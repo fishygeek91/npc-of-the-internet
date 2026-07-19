@@ -1,0 +1,17 @@
+---
+description: Rules for soulchain, spec, and protocol code
+globs: ["packages/osp-core/**", "packages/osp-cli/**", "spec/**"]
+alwaysApply: false
+---
+
+# Soulchain & spec rules
+
+You are touching the being's identity layer. Highest care applies.
+
+- **Append-only is absolute.** No code path may mutate, reorder, or delete a committed record. `SoulStore.append` must refuse a record whose `prev` is not the current head.
+- **Canonical serialization** (sorted keys, no whitespace) is defined in `spec/osp/records.md`; sign/hash only canonical bytes. If you change canonicalization you are breaking every existing chain — that requires a spec version bump and migration vectors, almost certainly out of your task's scope. Flag it instead.
+- **Conformance vectors are the law.** Any new or changed verification rule ships with vectors in `spec/osp/vectors/` in the same PR: at least one valid and one invalid case per rule. `verifyChain` must pass the whole suite.
+- **Real crypto in tests.** Never mock signatures or hashes; generate throwaway keys.
+- **Spec prose wins** over code on any disagreement — fix the code or (if the spec is wrong) change both in one PR with vectors proving the new behavior.
+- **No inward imports:** nothing in `osp-core`/`osp-cli`/`spec` may depend on `runtime`, `immune`, `door-*`, or `atlas`. This code is destined for extraction as the standalone OpenSoul project.
+- Spec version (`osp/0.1`, `pop/0.1`) is recorded in every record; bumping it is its own task, never a side effect.

@@ -1,0 +1,17 @@
+---
+description: TypeScript conventions for all packages
+globs: ["**/*.ts"]
+alwaysApply: false
+---
+
+# TypeScript conventions
+
+- ESM only (`type: module`), Node ≥ 22, imports end in `.js`. Strict mode per `tsconfig.base.json` — never loosen compiler options.
+- **Schemas:** all record/message/config types are Zod schemas in `@npc/osp-core` (records) or the owning package; derive TS types with `z.infer`. JSON Schema is generated from Zod into `spec/` — never hand-write it.
+- **Crypto:** only `@noble/ed25519`, `@noble/hashes`, `multiformats`. Never implement primitives, never add another crypto dependency.
+- **LLM calls:** only through the `Brain` interface in `@npc/runtime`. No direct API calls from feature code; no hard-coded model names outside config. Prompts live in `runtime/src/prompts/` as versioned files — never inline prompts in logic.
+- **Determinism:** inside self-composition and anything spec-verified: no `Date.now()`, no `Math.random()`, no map-iteration-order dependence. Clock and randomness are injected dependencies.
+- **Untrusted input:** all text from a Door is hostile until it passes the immune static screen. Never place untrusted text into a system prompt.
+- **Errors:** typed error classes per package; never throw strings; never swallow errors. Logging via `pino`, structured; `no-console` is enforced by ESLint.
+- **Config:** env vars validated with Zod at boot in a `config.ts`; fail fast listing missing vars.
+- **Extractability:** `spec/`, `packages/osp-core`, `packages/osp-cli` must never import from other workspace packages (they will be extracted as the standalone OpenSoul project — ENGINEERING.md D1).

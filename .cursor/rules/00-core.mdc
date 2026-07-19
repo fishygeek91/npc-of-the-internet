@@ -1,0 +1,20 @@
+---
+description: Core directives for all work in this repo
+alwaysApply: true
+---
+
+# Core directives
+
+This repo is built end to end by AI agents. The canonical instructions live in repo docs — these rules summarize them; the docs win on conflict.
+
+**Required reading order before any work:** `AGENTS.md` → `ENGINEERING.md` → `TASKS.md` (your task) → `ARCHITECTURE.md` (relevant sections only).
+
+## Non-negotiables
+
+- Work on exactly **one TASKS.md task at a time**, and only from a GitHub issue carrying the `approved` label (see LIFECYCLE.md). No approved issue = no implementation.
+- **Never redesign.** All technical decisions are made in `ENGINEERING.md` (D1–D7) and are final pre-1.0. If blocked by a decision, record it in `DEVIATIONS.md` with the smallest workaround, and continue. Do not add packages, languages, services, or dependencies beyond those listed.
+- **The soulchain is sacred**: append-only, really signed, hash-linked. Never write code that can mutate or delete a committed record. Crash-only design: every state change is a soulchain append or it didn't happen.
+- **Spec and code move together**: record schemas, Zod types, and test vectors change in the same PR, or not at all. `spec/` wins on disagreement.
+- A task is done only when its acceptance criteria pass and `pnpm check` is green. Never weaken, skip, or delete an existing test to get green.
+- No secrets in the repo, ever. New secret → name + purpose added to `ops/SECRETS.md`, value via env.
+- Small, honest diffs: one issue = one branch = one PR. Don't reformat or "improve" code outside your task.

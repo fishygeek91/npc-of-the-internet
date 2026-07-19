@@ -1,0 +1,17 @@
+---
+description: Testing rules
+globs: ["**/*.test.ts", "**/test/**", "**/vitest.config.*"]
+alwaysApply: false
+---
+
+# Testing rules
+
+Framework: Vitest. Full policy in `ENGINEERING.md` D3.
+
+- Every exported function: at least one happy-path and one failure-path test.
+- **Never** weaken, skip (`.skip`, `.todo` on existing tests), or delete a test to make a change pass. A failing test means your change is wrong, or you flag the task in `DEVIATIONS.md`.
+- LLM-dependent code tests use `FakeBrain` (scripted, deterministic). Real-model tests only under `test/live/` guarded by `LIVE_TESTS=1`, never in CI.
+- Golden files (`runtime/test/golden/`) change only with explicit justification in the PR description — byte-identical self-composition is a spec property, not an implementation detail.
+- Conformance vectors (`spec/*/vectors/`) are shared law; extending them is encouraged, editing existing vectors requires a spec change in the same PR.
+- No mocked crypto. No network in tests. No time/randomness flakiness — inject clocks and seeds.
+- Door adapters need the scripted end-to-end residency integration test (arrive → messages → distill → cosign → depart → chain verifies).
