@@ -29,7 +29,7 @@ Every soulchain record that touches PoP MUST include `pop_version: "pop/0.1"` in
 | **Soul key** | Long-lived Ed25519 identity key. Signs soulchain records and authorizes session keys. |
 | **Session key** | Short-lived Ed25519 subkey for one residency epoch. Signs all live Door traffic. |
 | **Door** | A host adapter with its own Ed25519 identity key (`door_id`). |
-| **Epoch** | Monotonic residency counter. Increments on every arrival at a new Door. |
+| **Epoch** | **Global** monotonic residency counter owned by the Wanderer (soulchain), not by any Door. Increments by exactly 1 on every successful `arrival`, regardless of which Door is hosting. Conflict detection (same epoch, different `door_id`) requires this global namespace. |
 | **Residency** | The pair `(door_id, epoch)`, encoded in records as `door:<door_id>/epoch:<n>` (example: `door:discord:guild123/epoch:77`). |
 | **Attestation** | A soulchain `attestation` record (`body.kind`: `arrival`, `heartbeat`, `departure`, `travel`, or future `handover`). |
 | **Traveling** | The public state between `departure`/`travel` and the next `arrival`: no valid session key exists. |
@@ -153,14 +153,16 @@ On depart, before the `departure` attestation:
 
 - Distill the residency into candidate memory shards.
 - Run the cosign flow at the Door (`POST /door/cosign`).
+- Obtain Door co-signature for the departure record via `POST /door/attest` (`kind: "departure"`).
 - Append cosigned `memory` records, then `departure`, then `travel`.
 
 ### 6.4 Arrive responsibilities
 
 On arrive:
 
-- Increment epoch.
+- Assign the next **global** epoch: `new_epoch = last_closed_or_current_epoch + 1` (Wanderer-side; never ask the Door for `epoch_next`).
 - Derive the new session key for `(new_door_id, new_epoch)`.
+- Obtain the arriving Door's co-signature over the arrival record `core` via `POST /door/attest` (`kind: "arrival"`).
 - Append the `arrival` attestation containing the session public key.
 - Begin heartbeat timer and accept Door session traffic.
 
@@ -184,20 +186,20 @@ During an active residency (present state), the runtime emits heartbeat attestat
 
 Each heartbeat is:
 
-1. Appended to the soulchain as an `attestation` record with `body.kind: "heartbeat"` (fields per OSP records).
-2. Sent to the Door via `POST /door/heartbeat` (Door API spec) — Door returns a Door-key signature that is recorded in the soulchain record's `cosigners`.
+1. Sent to the Door via `POST /door/heartbeat` (transport ack).
+2. Door co-signature obtained via `POST /door/attest` (`kind: "heartbeat"`) over the OSP `core` bytes.
+3. Appended to the soulchain as an `attestation` record with `body.kind: "heartbeat"` and that Door signature in `cosigners`.
 
 ### 7.2 Signatures
 
-Every heartbeat MUST be dual-attested:
+Every soulchain heartbeat MUST be dual-attested on-chain:
 
 | Signer | Where | Proves |
 |--------|--------|--------|
 | **Soul key** | Record envelope `sig` | Chain integrity / authority to claim presence. |
-| **Session key** | Door API heartbeat request `sig` (and binding via `session_pubkey` in body) | The runtime holding the active session for `(door_id, epoch)`. |
-| **Door key** | Record `cosigners` (from Door heartbeat response) | The host Door is actually serving and relaying the heartbeat. |
+| **Door key** | Record `cosigners` (from `POST /door/attest`) | The host Door co-signed the heartbeat `core`. |
 
-A soulchain heartbeat without a Door co-signature is invalid. A Door API heartbeat without a valid session-key signature is invalid.
+Separately, the Door API heartbeat request carries a **session-key** signature (live presence to the Door). A soulchain heartbeat without a Door `cosigners` entry is invalid.
 
 ### 7.3 Heartbeat body (minimum fields)
 
@@ -266,7 +268,7 @@ Conformance test vectors in `spec/pop/vectors/` are the final arbiter when this 
 ## 11. Related specifications
 
 - **OSP records** (`spec/osp/records.md`) — `attestation` record envelope and soulchain rules.
-- **Door API** (`spec/door/api.md`) — `hello`, `session`, `heartbeat`, `cosign` endpoints.
+- **Door API** (`spec/door/api.md`) — `hello`, `session`, `heartbeat`, `attest`, `cosign` endpoints.
 - **ARCHITECTURE.md §3** — motivational overview (threshold/TEE described there as long-term, not Ghost requirements).
 
 ---

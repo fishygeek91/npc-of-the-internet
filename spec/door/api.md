@@ -15,8 +15,11 @@ Normative references: [ARCHITECTURE.md](../../ARCHITECTURE.md) §4 (Doors), [Pro
 |--------|------|-----------|---------|
 | `POST` | `/door/hello` | Wanderer → Door | Capability negotiation + community descriptor (Door-signed response) |
 | `WS` | `/door/session` | Bidirectional | Residency message stream; outbound Wanderer messages carry session-key signatures |
-| `POST` | `/door/heartbeat` | Wanderer → Door | Presence attestation (~10 minute cadence) |
+| `POST` | `/door/heartbeat` | Wanderer → Door | Presence ping (~10 minute cadence); Door ack |
+| `POST` | `/door/attest` | Wanderer → Door | Door co-signature over a soulchain attestation `core` (arrival / departure / heartbeat) |
 | `POST` | `/door/cosign` | Wanderer → Door | Host review + co-sign candidate memory shards at departure |
+
+Ghost implements five HTTP/WS paths. The four ARCHITECTURE.md discovery/session/presence/memory flows remain; `/door/attest` is the explicit PoP co-signing path required so arrival/departure (and soulchain heartbeats) can fill non-empty `cosigners` without a circular signing payload.
 
 **Base URL:** implementation-defined (e.g. `https://door.example.com` for network transports). Path prefixes are fixed.
 
@@ -35,7 +38,7 @@ Normative references: [ARCHITECTURE.md](../../ARCHITECTURE.md) §4 (Doors), [Pro
 | Type | Format | Example | Notes |
 |------|--------|---------|-------|
 | `door_id` | `platform:community-id` | `discord:123456789012345678` | Stable identity of a hosted community. **No** leading `door:` prefix. `<platform>` is a short slug (`discord`, `web`, `matrix`, …). `<community-id>` is opaque to the protocol. |
-| `epoch` | unsigned integer ≥ 1 | `77` | Residency counter at this `door_id`. Increments on each new arrival. A Wanderer MUST NOT hold a valid session key for the same `(door_id, epoch)` from two operators simultaneously (PoP). |
+| `epoch` | unsigned integer ≥ 1 | `77` | **Global** residency epoch from the Wanderer soulchain (PoP). Not per-Door. The Wanderer supplies `epoch` on every call; Doors MUST NOT allocate or invent epochs. Only one valid session key may exist for a given epoch globally. |
 | `msg_id` | string | `msg_01HY…` | Unique within a session stream. Implementations MAY use ULID/UUID; the wire format is opaque. |
 | `shard_id` | string | `shard_01HY…` | Unique within a cosign request. |
 
@@ -55,7 +58,7 @@ All public keys and signatures on the Door wire are **opaque strings** encoding 
 
 **Canonical signing payload:** JSON object containing all signed fields, **sorted keys**, UTF-8, no insignificant whitespace, excluding the signature field itself — same rules as OSP canonical serialization. Exact conformance vectors will live in `spec/door/vectors/` (future task); implementers MUST match the algorithm in `osp-core` once vectors land.
 
-**Session-key binding (v0.1):** The session key is derived from the soul key for `(door_id, epoch)` and recorded in an `attestation` record at arrival. Every outbound Wanderer message on `/door/session`, every `/door/heartbeat` request, and every `/door/cosign` request MUST include `session_pubkey` and `sig` under that session key. Receivers MUST reject payloads where `session_pubkey` does not match the active session for the claimed `(door_id, epoch)` or where `sig` fails verification.
+**Session-key binding (v0.1):** The session key is derived from the soul key for `(door_id, epoch)` and recorded in an `attestation` record at arrival. Every outbound Wanderer message on `/door/session`, every `/door/heartbeat` request, every `/door/attest` request after arrival, and every `/door/cosign` request MUST include `session_pubkey` and `sig` under that session key (arrival attest uses the soul key — see `/door/attest`). Receivers MUST reject payloads where `session_pubkey` does not match the active session for the claimed `(door_id, epoch)` or where `sig` fails verification.
 
 ### Timestamps
 
@@ -81,7 +84,8 @@ Machine-readable feature flags the Door supports. v0.1 registered values:
 |-------|---------|
 | `session.text` | Text messages on `/door/session`. |
 | `session.threads` | Thread/reply metadata on inbound messages (optional `reply_to`). |
-| `heartbeat` | Door accepts `/door/heartbeat` attestations. |
+| `heartbeat` | Door accepts `/door/heartbeat` presence pings. |
+| `attest` | Door accepts `/door/attest` soulchain co-signatures. |
 | `cosign.manual` | Host manually approves shards on `/door/cosign` (v0.1 default). |
 | `cosign.auto` | Door may auto-approve shards matching host policy (not required in v0.1). |
 
@@ -134,7 +138,7 @@ This endpoint is idempotent and does not mutate residency state.
 | `protocol_version` | string | yes | `door/0.1`. |
 | `door_id` | string | yes | This Door's stable id. |
 | `door_pubkey` | string | yes | Door public key (base64url). |
-| `epoch_next` | integer | yes | Epoch number that **would** be assigned on the next successful arrival. |
+| `active_epoch` | integer \| null | yes | If this Door currently believes it is hosting an active residency, the global `epoch` it last accepted; otherwise `null`. **Informational only** — the Wanderer is authoritative for epoch allocation. Doors MUST NOT expose an `epoch_next` (they cannot know the next global epoch). |
 | `capabilities` | string[] | yes | Subset of registered `Capability` values. |
 | `community` | `CommunityDescriptor` | yes | Community metadata. |
 | `issued_at` | string | yes | Door timestamp. |
@@ -273,12 +277,12 @@ Same object as HTTP `error` shape, plus optional `related_msg_id`.
 | `received_at` | string | yes | Door timestamp. |
 | `door_sig` | string | yes | Door signature over `{ door_id, epoch, seq, accepted, received_at }`. |
 
-Door SHOULD persist or forward attestations for Atlas/soulchain correlation (v0.1: optional local log; future tasks may require soulchain `attestation` records).
+Door SHOULD persist or forward presence pings for local ops. **Soulchain** heartbeat records still require a Door co-signature over the OSP `core` payload, obtained via `POST /door/attest` with `kind: "heartbeat"` (the HTTP `door_sig` above is a transport ack only and is **not** the soulchain cosigner).
 
 ### Auth / signing
 
 - **Request:** Session-key `sig` required; MUST match active residency.
-- **Response:** `door_sig` required so the attestation is host-backed.
+- **Response:** `door_sig` required as a transport ack (not the OSP cosigner).
 
 ### Errors
 
@@ -288,6 +292,65 @@ Door SHOULD persist or forward attestations for Atlas/soulchain correlation (v0.
 | `signature_invalid` | `401` | `sig` failed verification. |
 | `epoch_closed` | `409` | Residency already departed. |
 | `seq_replay` | `409` | `seq` not greater than last accepted (if Door tracks). |
+
+---
+
+## `POST /door/attest`
+
+### Purpose
+
+Obtain a **Door co-signature** for a soulchain `attestation` record. The Wanderer builds the unsigned envelope, computes the OSP **`core`** bytes (canonical JSON with `cosigners` and `sig` omitted — see `spec/osp/records.md`), and asks the Door to sign those bytes. Used for:
+
+| `kind` | When |
+|--------|------|
+| `arrival` | Before appending the arrival attestation (no session yet — see auth below) |
+| `departure` | After cosign flow, before appending departure |
+| `heartbeat` | After `/door/heartbeat` ack, before appending the soulchain heartbeat |
+
+This is how `cosigners` becomes non-empty for arrival/departure/heartbeat without a circular signing payload.
+
+### Request
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `protocol_version` | string | yes | `door/0.1`. |
+| `door_id` | string | yes | Hosting Door. |
+| `epoch` | integer | yes | **Global** epoch supplied by the Wanderer. |
+| `kind` | string | yes | `arrival`, `departure`, or `heartbeat`. |
+| `core` | string | yes | UTF-8 string equal to the OSP `core` canonical JSON bytes (the exact bytes the Door will sign). Max 64 KiB. |
+| `session_pubkey` | string | cond. | Required for `departure` and `heartbeat`. For `arrival`, the new session public key that will appear in the attestation body (Door binds to it). |
+| `issued_at` | string | yes | Wanderer timestamp. |
+| `sig` | string | yes | For `arrival`: **soul-key** signature over `{ door_id, epoch, kind, core, session_pubkey, issued_at }` (session not valid yet). For `departure` / `heartbeat`: **session-key** signature over the same fields. |
+
+### Response `200`
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `door_id` | string | yes | Echo. |
+| `epoch` | integer | yes | Echo. |
+| `kind` | string | yes | Echo. |
+| `door_cosig` | string | yes | Door Ed25519 signature over the raw UTF-8 bytes of `core` (not over a wrapper object). Base64url. |
+| `received_at` | string | yes | Door timestamp. |
+| `door_sig` | string | yes | Door signature over `{ door_id, epoch, kind, door_cosig, received_at }` (response authenticity). |
+
+The Wanderer places `door_cosig` into the record's `cosigners` array, then soul-signs and appends.
+
+### Auth / signing
+
+- **Arrival:** Soul-key `sig` on the request; Door verifies soul pubkey from genesis / prior hello context the operator configured.
+- **Departure / heartbeat:** Active session-key `sig`; Door verifies against the session published at arrival for this global `epoch`.
+- **`door_cosig`:** MUST verify as Ed25519 over the exact `core` bytes under `door_pubkey`.
+
+### Errors
+
+| `error.code` | Status | Meaning |
+|--------------|--------|---------|
+| `unsupported_kind` | `400` | `kind` not in the allowed set. |
+| `core_invalid` | `400` | `core` empty, too large, or not valid UTF-8. |
+| `signature_invalid` | `401` | Request `sig` failed. |
+| `session_invalid` | `401` | Session required but missing/invalid (`departure` / `heartbeat`). |
+| `epoch_mismatch` | `409` | Door's active residency epoch ≠ request `epoch` (when Door has an active session). |
+| `not_hosting` | `403` | Door refuses to attest (e.g. operator denied arrival). |
 
 ---
 
@@ -368,8 +431,9 @@ The Wanderer MUST NOT commit rejected shards to the soulchain. Approved shards a
 
 ## Implementer checklist (`door-sdk`, T4.1)
 
-1. Typed request/response/frame types for all four endpoints.
+1. Typed request/response/frame types for all five endpoints (`hello`, `session`, `heartbeat`, `attest`, `cosign`).
 2. Door identity keypair generation and `sig` / `door_sig` / `door_cosig` helpers.
-3. In-process transport implementing the same shapes (no network).
-4. WebSocket transport for `/door/session`.
-5. Contract tests shared with runtime integration suite (T2.4, T2.5).
+3. OSP `core` cosigning for `/door/attest` (sign raw `core` bytes) and per-shard `door_cosig` for `/door/cosign`.
+4. In-process transport implementing the same shapes (no network).
+5. WebSocket transport for `/door/session`.
+6. Contract tests shared with runtime integration suite (T2.4, T2.5).

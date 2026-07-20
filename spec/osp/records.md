@@ -229,7 +229,7 @@ Prose aliases used in PoP narrative: **welcome** = `arrival`, **farewell** = `de
 | `kind` | string | yes | `"arrival"`. |
 | `pop_version` | string | yes | `"pop/0.1"`. |
 | `door_id` | string | yes | Door identifier **without** a leading `door:` prefix (e.g. `discord:guild123`). Must match the Door portion of `residency`. |
-| `epoch` | unsigned integer | yes | New residency epoch (monotonic; increments on each arrival). |
+| `epoch` | unsigned integer | yes | **Global** residency epoch (see PoP). Wanderer assigns `previous_global_epoch + 1` at arrival; Door does not allocate epochs. |
 | `session_pubkey` | string | yes | Base64url-encoded 32-byte Ed25519 public key for live outputs during this residency. Authorized by the soul key (see PoP spec). |
 | `at` | string | yes | ISO 8601 UTC timestamp. |
 
@@ -338,23 +338,34 @@ Canonical form is critical for interoperable signing and CID computation (T1.1).
 
 1. **UTF-8** encoding.
 2. JSON representation with **no insignificant whitespace** (no extra spaces, no pretty-printing, no trailing newline).
-3. **Recursively sorted object keys** at every object level, ascending by Unicode code point (UTF-16 code unit order as JavaScript `Array.prototype.sort()` on key strings — implementations must match the conformance vectors in T1.3).
+3. **Recursively sorted object keys** at every object level, ascending by **UTF-16 code unit order** — the same order as JavaScript `Array.prototype.sort()` on key strings (ECMAScript string comparison). Do **not** use Unicode code-point / code-point collation order; those diverge for astral-plane keys. Implementations must match the conformance vectors in T1.3.
 4. **Arrays preserve element order** (only object keys are sorted).
 5. Numbers: JSON number rules; `seq` and integer body fields must serialize without fractional part (e.g. `42`, not `42.0`).
 6. `null` serializes as JSON `null`.
 
-### Signing payload
+### Signing payloads
 
-The bytes signed by the soul key are the canonical JSON serialization of the **envelope object with the `sig` field omitted**. All other envelope fields (`spec`, `seq`, `prev`, `type`, `body`, `residency`, `cosigners`) are included.
+Signing is ordered so payloads are never circular.
 
-Co-signers similarly sign the same payload (or a domain-separated variant defined in the Door/PoP spec — default: identical signing payload unless Door spec states otherwise).
+**Cosigner (Door) payload — `core`:** canonical JSON of the envelope with **both `cosigners` and `sig` omitted**. Fields included: `spec`, `seq`, `prev`, `type`, `body`, `residency`. Each Door co-signature in `cosigners` is an Ed25519 signature over these `core` bytes under the Door identity key.
+
+**Soul-key payload:** canonical JSON of the envelope with **only `sig` omitted**. Fields included: `spec`, `seq`, `prev`, `type`, `body`, `residency`, **and** `cosigners` (already filled). The soul key signs after cosigners are collected (or after deciding `cosigners: []` when none are required).
+
+**Append order (normative):**
+
+1. Build the unsigned envelope (`cosigners` unset / empty, no `sig`).
+2. If Door co-signatures are required: obtain each Door signature over `core` via the Door API (`POST /door/attest` for attestation kinds; `POST /door/cosign` for memory shards — see `spec/door/api.md`), then set `cosigners` to those signature strings (stable order: ascending base64url lexicographic sort of the signature strings).
+3. Compute the soul-key signature over the soul-key payload; set `sig`.
+4. Persist the full record; compute its CID.
+
+Verifiers check: each `cosigners[i]` verifies over `core`; `sig` verifies over the soul-key payload; then CID matches the full stored bytes.
 
 ### CID computation
 
 1. Build the envelope **including** `sig` (full record as stored).
 2. Serialize to **canonical JSON** bytes per rules above.
 3. Compute CID: `multiformats` **dag-json** codec with **sha2-256** hasher.
-4. CID string representation: base58btc (standard `CID.toString()` / `bafy…` form).
+4. CID string representation: CIDv1 default **base32** (`base32` multibase, no padding) — standard `CID.toString()` form beginning with `bafy…`. Do **not** use base58btc (`z…` / `Qm…`) for soulchain record CIDs.
 
 The `prev` field of record `n` must equal the CID computed from record `n - 1`.
 
@@ -362,7 +373,7 @@ The `prev` field of record `n` must equal the CID computed from record `n - 1`.
 
 ## CIDs
 
-- Format: multiformats CID string (typically `bafy…` base58btc).
+- Format: multiformats CIDv1 string in **base32** (typically `bafy…`).
 - Algorithm: sha2-256 digest of dag-json–encoded canonical record bytes.
 - `prev: null` is permitted **only** when `seq === 0`.
 
@@ -416,7 +427,7 @@ A fork is verified as its own chain starting at a new genesis with `fork_point` 
 |---|---|
 | `spec/osp/genesis.md` | Wanderer charter text referenced by genesis records |
 | `spec/pop/overview.md` | Soul key, session keys, handover ceremony |
-| `spec/door/api.md` | Door endpoints (`hello`, `session`, `heartbeat`, `cosign`) |
+| `spec/door/api.md` | Door endpoints (`hello`, `session`, `heartbeat`, `attest`, `cosign`) |
 | `ARCHITECTURE.md` §2 | Soulchain architecture |
 | `spec/osp/vectors/` | Conformance test vectors (T1.3) |
 

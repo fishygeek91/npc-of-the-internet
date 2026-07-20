@@ -75,9 +75,12 @@ A Door is any process implementing the Door API:
 ```
 POST /door/hello        capability + community descriptor (signed)
 WS   /door/session      bidirectional message stream during residency
-POST /door/heartbeat    presence attestation (signed, ~10 min cadence)
+POST /door/heartbeat    presence ping (signed, ~10 min cadence)
+POST /door/attest       Door co-signature over soulchain attestation core (arrival / departure / heartbeat)
 POST /door/cosign       review + co-sign candidate shards at departure
 ```
+
+Epochs are **global** (Wanderer-allocated). Doors never assign `epoch_next`.
 
 Reference Doors, in order: `door-discord`, `door-web` (embeddable widget with signature verification built into the UI), `door-matrix`, `door-activitypub`. Community-built Doors register on the Atlas with a stake of reputation (initially: just a signed registration; sybil resistance is invitation-weight, not registration).
 
