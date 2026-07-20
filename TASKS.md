@@ -22,6 +22,12 @@ Each task lists **Deps**, **Deliverables**, and **Acceptance** (how a reviewer v
 - Acceptance: docs exist, internally consistent with ARCHITECTURE.md; another agent can implement T1.x from spec alone.
 - Notes:
 
+### T0.3 ⬜ Release tooling (changesets)
+- Deps: T0.1
+- Deliverables: `@changesets/cli` configured (fixed versioning, all packages one version); `.changeset/config.json`; PR template gains a "changeset added (or N/A: docs/tests only)" checkbox; `release.yml` workflow per ENGINEERING.md D7 (tag → Docker images to GHCR + GitHub Release).
+- Acceptance: `pnpm changeset` works; a dry-run `changeset version` bumps all packages together and generates CHANGELOG.md entries. Green.
+- Notes:
+
 ## Phase 1 — osp-core (the chain)
 
 ### T1.1 ⬜ Record types + signing

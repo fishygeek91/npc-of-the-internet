@@ -80,6 +80,14 @@ Test framework: **Vitest**. Rules:
 - **Docs:** every package has a README with: purpose (2 sentences), public API, how to run tests. Spec changes update `spec/` in the same PR.
 - **License:** MIT for code, CC-BY-4.0 for specs/whitepaper.
 
-## D7. What NOT to build (pre-1.0)
+## D7. Releases & changelog
+
+- **Changesets drive everything.** Any PR that changes behavior includes a changeset file (`pnpm changeset`: bump type + one-sentence summary written for humans). Docs-only and test-only PRs skip it.
+- **CHANGELOG.md is generated** by changesets from those summaries at release time — never edited by hand. Agents: do not write to CHANGELOG.md directly.
+- **Versioning:** all packages share one version (fixed mode). Releasing = merging the changesets "Version Packages" PR — this is a **human gate 2 action** (LIFECYCLE.md §8). The resulting tag `vX.Y.Z` triggers `release.yml` (Docker images to GHCR + GitHub Release with the changelog section).
+- **Milestones** (Ghost, Body, Society, Standard) are GitHub milestones mapped to the roadmap; a milestone ships as a normal semver release that completes its phase (Ghost = v0.1.0).
+- **Spec versions** (`osp/0.1`, `pop/0.1`) are independent of package versions, recorded in every soulchain record; bumping one is its own task with migration vectors, never a release side effect.
+
+## D8. What NOT to build (pre-1.0)
 
 No token or tokenomics. No smart contracts beyond the eventual anchor (v0.3). No user accounts/auth on Atlas. No fine-tuning pipeline. No mobile apps. No kubernetes. No microservices — deployables are three processes, period. If a task seems to need one of these, it's mis-scoped; flag it in `DEVIATIONS.md`.

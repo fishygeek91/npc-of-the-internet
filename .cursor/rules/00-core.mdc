@@ -12,7 +12,7 @@ This repo is built end to end by AI agents. The canonical instructions live in r
 ## Non-negotiables
 
 - Work on exactly **one TASKS.md task at a time**, and only from a GitHub issue carrying the `approved` label (see LIFECYCLE.md). No approved issue = no implementation.
-- **Never redesign.** All technical decisions are made in `ENGINEERING.md` (D1–D7) and are final pre-1.0. If blocked by a decision, record it in `DEVIATIONS.md` with the smallest workaround, and continue. Do not add packages, languages, services, or dependencies beyond those listed.
+- **Never redesign.** All technical decisions are made in `ENGINEERING.md` (D1–D8) and are final pre-1.0. Behavior-changing PRs include a changeset (D7); never edit CHANGELOG.md by hand. If blocked by a decision, record it in `DEVIATIONS.md` with the smallest workaround, and continue. Do not add packages, languages, services, or dependencies beyond those listed.
 - **The soulchain is sacred**: append-only, really signed, hash-linked. Never write code that can mutate or delete a committed record. Crash-only design: every state change is a soulchain append or it didn't happen.
 - **Spec and code move together**: record schemas, Zod types, and test vectors change in the same PR, or not at all. `spec/` wins on disagreement.
 - A task is done only when its acceptance criteria pass and `pnpm check` is green. Never weaken, skip, or delete an existing test to get green.
