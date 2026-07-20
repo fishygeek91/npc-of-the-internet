@@ -11,5 +11,6 @@ Closes #<issue-number> (TASKS.md ID: T0.0)
 - [ ] Acceptance criteria from the issue all pass
 - [ ] Spec, Zod schemas, and vectors updated together (if touched)
 - [ ] TASKS.md status updated
+- [ ] Reviewer LGTM comment exists on this PR (do NOT merge before it)
 
 ## Notes for reviewer

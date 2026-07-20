@@ -1,0 +1,11 @@
+---
+description: Never self-merge — stop after opening a PR
+alwaysApply: true
+---
+
+# No self-merge
+
+- After opening a PR: comment that it is ready for review, then **stop the session**.
+- Never run `gh pr merge` or squash-merge unless the human explicitly asked in this conversation **and** a reviewer `LGTM` / `Approve` / `APPROVE` comment already exists on the PR.
+- The PR author must not post their own APPROVE as a substitute for independent review.
+- Full workflow: `LIFECYCLE.md` §6–7.

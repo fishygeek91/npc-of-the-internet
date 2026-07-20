@@ -34,8 +34,11 @@ The delivery workflow (issues, branches, PRs, review, the two human gates) is de
 6. Run: pnpm check   (build + lint + test)
 7. Update the task to ✅ in TASKS.md, noting anything the next agent must know in its Notes line.
 8. Open a PR (template, conventional-commit title with task ID, Closes #N).
-   An AI reviewer that didn't author it must approve before squash-merge.
-   NEVER execute production actions (deploy, keys, genesis, releases) — prepare, then stop for human approval.
+   Comment that the PR is ready for review, then **STOP** — do not merge.
+   Cursor implements; reviewing agent (Claude via GitHub) reviews, comments inline, posts verdict (`LGTM` / `Approve` / `APPROVE` or `REQUEST CHANGES`).
+   After fixes are pushed, request re-review by comment.
+   Merge only by the human, or by an agent explicitly instructed after a reviewer verdict exists.
+   NEVER execute production actions (Gate 2) — prepare, then stop for human approval.
 ```
 
 ## Definition of done (all must hold)
