@@ -30,11 +30,11 @@ Each task lists **Deps**, **Deliverables**, and **Acceptance** (how a reviewer v
 
 ## Phase 1 — osp-core (the chain)
 
-### T1.1 ⬜ Record types + signing
+### T1.1 ✅ Record types + signing
 - Deps: T0.2
 - Deliverables: in `osp-core`: Zod schemas for all record types; canonical JSON serialization (sorted keys, no whitespace — document it in spec); Ed25519 sign/verify; CID computation (`multiformats`, sha2-256, dag-json codec); `createRecord`, `verifyRecord`.
 - Acceptance: unit tests incl. tamper detection (flip one byte → verify fails); generated JSON Schema emitted to `spec/osp/schema/`. Green.
-- Notes:
+- Notes: Implemented from `spec/osp/records.md`. CID prefix `bagu` (dag-json) — see DEVIATIONS.md. JSON Schema at `spec/osp/schema/`. Next: T1.2 SoulStore. Agent: Grok 4.5 Maestro, 2026-07-20.
 
 ### T1.2 ⬜ SoulStore (append-only local store)
 - Deps: T1.1
