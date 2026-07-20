@@ -2,7 +2,17 @@ export const packageName = "@npc/osp-core";
 
 export * from "./schemas/index.js";
 
-export { SchemaError, VerificationError, EncodingError } from "./errors.js";
+export {
+  SchemaError,
+  VerificationError,
+  EncodingError,
+  StorageError,
+  CorruptionError,
+  ConcurrentAppendError,
+  ChainMismatchError
+} from "./errors.js";
+export type { HeadInfo, AppendResult, FileSoulStoreOpenOptions, SoulStore } from "./store/index.js";
+export { FileSoulStore } from "./store/index.js";
 export { canonicalize } from "./canonical.js";
 export {
   encodeBase64Url,

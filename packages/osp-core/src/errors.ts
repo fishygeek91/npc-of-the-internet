@@ -34,3 +34,39 @@ export class EncodingError extends OspCoreError {
     super(message);
   }
 }
+
+/** Thrown on general I/O or store failures. */
+export class StorageError extends OspCoreError {
+  readonly code = "STORAGE_ERROR";
+
+  constructor(message: string) {
+    super(message);
+  }
+}
+
+/** Thrown when stored data is torn, CID-mismatched, or the chain is invalid on open. */
+export class CorruptionError extends OspCoreError {
+  readonly code = "CORRUPTION_ERROR";
+
+  constructor(message: string) {
+    super(message);
+  }
+}
+
+/** Thrown when an append fails due to lock contention. */
+export class ConcurrentAppendError extends OspCoreError {
+  readonly code = "CONCURRENT_APPEND_ERROR";
+
+  constructor(message: string) {
+    super(message);
+  }
+}
+
+/** Thrown when a record's prev/seq does not match the current head. */
+export class ChainMismatchError extends OspCoreError {
+  readonly code = "CHAIN_MISMATCH_ERROR";
+
+  constructor(message: string) {
+    super(message);
+  }
+}
