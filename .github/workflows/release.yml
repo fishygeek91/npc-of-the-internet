@@ -5,6 +5,11 @@ on:
     branches: [main]
     tags: ["v*"]
 
+# Serialize Version Packages updates on main; tags use distinct refs so they do not collide.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   version:
     if: github.ref == 'refs/heads/main'
@@ -135,12 +140,17 @@ jobs:
       - name: Prepare image tags
         if: steps.dockerfile.outputs.exists == 'true'
         id: tags
+        env:
+          TAG: ${{ github.ref_name }}
         run: |
           OWNER=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')
           {
             echo "tags<<TAGS_EOF"
-            echo "ghcr.io/${OWNER}/npc-${{ matrix.name }}:${{ github.ref_name }}"
-            echo "ghcr.io/${OWNER}/npc-${{ matrix.name }}:latest"
+            echo "ghcr.io/${OWNER}/npc-${{ matrix.name }}:${TAG}"
+            # Only promote :latest for plain semver tags (skip v0.1.0-rc.1 etc.).
+            if [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "ghcr.io/${OWNER}/npc-${{ matrix.name }}:latest"
+            fi
             echo "TAGS_EOF"
           } >> "$GITHUB_OUTPUT"
 
