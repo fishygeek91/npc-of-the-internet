@@ -8,3 +8,7 @@ coverage/
 .DS_Store
 soulchain-data/
 _tmp_*
+.cursor/plans/
+*.pem
+*.key
+*.p12

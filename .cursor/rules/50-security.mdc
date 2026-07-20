@@ -1,0 +1,36 @@
+---
+description: Security rules — secrets, keys, input handling, CI
+alwaysApply: true
+---
+
+# Security rules
+
+## Secrets & config
+
+- **No secrets in the repo, ever** — not in code, tests, fixtures, docs, comments, commit messages, PR descriptions, or `.cursor/plans/`. New secret → add name + purpose to `ops/SECRETS.md`, value comes from env only.
+- Never print, log, or interpolate secret values into error messages, thrown errors, or debug output. Error messages may name the missing env var (`ANTHROPIC_API_KEY is required`) but never echo its value.
+- When wrapping caught errors (e.g. `BrainError(msg, cause)`), assume `cause` may be serialized to logs — never attach request params or headers to it.
+- `.env.example` documents variable names with empty/placeholder values only. Real `.env*` files are gitignored; never weaken those gitignore entries.
+- Before committing, if you touched any config, fixture, or test file, re-check the diff for anything that looks like a real key (`sk-ant-`, `ghp_`, `AKIA`, base64 blobs, PEM blocks).
+
+## Keys & crypto (soulchain)
+
+- Private keys exist only: (a) generated at runtime via `generateKeypair()`, (b) loaded from a host path given by env (Keyring). Never hard-code, never write to disk in code you author, never include in vectors except the deterministic obviously-fake fill-byte test keys in `scripts/generate-vectors.ts`.
+- Test keys must be throwaway or deterministic-fake; never copy a key from anywhere else.
+- Never log private key material, even truncated.
+
+## Input handling
+
+- Any externally supplied identifier used to build a filesystem path (CIDs, soul ids, filenames) must be format-validated first (strict regex, no `/`, no `..`) before `path.join`. Reject, don't sanitize.
+- Validate all external input with Zod at the boundary; identifiers that name resources need format constraints (regex/length), not bare `z.string()`.
+
+## CI & supply chain
+
+- PR-triggered workflows must never use `pull_request_target` with checkout of PR code, and must not receive repo secrets.
+- Keep `permissions:` blocks minimal per job. Never add `secrets.*` to a job that runs untrusted PR code.
+- New dependencies require an approved issue (see 00-core); prefer zero-dep additions. Lockfile changes must come from `pnpm install --frozen-lockfile`-compatible flows, never hand-edited.
+
+## Development hygiene
+
+- Local dev data (`soulchain-data/`, `_tmp_*`, `.env*`) stays gitignored. If you create a new local-artifact directory, add it to `.gitignore` in the same PR.
+- Never commit `.cursor/plans/` content — plans can contain internal reasoning and paths.
