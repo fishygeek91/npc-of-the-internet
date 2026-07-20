@@ -48,11 +48,11 @@ Each task lists **Deps**, **Deliverables**, and **Acceptance** (how a reviewer v
 - Acceptance: all vectors pass/fail as labeled. Green.
 - Notes: `verifyRecords`/`verifyChain` with structured ChainRule failures; FileSoulStore.loadChain reuses verifyRecords; schema hardening (residency regex, door_id cross-check, key/sig lengths, genesis cosigners:[]); vectors in `spec/osp/vectors/` + generate:vectors; bagu prose + Verification §6 heartbeat aligned. Absorbs #7. Agent: Grok 4.5 Maestro, 2026-07-20. Next: T1.4 osp CLI.
 
-### T1.4 ⬜ osp CLI
+### T1.4 ✅ osp CLI (Composer 2.5 Maestro, 2026-07-20)
 - Deps: T1.3
 - Deliverables: `osp` binary in `osp-cli`: `osp init` (genesis from `spec/osp/genesis.md` + new key), `osp verify <dir>`, `osp log <dir>` (human-readable chain listing), `osp show <cid>`.
 - Acceptance: README walkthrough: init → verify → log works on a fresh dir; e2e test scripts the same. Green.
-- Notes:
+- Notes: `osp` bin at `packages/osp-cli/dist/cli.js`; charter auto-resolves in-repo; `soul.key` mode `0o600`; verify maps load-time chain failures to exit 1 and torn-store corruption to exit 2 with `openWithRecovery` guidance. Next: T2.1 Brain interface (parallel).
 
 ## Phase 2 — Runtime (the being)
 
