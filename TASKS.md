@@ -20,7 +20,7 @@ Each task lists **Deps**, **Deliverables**, and **Acceptance** (how a reviewer v
 - Deps: T0.1
 - Deliverables: `spec/osp/records.md` (prose schemas for all record types from ARCHITECTURE.md §2), `spec/pop/overview.md` (keys, session keys, attestations, handover — v0.1 scope: single key, manual handover), `spec/door/api.md` (Door endpoints: hello/session/heartbeat/attest/cosign), `spec/osp/genesis.md` (the Wanderer's charter: personality per AGENTS.md "Style of the being", constraints: no PII in shards, spend policy stub, host-instruction override rule).
 - Acceptance: docs exist, internally consistent with ARCHITECTURE.md; another agent can implement T1.x from spec alone.
-- Notes: Specs at `osp/0.1`, `pop/0.1`, `door/0.1`. Epoch is **global** (Wanderer-owned); Doors do not allocate epochs (`active_epoch` on hello is informational). Attestation `body.kind`: `arrival` | `heartbeat` | `departure` | `travel` (`handover` reserved). Cosigner payload = envelope `core` (omit `cosigners`+`sig`); soul signs after cosigners filled. Door cosigs for attestations via `POST /door/attest`. Keys/sigs base64url; CIDs CIDv1 **base32** (`bafy…`). Canonical key sort = UTF-16 code unit order. Next: T0.3 or T1.1 (Zod from `records.md`).
+- Notes: Specs at `osp/0.1`, `pop/0.1`, `door/0.1`. Epoch is **global** (Wanderer-owned); Doors do not allocate epochs (`active_epoch` on hello is informational). Attestation `body.kind`: `arrival` | `heartbeat` | `departure` | `travel` (`handover` reserved). Cosigner payload = envelope `core` (omit `cosigners`+`sig`); soul signs after cosigners filled. Door cosigs for attestations via `POST /door/attest`. Keys/sigs base64url; CIDs CIDv1 **base32** (`bagu…`, dag-json codec). Canonical key sort = UTF-16 code unit order. Next: T0.3 or T1.1 (Zod from `records.md`).
 
 ### T0.3 ✅ Release tooling (changesets) (Grok 4.5, 2026-07-20)
 - Deps: T0.1
@@ -42,11 +42,11 @@ Each task lists **Deps**, **Deliverables**, and **Acceptance** (how a reviewer v
 - Acceptance: unit tests: append/read/iterate; simulated partial-write recovery; concurrent-append rejection. Green.
 - Notes: FileSoulStore: chain.jsonl + blobs/<cid>, fsync, wx lock, open fails on torn line / openWithRecovery truncates. Agent: Grok 4.5 Maestro, 2026-07-20. Next: T1.3 verifyChain + vectors.
 
-### T1.3 ⬜ Chain verification + test vectors
+### T1.3 ✅ Chain verification + test vectors
 - Deps: T1.2
 - Deliverables: `verifyChain(store)` — full walk: sigs, prev-links, seq monotonicity, schema validity, cosigner sigs where required; vector suite in `spec/osp/vectors/` (≥1 valid chain, ≥6 invalid: bad sig, broken link, seq gap, schema violation, missing cosign, forked head) + vector runner test.
 - Acceptance: all vectors pass/fail as labeled. Green.
-- Notes:
+- Notes: `verifyRecords`/`verifyChain` with structured ChainRule failures; FileSoulStore.loadChain reuses verifyRecords; schema hardening (residency regex, door_id cross-check, key/sig lengths, genesis cosigners:[]); vectors in `spec/osp/vectors/` + generate:vectors; bagu prose + Verification §6 heartbeat aligned. Absorbs #7. Agent: Grok 4.5 Maestro, 2026-07-20. Next: T1.4 osp CLI.
 
 ### T1.4 ⬜ osp CLI
 - Deps: T1.3

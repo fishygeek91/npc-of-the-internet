@@ -33,3 +33,10 @@ export type {
   VerifyRecordOptions,
   VerifyRecordResult
 } from "./record.js";
+export { verifyRecords, verifyChain } from "./verify-chain.js";
+export type {
+  ChainRule,
+  ChainFailure,
+  VerifyChainResult,
+  VerifyChainOptions
+} from "./verify-chain.js";
