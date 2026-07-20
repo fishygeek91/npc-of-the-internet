@@ -12,7 +12,7 @@ Full detail in `LIFECYCLE.md`. Summary:
 3. Implement. Update `TASKS.md` status (⏳ → ✅ with Notes) in the same branch.
 4. Run `pnpm check` locally; only open the PR when green.
 5. PR: conventional-commit title ending with the task ID, e.g. `feat(osp-core): append-only SoulStore (T1.2)`; body `Closes #N`; fill the PR template. Keep PRs under ~600 changed lines (excluding lockfiles/goldens) — split otherwise.
-6. An AI reviewer that did not author the PR will review via GitHub. Respond to review comments by pushing fixes. Do not merge your own PR without that review + green CI. Squash-merge, delete the branch.
+6. An AI reviewer that did not author the PR will review via GitHub. Reviews arrive as PR comments titled "🤖 AI Review — APPROVE / REQUEST CHANGES" (formal GitHub reviews are blocked because all agents share the owner account) — they are binding. Respond to REQUEST CHANGES by pushing fixes. Never merge until the latest AI Review comment says APPROVE and CI is green. Squash-merge, delete the branch.
 7. Discovered work (bugs, follow-ups, ambiguities) becomes a new issue — never scope creep in the current PR.
 
 ## Human gates — hard stops

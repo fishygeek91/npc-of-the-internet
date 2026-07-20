@@ -1,6 +1,6 @@
 # @npc/door-sdk
 
-Shared library for building Door adapters (hello/session/heartbeat/cosign).
+Shared library for building Door adapters (hello/session/heartbeat/attest/cosign).
 
 Status: scaffold only — see /TASKS.md for the tasks that build this package.
 
