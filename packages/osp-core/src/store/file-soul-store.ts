@@ -148,6 +148,9 @@ export class FileSoulStore implements SoulStore {
     this.acquireLock();
 
     try {
+      // Re-read head from disk under the lock so a second store instance cannot fork the chain.
+      await this.refreshHeadFromDisk();
+
       if (this.headInfo === null) {
         if (validatedRecord.seq !== 0 || validatedRecord.prev !== null) {
           throw new ChainMismatchError("first append requires seq 0 and prev null");
@@ -163,25 +166,7 @@ export class FileSoulStore implements SoulStore {
 
       const bytes = canonicalize(validatedRecord);
       const cid = await computeCidFromCanonicalBytes(bytes);
-      const blobPath = path.join(this.blobsDir, cid);
-
-      let blobFd: number;
-      try {
-        blobFd = openSync(blobPath, "wx");
-      } catch (error) {
-        if (isNodeError(error) && error.code === "EEXIST") {
-          throw new StorageError(`blob already exists for CID ${cid}`);
-        }
-        throw new StorageError(`failed to create blob ${cid}: ${nodeErrorMessage(error)}`);
-      }
-
-      try {
-        writeSync(blobFd, bytes);
-        fsyncSync(blobFd);
-      } finally {
-        closeSync(blobFd);
-      }
-
+      await this.writeBlobIdempotent(cid, bytes);
       await FileSoulStore.fsyncDirectory(this.blobsDir);
 
       let chainFd: number;
@@ -342,6 +327,99 @@ export class FileSoulStore implements SoulStore {
     await mkdir(this.blobsDir, { recursive: true });
   }
 
+  /**
+   * Re-read the on-disk chain head under the append lock.
+   * Prevents two open store instances from forking the chain via a stale in-memory head.
+   */
+  private async refreshHeadFromDisk(): Promise<void> {
+    let buffer: Buffer;
+    try {
+      buffer = await readFile(this.chainPath);
+    } catch (error) {
+      if (isNodeError(error) && error.code === "ENOENT") {
+        this.headInfo = null;
+        return;
+      }
+      throw new StorageError(`failed to refresh head from disk: ${nodeErrorMessage(error)}`);
+    }
+
+    if (buffer.length === 0) {
+      this.headInfo = null;
+      return;
+    }
+
+    if (buffer[buffer.length - 1] !== 0x0a) {
+      throw new CorruptionError("truncated trailing line");
+    }
+
+    const lines = splitChainLines(buffer);
+    if (lines.length === 0) {
+      this.headInfo = null;
+      return;
+    }
+
+    const lastLine = lines[lines.length - 1];
+    if (lastLine === undefined) {
+      this.headInfo = null;
+      return;
+    }
+
+    const cid = await computeCidFromCanonicalBytes(lastLine);
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(new TextDecoder().decode(lastLine));
+    } catch (error) {
+      throw new CorruptionError(
+        `invalid JSON in chain head during refresh: ${nodeErrorMessage(error)}`
+      );
+    }
+
+    const schemaResult = RecordSchema.safeParse(parsed);
+    if (!schemaResult.success) {
+      throw new CorruptionError(
+        `invalid record at chain head during refresh: ${schemaResult.error.message}`
+      );
+    }
+
+    this.headInfo = { cid, seq: schemaResult.data.seq };
+  }
+
+  /**
+   * Write blob bytes, treating an existing byte-identical blob as already written
+   * (idempotent retry after crash between blob and chain append).
+   */
+  private async writeBlobIdempotent(cid: string, bytes: Uint8Array): Promise<void> {
+    const blobPath = path.join(this.blobsDir, cid);
+
+    let blobFd: number;
+    try {
+      blobFd = openSync(blobPath, "wx");
+    } catch (error) {
+      if (isNodeError(error) && error.code === "EEXIST") {
+        let existing: Buffer;
+        try {
+          existing = await readFile(blobPath);
+        } catch (readError) {
+          throw new StorageError(
+            `failed to read existing blob ${cid}: ${nodeErrorMessage(readError)}`
+          );
+        }
+        if (bytesEqual(new Uint8Array(existing), bytes)) {
+          return;
+        }
+        throw new CorruptionError(`blob already exists for CID ${cid} with different bytes`);
+      }
+      throw new StorageError(`failed to create blob ${cid}: ${nodeErrorMessage(error)}`);
+    }
+
+    try {
+      writeSync(blobFd, bytes);
+      fsyncSync(blobFd);
+    } finally {
+      closeSync(blobFd);
+    }
+  }
+
   /** Truncate a torn chain file; returns the number of bytes removed. */
   private async recoverTornChain(): Promise<number> {
     let chainStat;
@@ -355,6 +433,7 @@ export class FileSoulStore implements SoulStore {
         } finally {
           closeSync(fd);
         }
+        await FileSoulStore.fsyncDirectory(this.dir);
         return 0;
       }
       throw error;
@@ -398,11 +477,13 @@ export class FileSoulStore implements SoulStore {
       } finally {
         closeSync(fd);
       }
+      await FileSoulStore.fsyncDirectory(this.dir);
       this.headInfo = null;
       this.soulPublicKey = null;
       return;
     }
 
+    // TODO(T7.1): stream loadChain for large chains
     const buffer = await readFile(this.chainPath);
     if (buffer.length === 0) {
       this.headInfo = null;
@@ -526,7 +607,9 @@ export class FileSoulStore implements SoulStore {
       this.lockFd = openSync(this.lockPath, "wx");
     } catch (error) {
       if (isNodeError(error) && error.code === "EEXIST") {
-        throw new ConcurrentAppendError("another append is in progress");
+        throw new ConcurrentAppendError(
+          "another append is in progress (or a stale .append.lock remains after a crash — use openWithRecovery)"
+        );
       }
       throw new StorageError(`failed to acquire append lock: ${nodeErrorMessage(error)}`);
     }
@@ -561,7 +644,7 @@ export class FileSoulStore implements SoulStore {
   private static async fsyncPath(targetPath: string): Promise<void> {
     let fd: number;
     try {
-      fd = openSync(targetPath, "r+");
+      fd = openSync(targetPath, "r");
     } catch (error) {
       throw new StorageError(`failed to open for fsync: ${nodeErrorMessage(error)}`);
     }

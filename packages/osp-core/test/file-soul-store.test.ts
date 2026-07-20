@@ -9,6 +9,7 @@ import {
   signCore,
   generateKeypair,
   encodePublicKey,
+  canonicalize,
   CorruptionError,
   ChainMismatchError,
   ConcurrentAppendError,
@@ -382,6 +383,107 @@ describe("FileSoulStore", () => {
       expect(fetchedShard.body).toEqual(shardBody);
     } finally {
       await reader.close();
+    }
+  });
+
+  it("rejects stale-head append from a second store instance without forking the chain", async () => {
+    const storeA = await FileSoulStore.open(dir);
+    const storeB = await FileSoulStore.open(dir);
+    let firstMemoryBody: OspRecord["body"] | undefined;
+    try {
+      const genesis = await appendGenesis(storeA, soul);
+
+      const memoryForA = await createMemoryCandidateRecord(
+        soul,
+        1,
+        genesis.cid,
+        "Appended by store A."
+      );
+      firstMemoryBody = memoryForA.record.body;
+      await storeA.append(memoryForA.record);
+
+      const staleForB = await createMemoryCandidateRecord(
+        soul,
+        1,
+        genesis.cid,
+        "Stale append by store B."
+      );
+      await expect(storeB.append(staleForB.record)).rejects.toThrow(ChainMismatchError);
+
+      const headA = await storeA.head();
+      expect(headA?.seq).toBe(1);
+      expect(headA?.cid).toBe(memoryForA.cid);
+
+      if (headA === null) {
+        throw new Error("expected head after store A append");
+      }
+
+      const followOn = await createMemoryCandidateRecord(
+        soul,
+        2,
+        headA.cid,
+        "Built on true head by store B."
+      );
+      const followResult = await storeB.append(followOn.record);
+      expect(followResult.cid).toBe(followOn.cid);
+
+      const headB = await storeB.head();
+      expect(headB).toEqual({ cid: followOn.cid, seq: 2 });
+    } finally {
+      await storeA.close();
+      await storeB.close();
+    }
+
+    const verified = await FileSoulStore.open(dir);
+    try {
+      const iterated = await collectRecords(verified);
+      expect(iterated).toHaveLength(3);
+      expect(iterated.map((record) => record.seq)).toEqual([0, 1, 2]);
+      expect(iterated[1]?.body).toEqual(firstMemoryBody);
+    } finally {
+      await verified.close();
+    }
+  });
+
+  it("retries append after orphan blob left by crash between blob and chain write", async () => {
+    const store = await FileSoulStore.open(dir);
+    let memoryCid = "";
+    let memoryRecord: OspRecord;
+    try {
+      const genesis = await appendGenesis(store, soul);
+      const memory = await createMemoryCandidateRecord(soul, 1, genesis.cid, "Orphan blob retry.");
+      memoryRecord = memory.record;
+      memoryCid = memory.cid;
+
+      // Simulate durable blob write without the chain line (crash mid-append).
+      const blobPath = path.join(dir, "blobs", memoryCid);
+      await writeFile(blobPath, canonicalize(memoryRecord));
+    } finally {
+      await store.close();
+    }
+
+    const { store: recovered, truncatedBytes } = await FileSoulStore.openWithRecovery(dir);
+    try {
+      expect(truncatedBytes).toBe(0);
+      expect(await recovered.head()).toEqual(expect.objectContaining({ seq: 0 }));
+
+      const retry = await recovered.append(memoryRecord);
+      expect(retry.cid).toBe(memoryCid);
+
+      const head = await recovered.head();
+      expect(head).toEqual({ cid: memoryCid, seq: 1 });
+      expect(await collectRecords(recovered)).toHaveLength(2);
+    } finally {
+      await recovered.close();
+    }
+
+    const verified = await FileSoulStore.open(dir);
+    try {
+      const iterated = await collectRecords(verified);
+      expect(iterated).toHaveLength(2);
+      expect(iterated[1]?.seq).toBe(1);
+    } finally {
+      await verified.close();
     }
   });
 });
