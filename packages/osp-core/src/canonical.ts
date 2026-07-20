@@ -16,9 +16,10 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Recursively rebuild a value with sorted object keys for canonical JSON.
+ * Validate and convert an unknown value to a JSON-compatible tree.
+ * Does not rely on object insertion order for later serialization.
  */
-function sortKeys(value: unknown): JsonValue {
+function toJsonValue(value: unknown): JsonValue {
   if (value === null) {
     return null;
   }
@@ -47,26 +48,52 @@ function sortKeys(value: unknown): JsonValue {
   }
 
   if (Array.isArray(value)) {
-    return value.map((item) => sortKeys(item));
+    return value.map((item) => toJsonValue(item));
   }
 
   if (isPlainObject(value)) {
-    const sorted: { [key: string]: JsonValue } = {};
-    const keys = Object.keys(value).sort();
-    for (const key of keys) {
-      sorted[key] = sortKeys(value[key]);
+    const result: { [key: string]: JsonValue } = {};
+    for (const key of Object.keys(value)) {
+      result[key] = toJsonValue(value[key]);
     }
-    return sorted;
+    return result;
   }
 
   throw new EncodingError("canonicalize: unsupported object type");
 }
 
 /**
+ * Emit canonical JSON text with UTF-16 code-unit key order.
+ * Builds the string directly so integer-like keys are not reordered by JS property order.
+ */
+function canonicalJson(value: JsonValue): string {
+  if (value === null || typeof value === "boolean" || typeof value === "number") {
+    return JSON.stringify(value);
+  }
+
+  if (typeof value === "string") {
+    return JSON.stringify(value);
+  }
+
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => canonicalJson(item)).join(",")}]`;
+  }
+
+  const keys = Object.keys(value).sort();
+  const entries = keys.map((key) => {
+    const child = value[key];
+    if (child === undefined) {
+      throw new EncodingError("canonicalize: missing object value");
+    }
+    return `${JSON.stringify(key)}:${canonicalJson(child)}`;
+  });
+  return `{${entries.join(",")}}`;
+}
+
+/**
  * Serialize a value to canonical UTF-8 JSON bytes per spec/osp/records.md.
  */
 export function canonicalize(value: unknown): Uint8Array {
-  const sorted = sortKeys(value);
-  const json = JSON.stringify(sorted);
+  const json = canonicalJson(toJsonValue(value));
   return new TextEncoder().encode(json);
 }

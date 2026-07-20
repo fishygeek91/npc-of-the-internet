@@ -25,6 +25,19 @@ describe("base64url", () => {
     expect(() => decodeBase64Url("")).toThrow(EncodingError);
   });
 
+  it("rejects length congruent to 1 mod 4", () => {
+    expect(() => decodeBase64Url("A")).toThrow(EncodingError);
+    expect(() => decodeBase64Url("ABCDE")).toThrow(EncodingError);
+  });
+
+  it("rejects non-zero trailing bits", () => {
+    // One zero byte encodes as "AA". "AB"/"AC" decode to the same byte under
+    // permissive base64 but have non-zero pad bits — reject them.
+    expect(decodeBase64Url("AA")).toEqual(new Uint8Array([0]));
+    expect(() => decodeBase64Url("AB")).toThrow(EncodingError);
+    expect(() => decodeBase64Url("AC")).toThrow(EncodingError);
+  });
+
   it("encodes and decodes public keys at exactly 32 bytes", () => {
     const { publicKey } = generateKeypair();
     const encoded = encodePublicKey(publicKey);

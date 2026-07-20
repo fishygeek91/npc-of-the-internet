@@ -12,14 +12,16 @@ import {
 } from "./body.js";
 
 /** Shared envelope fields present on every soulchain record. */
-export const EnvelopeFieldsSchema = z.object({
-  spec: z.literal(OSP_SPEC),
-  seq: z.number().int().nonnegative(),
-  prev: z.string().nullable(),
-  residency: z.string().nullable(),
-  cosigners: z.array(z.string()),
-  sig: z.string()
-});
+export const EnvelopeFieldsSchema = z
+  .object({
+    spec: z.literal(OSP_SPEC),
+    seq: z.number().int().nonnegative(),
+    prev: z.string().nullable(),
+    residency: z.string().nullable(),
+    cosigners: z.array(z.string()),
+    sig: z.string()
+  })
+  .strict();
 
 /** Validates `prev` and `residency` nullability rules against `seq`. */
 function validateChainLinkFields(
@@ -106,37 +108,37 @@ function validateCosignerRules(
 const GenesisRecordSchema = EnvelopeFieldsSchema.extend({
   type: z.literal("genesis"),
   body: GenesisBodySchema
-});
+}).strict();
 
 const MemoryRecordSchema = EnvelopeFieldsSchema.extend({
   type: z.literal("memory"),
   body: MemoryBodySchema
-});
+}).strict();
 
 const DriftRecordSchema = EnvelopeFieldsSchema.extend({
   type: z.literal("drift"),
   body: DriftBodySchema
-});
+}).strict();
 
 const DecisionRecordSchema = EnvelopeFieldsSchema.extend({
   type: z.literal("decision"),
   body: DecisionBodySchema
-});
+}).strict();
 
 const TransactionRecordSchema = EnvelopeFieldsSchema.extend({
   type: z.literal("transaction"),
   body: TransactionBodySchema
-});
+}).strict();
 
 const AttestationRecordSchema = EnvelopeFieldsSchema.extend({
   type: z.literal("attestation"),
   body: AttestationBodySchema
-});
+}).strict();
 
 const SleepRecordSchema = EnvelopeFieldsSchema.extend({
   type: z.literal("sleep"),
   body: SleepBodySchema
-});
+}).strict();
 
 /**
  * Structural OSP soulchain record schema (no chain-link or cosigner refinements).

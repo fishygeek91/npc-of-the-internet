@@ -544,4 +544,25 @@ describe("verifyRecord edge cases", () => {
       VerificationError
     );
   });
+
+  it("rejects records with an extra top-level field", async () => {
+    const soulKeys = generateKeypair();
+    const { record } = await createRecord({
+      seq: 0,
+      prev: null,
+      type: "genesis",
+      body: {
+        charter: "# Charter",
+        soul_pubkey: encodePublicKey(soulKeys.publicKey),
+        created_at: "2026-01-01T00:00:00.000Z"
+      },
+      residency: null,
+      cosigners: [],
+      soulPrivateKey: soulKeys.privateKey
+    });
+
+    await expect(
+      verifyRecord({ ...record, note: "injected" }, { soulPublicKey: soulKeys.publicKey })
+    ).rejects.toThrow(SchemaError);
+  });
 });

@@ -41,4 +41,10 @@ describe("canonicalize", () => {
     expect(text.endsWith("\n")).toBe(false);
     expect(text).toBe('{"nested":{"a":1},"seq":42,"type":"genesis"}');
   });
+
+  it("sorts integer-like keys by UTF-16 order, not JS numeric property order", () => {
+    const bytes = canonicalize({ "10": 1, "2": 2 });
+    // UTF-16: "10" < "2"; JS object order would put "2" before "10".
+    expect(new TextDecoder().decode(bytes)).toBe('{"10":1,"2":2}');
+  });
 });

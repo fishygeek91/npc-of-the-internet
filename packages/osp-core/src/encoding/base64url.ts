@@ -40,6 +40,9 @@ export function decodeBase64Url(encoded: string): Uint8Array {
   if (encoded.length === 0) {
     throw new EncodingError("base64url: empty input");
   }
+  if (encoded.length % 4 === 1) {
+    throw new EncodingError("base64url: invalid length");
+  }
   if (!BASE64URL_ALPHABET_RE.test(encoded)) {
     throw new EncodingError("base64url: invalid alphabet");
   }
@@ -61,6 +64,10 @@ export function decodeBase64Url(encoded: string): Uint8Array {
       bits -= 8;
       output.push((buffer >> bits) & 0xff);
     }
+  }
+
+  if (bits > 0 && (buffer & ((1 << bits) - 1)) !== 0) {
+    throw new EncodingError("base64url: non-zero trailing bits");
   }
 
   return new Uint8Array(output);
