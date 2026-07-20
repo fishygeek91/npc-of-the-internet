@@ -12,6 +12,7 @@ OSP soulchain primitives: Zod record schemas, canonical JSON, Ed25519 signing, C
 | Ed25519 | `generateKeypair`, `sign`, `verify` |
 | CIDs | `computeCid`, `computeCidFromCanonicalBytes` — dag-json codec + sha2-256 → CIDv1 base32 strings (typically `bagu…`, not `bafy…` which is dag-pb) |
 | Records | `createRecord`, `verifyRecord`, `signCore`, `corePayload`, `soulPayload` |
+| Chain verify | `verifyRecords`, `verifyChain`, `ChainRule`, `ChainFailure`, `VerifyChainResult`, `VerifyChainOptions` |
 | SoulStore | `SoulStore`, `FileSoulStore`, `HeadInfo`, `AppendResult`, `FileSoulStoreOpenOptions` |
 | Errors | `SchemaError`, `VerificationError`, `EncodingError`, `StorageError`, `CorruptionError`, `ConcurrentAppendError`, `ChainMismatchError` |
 

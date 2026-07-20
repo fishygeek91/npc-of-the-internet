@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { decodeSignature } from "../encoding/base64url.js";
+import { EncodingError } from "../errors.js";
 import {
   AttestationBodySchema,
   DecisionBodySchema,
@@ -10,6 +12,40 @@ import {
   SleepBodySchema,
   TransactionBodySchema
 } from "./body.js";
+
+/** Residency descriptor format: `door:<platform>:<door-id>/epoch:<n>`. */
+export const RESIDENCY_RE = /^door:[a-z0-9-]+:[A-Za-z0-9_-]+\/epoch:(0|[1-9][0-9]*)$/;
+
+/** Validates that a string decodes to a 64-byte Ed25519 signature. */
+function validateSignatureString(
+  value: string,
+  ctx: z.RefinementCtx,
+  path: (string | number)[]
+): void {
+  try {
+    decodeSignature(value);
+  } catch (error) {
+    if (error instanceof EncodingError) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: error.message,
+        path
+      });
+      return;
+    }
+    throw error;
+  }
+}
+
+/**
+ * Extract the Door identifier from a validated residency string.
+ * Strips the leading `door:` prefix and `/epoch:<n>` suffix.
+ */
+function doorIdFromResidency(residency: string): string {
+  const withoutPrefix = residency.slice("door:".length);
+  const epochSuffix = withoutPrefix.lastIndexOf("/epoch:");
+  return withoutPrefix.slice(0, epochSuffix);
+}
 
 /** Shared envelope fields present on every soulchain record. */
 export const EnvelopeFieldsSchema = z
@@ -60,6 +96,16 @@ function validateChainLinkFields(
       message: "residency must be a non-empty string when seq > 0",
       path: ["residency"]
     });
+    return;
+  }
+
+  if (!RESIDENCY_RE.test(record.residency)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message:
+        "residency must match door:<platform>:<door-id>/epoch:<n> (example: door:discord:guild123/epoch:77)",
+      path: ["residency"]
+    });
   }
 }
 
@@ -72,6 +118,15 @@ function validateCosignerRules(
   },
   ctx: z.RefinementCtx
 ): void {
+  if (record.type === "genesis" && record.cosigners.length > 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "genesis records must have an empty cosigners array",
+      path: ["cosigners"]
+    });
+    return;
+  }
+
   const bodyKind =
     typeof record.body === "object" &&
     record.body !== null &&
@@ -102,6 +157,57 @@ function validateCosignerRules(
         path: ["cosigners"]
       });
     }
+  }
+}
+
+/** Validates sig and cosigner signature encodings. */
+function validateSignatureFields(
+  record: { cosigners: string[]; sig: string },
+  ctx: z.RefinementCtx
+): void {
+  validateSignatureString(record.sig, ctx, ["sig"]);
+
+  record.cosigners.forEach((cosigner, index) => {
+    validateSignatureString(cosigner, ctx, ["cosigners", index]);
+  });
+}
+
+/** Cross-checks attestation door_id against the Door portion of residency. */
+function validateAttestationDoorId(
+  record: {
+    type: string;
+    body: unknown;
+    residency: string | null;
+  },
+  ctx: z.RefinementCtx
+): void {
+  if (record.type !== "attestation" || record.residency === null) {
+    return;
+  }
+
+  if (
+    typeof record.body !== "object" ||
+    record.body === null ||
+    !("kind" in record.body) ||
+    typeof record.body.kind !== "string" ||
+    !("door_id" in record.body) ||
+    typeof record.body.door_id !== "string"
+  ) {
+    return;
+  }
+
+  const bodyKind = record.body.kind;
+  if (bodyKind !== "arrival" && bodyKind !== "heartbeat" && bodyKind !== "departure") {
+    return;
+  }
+
+  const expectedDoorId = doorIdFromResidency(record.residency);
+  if (record.body.door_id !== expectedDoorId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `door_id must match the Door portion of residency (expected "${expectedDoorId}")`,
+      path: ["body", "door_id"]
+    });
   }
 }
 
@@ -161,4 +267,6 @@ export const RecordSchemaBase = z.discriminatedUnion("type", [
 export const RecordSchema = RecordSchemaBase.superRefine((record, ctx) => {
   validateChainLinkFields(record, ctx);
   validateCosignerRules(record, ctx);
+  validateSignatureFields(record, ctx);
+  validateAttestationDoorId(record, ctx);
 });

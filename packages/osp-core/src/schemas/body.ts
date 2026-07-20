@@ -1,5 +1,8 @@
 import { z } from "zod";
 
+import { decodePublicKey } from "../encoding/base64url.js";
+import { EncodingError } from "../errors.js";
+
 /** OSP spec version literal for all soulchain records. */
 export const OSP_SPEC = "osp/0.1" as const;
 
@@ -8,13 +11,36 @@ export const POP_VERSION = "pop/0.1" as const;
 
 const MEMORY_TEXT_MAX_CODE_POINTS = 500;
 
-/**
- * Count Unicode code points in a string (not UTF-16 code units).
- * Uses spread iteration per spec requirement.
- */
+/** Count Unicode code points in a string (not UTF-16 code units). */
 function countCodePoints(text: string): number {
   return [...text].length;
 }
+
+/** Validates that a string decodes to a 32-byte Ed25519 public key. */
+function validatePublicKeyString(
+  value: string,
+  ctx: z.RefinementCtx,
+  path: (string | number)[]
+): void {
+  try {
+    decodePublicKey(value);
+  } catch (error) {
+    if (error instanceof EncodingError) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: error.message,
+        path
+      });
+      return;
+    }
+    throw error;
+  }
+}
+
+/** Zod string schema for a base64url-encoded 32-byte Ed25519 public key. */
+const PublicKeyStringSchema = z.string().superRefine((value, ctx) => {
+  validatePublicKeyString(value, ctx, []);
+});
 
 /** Memory shard/candidate text: max 500 Unicode code points. */
 const MemoryTextSchema = z
@@ -27,7 +53,7 @@ const MemoryTextSchema = z
 export const GenesisBodySchema = z
   .object({
     charter: z.string(),
-    soul_pubkey: z.string(),
+    soul_pubkey: PublicKeyStringSchema,
     created_at: z.string(),
     fork_point: z.string().optional(),
     fork_reason: z.string().optional()
@@ -129,7 +155,7 @@ export const ArrivalBodySchema = z
     pop_version: z.literal(POP_VERSION),
     door_id: z.string(),
     epoch: z.number().int().nonnegative(),
-    session_pubkey: z.string(),
+    session_pubkey: PublicKeyStringSchema,
     at: z.string()
   })
   .strict();
@@ -141,7 +167,7 @@ export const HeartbeatBodySchema = z
     pop_version: z.literal(POP_VERSION),
     door_id: z.string(),
     epoch: z.number().int().nonnegative(),
-    session_pubkey: z.string(),
+    session_pubkey: PublicKeyStringSchema,
     at: z.string()
   })
   .strict();

@@ -24,6 +24,7 @@ import {
 } from "../errors.js";
 import { verifyRecord } from "../record.js";
 import { RecordSchema, type OspRecord } from "../schemas/index.js";
+import { verifyRecords } from "../verify-chain.js";
 
 import type { AppendResult, FileSoulStoreOpenOptions, HeadInfo, SoulStore } from "./types.js";
 
@@ -502,10 +503,7 @@ export class FileSoulStore implements SoulStore {
       return;
     }
 
-    let previousCid: string | null = null;
-    let previousSeq: number | null = null;
-    let soulPublicKey: Uint8Array | null = null;
-    let lastHead: HeadInfo | null = null;
+    const records: unknown[] = [];
 
     for (const lineBytes of lineBytesList) {
       const cid = await computeCidFromCanonicalBytes(lineBytes);
@@ -535,70 +533,34 @@ export class FileSoulStore implements SoulStore {
         );
       }
 
-      if (previousSeq === null) {
-        const first = RecordSchema.safeParse(parsed);
-        if (!first.success) {
-          throw new CorruptionError(`invalid genesis record: ${first.error.message}`);
-        }
-        if (first.data.seq !== 0 || first.data.prev !== null) {
-          throw new CorruptionError("first record must have seq 0 and prev null");
-        }
-        if (first.data.type !== "genesis") {
-          throw new CorruptionError("first record must be genesis");
-        }
-        soulPublicKey = decodePublicKey(first.data.body.soul_pubkey);
-      } else {
-        const recordProbe = RecordSchema.safeParse(parsed);
-        if (!recordProbe.success) {
-          throw new CorruptionError(
-            `invalid record at seq chain position: ${recordProbe.error.message}`
-          );
-        }
-        if (recordProbe.data.seq !== previousSeq + 1) {
-          throw new CorruptionError(
-            `sequence gap: expected seq ${previousSeq + 1}, found ${recordProbe.data.seq}`
-          );
-        }
-        if (recordProbe.data.prev !== previousCid) {
-          throw new CorruptionError(
-            `prev mismatch at seq ${recordProbe.data.seq}: expected ${previousCid}`
-          );
-        }
-      }
-
-      if (soulPublicKey === null) {
-        throw new CorruptionError("missing genesis soul public key");
-      }
-
-      const verifyOptions: {
-        soulPublicKey: Uint8Array;
-        doorPublicKeys?: readonly Uint8Array[];
-        expectedCid: string;
-      } = {
-        soulPublicKey,
-        expectedCid: cid
-      };
-      if (this.doorPublicKeys !== undefined) {
-        verifyOptions.doorPublicKeys = this.doorPublicKeys;
-      }
-
-      try {
-        await verifyRecord(parsed, verifyOptions);
-      } catch (error) {
-        if (error instanceof VerificationError || error instanceof SchemaError) {
-          throw new CorruptionError(`record verification failed for CID ${cid}: ${error.message}`);
-        }
-        throw error;
-      }
-
-      const validated = RecordSchema.parse(parsed);
-      previousCid = cid;
-      previousSeq = validated.seq;
-      lastHead = { cid, seq: validated.seq };
+      records.push(parsed);
     }
 
-    this.headInfo = lastHead;
-    this.soulPublicKey = soulPublicKey;
+    const verifyOptions: { doorPublicKeys?: readonly Uint8Array[] } = {};
+    if (this.doorPublicKeys !== undefined) {
+      verifyOptions.doorPublicKeys = this.doorPublicKeys;
+    }
+
+    const verifyResult = await verifyRecords(records, verifyOptions);
+    if (!verifyResult.valid) {
+      const firstFailure = verifyResult.failures[0];
+      if (firstFailure !== undefined) {
+        const cidPart = firstFailure.cid === undefined ? "" : ` (cid ${firstFailure.cid})`;
+        throw new CorruptionError(
+          `chain verification failed: ${firstFailure.rule} at seq ${firstFailure.seq}${cidPart}: ${firstFailure.message}`
+        );
+      }
+      throw new CorruptionError("chain verification failed");
+    }
+
+    this.headInfo = verifyResult.head;
+
+    const firstParsed = RecordSchema.safeParse(records[0]);
+    if (firstParsed.success && firstParsed.data.type === "genesis") {
+      this.soulPublicKey = decodePublicKey(firstParsed.data.body.soul_pubkey);
+    } else {
+      this.soulPublicKey = null;
+    }
   }
 
   /** Acquire the exclusive append lock. */

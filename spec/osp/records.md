@@ -39,7 +39,7 @@ Every soulchain record is a JSON object with the following top-level fields. The
 {
   "body": { "kind": "shard", "text": "..." },
   "cosigners": ["<door-sig-base64url>"],
-  "prev": "bafybeig...",
+  "prev": "bagu4eram...",
   "residency": "door:discord:guild123/epoch:77",
   "seq": 42,
   "spec": "osp/0.1",
@@ -365,7 +365,7 @@ Verifiers check: each `cosigners[i]` verifies over `core`; `sig` verifies over t
 1. Build the envelope **including** `sig` (full record as stored).
 2. Serialize to **canonical JSON** bytes per rules above.
 3. Compute CID: `multiformats` **dag-json** codec with **sha2-256** hasher.
-4. CID string representation: CIDv1 default **base32** (`base32` multibase, no padding) — standard `CID.toString()` form beginning with `bafy…`. Do **not** use base58btc (`z…` / `Qm…`) for soulchain record CIDs.
+4. CID string representation: CIDv1 default **base32** (`base32` multibase, no padding) — standard `CID.toString()` form beginning with `bagu…` (dag-json codec). Do **not** use base58btc (`z…` / `Qm…`) for soulchain record CIDs.
 
 The `prev` field of record `n` must equal the CID computed from record `n - 1`.
 
@@ -373,7 +373,7 @@ The `prev` field of record `n` must equal the CID computed from record `n - 1`.
 
 ## CIDs
 
-- Format: multiformats CIDv1 string in **base32** (typically `bafy…`).
+- Format: multiformats CIDv1 string in **base32** (typically `bagu…`).
 - Algorithm: sha2-256 digest of dag-json–encoded canonical record bytes.
 - `prev: null` is permitted **only** when `seq === 0`.
 
@@ -393,7 +393,7 @@ High-level rules for `verifyChain` (full vector suite deferred to **T1.3**). A c
 ### Cryptographic
 
 5. **Soul signature:** `sig` verifies against `genesis.body.soul_pubkey` over the signing payload (canonical JSON without `sig`).
-6. **Co-signatures:** where required (committed `memory` shards, `attestation` arrival/departure), each `cosigners` entry verifies against the expected Door public key for that `residency`.
+6. **Co-signatures:** where required (committed `memory` shards, `attestation` arrival/heartbeat/departure), each `cosigners` entry verifies against the expected Door public key for that `residency`.
 
 ### Schema
 
