@@ -1,0 +1,164 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+# Serialize Version Packages updates on main; tags use distinct refs so they do not collide.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  version:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Create Version Packages PR
+        uses: changesets/action@v1
+        with:
+          version: pnpm changeset version
+          title: "chore: version packages"
+          commit: "chore: version packages"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  github-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract changelog section
+        id: changelog
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          SEMVER="${TAG#v}"
+          PLACEHOLDER="Changelog for ${TAG} will appear after the first Version Packages PR is merged."
+
+          # Fixed-mode changesets write per-package CHANGELOGs; osp-core is the canonical copy.
+          CHANGELOG_FILE=""
+          for candidate in CHANGELOG.md packages/osp-core/CHANGELOG.md; do
+            if [ -f "$candidate" ]; then
+              CHANGELOG_FILE="$candidate"
+              break
+            fi
+          done
+
+          if [ -z "$CHANGELOG_FILE" ]; then
+            {
+              echo "body<<CHANGELOG_EOF"
+              echo "$PLACEHOLDER"
+              echo "CHANGELOG_EOF"
+            } >> "$GITHUB_OUTPUT"
+            echo "has_section=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          SECTION=$(awk -v ver="$SEMVER" '
+            $0 ~ "^## " ver "($| )" { found=1; next }
+            found && /^## / { exit }
+            found { print }
+          ' "$CHANGELOG_FILE" | sed '/./,$!d')
+
+          if [ -n "$SECTION" ]; then
+            {
+              echo "body<<CHANGELOG_EOF"
+              echo "$SECTION"
+              echo "CHANGELOG_EOF"
+            } >> "$GITHUB_OUTPUT"
+            echo "has_section=true" >> "$GITHUB_OUTPUT"
+          else
+            {
+              echo "body<<CHANGELOG_EOF"
+              echo "$PLACEHOLDER"
+              echo "CHANGELOG_EOF"
+            } >> "$GITHUB_OUTPUT"
+            echo "has_section=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          body: ${{ steps.changelog.outputs.body }}
+          generate_release_notes: ${{ steps.changelog.outputs.has_section != 'true' }}
+
+  docker:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: runtime
+            file: ops/Dockerfile.runtime
+          - name: door-discord
+            file: ops/Dockerfile.door-discord
+          - name: atlas-api
+            file: ops/Dockerfile.atlas-api
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check Dockerfile exists
+        id: dockerfile
+        run: |
+          if [ -f "${{ matrix.file }}" ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping ${{ matrix.name }} — ${{ matrix.file }} not found yet (ships in T6.1)"
+          fi
+
+      - name: Log in to GHCR
+        if: steps.dockerfile.outputs.exists == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Prepare image tags
+        if: steps.dockerfile.outputs.exists == 'true'
+        id: tags
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          OWNER=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')
+          {
+            echo "tags<<TAGS_EOF"
+            echo "ghcr.io/${OWNER}/npc-${{ matrix.name }}:${TAG}"
+            # Only promote :latest for plain semver tags (skip v0.1.0-rc.1 etc.).
+            if [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "ghcr.io/${OWNER}/npc-${{ matrix.name }}:latest"
+            fi
+            echo "TAGS_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        if: steps.dockerfile.outputs.exists == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.file }}
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}

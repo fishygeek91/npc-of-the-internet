@@ -22,11 +22,11 @@ Each task lists **Deps**, **Deliverables**, and **Acceptance** (how a reviewer v
 - Acceptance: docs exist, internally consistent with ARCHITECTURE.md; another agent can implement T1.x from spec alone.
 - Notes: Specs at `osp/0.1`, `pop/0.1`, `door/0.1`. Epoch is **global** (Wanderer-owned); Doors do not allocate epochs (`active_epoch` on hello is informational). Attestation `body.kind`: `arrival` | `heartbeat` | `departure` | `travel` (`handover` reserved). Cosigner payload = envelope `core` (omit `cosigners`+`sig`); soul signs after cosigners filled. Door cosigs for attestations via `POST /door/attest`. Keys/sigs base64url; CIDs CIDv1 **base32** (`bafy…`). Canonical key sort = UTF-16 code unit order. Next: T0.3 or T1.1 (Zod from `records.md`).
 
-### T0.3 ⬜ Release tooling (changesets)
+### T0.3 ✅ Release tooling (changesets) (Grok 4.5, 2026-07-20)
 - Deps: T0.1
 - Deliverables: `@changesets/cli` configured (fixed versioning, all packages one version); `.changeset/config.json`; PR template gains a "changeset added (or N/A: docs/tests only)" checkbox; `release.yml` workflow per ENGINEERING.md D7 (tag → Docker images to GHCR + GitHub Release).
 - Acceptance: `pnpm changeset` works; a dry-run `changeset version` bumps all packages together and generates CHANGELOG.md entries. Green.
-- Notes:
+- Notes: Fixed group = all seven `@npc/*` packages. `release.yml` opens Version Packages PRs on main (Gate 2 to merge) and on `v*` tags creates a GitHub Release + GHCR pushes. Dockerfiles expected at `ops/Dockerfile.runtime`, `ops/Dockerfile.door-discord`, `ops/Dockerfile.atlas-api` (T6.1); docker job skips cleanly until those exist. Changesets writes per-package CHANGELOGs; release body reads `packages/osp-core/CHANGELOG.md` as canonical.
 
 ## Phase 1 — osp-core (the chain)
 
