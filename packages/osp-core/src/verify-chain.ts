@@ -121,12 +121,11 @@ function mapVerifyRecordError(record: OspRecord, error: unknown): ChainFailure {
     };
   }
 
-  const message = error instanceof Error ? error.message : String(error);
-  return {
-    seq: record.seq,
-    rule: "bad_soul_sig",
-    message
-  };
+  // Do not guess a ChainRule for unexpected errors (e.g. EncodingError, CID mismatch).
+  if (error instanceof Error) {
+    throw error;
+  }
+  throw new Error(String(error));
 }
 
 /** True when the value is an async iterable (including async generators). */
@@ -158,6 +157,11 @@ async function materializeRecords(
  *
  * Structural, cryptographic, and schema rules follow `spec/osp/records.md` Verification.
  * Accepts unknown JSON-shaped records (e.g. from disk) and validates each with {@link RecordSchema}.
+ *
+ * On `schema_violation`, the walker `continue`s without advancing `previousSeq`/`previousCid`,
+ * so later records may also report derived `seq_gap` / `broken_prev_link` noise after the first
+ * real failure. Callers that only need a labeled outcome should check rule presence, not assume
+ * `failures` is a minimal set.
  */
 export async function verifyRecords(
   records: AsyncIterable<unknown> | readonly unknown[],
@@ -255,6 +259,8 @@ export async function verifyRecords(
       }
     }
 
+    // Belt-and-suspenders: RecordSchema already rejects empty cosigners for these kinds
+    // (schema_violation + continue), so this branch is unreachable for schema-valid records.
     if (requiresCosigner(record) && record.cosigners.length === 0) {
       failures.push({
         seq: record.seq,
@@ -298,7 +304,9 @@ export async function verifyRecords(
 /**
  * Verify a soulchain loaded from a {@link SoulStore}.
  *
- * Uses {@link SoulStore.iterate} for record order and optionally cross-checks the store head.
+ * Uses {@link SoulStore.iterate} for record order, then cross-checks {@link SoulStore.head}.
+ * A store-head vs verified-head mismatch is reported as `forked_head` (distinct from
+ * duplicate-seq forks detected inside {@link verifyRecords}).
  */
 export async function verifyChain(
   store: SoulStore,
