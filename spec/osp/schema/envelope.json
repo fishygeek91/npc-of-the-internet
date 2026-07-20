@@ -1,0 +1,36 @@
+{
+  "$ref": "#/definitions/EnvelopeFields",
+  "definitions": {
+    "EnvelopeFields": {
+      "type": "object",
+      "properties": {
+        "spec": {
+          "type": "string",
+          "const": "osp/0.1"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "prev": {
+          "type": ["string", "null"]
+        },
+        "residency": {
+          "type": ["string", "null"]
+        },
+        "cosigners": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "sig": {
+          "type": "string"
+        }
+      },
+      "required": ["spec", "seq", "prev", "residency", "cosigners", "sig"],
+      "additionalProperties": false
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

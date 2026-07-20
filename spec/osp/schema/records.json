@@ -1,0 +1,584 @@
+{
+  "$ref": "#/definitions/OspRecord",
+  "definitions": {
+    "OspRecord": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "spec": {
+              "type": "string",
+              "const": "osp/0.1"
+            },
+            "seq": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "prev": {
+              "type": ["string", "null"]
+            },
+            "residency": {
+              "type": ["string", "null"]
+            },
+            "cosigners": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "sig": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "genesis"
+            },
+            "body": {
+              "type": "object",
+              "properties": {
+                "charter": {
+                  "type": "string"
+                },
+                "soul_pubkey": {
+                  "type": "string"
+                },
+                "created_at": {
+                  "type": "string"
+                },
+                "fork_point": {
+                  "type": "string"
+                },
+                "fork_reason": {
+                  "type": "string"
+                }
+              },
+              "required": ["charter", "soul_pubkey", "created_at"],
+              "additionalProperties": false
+            }
+          },
+          "required": ["spec", "seq", "prev", "residency", "cosigners", "sig", "type", "body"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "spec": {
+              "type": "string",
+              "const": "osp/0.1"
+            },
+            "seq": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "prev": {
+              "type": ["string", "null"]
+            },
+            "residency": {
+              "type": ["string", "null"]
+            },
+            "cosigners": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "sig": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "memory"
+            },
+            "body": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "const": "shard"
+                    },
+                    "text": {
+                      "type": "string"
+                    },
+                    "candidate_cid": {
+                      "type": "string"
+                    },
+                    "journal": {
+                      "type": "string"
+                    },
+                    "distilled_at": {
+                      "type": "string"
+                    }
+                  },
+                  "required": ["kind", "text", "distilled_at"],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "const": "candidate"
+                    },
+                    "text": {
+                      "type": "string"
+                    },
+                    "proposed_at": {
+                      "type": "string"
+                    }
+                  },
+                  "required": ["kind", "text", "proposed_at"],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "const": "rejected"
+                    },
+                    "category": {
+                      "type": "string"
+                    },
+                    "candidate_cid": {
+                      "type": "string"
+                    },
+                    "rejected_at": {
+                      "type": "string"
+                    }
+                  },
+                  "required": ["kind", "category", "rejected_at"],
+                  "additionalProperties": false
+                }
+              ]
+            }
+          },
+          "required": ["spec", "seq", "prev", "residency", "cosigners", "sig", "type", "body"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "spec": {
+              "type": "string",
+              "const": "osp/0.1"
+            },
+            "seq": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "prev": {
+              "type": ["string", "null"]
+            },
+            "residency": {
+              "type": ["string", "null"]
+            },
+            "cosigners": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "sig": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "drift"
+            },
+            "body": {
+              "type": "object",
+              "properties": {
+                "summary": {
+                  "type": "string"
+                },
+                "evidence": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "minItems": 1
+                },
+                "effective_at": {
+                  "type": "string"
+                }
+              },
+              "required": ["summary", "evidence", "effective_at"],
+              "additionalProperties": false
+            }
+          },
+          "required": ["spec", "seq", "prev", "residency", "cosigners", "sig", "type", "body"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "spec": {
+              "type": "string",
+              "const": "osp/0.1"
+            },
+            "seq": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "prev": {
+              "type": ["string", "null"]
+            },
+            "residency": {
+              "type": ["string", "null"]
+            },
+            "cosigners": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "sig": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "decision"
+            },
+            "body": {
+              "type": "object",
+              "properties": {
+                "decision": {
+                  "type": "string"
+                },
+                "reasoning": {
+                  "type": "string"
+                },
+                "inputs": {
+                  "type": "object",
+                  "additionalProperties": {}
+                },
+                "decided_at": {
+                  "type": "string"
+                }
+              },
+              "required": ["decision", "reasoning", "decided_at"],
+              "additionalProperties": false
+            }
+          },
+          "required": ["spec", "seq", "prev", "residency", "cosigners", "sig", "type", "body"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "spec": {
+              "type": "string",
+              "const": "osp/0.1"
+            },
+            "seq": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "prev": {
+              "type": ["string", "null"]
+            },
+            "residency": {
+              "type": ["string", "null"]
+            },
+            "cosigners": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "sig": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "transaction"
+            },
+            "body": {
+              "type": "object",
+              "properties": {
+                "direction": {
+                  "type": "string",
+                  "enum": ["in", "out"]
+                },
+                "amount": {
+                  "type": "string"
+                },
+                "currency": {
+                  "type": "string"
+                },
+                "counterparty": {
+                  "type": "string"
+                },
+                "memo": {
+                  "type": "string"
+                },
+                "tx_ref": {
+                  "type": "string"
+                },
+                "executed_at": {
+                  "type": "string"
+                }
+              },
+              "required": ["direction", "amount", "currency", "executed_at"],
+              "additionalProperties": false
+            }
+          },
+          "required": ["spec", "seq", "prev", "residency", "cosigners", "sig", "type", "body"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "spec": {
+              "type": "string",
+              "const": "osp/0.1"
+            },
+            "seq": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "prev": {
+              "type": ["string", "null"]
+            },
+            "residency": {
+              "type": ["string", "null"]
+            },
+            "cosigners": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "sig": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "attestation"
+            },
+            "body": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "const": "arrival"
+                    },
+                    "pop_version": {
+                      "type": "string",
+                      "const": "pop/0.1"
+                    },
+                    "door_id": {
+                      "type": "string"
+                    },
+                    "epoch": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "session_pubkey": {
+                      "type": "string"
+                    },
+                    "at": {
+                      "type": "string"
+                    }
+                  },
+                  "required": ["kind", "pop_version", "door_id", "epoch", "session_pubkey", "at"],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "const": "heartbeat"
+                    },
+                    "pop_version": {
+                      "type": "string",
+                      "const": "pop/0.1"
+                    },
+                    "door_id": {
+                      "type": "string"
+                    },
+                    "epoch": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "session_pubkey": {
+                      "type": "string"
+                    },
+                    "at": {
+                      "type": "string"
+                    }
+                  },
+                  "required": ["kind", "pop_version", "door_id", "epoch", "session_pubkey", "at"],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "const": "departure"
+                    },
+                    "pop_version": {
+                      "type": "string",
+                      "const": "pop/0.1"
+                    },
+                    "door_id": {
+                      "type": "string"
+                    },
+                    "epoch": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "at": {
+                      "type": "string"
+                    }
+                  },
+                  "required": ["kind", "pop_version", "door_id", "epoch", "at"],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "const": "travel"
+                    },
+                    "pop_version": {
+                      "type": "string",
+                      "const": "pop/0.1"
+                    },
+                    "from_door_id": {
+                      "type": "string"
+                    },
+                    "from_epoch": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "to_door_id": {
+                      "type": "string"
+                    },
+                    "at": {
+                      "type": "string"
+                    }
+                  },
+                  "required": ["kind", "pop_version", "from_door_id", "from_epoch", "at"],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "const": "handover"
+                    },
+                    "pop_version": {
+                      "type": "string",
+                      "const": "pop/0.1"
+                    },
+                    "depart_door_id": {
+                      "type": "string"
+                    },
+                    "arrive_door_id": {
+                      "type": "string"
+                    },
+                    "depart_epoch": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "arrive_epoch": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "depart_attestation": {
+                      "type": "string"
+                    },
+                    "rotate_attestation": {
+                      "type": "string"
+                    },
+                    "arrive_attestation": {
+                      "type": "string"
+                    },
+                    "at": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "pop_version",
+                    "depart_door_id",
+                    "arrive_door_id",
+                    "depart_epoch",
+                    "arrive_epoch",
+                    "at"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            }
+          },
+          "required": ["spec", "seq", "prev", "residency", "cosigners", "sig", "type", "body"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "spec": {
+              "type": "string",
+              "const": "osp/0.1"
+            },
+            "seq": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "prev": {
+              "type": ["string", "null"]
+            },
+            "residency": {
+              "type": ["string", "null"]
+            },
+            "cosigners": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "sig": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "sleep"
+            },
+            "body": {
+              "type": "object",
+              "properties": {
+                "reason": {
+                  "type": "string"
+                },
+                "balance": {
+                  "type": "string"
+                },
+                "threshold": {
+                  "type": "string"
+                },
+                "as_of": {
+                  "type": "string"
+                }
+              },
+              "required": ["reason", "balance", "threshold", "as_of"],
+              "additionalProperties": false
+            }
+          },
+          "required": ["spec", "seq", "prev", "residency", "cosigners", "sig", "type", "body"],
+          "additionalProperties": false
+        }
+      ]
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}
