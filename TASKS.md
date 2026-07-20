@@ -56,11 +56,11 @@ Each task lists **Deps**, **Deliverables**, and **Acceptance** (how a reviewer v
 
 ## Phase 2 — Runtime (the being)
 
-### T2.1 ⬜ Brain interface + FakeBrain
+### T2.1 ✅ Brain interface + FakeBrain (Composer 2.5 Maestro, 2026-07-20)
 - Deps: T0.1
 - Deliverables: `Brain` interface in `runtime` (`complete(messages, opts)`); `AnthropicBrain` (config from env per ENGINEERING.md D2); `FakeBrain` (scripted responses for tests); config loader with Zod validation.
 - Acceptance: unit tests with FakeBrain; `LIVE_TESTS=1` smoke test file exists (not run in CI). Green.
-- Notes:
+- Notes: `packages/runtime/src/brain/` — types, FakeBrain, AnthropicBrain, Zod config (`loadBrainConfig`), BrainError. Env: ANTHROPIC_API_KEY, NPC_BRAIN_MODEL, NPC_BRAIN_MAX_TOKENS, NPC_BRAIN_TIMEOUT_MS. Live smoke at `test/live/anthropic-brain.live.test.ts` (skipped unless LIVE_TESTS set). ops/SECRETS.md created. Next: T2.2 Self-Composer.
 
 ### T2.2 ⬜ Self-Composer
 - Deps: T1.3, T2.1
