@@ -5,11 +5,18 @@
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "bin": {
+    "osp": "./dist/cli.js"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "vitest run"
   },
+  "dependencies": {
+    "@npc/osp-core": "workspace:*"
+  },
   "devDependencies": {
+    "@types/node": "^22",
     "typescript": "^5.6.0",
     "vitest": "^3.0.0"
   }
