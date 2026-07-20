@@ -8,6 +8,7 @@
   },
   "packageManager": "pnpm@9.15.9",
   "scripts": {
+    "changeset": "changeset",
     "build": "pnpm -r build",
     "lint": "eslint . && prettier --check .",
     "lint:fix": "eslint . --fix && prettier --write .",
@@ -15,6 +16,7 @@
     "check": "pnpm build && pnpm lint && pnpm test"
   },
   "devDependencies": {
+    "@changesets/cli": "^2.31.1",
     "@eslint/js": "^9.0.0",
     "eslint": "^9.0.0",
     "prettier": "^3.3.0",
