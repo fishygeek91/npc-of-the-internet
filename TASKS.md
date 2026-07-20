@@ -16,11 +16,11 @@ Each task lists **Deps**, **Deliverables**, and **Acceptance** (how a reviewer v
 - Acceptance: fresh clone → `pnpm install` → green. CI workflow runs the same steps.
 - Notes: Done outside the normal PR flow (initial commit, pre-lifecycle). `pnpm check` verified green (build + lint + 7/7 package tests). Lifecycle docs added in the same commit: LIFECYCLE.md, .cursor/rules/, issue/PR templates. Next agent: start at T0.2 via an approved GitHub issue per LIFECYCLE.md.
 
-### T0.2 ⬜ Spec directory + genesis charter
+### T0.2 ✅ Spec directory + genesis charter (Composer, 2026-07-20)
 - Deps: T0.1
 - Deliverables: `spec/osp/records.md` (prose schemas for all record types from ARCHITECTURE.md §2), `spec/pop/overview.md` (keys, session keys, attestations, handover — v0.1 scope: single key, manual handover), `spec/door/api.md` (the four Door endpoints), `spec/osp/genesis.md` (the Wanderer's charter: personality per AGENTS.md "Style of the being", constraints: no PII in shards, spend policy stub, host-instruction override rule).
 - Acceptance: docs exist, internally consistent with ARCHITECTURE.md; another agent can implement T1.x from spec alone.
-- Notes:
+- Notes: Specs at `osp/0.1`, `pop/0.1`, `door/0.1`. Attestation `body.kind` vocabulary: `arrival` | `heartbeat` | `departure` | `travel` (`handover` reserved for v0.2+). Keys/sigs are base64url; CIDs are multiformats. Next: T0.3 (changesets) or T1.1 (Zod from `records.md`) — T1.1 depends on this.
 
 ### T0.3 ⬜ Release tooling (changesets)
 - Deps: T0.1
