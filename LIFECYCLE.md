@@ -32,7 +32,9 @@ Use the PR template. Title is a conventional commit (it becomes the squash commi
 
 ### 6. AI review
 
-Every PR gets a review from an AI agent **that did not author it** (typically Claude via `gh pr review`). The reviewer checks, in order: acceptance criteria met and verifiable · soulchain/crypto guardrails (AGENTS.md) respected · spec/schemas/vectors moved together · tests real (no weakened or skipped tests) · scope matches the issue. Reviewer either approves or requests changes with specific, actionable comments. Authors respond by pushing fixes, not by arguing scope.
+Every PR gets a review from an AI agent **that did not author it** (typically Claude via the GitHub connector).
+
+**Mechanics:** because all agents authenticate as the repo owner, GitHub blocks formal reviews (approve / request-changes) on these PRs. AI reviews are therefore posted as **PR comments titled "🤖 AI Review — APPROVE / REQUEST CHANGES"** and are binding: a PR must not be merged until its latest AI Review comment says APPROVE. This is a procedural gate, not a GitHub-enforced one. The reviewer checks, in order: acceptance criteria met and verifiable · soulchain/crypto guardrails (AGENTS.md) respected · spec/schemas/vectors moved together · tests real (no weakened or skipped tests) · scope matches the issue. Reviewer either approves or requests changes with specific, actionable comments. Authors respond by pushing fixes, not by arguing scope.
 
 ### 7. Merge
 
