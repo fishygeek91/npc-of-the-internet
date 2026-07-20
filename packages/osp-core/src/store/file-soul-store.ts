@@ -1,0 +1,603 @@
+import {
+  closeSync,
+  createReadStream,
+  existsSync,
+  fsyncSync,
+  openSync,
+  unlinkSync,
+  writeSync
+} from "node:fs";
+import { mkdir, readFile, stat, truncate, unlink } from "node:fs/promises";
+import * as path from "node:path";
+import * as readline from "node:readline";
+
+import { canonicalize } from "../canonical.js";
+import { computeCidFromCanonicalBytes } from "../crypto/cid.js";
+import { decodePublicKey } from "../encoding/base64url.js";
+import {
+  ChainMismatchError,
+  ConcurrentAppendError,
+  CorruptionError,
+  SchemaError,
+  StorageError,
+  VerificationError
+} from "../errors.js";
+import { verifyRecord } from "../record.js";
+import { RecordSchema, type OspRecord } from "../schemas/index.js";
+
+import type { AppendResult, FileSoulStoreOpenOptions, HeadInfo, SoulStore } from "./types.js";
+
+const CHAIN_FILE = "chain.jsonl";
+const BLOBS_DIR = "blobs";
+const LOCK_FILE = ".append.lock";
+
+/** Compare two byte arrays for equality. */
+function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** Split chain file bytes into per-record canonical line payloads (without trailing newlines). */
+function splitChainLines(buffer: Buffer): Uint8Array[] {
+  const lines: Uint8Array[] = [];
+  let start = 0;
+
+  for (let index = 0; index < buffer.length; index += 1) {
+    if (buffer[index] === 0x0a) {
+      const lineLength = index - start;
+      if (lineLength > 0) {
+        lines.push(new Uint8Array(buffer.subarray(start, index)));
+      } else if (index < buffer.length - 1) {
+        throw new CorruptionError("empty line in chain file");
+      }
+      start = index + 1;
+    }
+  }
+
+  return lines;
+}
+
+/**
+ * Append-only file-backed soulchain store (JSONL chain + CID-addressed blobs).
+ */
+export class FileSoulStore implements SoulStore {
+  private readonly dir: string;
+  private readonly chainPath: string;
+  private readonly blobsDir: string;
+  private readonly lockPath: string;
+  private readonly doorPublicKeys: readonly Uint8Array[] | undefined;
+  private headInfo: HeadInfo | null;
+  private soulPublicKey: Uint8Array | null;
+  private lockFd: number | null;
+  private closed: boolean;
+
+  private constructor(
+    dir: string,
+    doorPublicKeys: readonly Uint8Array[] | undefined,
+    head: HeadInfo | null,
+    soulPublicKey: Uint8Array | null
+  ) {
+    this.dir = dir;
+    this.chainPath = path.join(dir, CHAIN_FILE);
+    this.blobsDir = path.join(dir, BLOBS_DIR);
+    this.lockPath = path.join(dir, LOCK_FILE);
+    this.doorPublicKeys = doorPublicKeys;
+    this.headInfo = head;
+    this.soulPublicKey = soulPublicKey;
+    this.lockFd = null;
+    this.closed = false;
+  }
+
+  /**
+   * Open a soulchain directory. Never auto-truncates torn writes; use {@link openWithRecovery} instead.
+   */
+  static async open(dir: string, options?: FileSoulStoreOpenOptions): Promise<FileSoulStore> {
+    const absoluteDir = path.resolve(dir);
+    const store = new FileSoulStore(absoluteDir, options?.doorPublicKeys, null, null);
+    await store.ensureLayout();
+    await store.loadChain();
+    return store;
+  }
+
+  /**
+   * Open a soulchain directory after recovering from a torn append.
+   *
+   * Removes a stale `.append.lock` if present (crash mid-append), truncates a partial trailing
+   * chain line when the file lacks a terminating newline, then validates like {@link open}.
+   */
+  static async openWithRecovery(
+    dir: string,
+    options?: FileSoulStoreOpenOptions
+  ): Promise<{ store: FileSoulStore; truncatedBytes: number }> {
+    const absoluteDir = path.resolve(dir);
+    const store = new FileSoulStore(absoluteDir, options?.doorPublicKeys, null, null);
+    await store.ensureLayout();
+
+    if (existsSync(store.lockPath)) {
+      try {
+        await unlink(store.lockPath);
+      } catch (error) {
+        if (!isNodeError(error) || error.code !== "ENOENT") {
+          throw error;
+        }
+      }
+    }
+
+    const truncatedBytes = await store.recoverTornChain();
+    await store.loadChain();
+    return { store, truncatedBytes };
+  }
+
+  /** Append a signed record to the chain and return its CID. */
+  async append(record: OspRecord): Promise<AppendResult> {
+    this.assertOpen();
+
+    const parsed = RecordSchema.safeParse(record);
+    if (!parsed.success) {
+      throw new SchemaError(parsed.error.message);
+    }
+    const validatedRecord = parsed.data;
+
+    this.acquireLock();
+
+    try {
+      if (this.headInfo === null) {
+        if (validatedRecord.seq !== 0 || validatedRecord.prev !== null) {
+          throw new ChainMismatchError("first append requires seq 0 and prev null");
+        }
+      } else if (
+        validatedRecord.prev !== this.headInfo.cid ||
+        validatedRecord.seq !== this.headInfo.seq + 1
+      ) {
+        throw new ChainMismatchError(
+          `append prev/seq mismatch: expected prev ${this.headInfo.cid} seq ${this.headInfo.seq + 1}`
+        );
+      }
+
+      const bytes = canonicalize(validatedRecord);
+      const cid = await computeCidFromCanonicalBytes(bytes);
+      const blobPath = path.join(this.blobsDir, cid);
+
+      let blobFd: number;
+      try {
+        blobFd = openSync(blobPath, "wx");
+      } catch (error) {
+        if (isNodeError(error) && error.code === "EEXIST") {
+          throw new StorageError(`blob already exists for CID ${cid}`);
+        }
+        throw new StorageError(`failed to create blob ${cid}: ${nodeErrorMessage(error)}`);
+      }
+
+      try {
+        writeSync(blobFd, bytes);
+        fsyncSync(blobFd);
+      } finally {
+        closeSync(blobFd);
+      }
+
+      await FileSoulStore.fsyncDirectory(this.blobsDir);
+
+      let chainFd: number;
+      try {
+        chainFd = openSync(this.chainPath, "a");
+      } catch (error) {
+        throw new StorageError(`failed to open chain file for append: ${nodeErrorMessage(error)}`);
+      }
+
+      try {
+        const line = Buffer.concat([Buffer.from(bytes), Buffer.from("\n")]);
+        writeSync(chainFd, line);
+        fsyncSync(chainFd);
+      } finally {
+        closeSync(chainFd);
+      }
+
+      this.headInfo = { cid, seq: validatedRecord.seq };
+
+      if (validatedRecord.seq === 0 && validatedRecord.type === "genesis") {
+        this.soulPublicKey = decodePublicKey(validatedRecord.body.soul_pubkey);
+      }
+
+      return { cid };
+    } finally {
+      this.releaseLock();
+    }
+  }
+
+  /** Return the current head, or null if the chain is empty. */
+  async head(): Promise<HeadInfo | null> {
+    this.assertOpen();
+    if (this.headInfo === null) {
+      return null;
+    }
+    return { cid: this.headInfo.cid, seq: this.headInfo.seq };
+  }
+
+  /** Fetch a record by CID. */
+  async get(cid: string): Promise<OspRecord> {
+    this.assertOpen();
+
+    const blobPath = path.join(this.blobsDir, cid);
+    let bytes: Buffer;
+    try {
+      bytes = await readFile(blobPath);
+    } catch (error) {
+      if (isNodeError(error) && error.code === "ENOENT") {
+        throw new StorageError(`record not found for CID ${cid}`);
+      }
+      throw new StorageError(`failed to read blob ${cid}: ${nodeErrorMessage(error)}`);
+    }
+
+    const canonicalBytes = new Uint8Array(bytes);
+    const computedCid = await computeCidFromCanonicalBytes(canonicalBytes);
+    if (computedCid !== cid) {
+      throw new CorruptionError(`blob CID mismatch for ${cid}: computed ${computedCid}`);
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(new TextDecoder().decode(canonicalBytes));
+    } catch (error) {
+      throw new CorruptionError(`invalid JSON in blob ${cid}: ${nodeErrorMessage(error)}`);
+    }
+
+    const schemaResult = RecordSchema.safeParse(parsed);
+    if (!schemaResult.success) {
+      throw new SchemaError(schemaResult.error.message);
+    }
+
+    if (this.soulPublicKey !== null) {
+      const verifyOptions: {
+        soulPublicKey: Uint8Array;
+        doorPublicKeys?: readonly Uint8Array[];
+        expectedCid: string;
+      } = {
+        soulPublicKey: this.soulPublicKey,
+        expectedCid: cid
+      };
+      if (this.doorPublicKeys !== undefined) {
+        verifyOptions.doorPublicKeys = this.doorPublicKeys;
+      }
+
+      try {
+        await verifyRecord(schemaResult.data, verifyOptions);
+      } catch (error) {
+        if (error instanceof VerificationError || error instanceof SchemaError) {
+          throw new CorruptionError(`record verification failed for ${cid}: ${error.message}`);
+        }
+        throw error;
+      }
+    }
+
+    return schemaResult.data;
+  }
+
+  /** Iterate all records in chain order from genesis to head. */
+  async *iterate(): AsyncIterable<OspRecord> {
+    this.assertOpen();
+
+    const chainStat = await stat(this.chainPath).catch((error: unknown) => {
+      if (isNodeError(error) && error.code === "ENOENT") {
+        return null;
+      }
+      throw error;
+    });
+
+    if (chainStat === null || chainStat.size === 0) {
+      return;
+    }
+
+    const stream = createReadStream(this.chainPath, { encoding: "utf8" });
+    const lineReader = readline.createInterface({ input: stream, crlfDelay: Infinity });
+
+    try {
+      for await (const line of lineReader) {
+        if (line.length === 0) {
+          continue;
+        }
+
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(line);
+        } catch (error) {
+          throw new CorruptionError(`invalid JSON in chain line: ${nodeErrorMessage(error)}`);
+        }
+
+        const schemaResult = RecordSchema.safeParse(parsed);
+        if (!schemaResult.success) {
+          throw new SchemaError(schemaResult.error.message);
+        }
+
+        yield schemaResult.data;
+      }
+    } finally {
+      lineReader.close();
+      stream.destroy();
+    }
+  }
+
+  /** Release resources held by this store. */
+  async close(): Promise<void> {
+    if (this.closed) {
+      return;
+    }
+
+    if (this.lockFd !== null) {
+      this.releaseLock();
+    }
+
+    this.closed = true;
+  }
+
+  /** Ensure directory layout exists under the store root. */
+  private async ensureLayout(): Promise<void> {
+    await mkdir(this.dir, { recursive: true });
+    await mkdir(this.blobsDir, { recursive: true });
+  }
+
+  /** Truncate a torn chain file; returns the number of bytes removed. */
+  private async recoverTornChain(): Promise<number> {
+    let chainStat;
+    try {
+      chainStat = await stat(this.chainPath);
+    } catch (error) {
+      if (isNodeError(error) && error.code === "ENOENT") {
+        const fd = openSync(this.chainPath, "w");
+        try {
+          fsyncSync(fd);
+        } finally {
+          closeSync(fd);
+        }
+        return 0;
+      }
+      throw error;
+    }
+
+    if (chainStat.size === 0) {
+      return 0;
+    }
+
+    const buffer = await readFile(this.chainPath);
+    if (buffer.length > 0 && buffer[buffer.length - 1] === 0x0a) {
+      return 0;
+    }
+
+    const oldSize = buffer.length;
+    let newSize = 0;
+    let lastNewline = -1;
+    for (let index = 0; index < buffer.length; index += 1) {
+      if (buffer[index] === 0x0a) {
+        lastNewline = index;
+      }
+    }
+
+    if (lastNewline === -1) {
+      newSize = 0;
+    } else {
+      newSize = lastNewline + 1;
+    }
+
+    await truncate(this.chainPath, newSize);
+    await FileSoulStore.fsyncPath(this.chainPath);
+    return oldSize - newSize;
+  }
+
+  /** Read and validate the on-disk chain, populating head and soul public key. */
+  private async loadChain(): Promise<void> {
+    if (!existsSync(this.chainPath)) {
+      const fd = openSync(this.chainPath, "w");
+      try {
+        fsyncSync(fd);
+      } finally {
+        closeSync(fd);
+      }
+      this.headInfo = null;
+      this.soulPublicKey = null;
+      return;
+    }
+
+    const buffer = await readFile(this.chainPath);
+    if (buffer.length === 0) {
+      this.headInfo = null;
+      this.soulPublicKey = null;
+      return;
+    }
+
+    if (buffer[buffer.length - 1] !== 0x0a) {
+      throw new CorruptionError("truncated trailing line");
+    }
+
+    const lineBytesList = splitChainLines(buffer);
+    if (lineBytesList.length === 0) {
+      this.headInfo = null;
+      this.soulPublicKey = null;
+      return;
+    }
+
+    let previousCid: string | null = null;
+    let previousSeq: number | null = null;
+    let soulPublicKey: Uint8Array | null = null;
+    let lastHead: HeadInfo | null = null;
+
+    for (const lineBytes of lineBytesList) {
+      const cid = await computeCidFromCanonicalBytes(lineBytes);
+      const blobPath = path.join(this.blobsDir, cid);
+
+      let blobBytes: Buffer;
+      try {
+        blobBytes = await readFile(blobPath);
+      } catch (error) {
+        if (isNodeError(error) && error.code === "ENOENT") {
+          throw new CorruptionError(`missing blob for CID ${cid}`);
+        }
+        throw new StorageError(`failed to read blob ${cid}: ${nodeErrorMessage(error)}`);
+      }
+
+      const blobCanonical = new Uint8Array(blobBytes);
+      if (!bytesEqual(lineBytes, blobCanonical)) {
+        throw new CorruptionError(`blob bytes mismatch for CID ${cid}`);
+      }
+
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(new TextDecoder().decode(lineBytes));
+      } catch (error) {
+        throw new CorruptionError(
+          `invalid JSON in chain for CID ${cid}: ${nodeErrorMessage(error)}`
+        );
+      }
+
+      if (previousSeq === null) {
+        const first = RecordSchema.safeParse(parsed);
+        if (!first.success) {
+          throw new CorruptionError(`invalid genesis record: ${first.error.message}`);
+        }
+        if (first.data.seq !== 0 || first.data.prev !== null) {
+          throw new CorruptionError("first record must have seq 0 and prev null");
+        }
+        if (first.data.type !== "genesis") {
+          throw new CorruptionError("first record must be genesis");
+        }
+        soulPublicKey = decodePublicKey(first.data.body.soul_pubkey);
+      } else {
+        const recordProbe = RecordSchema.safeParse(parsed);
+        if (!recordProbe.success) {
+          throw new CorruptionError(
+            `invalid record at seq chain position: ${recordProbe.error.message}`
+          );
+        }
+        if (recordProbe.data.seq !== previousSeq + 1) {
+          throw new CorruptionError(
+            `sequence gap: expected seq ${previousSeq + 1}, found ${recordProbe.data.seq}`
+          );
+        }
+        if (recordProbe.data.prev !== previousCid) {
+          throw new CorruptionError(
+            `prev mismatch at seq ${recordProbe.data.seq}: expected ${previousCid}`
+          );
+        }
+      }
+
+      if (soulPublicKey === null) {
+        throw new CorruptionError("missing genesis soul public key");
+      }
+
+      const verifyOptions: {
+        soulPublicKey: Uint8Array;
+        doorPublicKeys?: readonly Uint8Array[];
+        expectedCid: string;
+      } = {
+        soulPublicKey,
+        expectedCid: cid
+      };
+      if (this.doorPublicKeys !== undefined) {
+        verifyOptions.doorPublicKeys = this.doorPublicKeys;
+      }
+
+      try {
+        await verifyRecord(parsed, verifyOptions);
+      } catch (error) {
+        if (error instanceof VerificationError || error instanceof SchemaError) {
+          throw new CorruptionError(`record verification failed for CID ${cid}: ${error.message}`);
+        }
+        throw error;
+      }
+
+      const validated = RecordSchema.parse(parsed);
+      previousCid = cid;
+      previousSeq = validated.seq;
+      lastHead = { cid, seq: validated.seq };
+    }
+
+    this.headInfo = lastHead;
+    this.soulPublicKey = soulPublicKey;
+  }
+
+  /** Acquire the exclusive append lock. */
+  private acquireLock(): void {
+    try {
+      this.lockFd = openSync(this.lockPath, "wx");
+    } catch (error) {
+      if (isNodeError(error) && error.code === "EEXIST") {
+        throw new ConcurrentAppendError("another append is in progress");
+      }
+      throw new StorageError(`failed to acquire append lock: ${nodeErrorMessage(error)}`);
+    }
+  }
+
+  /** Release the exclusive append lock. */
+  private releaseLock(): void {
+    if (this.lockFd !== null) {
+      try {
+        closeSync(this.lockFd);
+      } catch {
+        // Ignore close errors during lock cleanup.
+      }
+      this.lockFd = null;
+    }
+
+    try {
+      unlinkSync(this.lockPath);
+    } catch (error) {
+      if (!isNodeError(error) || error.code !== "ENOENT") {
+        throw error;
+      }
+    }
+  }
+
+  private assertOpen(): void {
+    if (this.closed) {
+      throw new StorageError("FileSoulStore is closed");
+    }
+  }
+
+  private static async fsyncPath(targetPath: string): Promise<void> {
+    let fd: number;
+    try {
+      fd = openSync(targetPath, "r+");
+    } catch (error) {
+      throw new StorageError(`failed to open for fsync: ${nodeErrorMessage(error)}`);
+    }
+
+    try {
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+  }
+
+  private static async fsyncDirectory(dirPath: string): Promise<void> {
+    let fd: number;
+    try {
+      fd = openSync(dirPath, "r");
+    } catch (error) {
+      throw new StorageError(`failed to open directory for fsync: ${nodeErrorMessage(error)}`);
+    }
+
+    try {
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+  }
+}
+
+type NodeError = Error & { code?: string };
+
+function isNodeError(error: unknown): error is NodeError {
+  return error instanceof Error && "code" in error;
+}
+
+function nodeErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  return String(error);
+}

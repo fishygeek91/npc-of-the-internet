@@ -36,11 +36,11 @@ Each task lists **Deps**, **Deliverables**, and **Acceptance** (how a reviewer v
 - Acceptance: unit tests incl. tamper detection (flip one byte → verify fails); generated JSON Schema emitted to `spec/osp/schema/`. Green.
 - Notes: Implemented from `spec/osp/records.md`. CID prefix `bagu` (dag-json) — see DEVIATIONS.md. JSON Schema at `spec/osp/schema/`. Next: T1.2 SoulStore. Agent: Grok 4.5 Maestro, 2026-07-20.
 
-### T1.2 ⬜ SoulStore (append-only local store)
+### T1.2 ✅ SoulStore (append-only local store)
 - Deps: T1.1
 - Deliverables: `SoulStore` interface (`append`, `head`, `get(cid)`, `iterate`); `FileSoulStore` impl: JSONL chain file + blob dir, fsync on append, refuses append if `prev` ≠ current head; corruption detection on open.
 - Acceptance: unit tests: append/read/iterate; simulated partial-write recovery; concurrent-append rejection. Green.
-- Notes:
+- Notes: FileSoulStore: chain.jsonl + blobs/<cid>, fsync, wx lock, open fails on torn line / openWithRecovery truncates. Agent: Grok 4.5 Maestro, 2026-07-20. Next: T1.3 verifyChain + vectors.
 
 ### T1.3 ⬜ Chain verification + test vectors
 - Deps: T1.2
