@@ -20,6 +20,10 @@ Full detail in `LIFECYCLE.md`. Summary:
 - **Gate 1:** no `approved` label on the issue → do not start.
 - **Gate 2:** never execute production actions: deploying to the VPS, genesis ceremony, key generation/rotation, wallet/treasury operations, tagged releases, publishing images, making Atlas public. Prepare them fully (scripts, runbook, dry-run results), then stop and request human approval on a `release` issue.
 
+## Governance CI (keeps docs honest)
+
+A `Governance` workflow fails your PR if: source/spec changed without a TASKS.md update · source changed without a changeset · `osp-core`/`osp-cli`/`spec` import other workspace packages · CHANGELOG.md was hand-edited. Escape hatches are labels (`governance-exempt`, `no-changeset`) — use them only when genuinely applicable and say why in the PR body.
+
 ## CI red on main
 
 Stop-the-line: file a `bug` issue (no gate needed), fix it before any task work.
