@@ -44,8 +44,9 @@ describe("log formatting", () => {
       sig: "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
     };
 
-    const line = formatLogLine(record, "bagu4eraaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
-    expect(line).toBe("0 genesis bagu4eraaaaaa… 2026-07-20T00:00:00.000Z");
+    const prevCid = "bagu" + "a".repeat(57);
+    const line = formatLogLine(record, prevCid);
+    expect(line).toBe("0 genesis baguaaaaaaaaa… 2026-07-20T00:00:00.000Z");
   });
 });
 

@@ -7,7 +7,7 @@ const DUMMY_SIG =
   "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
 const DUMMY_PUBKEY = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 const RESIDENCY = "door:discord:g/epoch:1";
-const PREV_CID = "bagu4eraaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const PREV_CID = "bagu" + "a".repeat(57);
 
 /** Shared envelope fields for minimal typed fixtures. */
 function envelope(

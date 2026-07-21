@@ -22,7 +22,7 @@ import {
 ed.etc.sha512Sync = (...messages: Uint8Array[]) => sha512(ed.etc.concatBytes(...messages));
 
 const RESIDENCY = "door:discord:g/epoch:1";
-const WRONG_PREV_CID = "bagu4eraaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const WRONG_PREV_CID = "bagu" + "a".repeat(57);
 
 /** TEST-ONLY: deterministic Ed25519 keypair from a fixed 32-byte private key fill pattern. */
 function testKeypair(fillByte: number): Ed25519Keypair {
@@ -369,6 +369,38 @@ async function buildVectors(): Promise<VectorCase[]> {
     ]
   };
 
+  const schemaBadPrev: VectorCase = {
+    filename: "schema-bad-prev.json",
+    description: "Record prev is not a valid bagu CID string",
+    expected: "schema_violation",
+    soulPublicKey: soulPub,
+    doorPublicKeys: [doorPub],
+    records: [
+      chain.genesis.record,
+      mutateRecord(chain.arrival.record, (draft) => {
+        draft.prev = "../../../etc/passwd";
+      })
+    ]
+  };
+
+  const schemaBadEvidence: VectorCase = {
+    filename: "schema-bad-evidence.json",
+    description: "Drift evidence entry is not a valid bagu CID string",
+    expected: "schema_violation",
+    soulPublicKey: soulPub,
+    doorPublicKeys: [doorPub],
+    records: [
+      chain.genesis.record,
+      chain.arrival.record,
+      chain.shard.record,
+      mutateRecord(chain.drift.record, (draft) => {
+        if (draft.body.evidence !== undefined) {
+          draft.body.evidence[0] = "../../../etc/passwd";
+        }
+      })
+    ]
+  };
+
   return [
     validMiniChain,
     badSoulSig,
@@ -383,7 +415,9 @@ async function buildVectors(): Promise<VectorCase[]> {
     schemaBadCandidateCid,
     schemaDoorIdMismatch,
     schemaGenesisCosigners,
-    schemaBadKeyLength
+    schemaBadKeyLength,
+    schemaBadPrev,
+    schemaBadEvidence
   ];
 }
 

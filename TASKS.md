@@ -46,7 +46,7 @@ Each task lists **Deps**, **Deliverables**, and **Acceptance** (how a reviewer v
 - Deps: T1.2
 - Deliverables: `verifyChain(store)` — full walk: sigs, prev-links, seq monotonicity, schema validity, cosigner sigs where required; vector suite in `spec/osp/vectors/` (≥1 valid chain, ≥6 invalid: bad sig, broken link, seq gap, schema violation, missing cosign, forked head) + vector runner test.
 - Acceptance: all vectors pass/fail as labeled. Green.
-- Notes: `verifyRecords`/`verifyChain` with structured ChainRule failures; FileSoulStore.loadChain reuses verifyRecords; schema hardening (residency regex, door_id cross-check, key/sig lengths, genesis cosigners:[]); vectors in `spec/osp/vectors/` + generate:vectors; bagu prose + Verification §6 heartbeat aligned. Absorbs #7. Agent: Grok 4.5 Maestro, 2026-07-20. Next: T1.4 osp CLI.
+- Notes: `verifyRecords`/`verifyChain` with structured ChainRule failures; FileSoulStore.loadChain reuses verifyRecords; schema hardening (residency regex, door_id cross-check, key/sig lengths, genesis cosigners:[]); vectors in `spec/osp/vectors/` + generate:vectors; bagu prose + Verification §6 heartbeat aligned. Absorbs #7. Agent: Grok 4.5 Maestro, 2026-07-20. Next: T1.4 osp CLI. #24: `prev` and `drift.evidence` tightened to `CidSchema`; well-formed-but-wrong vector fixture CID; `schema-bad-prev` / `schema-bad-evidence` vectors regenerated.
 
 ### T1.4 ✅ osp CLI (Composer 2.5 Maestro, 2026-07-20)
 - Deps: T1.3

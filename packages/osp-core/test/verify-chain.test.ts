@@ -16,7 +16,7 @@ import {
 } from "../src/index.js";
 
 const RESIDENCY = "door:discord:g/epoch:1";
-const WRONG_PREV_CID = "bagu4eraaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const WRONG_PREV_CID = "bagu" + "a".repeat(57);
 
 /** Create a unique temporary directory for an isolated store. */
 async function makeTempDir(): Promise<string> {

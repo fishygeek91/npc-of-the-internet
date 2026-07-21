@@ -1,6 +1,6 @@
 {
-  "description": "Drift evidence cites a CID that is not an earlier shard on this chain",
-  "expected": "bad_drift_evidence",
+  "description": "Drift evidence entry is not a valid bagu CID string",
+  "expected": "schema_violation",
   "soulPublicKey": "6kpsY-KcUgq-9VB7Ey7F-ZVHdq6-vnuSQh7qaRRG0iw",
   "doorPublicKeys": ["E5j2LG0aRXxRumpLXz29L2n8qTIWIY3ImX5Ba9F9k8o"],
   "records": [
@@ -59,11 +59,11 @@
       "prev": "baguqeeraguo6fhkqxgwm3w3jcourp5ns2mojqpk6npinww3jg72yf6bxspwq",
       "residency": "door:discord:g/epoch:1",
       "cosigners": [],
-      "sig": "_5n3DiEEXp2HGbqNi1UopVxUiaPQDfdeUPp8xFewojewlAnBLQ_ecXUr7o05_vOum0K46IQ8eLOWCXSCXpQ0Ag",
+      "sig": "mLSBB4ATKo-d3m7VdBsxkOXHlhXPvJZfZ7lpYneerjmsU2-maoun61oUD2-p9cU0sBm4JD8v0HXIoa5IwsyaCQ",
       "type": "drift",
       "body": {
         "summary": "I feel more patient after the long stay.",
-        "evidence": ["baguaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+        "evidence": ["../../../etc/passwd"],
         "effective_at": "2026-01-03T00:00:00.000Z"
       }
     }
