@@ -133,6 +133,69 @@ describe("extractTimestamp", () => {
     expect(extractTimestamp(record)).toBe("2026-01-08T00:00:00.000Z");
   });
 
+  it("reads at from attestation/heartbeat", () => {
+    const record: OspRecord = {
+      ...envelope(1),
+      type: "attestation",
+      body: {
+        kind: "heartbeat",
+        pop_version: "pop/0.1",
+        door_id: "discord:g",
+        epoch: 1,
+        session_pubkey: DUMMY_PUBKEY,
+        at: "2026-01-08T01:00:00.000Z"
+      }
+    };
+    expect(extractTimestamp(record)).toBe("2026-01-08T01:00:00.000Z");
+  });
+
+  it("reads at from attestation/departure", () => {
+    const record: OspRecord = {
+      ...envelope(1),
+      type: "attestation",
+      body: {
+        kind: "departure",
+        pop_version: "pop/0.1",
+        door_id: "discord:g",
+        epoch: 1,
+        at: "2026-01-08T02:00:00.000Z"
+      }
+    };
+    expect(extractTimestamp(record)).toBe("2026-01-08T02:00:00.000Z");
+  });
+
+  it("reads at from attestation/travel", () => {
+    const record: OspRecord = {
+      ...envelope(1),
+      type: "attestation",
+      body: {
+        kind: "travel",
+        pop_version: "pop/0.1",
+        from_door_id: "discord:g",
+        from_epoch: 1,
+        at: "2026-01-08T03:00:00.000Z"
+      }
+    };
+    expect(extractTimestamp(record)).toBe("2026-01-08T03:00:00.000Z");
+  });
+
+  it("reads at from attestation/handover", () => {
+    const record: OspRecord = {
+      ...envelope(1),
+      type: "attestation",
+      body: {
+        kind: "handover",
+        pop_version: "pop/0.1",
+        depart_door_id: "discord:g",
+        arrive_door_id: "discord:h",
+        depart_epoch: 1,
+        arrive_epoch: 2,
+        at: "2026-01-08T04:00:00.000Z"
+      }
+    };
+    expect(extractTimestamp(record)).toBe("2026-01-08T04:00:00.000Z");
+  });
+
   it("reads as_of from sleep", () => {
     const record: OspRecord = {
       ...envelope(1),

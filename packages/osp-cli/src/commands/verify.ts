@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import * as path from "node:path";
 
 import {
@@ -31,13 +31,25 @@ export function printFailures(failures: readonly ChainFailure[]): void {
   }
 }
 
+/** True when path exists and is a directory. */
+function isExistingDirectory(resolvedDir: string): boolean {
+  if (!existsSync(resolvedDir)) {
+    return false;
+  }
+  try {
+    return statSync(resolvedDir).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Open a soulchain directory and verify the full chain.
  * Returns exit code 0 when valid, 1 when verification fails, 2 on I/O or corruption.
  */
 export async function runVerify(options: VerifyOptions): Promise<number> {
   const resolvedDir = path.resolve(options.dir);
-  if (!existsSync(resolvedDir)) {
+  if (!isExistingDirectory(resolvedDir)) {
     writeStderr(`Soulchain directory not found: ${resolvedDir}`);
     return EXIT_USAGE;
   }
