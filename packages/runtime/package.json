@@ -7,14 +7,19 @@
   "types": "./dist/index.d.ts",
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "generate:goldens": "tsx scripts/generate-goldens.ts",
     "test": "vitest run"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.112.4",
+    "@npc/osp-core": "workspace:*",
     "zod": "^3.24.2"
   },
   "devDependencies": {
+    "@noble/ed25519": "^2.2.3",
+    "@noble/hashes": "^1.7.1",
     "@types/node": "^22",
+    "tsx": "^4.19.4",
     "typescript": "^5.6.0",
     "vitest": "^3.0.0"
   }

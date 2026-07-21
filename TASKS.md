@@ -62,11 +62,11 @@ Each task lists **Deps**, **Deliverables**, and **Acceptance** (how a reviewer v
 - Acceptance: unit tests with FakeBrain; `LIVE_TESTS=1` smoke test file exists (not run in CI). Green.
 - Notes: `packages/runtime/src/brain/` — types, FakeBrain, AnthropicBrain, Zod config (`loadBrainConfig`), BrainError. Env: ANTHROPIC_API_KEY, NPC_BRAIN_MODEL, NPC_BRAIN_MAX_TOKENS, NPC_BRAIN_TIMEOUT_MS. Live smoke at `test/live/anthropic-brain.live.test.ts` (skipped unless LIVE_TESTS set). ops/SECRETS.md created. Next: T2.2 Self-Composer.
 
-### T2.2 ⬜ Self-Composer
+### T2.2 ✅ Self-Composer (Grok 4.5 Maestro, 2026-07-20)
 - Deps: T1.3, T2.1
 - Deliverables: `composeSelf(store) → {systemPrompt, memoryIndex}`: genesis charter + drift records + shard retrieval index. Deterministic (injected clock/randomness per AGENTS.md). Prompt templates in `runtime/src/prompts/composer/`.
 - Acceptance: golden-file test — same chain head twice → byte-identical output; composing a longer fixture chain includes drift + shards in prompt. Green.
-- Notes:
+- Notes: `composeSelf(store, options?)` with `ComposeSelfOptions.doorPublicKeys` forwarded to verifyChain only. Template strategy (a) TS const in `src/prompts/composer/system.ts`. Journal + drift evidence excluded from prompt. Goldens: `pnpm --filter @npc/runtime generate:goldens`. MemorySoulStore at `test/helpers/memory-soul-store.ts` for T2.4. Next: T2.4.
 
 ### T2.3 ⬜ Distiller
 - Deps: T2.1, T1.1
