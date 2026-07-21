@@ -1,0 +1,19 @@
+# Gitleaks config for NPC of the Internet.
+# Extends the default rule set; allowlists cover TEST-ONLY fixtures only.
+
+title = "npc-of-the-internet"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "PoP/OSP conformance vectors use deterministic TEST-ONLY keys (never production secrets)"
+paths = [
+  '''spec/.+/vectors/.*\.json$'''
+]
+
+[[allowlists]]
+description = "Runtime tests use fixed fill-byte keys and fake door ids (e.g. discord:g, snowflake-shaped fixtures)"
+paths = [
+  '''packages/runtime/test/.*'''
+]
