@@ -8,3 +8,6 @@ export { BrainError } from "./brain/errors.js";
 export { FakeBrain } from "./brain/fake-brain.js";
 export type { FakeBrainCall, FakeBrainHandler } from "./brain/fake-brain.js";
 export type { Brain, BrainMessage, CompleteOptions } from "./brain/types.js";
+export { ComposeError } from "./compose/errors.js";
+export { composeSelf } from "./compose/compose-self.js";
+export type { ComposedSelf, ComposeSelfOptions, MemoryIndexEntry } from "./compose/compose-self.js";
