@@ -11,13 +11,16 @@ import {
  * In-memory append-only {@link SoulStore} for tests.
  *
  * Records are kept in append order; {@link head} reflects the last append.
+ * No chain validation on append (seq/prev continuity, signatures) — callers own
+ * continuity. Negative tests may append broken records and discover failures via
+ * {@link composeSelf} / verifyChain.
  */
 export class MemorySoulStore implements SoulStore {
   private readonly records: OspRecord[] = [];
   private readonly byCid = new Map<string, OspRecord>();
   private headInfo: HeadInfo | null = null;
 
-  /** Append a signed record and update the chain head. */
+  /** Append a signed record and update the chain head (no validation). */
   async append(record: OspRecord): Promise<AppendResult> {
     const cid = await computeCid(record);
     this.records.push(record);

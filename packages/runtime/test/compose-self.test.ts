@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { computeCid } from "@npc/osp-core";
+import { computeCid, type SoulStore } from "@npc/osp-core";
 import { describe, expect, it } from "vitest";
 
 import { composeSelf } from "../src/compose/compose-self.js";
@@ -185,5 +185,36 @@ describe("composeSelf", () => {
     const charterSection = systemPrompt.split("## Drift")[0] ?? "";
     expect(charterSection).toContain(CHARTER);
     expect(charterSection).not.toContain(poisonText);
+  });
+
+  it("throws ComposeError when store.head disagrees with the verified snapshot", async () => {
+    const { store, doorPublicKeys } = await buildFixtureA();
+    const realHead = await store.head();
+    if (realHead === null) {
+      throw new Error("expected non-null head after fixture A");
+    }
+
+    const mismatched: SoulStore = {
+      append: (record) => store.append(record),
+      get: (cid) => store.get(cid),
+      iterate: () => store.iterate(),
+      head: async () => ({
+        cid: realHead.cid,
+        seq: realHead.seq + 1
+      })
+    };
+
+    let caught: unknown;
+    try {
+      await composeSelf(mismatched, { doorPublicKeys });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(ComposeError);
+    if (!(caught instanceof ComposeError)) {
+      throw new Error("expected ComposeError");
+    }
+    expect(caught.failures.some((failure) => failure.rule === "forked_head")).toBe(true);
   });
 });

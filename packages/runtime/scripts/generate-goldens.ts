@@ -13,11 +13,11 @@ import { serializeMemoryIndex } from "../test/helpers/golden-format.js";
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const goldenDir = join(scriptDir, "../test/golden");
 
-async function writeGolden(
+function writeGolden(
   label: "a" | "b",
   systemPrompt: string,
   memoryIndex: Parameters<typeof serializeMemoryIndex>[0]
-): Promise<void> {
+): void {
   writeFileSync(join(goldenDir, `compose-${label}.systemPrompt.txt`), systemPrompt, "utf8");
   writeFileSync(
     join(goldenDir, `compose-${label}.memoryIndex.json`),
@@ -33,13 +33,13 @@ async function main(): Promise<void> {
   const composedA = await composeSelf(fixtureA.store, {
     doorPublicKeys: fixtureA.doorPublicKeys
   });
-  await writeGolden("a", composedA.systemPrompt, composedA.memoryIndex);
+  writeGolden("a", composedA.systemPrompt, composedA.memoryIndex);
 
   const fixtureB = await buildFixtureB();
   const composedB = await composeSelf(fixtureB.store, {
     doorPublicKeys: fixtureB.doorPublicKeys
   });
-  await writeGolden("b", composedB.systemPrompt, composedB.memoryIndex);
+  writeGolden("b", composedB.systemPrompt, composedB.memoryIndex);
 }
 
 main().catch((error: unknown) => {

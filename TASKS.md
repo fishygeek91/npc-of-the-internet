@@ -66,7 +66,7 @@ Each task lists **Deps**, **Deliverables**, and **Acceptance** (how a reviewer v
 - Deps: T1.3, T2.1
 - Deliverables: `composeSelf(store) → {systemPrompt, memoryIndex}`: genesis charter + drift records + shard retrieval index. Deterministic (injected clock/randomness per AGENTS.md). Prompt templates in `runtime/src/prompts/composer/`.
 - Acceptance: golden-file test — same chain head twice → byte-identical output; composing a longer fixture chain includes drift + shards in prompt. Green.
-- Notes: `composeSelf(store, options?)` with `ComposeSelfOptions.doorPublicKeys` forwarded to verifyChain only. Template strategy (a) TS const in `src/prompts/composer/system.ts`. Journal + drift evidence excluded from prompt. Goldens: `pnpm --filter @npc/runtime generate:goldens`. MemorySoulStore at `test/helpers/memory-soul-store.ts` for T2.4. Next: T2.4.
+- Notes: `composeSelf(store, options?)` with `ComposeSelfOptions.doorPublicKeys` forwarded to verify only. Single materialize → `verifyRecords` → compose from same snapshot (plus store-head cross-check). Template strategy (a) TS const in `src/prompts/composer/system.ts`. Journal + drift evidence excluded from prompt. Goldens: `pnpm --filter @npc/runtime generate:goldens`. MemorySoulStore at `test/helpers/memory-soul-store.ts` for T2.4. Next: T2.4.
 
 ### T2.3 ⬜ Distiller
 - Deps: T2.1, T1.1

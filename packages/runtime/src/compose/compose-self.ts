@@ -1,4 +1,4 @@
-import { computeCid, verifyChain, type SoulStore } from "@npc/osp-core";
+import { computeCid, verifyRecords, type OspRecord, type SoulStore } from "@npc/osp-core";
 
 import { ComposeError } from "./errors.js";
 import { SYSTEM_TEMPLATE } from "../prompts/composer/system.js";
@@ -17,21 +17,14 @@ type Section = "charter" | "drifts" | "shards";
 /** Fixed sentinel when a list section has no items (readable goldens, deterministic). */
 const EMPTY_SECTION = "(none yet)";
 
+/**
+ * Render the system prompt by substituting template placeholders in a single pass.
+ * Replacer-function form keeps `$&` / `{{...}}` in chain content inert.
+ */
 function renderSystemPrompt(sections: Record<Section, string>): string {
   return SYSTEM_TEMPLATE.replaceAll(
     /\{\{(charter|drifts|shards)\}\}/g,
-    (_match, key: string): string => {
-      switch (key) {
-        case "charter":
-          return sections.charter;
-        case "drifts":
-          return sections.drifts;
-        case "shards":
-          return sections.shards;
-        default:
-          throw new ComposeError(`unknown template section: ${key}`, []);
-      }
-    }
+    (_match, key: Section): string => sections[key]
   );
 }
 
@@ -42,19 +35,42 @@ function joinSection(items: readonly string[]): string {
 /**
  * Project a verified soulchain into the Wanderer's system prompt and shard memory index.
  *
- * Verifies the chain first; door public keys affect verification only, not prompt content.
+ * Materializes the chain once, verifies that snapshot, then composes from the same array
+ * (no second iterate). Door public keys affect verification only, not prompt content.
  */
 export async function composeSelf(
   store: SoulStore,
   options?: ComposeSelfOptions
 ): Promise<ComposedSelf> {
+  const records: OspRecord[] = [];
+  for await (const record of store.iterate()) {
+    records.push(record);
+  }
+
   const doorPublicKeys = options?.doorPublicKeys;
-  const result = await verifyChain(
-    store,
+  const result = await verifyRecords(
+    records,
     doorPublicKeys === undefined ? undefined : { doorPublicKeys }
   );
   if (!result.valid) {
     throw new ComposeError("cannot compose self from an invalid soulchain", result.failures);
+  }
+
+  // Retain verifyChain's store-head cross-check against the verified snapshot head.
+  const storeHead = await store.head();
+  if (
+    result.head !== null &&
+    storeHead !== null &&
+    (storeHead.cid !== result.head.cid || storeHead.seq !== result.head.seq)
+  ) {
+    throw new ComposeError("cannot compose self from an invalid soulchain", [
+      {
+        seq: storeHead.seq,
+        cid: storeHead.cid,
+        rule: "forked_head",
+        message: "store head does not match verified chain head"
+      }
+    ]);
   }
 
   let charter: string | undefined;
@@ -62,7 +78,7 @@ export async function composeSelf(
   const shardTexts: string[] = [];
   const memoryIndex: MemoryIndexEntry[] = [];
 
-  for await (const record of store.iterate()) {
+  for (const record of records) {
     switch (record.type) {
       case "genesis":
         charter = record.body.charter;
