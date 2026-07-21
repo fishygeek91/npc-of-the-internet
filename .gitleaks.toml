@@ -11,8 +11,11 @@ useDefault = true
 description = "TEST-ONLY PoP/OSP vectors, runtime test fixtures, and historical T2.4 false-positive commit"
 paths = [
   '''spec/.+/vectors/.*''',
-  '''packages/runtime/test'''
+  '''packages/runtime/test''',
+  '''packages/door-sdk/test'''
 ]
 commits = [
-  "3a698bdb4d6906ea8066ad2e5ed5ef0dbb13e5ed"
+  "3a698bdb4d6906ea8066ad2e5ed5ef0dbb13e5ed",
+  # T4.1 (#41): temporary discord-snowflake door_id fixture in schemas/signing tests (fixed in later commit)
+  "bf8bbe081cf0772c5543ab97aa57f2e9027c93e3"
 ]
