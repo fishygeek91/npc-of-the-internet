@@ -154,7 +154,7 @@ Vectors live under `spec/pop/vectors/`; the runner is `test/pop-vectors.test.ts`
 
 ### Door stub (integration tests)
 
-`test/helpers/door-stub.ts` implements an in-process `DoorConnection` for T2.4/T2.5 and future `door-sdk` contract tests. It verifies soul/session signatures, returns door co-signatures on `attest`, implements two-phase `cosign` (review then per-shard commit with core-bound `door_cosig`), retires the session on departure attest, and exposes `verifyOutbound(frame)` for outbound frame checks. See `test/session-integration.test.ts` for the full 20-message residency acceptance test.
+`test/helpers/door-stub.ts` is a thin wrapper around `@npc/door-sdk` `Door` for T2.4/T2.5 integration tests. It maps `DoorError` to `DoorStubError`, supports per-shard cosign policy via `decide` / `rejectShardIds`, and exposes `verifyOutbound(frame)` for outbound frame checks. See `test/session-integration.test.ts` for the full 20-message residency acceptance test.
 
 ## Departure / handover (T2.5)
 
