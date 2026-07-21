@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { canonicalize } from "../src/canonical.js";
-import { computeCid } from "../src/crypto/cid.js";
+import { CidSchema, computeCid, isValidCid } from "../src/crypto/cid.js";
 import { generateKeypair, sign, verify } from "../src/crypto/ed25519.js";
 
 describe("ed25519", () => {
@@ -64,5 +64,56 @@ describe("computeCid", () => {
     const cidA = await computeCid(sampleRecord);
     const cidB = await computeCid({ ...sampleRecord, seq: 43 });
     expect(cidA).not.toBe(cidB);
+  });
+});
+
+describe("isValidCid", () => {
+  const sampleRecord = {
+    body: { kind: "shard", text: "I remember the rain." },
+    cosigners: [],
+    prev: "bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi",
+    residency: "door:discord:guild123/epoch:77",
+    seq: 42,
+    sig: "abc",
+    spec: "osp/0.1",
+    type: "memory"
+  };
+
+  it("accepts a real CID from computeCid", async () => {
+    const cid = await computeCid(sampleRecord);
+    expect(isValidCid(cid)).toBe(true);
+    expect(CidSchema.safeParse(cid).success).toBe(true);
+  });
+
+  it("rejects empty string", () => {
+    expect(isValidCid("")).toBe(false);
+    expect(CidSchema.safeParse("").success).toBe(false);
+  });
+
+  it("rejects path traversal and absolute paths", () => {
+    expect(isValidCid("../etc/passwd")).toBe(false);
+    expect(isValidCid("/etc/passwd")).toBe(false);
+  });
+
+  it("rejects wrong length (51-char bagu prefix fake)", () => {
+    const shortFake = "bagu" + "a".repeat(47);
+    expect(shortFake.length).toBe(51);
+    expect(isValidCid(shortFake)).toBe(false);
+  });
+
+  it("rejects invalid base32 alphabet characters (0, 1, 8, 9)", () => {
+    const withZero = "bagu" + "0".repeat(57);
+    const withOne = "bagu" + "1".repeat(57);
+    const withEight = "bagu" + "8".repeat(57);
+    const withNine = "bagu" + "9".repeat(57);
+    expect(isValidCid(withZero)).toBe(false);
+    expect(isValidCid(withOne)).toBe(false);
+    expect(isValidCid(withEight)).toBe(false);
+    expect(isValidCid(withNine)).toBe(false);
+  });
+
+  it("rejects wrong prefix (dag-pb bafy style short fake)", () => {
+    const dagPbFake = "bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi";
+    expect(isValidCid(dagPbFake)).toBe(false);
   });
 });

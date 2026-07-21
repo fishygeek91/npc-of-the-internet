@@ -12,7 +12,7 @@ import * as path from "node:path";
 import * as readline from "node:readline";
 
 import { canonicalize } from "../canonical.js";
-import { computeCidFromCanonicalBytes } from "../crypto/cid.js";
+import { computeCidFromCanonicalBytes, isValidCid } from "../crypto/cid.js";
 import { decodePublicKey } from "../encoding/base64url.js";
 import {
   ChainMismatchError,
@@ -210,6 +210,10 @@ export class FileSoulStore implements SoulStore {
   async get(cid: string): Promise<OspRecord> {
     this.assertOpen();
 
+    if (!isValidCid(cid)) {
+      throw new StorageError(`invalid CID format: ${cid}`);
+    }
+
     const blobPath = path.join(this.blobsDir, cid);
     let bytes: Buffer;
     try {
@@ -390,6 +394,10 @@ export class FileSoulStore implements SoulStore {
    * (idempotent retry after crash between blob and chain append).
    */
   private async writeBlobIdempotent(cid: string, bytes: Uint8Array): Promise<void> {
+    if (!isValidCid(cid)) {
+      throw new StorageError(`invalid CID format: ${cid}`);
+    }
+
     const blobPath = path.join(this.blobsDir, cid);
 
     let blobFd: number;
@@ -507,6 +515,10 @@ export class FileSoulStore implements SoulStore {
 
     for (const lineBytes of lineBytesList) {
       const cid = await computeCidFromCanonicalBytes(lineBytes);
+      if (!isValidCid(cid)) {
+        throw new StorageError(`invalid CID format: ${cid}`);
+      }
+
       const blobPath = path.join(this.blobsDir, cid);
 
       let blobBytes: Buffer;

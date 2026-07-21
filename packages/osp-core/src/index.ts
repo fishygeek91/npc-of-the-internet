@@ -24,7 +24,13 @@ export {
 } from "./encoding/base64url.js";
 export { generateKeypair, sign, verify } from "./crypto/ed25519.js";
 export type { Ed25519Keypair } from "./crypto/ed25519.js";
-export { computeCidFromCanonicalBytes, computeCid } from "./crypto/cid.js";
+export {
+  CID_RE,
+  CidSchema,
+  computeCidFromCanonicalBytes,
+  computeCid,
+  isValidCid
+} from "./crypto/cid.js";
 export { corePayload, soulPayload, signCore, createRecord, verifyRecord } from "./record.js";
 export type {
   CreateRecordFields,

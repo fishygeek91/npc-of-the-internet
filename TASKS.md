@@ -40,7 +40,7 @@ Each task lists **Deps**, **Deliverables**, and **Acceptance** (how a reviewer v
 - Deps: T1.1
 - Deliverables: `SoulStore` interface (`append`, `head`, `get(cid)`, `iterate`); `FileSoulStore` impl: JSONL chain file + blob dir, fsync on append, refuses append if `prev` ≠ current head; corruption detection on open.
 - Acceptance: unit tests: append/read/iterate; simulated partial-write recovery; concurrent-append rejection. Green.
-- Notes: FileSoulStore: chain.jsonl + blobs/<cid>, fsync, wx lock, open fails on torn line / openWithRecovery truncates. Agent: Grok 4.5 Maestro, 2026-07-20. Next: T1.3 verifyChain + vectors.
+- Notes: FileSoulStore: chain.jsonl + blobs/<cid>, fsync, wx lock, open fails on torn line / openWithRecovery truncates. Agent: Grok 4.5 Maestro, 2026-07-20. Next: T1.3 verifyChain + vectors. #19: CID format validation before path.join in FileSoulStore; candidate_cid schema tightened; vector schema-bad-candidate-cid.json.
 
 ### T1.3 ✅ Chain verification + test vectors
 - Deps: T1.2
