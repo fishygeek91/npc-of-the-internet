@@ -124,6 +124,9 @@ importers:
       '@noble/hashes':
         specifier: ^1.7.1
         version: 1.8.0
+      '@npc/immune':
+        specifier: workspace:*
+        version: link:../immune
       '@npc/osp-core':
         specifier: workspace:*
         version: link:../osp-core

@@ -88,11 +88,11 @@ Each task lists **Deps**, **Deliverables**, and **Acceptance** (how a reviewer v
 
 ## Phase 3 — Immune system (v0.1 scope: static screen)
 
-### T3.1 ⬜ Static screen
+### T3.1 ✅ Static screen
 - Deps: T1.1
 - Deliverables: in `immune`: injection-pattern screen (instruction-like text, role markers, URLs-with-payload heuristics) + PII screen (emails, phones, handles) with allowlist hook; applied to inbound Door text and candidate shards; rejections logged with category only.
 - Acceptance: unit tests with a labeled corpus (≥30 cases, both classes) in `immune/test/corpus/`; screen wired into Distiller (T2.3 test extended). Green.
-- Notes:
+- Notes: Agent: Cursor Grok 4.5 Maestro, 2026-07-21. Corpus in immune/test/corpus/ (≥30); Distiller + session inbound use screenText; category names are pii.*/injection.*; DistillError reason screen_reject. Next: T3.2 quarantine.
 
 ### T3.2 ⬜ Quarantine records
 - Deps: T3.1, T2.5

@@ -24,10 +24,10 @@ export { FileTranscriptSource } from "./distill/file-transcript-source.js";
 export type {
   CandidateShard,
   DistillOptions,
-  PiiCategory,
   TranscriptLine,
   TranscriptSource
 } from "./distill/types.js";
+export type { ScreenCategory } from "@npc/immune";
 export { KeyringError } from "./keyring/errors.js";
 export { buildSessionKeyInfo, SESSION_KEY_DERIVATION_SALT } from "./keyring/derive-session-key.js";
 export { loadSoulPrivateKeyFromPath } from "./keyring/load-soul-key.js";

@@ -1,16 +1,11 @@
+import { screenText } from "@npc/immune";
+import type { ScreenCategory } from "@npc/immune";
 import type { Brain, BrainMessage } from "../brain/types.js";
 import { DISTILLER_RETRY } from "../prompts/distiller/retry.js";
 import { DISTILLER_SYSTEM } from "../prompts/distiller/system.js";
 import { DistillError } from "./errors.js";
 import { countCodePoints, parseBrainShards } from "./parse.js";
-import { screenPii } from "./pii.js";
-import type {
-  CandidateShard,
-  DistillOptions,
-  PiiCategory,
-  TranscriptLine,
-  TranscriptSource
-} from "./types.js";
+import type { CandidateShard, DistillOptions, TranscriptLine, TranscriptSource } from "./types.js";
 
 const MIN_SHARDS = 5;
 const MAX_SHARDS = 20;
@@ -84,22 +79,25 @@ function filterLengthAndEmpty(shards: readonly ParsedShard[]): ParsedShard[] {
   return usable;
 }
 
-function applyPiiScreen(
+function applyImmuneScreen(
   shards: readonly ParsedShard[],
   opts: DistillOptions | undefined
-): { shards: ParsedShard[]; droppedCategories: PiiCategory[] } {
-  const allowlist = opts?.piiAllowlist;
-  const onPiiReject = opts?.onPiiReject;
+): { shards: ParsedShard[]; droppedCategories: ScreenCategory[] } {
+  const onScreenReject = opts?.onScreenReject;
   const kept: ParsedShard[] = [];
-  const droppedCategories: PiiCategory[] = [];
+  const droppedCategories: ScreenCategory[] = [];
 
   for (const shard of shards) {
-    // T3.1: immune screen hook
-    const screenResult = screenPii(shard.text, allowlist);
+    const screenResult =
+      opts?.piiAllowlist === undefined
+        ? screenText(shard.text)
+        : screenText(shard.text, { allowlist: opts.piiAllowlist });
     if (!screenResult.ok) {
-      onPiiReject?.(screenResult.category);
-      if (!droppedCategories.includes(screenResult.category)) {
-        droppedCategories.push(screenResult.category);
+      for (const category of screenResult.categories) {
+        onScreenReject?.(category);
+        if (!droppedCategories.includes(category)) {
+          droppedCategories.push(category);
+        }
       }
       continue;
     }
@@ -123,7 +121,7 @@ function toCandidateShards(shards: readonly ParsedShard[]): CandidateShard[] {
 }
 
 /**
- * Distill a residency transcript into 5–20 PII-screened candidate memory shards.
+ * Distill a residency transcript into 5–20 immune-screened candidate memory shards.
  * Destroys the transcript source after a successful run.
  */
 export async function distillTranscripts(
@@ -139,21 +137,21 @@ export async function distillTranscripts(
   const parsed = await completeWithRetry(brain, userContent, raw);
 
   const lengthFiltered = filterLengthAndEmpty(parsed);
-  const { shards: piiFiltered, droppedCategories } = applyPiiScreen(lengthFiltered, opts);
+  const { shards: screenFiltered, droppedCategories } = applyImmuneScreen(lengthFiltered, opts);
 
-  if (piiFiltered.length < MIN_SHARDS) {
-    const hadPiiDrops = droppedCategories.length > 0;
-    const reason = hadPiiDrops ? "pii_screen" : "too_few_shards";
-    const message = hadPiiDrops
-      ? `distillation produced fewer than ${String(MIN_SHARDS)} shards after PII screening`
+  if (screenFiltered.length < MIN_SHARDS) {
+    const hadScreenDrops = droppedCategories.length > 0;
+    const reason = hadScreenDrops ? "screen_reject" : "too_few_shards";
+    const message = hadScreenDrops
+      ? `distillation produced fewer than ${String(MIN_SHARDS)} shards after immune screening`
       : `distillation produced fewer than ${String(MIN_SHARDS)} usable shards`;
-    if (hadPiiDrops) {
+    if (hadScreenDrops) {
       throw new DistillError(message, reason, { categories: droppedCategories });
     }
     throw new DistillError(message, reason);
   }
 
-  const clamped = piiFiltered.slice(0, MAX_SHARDS);
+  const clamped = screenFiltered.slice(0, MAX_SHARDS);
   const candidates = toCandidateShards(clamped);
 
   // T2.5: if destroy fails (e.g. EPERM), prefer returning candidates and
