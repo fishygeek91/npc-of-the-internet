@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { CidSchema } from "../crypto/cid.js";
 import { decodePublicKey } from "../encoding/base64url.js";
 import { EncodingError } from "../errors.js";
 
@@ -74,7 +75,7 @@ export const ShardBodySchema = z
   .object({
     kind: z.literal("shard"),
     text: MemoryTextSchema,
-    candidate_cid: z.string().optional(),
+    candidate_cid: CidSchema.optional(),
     journal: z.string().optional(),
     distilled_at: z.string()
   })
@@ -94,7 +95,7 @@ export const RejectedBodySchema = z
   .object({
     kind: z.literal("rejected"),
     category: z.string(),
-    candidate_cid: z.string().optional(),
+    candidate_cid: CidSchema.optional(),
     rejected_at: z.string()
   })
   .strict();

@@ -298,6 +298,23 @@ async function buildVectors(): Promise<VectorCase[]> {
     ]
   };
 
+  const schemaBadCandidateCid: VectorCase = {
+    filename: "schema-bad-candidate-cid.json",
+    description: "Shard candidate_cid is not a valid bagu CID string",
+    expected: "schema_violation",
+    soulPublicKey: soulPub,
+    doorPublicKeys: [doorPub],
+    records: [
+      chain.genesis.record,
+      chain.arrival.record,
+      mutateRecord(chain.shard.record, (draft) => {
+        if (draft.body.kind === "shard") {
+          draft.body.candidate_cid = "../../../etc/passwd";
+        }
+      })
+    ]
+  };
+
   const schemaDoorIdMismatch: VectorCase = {
     filename: "schema-door-id-mismatch.json",
     description: "Arrival door_id does not match the Door portion of residency",
@@ -363,6 +380,7 @@ async function buildVectors(): Promise<VectorCase[]> {
     badDriftEvidence,
     badGenesis,
     schemaBadResidency,
+    schemaBadCandidateCid,
     schemaDoorIdMismatch,
     schemaGenesisCosigners,
     schemaBadKeyLength

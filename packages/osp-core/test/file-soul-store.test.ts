@@ -14,6 +14,7 @@ import {
   CorruptionError,
   ChainMismatchError,
   ConcurrentAppendError,
+  StorageError,
   type OspRecord,
   type Ed25519Keypair
 } from "../src/index.js";
@@ -475,6 +476,90 @@ describe("FileSoulStore", () => {
       expect(iterated[1]?.body).toEqual(firstMemoryBody);
     } finally {
       await verified.close();
+    }
+  });
+
+  it("rejects path traversal CID in get() before filesystem access", async () => {
+    const store = await FileSoulStore.open(dir);
+    // blobsDir is <dir>/blobs, so "../sentinel" resolves to <dir>/sentinel
+    const sentinelPath = path.join(dir, "sentinel");
+    try {
+      await appendGenesis(store, soul);
+      await writeFile(sentinelPath, "traversal-success");
+
+      await expect(store.get("../sentinel")).rejects.toThrow(StorageError);
+      await expect(store.get("../sentinel")).rejects.toThrow(/invalid CID format/);
+
+      // The error must not depend on the target existing — same error with it gone.
+      await rm(sentinelPath, { force: true });
+      await expect(store.get("../sentinel")).rejects.toThrow(/invalid CID format/);
+    } finally {
+      await store.close();
+      await rm(sentinelPath, { force: true });
+    }
+  });
+
+  it("rejects parent-directory CID in get() before filesystem access", async () => {
+    const store = await FileSoulStore.open(dir);
+    try {
+      await appendGenesis(store, soul);
+
+      await expect(store.get("../")).rejects.toThrow(StorageError);
+      await expect(store.get("../")).rejects.toThrow(/invalid CID format/);
+    } finally {
+      await store.close();
+    }
+  });
+
+  it("rejects absolute-path CID in get() before filesystem access", async () => {
+    const store = await FileSoulStore.open(dir);
+    try {
+      await appendGenesis(store, soul);
+
+      await expect(store.get("/etc/passwd")).rejects.toThrow(StorageError);
+      await expect(store.get("/etc/passwd")).rejects.toThrow(/invalid CID format/);
+    } finally {
+      await store.close();
+    }
+  });
+
+  it("rejects empty CID in get() before filesystem access", async () => {
+    const store = await FileSoulStore.open(dir);
+    try {
+      await appendGenesis(store, soul);
+
+      await expect(store.get("")).rejects.toThrow(StorageError);
+      await expect(store.get("")).rejects.toThrow(/invalid CID format/);
+    } finally {
+      await store.close();
+    }
+  });
+
+  it("rejects wrong-alphabet CID in get() before filesystem access", async () => {
+    const store = await FileSoulStore.open(dir);
+    try {
+      await appendGenesis(store, soul);
+
+      const wrongAlphabetCid = "baguZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ";
+
+      await expect(store.get(wrongAlphabetCid)).rejects.toThrow(StorageError);
+      await expect(store.get(wrongAlphabetCid)).rejects.toThrow(/invalid CID format/);
+    } finally {
+      await store.close();
+    }
+  });
+
+  it("rejects wrong-length CID in get() before filesystem access", async () => {
+    const store = await FileSoulStore.open(dir);
+    try {
+      await appendGenesis(store, soul);
+
+      const wrongLengthCid = "baguabc";
+
+      await expect(store.get(wrongLengthCid)).rejects.toThrow(StorageError);
+      await expect(store.get(wrongLengthCid)).rejects.toThrow(/invalid CID format/);
+    } finally {
+      await store.close();
     }
   });
 

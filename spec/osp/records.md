@@ -113,7 +113,7 @@ Memory subtypes are distinguished by **`body.kind`** (not by separate top-level 
 |---|---|---|---|
 | `kind` | string | yes | Must be `"shard"`. |
 | `text` | string | yes | First-person memory text. **Max 500 Unicode code points.** No PII (emails, phones, handles). No raw quotes of others without explicit host consent recorded in cosigning. |
-| `candidate_cid` | string | no | CID of the `candidate` record this shard commits, if any. |
+| `candidate_cid` | string | no | When present, must be a CIDv1 base32 dag-json sha2-256 string (`bagu…`) as defined under [CIDs](#cids). CID of the `candidate` record this shard commits, if any. |
 | `journal` | string | no | Markdown residency journal (Wanderer's account of the stay). May be lengthy; not subject to the 500-character shard limit. |
 | `distilled_at` | string | yes | ISO 8601 UTC timestamp of distillation. |
 
@@ -131,7 +131,7 @@ Memory subtypes are distinguished by **`body.kind`** (not by separate top-level 
 |---|---|---|---|
 | `kind` | string | yes | Must be `"rejected"`. |
 | `category` | string | yes | Rejection reason category (e.g. `injection`, `pii`, `charter_violation`, `host_rejected`, `quarantine_flagged`). **No other fields and no reproduction of the rejected payload.** |
-| `candidate_cid` | string | no | CID of the rejected candidate record, if the rejection refers to a specific candidate. |
+| `candidate_cid` | string | no | When present, must be a CIDv1 base32 dag-json sha2-256 string (`bagu…`) as defined under [CIDs](#cids). CID of the rejected candidate record, if the rejection refers to a specific candidate. |
 | `rejected_at` | string | yes | ISO 8601 UTC timestamp of rejection. |
 
 ### Envelope notes
