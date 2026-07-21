@@ -1,3 +1,5 @@
+import type { ChainFailure } from "./chain-types.js";
+
 /** Base class for typed osp-core errors. */
 abstract class OspCoreError extends Error {
   abstract readonly code: string;
@@ -47,9 +49,13 @@ export class StorageError extends OspCoreError {
 /** Thrown when stored data is torn, CID-mismatched, or the chain is invalid on open. */
 export class CorruptionError extends OspCoreError {
   readonly code = "CORRUPTION_ERROR";
+  readonly failures?: readonly ChainFailure[];
 
-  constructor(message: string) {
+  constructor(message: string, options?: { failures?: readonly ChainFailure[] }) {
     super(message);
+    if (options?.failures !== undefined) {
+      this.failures = options.failures;
+    }
   }
 }
 

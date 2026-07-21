@@ -36,7 +36,7 @@ OSP soulchain primitives: Zod record schemas, canonical JSON, Ed25519 signing, C
 
 **Canonical bytes:** only canonical JSON (from `canonicalize`) is written to `chain.jsonl` and blob files; CIDs are computed from those bytes.
 
-**Store errors:** `StorageError` (I/O), `CorruptionError` (torn/invalid chain on open), `ConcurrentAppendError` (lock held), `ChainMismatchError` (`prev`/`seq` ≠ head on append).
+**Store errors:** `StorageError` (I/O), `CorruptionError` (torn/invalid chain on open; chain verification failures include optional `failures: ChainFailure[]`), `ConcurrentAppendError` (lock held), `ChainMismatchError` (`prev`/`seq` ≠ head on append).
 
 ## Test
 

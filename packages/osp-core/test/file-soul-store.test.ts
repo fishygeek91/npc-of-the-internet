@@ -10,6 +10,7 @@ import {
   generateKeypair,
   encodePublicKey,
   canonicalize,
+  computeCidFromCanonicalBytes,
   CorruptionError,
   ChainMismatchError,
   ConcurrentAppendError,
@@ -292,6 +293,38 @@ describe("FileSoulStore", () => {
     expect(head?.seq).toBe(1);
 
     await store.close();
+  });
+
+  it("includes chain verification failures on CorruptionError from loadChain", async () => {
+    const store = await FileSoulStore.open(dir);
+    let genesisCid = "";
+    try {
+      const genesis = await appendGenesis(store, soul);
+      genesisCid = genesis.cid;
+    } finally {
+      await store.close();
+    }
+
+    const blobPath = path.join(dir, "blobs", genesisCid);
+    const blobBytes = await readFile(blobPath);
+    const record = JSON.parse(new TextDecoder().decode(blobBytes)) as { sig: string };
+    const sig = record.sig;
+    record.sig = `${sig.slice(0, -1)}${sig.endsWith("A") ? "B" : "A"}`;
+    const tamperedBytes = canonicalize(record);
+    const tamperedCid = await computeCidFromCanonicalBytes(tamperedBytes);
+    await writeFile(path.join(dir, "blobs", tamperedCid), tamperedBytes);
+    await writeFile(path.join(dir, CHAIN_FILE), Buffer.concat([tamperedBytes, Buffer.from("\n")]));
+
+    try {
+      await FileSoulStore.open(dir);
+      expect.fail("expected CorruptionError");
+    } catch (error) {
+      expect(error).toBeInstanceOf(CorruptionError);
+      if (error instanceof CorruptionError) {
+        expect(error.failures).toBeDefined();
+        expect(error.failures?.length).toBeGreaterThan(0);
+      }
+    }
   });
 
   it("throws CorruptionError when blob bytes no longer match CID", async () => {

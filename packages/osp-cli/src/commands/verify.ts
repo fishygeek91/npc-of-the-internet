@@ -1,10 +1,12 @@
+import { existsSync } from "node:fs";
+import * as path from "node:path";
+
 import {
   CorruptionError,
   decodePublicKey,
   FileSoulStore,
   verifyChain,
-  type ChainFailure,
-  type ChainRule
+  type ChainFailure
 } from "@npc/osp-core";
 
 import { writeStderr, writeStdout } from "../io.js";
@@ -29,39 +31,17 @@ export function printFailures(failures: readonly ChainFailure[]): void {
   }
 }
 
-/** Parse a verification failure embedded in a CorruptionError from FileSoulStore.open. */
-export function parseVerificationCorruption(message: string): ChainFailure | null {
-  const match = message.match(
-    /^chain verification failed: ([a-z_]+) at seq (\d+)(?: \(cid ([^)]+)\))?: (.+)$/
-  );
-  if (match === null) {
-    return null;
-  }
-
-  const rule = match[1];
-  const seqText = match[2];
-  const messageText = match[4];
-  if (rule === undefined || seqText === undefined || messageText === undefined) {
-    return null;
-  }
-
-  const failure: ChainFailure = {
-    rule: rule as ChainRule,
-    seq: Number(seqText),
-    message: messageText
-  };
-  const cid = match[3];
-  if (cid !== undefined) {
-    failure.cid = cid;
-  }
-  return failure;
-}
-
 /**
  * Open a soulchain directory and verify the full chain.
  * Returns exit code 0 when valid, 1 when verification fails, 2 on I/O or corruption.
  */
 export async function runVerify(options: VerifyOptions): Promise<number> {
+  const resolvedDir = path.resolve(options.dir);
+  if (!existsSync(resolvedDir)) {
+    writeStderr(`Soulchain directory not found: ${resolvedDir}`);
+    return EXIT_USAGE;
+  }
+
   const doorPublicKeys =
     options.doorKeys === undefined
       ? undefined
@@ -74,9 +54,8 @@ export async function runVerify(options: VerifyOptions): Promise<number> {
     store = await FileSoulStore.open(options.dir, openOptions);
   } catch (error) {
     if (error instanceof CorruptionError) {
-      const embedded = parseVerificationCorruption(error.message);
-      if (embedded !== null) {
-        printFailures([embedded]);
+      if (error.failures !== undefined && error.failures.length > 0) {
+        printFailures(error.failures);
         return EXIT_VERIFY_FAILED;
       }
       writeStderr(`Chain store is corrupted: ${error.message}`);
