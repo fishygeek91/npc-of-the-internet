@@ -16,7 +16,7 @@ import {
 } from "../src/schemas.js";
 
 const ISSUED_AT = "2026-07-20T15:04:05.123Z";
-const DOOR_ID = "discord:123456789012345678";
+const DOOR_ID = "discord:test-guild";
 
 function makeKeyMaterial() {
   const soul = generateKeypair();
@@ -72,7 +72,7 @@ describe("door-sdk schemas", () => {
       door_id: DOOR_ID,
       epoch: 77,
       kind: "arrival",
-      core: '{"spec":"osp/0.1","seq":2,"prev":"bafy","type":"attestation","body":{},"residency":"door:discord:123456789012345678/epoch:77"}',
+      core: '{"spec":"osp/0.1","seq":2,"prev":"bafy","type":"attestation","body":{},"residency":"door:discord:test-guild/epoch:77"}',
       session_pubkey: keys.sessionPubkey,
       issued_at: ISSUED_AT,
       sig: encodeSignature(sign(new Uint8Array([4, 5, 6]), generateKeypair().privateKey))
@@ -109,7 +109,7 @@ describe("door-sdk schemas", () => {
       epoch: 77,
       session_pubkey: keys.sessionPubkey,
       shard_id: "shard_1",
-      core: '{"spec":"osp/0.1","seq":10,"prev":"bafy2","type":"memory","body":{"text":"I remember"},"residency":"door:discord:123456789012345678/epoch:77"}',
+      core: '{"spec":"osp/0.1","seq":10,"prev":"bafy2","type":"memory","body":{"text":"I remember"},"residency":"door:discord:test-guild/epoch:77"}',
       issued_at: ISSUED_AT,
       sig: encodeSignature(sign(new Uint8Array([13, 14, 15]), generateKeypair().privateKey))
     });

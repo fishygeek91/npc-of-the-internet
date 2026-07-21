@@ -28,7 +28,7 @@ import {
 import { DOOR_PROTOCOL_VERSION } from "../src/schemas.js";
 
 const ISSUED_AT = "2026-07-20T15:04:05.123Z";
-const DOOR_ID = "discord:123456789012345678";
+const DOOR_ID = "discord:test-guild";
 const PREV_CID = "bagu" + "a".repeat(57);
 
 describe("door-sdk signing", () => {
@@ -57,7 +57,7 @@ describe("door-sdk signing", () => {
           prev: "bafytestprev",
           type: "memory",
           body: { text: "I remember the hallway." },
-          residency: "door:discord:123456789012345678/epoch:77"
+          residency: "door:discord:test-guild/epoch:77"
         })
       )
     );
@@ -74,7 +74,7 @@ describe("door-sdk signing", () => {
       prev: "bafyanother",
       type: "attestation" as const,
       body: { kind: "arrival" },
-      residency: "door:discord:123456789012345678/epoch:77"
+      residency: "door:discord:test-guild/epoch:77"
     };
     const core = new TextDecoder().decode(
       canonicalize(
@@ -190,7 +190,7 @@ describe("door-sdk signing", () => {
         text: "A committed shard.",
         distilled_at: ISSUED_AT
       },
-      residency: "door:discord:123456789012345678/epoch:77"
+      residency: "door:discord:test-guild/epoch:77"
     };
     const core = new TextDecoder().decode(
       canonicalize(
