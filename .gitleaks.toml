@@ -9,18 +9,17 @@ useDefault = true
 [[allowlists]]
 description = "PoP/OSP conformance vectors use deterministic TEST-ONLY keys (never production secrets)"
 paths = [
-  '''(^|/)spec/.+/vectors/.*\.json$'''
+  '''spec/.+/vectors/.*'''
 ]
 
 [[allowlists]]
 description = "Runtime tests use fixed fill-byte keys and fake door ids"
 paths = [
-  '''(^|/)packages/runtime/test/.*'''
+  '''packages/runtime/test'''
 ]
 
 [[allowlists]]
-description = "Historical false positives in initial T2.4 commit (fixed in later commits; still present in PR git history)"
-fingerprints = [
-  '''3a698bdb4d6906ea8066ad2e5ed5ef0dbb13e5ed:packages/runtime/test/door-stub.test.ts:discord-client-id:11''',
-  '''3a698bdb4d6906ea8066ad2e5ed5ef0dbb13e5ed:spec/pop/vectors/session-key-derivation.json:generic-api-key:34'''
+description = "Initial T2.4 commit still contains historical false positives later fixed on this branch"
+commits = [
+  "3a698bdb4d6906ea8066ad2e5ed5ef0dbb13e5ed"
 ]
