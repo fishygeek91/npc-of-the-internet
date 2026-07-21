@@ -9,11 +9,12 @@ import {
   signCore
 } from "@npc/osp-core";
 import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import { runVerify } from "../src/commands/verify.js";
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -108,6 +109,14 @@ async function appendCosignedShard(
 }
 
 describe("osp CLI e2e", () => {
+  beforeAll(() => {
+    if (!existsSync(cliPath)) {
+      throw new Error(
+        "dist/cli.js missing — run `pnpm --filter @npc/osp-cli build` first (CI/pnpm check do this)"
+      );
+    }
+  });
+
   it("exits 2 when init has no directory argument", () => {
     const result = runCliAllowFail(["init"], repoRoot);
     expect(result.status).toBe(2);
@@ -168,7 +177,7 @@ describe("osp CLI e2e", () => {
 
       const verifyBad = runCliAllowFail(["verify", soulDir], repoRoot);
       expect(verifyBad.status).toBe(1);
-      expect(verifyBad.stdout).toMatch(/\[/);
+      expect(verifyBad.stdout).toMatch(/\[bad_soul_sig\]/);
     } finally {
       await rm(soulDir, { recursive: true, force: true });
     }
