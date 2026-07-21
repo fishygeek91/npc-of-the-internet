@@ -13,7 +13,8 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
-import { beforeAll, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
+import { runVerify } from "../src/commands/verify.js";
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cliPath = path.join(packageRoot, "dist", "cli.js");
@@ -107,13 +108,6 @@ async function appendCosignedShard(
 }
 
 describe("osp CLI e2e", () => {
-  beforeAll(() => {
-    execFileSync("pnpm", ["--filter", "@npc/osp-cli", "build"], {
-      cwd: repoRoot,
-      stdio: "inherit"
-    });
-  });
-
   it("exits 2 when init has no directory argument", () => {
     const result = runCliAllowFail(["init"], repoRoot);
     expect(result.status).toBe(2);
@@ -124,6 +118,7 @@ describe("osp CLI e2e", () => {
     const missingDir = path.join(tmpdir(), `osp-missing-${Date.now()}`);
     const result = runCliAllowFail(["verify", missingDir], repoRoot);
     expect(result.status).toBe(2);
+    expect(result.stderr).toMatch(/Soulchain directory not found/);
   });
 
   it("init → verify → log → show → tamper → verify fails", async () => {
@@ -173,6 +168,7 @@ describe("osp CLI e2e", () => {
 
       const verifyBad = runCliAllowFail(["verify", soulDir], repoRoot);
       expect(verifyBad.status).toBe(1);
+      expect(verifyBad.stdout).toMatch(/\[/);
     } finally {
       await rm(soulDir, { recursive: true, force: true });
     }
@@ -190,12 +186,17 @@ describe("osp CLI e2e", () => {
       await appendCosignedShard(soulDir, door.publicKey, door.privateKey);
 
       const doorKey = encodePublicKey(door.publicKey);
-      const verifyOk = runCliAllowFail(["verify", soulDir, "--door-key", doorKey], repoRoot);
-      expect(verifyOk.status).toBe(0);
-
       const wrongKey = encodePublicKey(wrongDoor.publicKey);
-      const verifyBad = runCliAllowFail(["verify", soulDir, "--door-key", wrongKey], repoRoot);
-      expect(verifyBad.status).toBe(1);
+
+      expect(await runVerify({ dir: soulDir, doorKeys: [doorKey] })).toBe(0);
+      expect(await runVerify({ dir: soulDir, doorKeys: [wrongKey] })).toBe(1);
+
+      const verifyOkCli = runCliAllowFail(["verify", soulDir, "--door-key", doorKey], repoRoot);
+      expect(verifyOkCli.status).toBe(0);
+
+      const verifyBadCli = runCliAllowFail(["verify", soulDir, "--door-key", wrongKey], repoRoot);
+      expect(verifyBadCli.status).toBe(1);
+      expect(verifyBadCli.stdout).toMatch(/\[missing_cosigner\]/);
     } finally {
       await rm(soulDir, { recursive: true, force: true });
     }
