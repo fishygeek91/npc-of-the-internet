@@ -3,7 +3,7 @@
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 
-import { initExitCode, runInit } from "./commands/init.js";
+import { runInit } from "./commands/init.js";
 import { runLog } from "./commands/log.js";
 import { runShow } from "./commands/show.js";
 import { EXIT_USAGE, runVerify } from "./commands/verify.js";
@@ -160,7 +160,7 @@ export async function main(argv: readonly string[] = process.argv): Promise<void
       if (error instanceof Error) {
         writeStderr(error.message);
       }
-      process.exit(initExitCode(error));
+      process.exit(EXIT_USAGE);
     }
     if (subcommand === "verify" && error instanceof Error) {
       writeStderr(error.message);

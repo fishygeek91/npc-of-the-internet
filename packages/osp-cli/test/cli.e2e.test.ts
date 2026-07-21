@@ -1,15 +1,25 @@
-import { canonicalize, computeCidFromCanonicalBytes } from "@npc/osp-core";
+import {
+  canonicalize,
+  computeCidFromCanonicalBytes,
+  createRecord,
+  decodeBase64Url,
+  encodePublicKey,
+  FileSoulStore,
+  generateKeypair,
+  signCore
+} from "@npc/osp-core";
 import { execFileSync } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cliPath = path.join(packageRoot, "dist", "cli.js");
 const repoRoot = path.resolve(packageRoot, "..", "..");
 const charterPath = path.join(repoRoot, "spec", "osp", "genesis.md");
+const RESIDENCY = "door:discord:g/epoch:1";
 
 /** Run the built CLI and return stdout, stderr, and exit code. */
 function runCli(args: string[], cwd?: string): { stdout: string; stderr: string; status: number } {
@@ -57,7 +67,65 @@ function parseGenesisCid(stdout: string): string {
   return match[1].trim();
 }
 
+/** Append a cosigned memory shard to an initialized soulchain directory. */
+async function appendCosignedShard(
+  soulDir: string,
+  doorPublicKey: Uint8Array,
+  doorPrivateKey: Uint8Array
+): Promise<void> {
+  const soulKeyEncoded = (await readFile(path.join(soulDir, "soul.key"), "utf8")).trim();
+  const soulPrivateKey = decodeBase64Url(soulKeyEncoded);
+
+  const store = await FileSoulStore.open(soulDir, { doorPublicKeys: [doorPublicKey] });
+  try {
+    const head = await store.head();
+    if (head === null) {
+      throw new Error("expected head after init");
+    }
+
+    const fields = {
+      seq: 1,
+      prev: head.cid,
+      type: "memory" as const,
+      body: {
+        kind: "shard" as const,
+        text: "E2E cosigned shard.",
+        distilled_at: "2026-07-20T00:00:00.000Z"
+      },
+      residency: RESIDENCY
+    };
+    const cosig = signCore(fields, doorPrivateKey);
+    const { record } = await createRecord({
+      ...fields,
+      cosigners: [cosig],
+      soulPrivateKey
+    });
+    await store.append(record);
+  } finally {
+    await store.close();
+  }
+}
+
 describe("osp CLI e2e", () => {
+  beforeAll(() => {
+    execFileSync("pnpm", ["--filter", "@npc/osp-cli", "build"], {
+      cwd: repoRoot,
+      stdio: "inherit"
+    });
+  });
+
+  it("exits 2 when init has no directory argument", () => {
+    const result = runCliAllowFail(["init"], repoRoot);
+    expect(result.status).toBe(2);
+    expect(result.stderr).toMatch(/init requires a target directory/);
+  });
+
+  it("exits 2 when verify path does not exist", () => {
+    const missingDir = path.join(tmpdir(), `osp-missing-${Date.now()}`);
+    const result = runCliAllowFail(["verify", missingDir], repoRoot);
+    expect(result.status).toBe(2);
+  });
+
   it("init → verify → log → show → tamper → verify fails", async () => {
     const soulDir = await mkdtemp(path.join(tmpdir(), "osp-cli-e2e-"));
 
@@ -104,6 +172,29 @@ describe("osp CLI e2e", () => {
       await writeFile(chainPath, Buffer.concat([tamperedBytes, Buffer.from("\n")]));
 
       const verifyBad = runCliAllowFail(["verify", soulDir], repoRoot);
+      expect(verifyBad.status).toBe(1);
+    } finally {
+      await rm(soulDir, { recursive: true, force: true });
+    }
+  });
+
+  it("verify accepts --door-key for cosigned shards and rejects wrong keys", async () => {
+    const soulDir = await mkdtemp(path.join(tmpdir(), "osp-cli-door-key-"));
+    const door = generateKeypair();
+    const wrongDoor = generateKeypair();
+
+    try {
+      const init = runCli(["init", soulDir, "--charter", charterPath], repoRoot);
+      expect(init.status).toBe(0);
+
+      await appendCosignedShard(soulDir, door.publicKey, door.privateKey);
+
+      const doorKey = encodePublicKey(door.publicKey);
+      const verifyOk = runCliAllowFail(["verify", soulDir, "--door-key", doorKey], repoRoot);
+      expect(verifyOk.status).toBe(0);
+
+      const wrongKey = encodePublicKey(wrongDoor.publicKey);
+      const verifyBad = runCliAllowFail(["verify", soulDir, "--door-key", wrongKey], repoRoot);
       expect(verifyBad.status).toBe(1);
     } finally {
       await rm(soulDir, { recursive: true, force: true });

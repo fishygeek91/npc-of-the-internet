@@ -1,3 +1,4 @@
+import type { ChainFailure } from "./chain-types.js";
 import { computeCid } from "./crypto/cid.js";
 import { decodePublicKey } from "./encoding/base64url.js";
 import { SchemaError, VerificationError } from "./errors.js";
@@ -5,24 +6,7 @@ import { verifyRecord } from "./record.js";
 import { RecordSchema, type OspRecord } from "./schemas/index.js";
 import type { HeadInfo, SoulStore } from "./store/types.js";
 
-/** Chain verification failure rule identifiers (T1.3). */
-export type ChainRule =
-  | "bad_soul_sig"
-  | "broken_prev_link"
-  | "seq_gap"
-  | "schema_violation"
-  | "missing_cosigner"
-  | "forked_head"
-  | "bad_genesis"
-  | "bad_drift_evidence";
-
-/** A single chain verification failure at a sequence position. */
-export type ChainFailure = {
-  seq: number;
-  cid?: string;
-  rule: ChainRule;
-  message: string;
-};
+export type { ChainFailure, ChainRule } from "./chain-types.js";
 
 /** Result of {@link verifyRecords} or {@link verifyChain}. */
 export type VerifyChainResult =

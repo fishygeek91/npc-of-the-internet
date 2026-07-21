@@ -18,11 +18,11 @@ export function extractTimestamp(record: OspRecord): string {
     "distilled_at",
     "proposed_at",
     "rejected_at",
-    "timestamp",
+    "effective_at",
     "decided_at",
-    "occurred_at",
-    "departed_at",
-    "arrived_at"
+    "executed_at",
+    "at",
+    "as_of"
   ];
 
   for (const key of keys) {
