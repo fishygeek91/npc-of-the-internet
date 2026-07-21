@@ -358,15 +358,22 @@ The Wanderer places `door_cosig` into the record's `cosigners` array, then soul-
 
 ### Purpose
 
-End-of-residency **host review** of candidate memory shards. After distillation, the Wanderer submits shards; the Door operator approves or rejects each; approved shards receive a **Door co-signature** (`door_cosig`) used in soulchain `memory` records (`cosigners` field per ARCHITECTURE.md §2).
+End-of-residency **host review and co-signing** of candidate memory shards. After distillation, the Wanderer submits shards for operator review, then obtains **Door co-signatures** (`door_cosig`) over the OSP envelope `core` for each approved shard. Those `door_cosig` values are placed in soulchain `memory` records (`cosigners` field per ARCHITECTURE.md §2 and `spec/osp/records.md`).
 
-Typically invoked once per residency during the `depart` flow (T2.5), after the session WebSocket is closed or concurrently with `session_end`.
+The flow is **two-phase** on the same path: **review** (approve/reject candidates) then **commit** (sign each approved shard's envelope `core`). This matches OSP verification: `verifyChain` / `verifyRecord` verify every `cosigners[i]` over envelope **core** bytes — not over shard-payload objects.
 
-### Request
+Typically invoked during the `depart` flow (T2.5), after the session WebSocket is closed or concurrently with `session_end`.
+
+### Phase 1 — Review
+
+Submit candidate shards for host approval. No soulchain append occurs in this phase.
+
+#### Request (`phase: "review"`)
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `protocol_version` | string | yes | `door/0.1`. |
+| `phase` | string | yes | Must be `"review"`. |
 | `door_id` | string | yes | Departing residency. |
 | `epoch` | integer | yes | Departing epoch. |
 | `session_pubkey` | string | yes | Session key for this epoch. |
@@ -383,42 +390,79 @@ Typically invoked once per residency during the `depart` flow (T2.5), after the 
 | `text` | string | yes | First-person memory text, ≤ 500 chars, no PII (immune screen applies before submit). |
 | `tags` | string[] | no | Optional topical tags for host review. |
 
-### Response `200`
+#### Response `200` (review)
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
+| `phase` | string | yes | `"review"`. |
 | `door_id` | string | yes | Echo. |
 | `epoch` | integer | yes | Echo. |
-| `decisions` | `CosignDecision[]` | yes | One entry per submitted `shard_id`. |
+| `decisions` | `ReviewDecision[]` | yes | One entry per submitted `shard_id`. |
 | `received_at` | string | yes | Door timestamp. |
-| `door_sig` | string | yes | Door signature over `{ door_id, epoch, decisions, received_at }`. |
+| `door_sig` | string | yes | Door signature over `{ door_id, epoch, phase, decisions, received_at }`. |
 
-#### `CosignDecision`
+#### `ReviewDecision`
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `shard_id` | string | yes | Matches request. |
 | `status` | string | yes | `approved` or `rejected`. |
 | `reason` | string | no | Host-facing reason (required when `rejected`; omit payload reproduction). |
-| `door_cosig` | string | yes when `approved` | Door signature over `{ shard_id, text, door_id, epoch }` (text from the approved shard). Absent when `rejected`. |
+| `host_audit_sig` | string | no | Optional Door signature over `{ shard_id, text, door_id, epoch }` (`text` from the submitted shard). **MUST NOT** be placed in soulchain `cosigners` — it is a host-audit artifact only, not an OSP envelope co-signature. |
 
-The Wanderer MUST NOT commit rejected shards to the soulchain. Approved shards are committed as `memory` records with `cosigners` containing `door_cosig` values.
+The Wanderer MUST NOT append rejected shards to the soulchain. Quarantine lifecycle (`memory.candidate` → `memory.shard`) is T3.2 and out of scope for v0.1 Ghost; in T2.5, only **approved** shards proceed to Phase 2 and are appended as committed `memory` records.
+
+### Phase 2 — Commit
+
+For each **approved** shard from Phase 1, the Wanderer builds the unsigned `memory` envelope (`cosigners` empty, no `sig`), computes the OSP **`core`** bytes (canonical JSON with `cosigners` and `sig` omitted — same rules as `POST /door/attest`), and requests a `door_cosig` over those raw bytes.
+
+#### Request (`phase: "commit"`)
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `protocol_version` | string | yes | `door/0.1`. |
+| `phase` | string | yes | Must be `"commit"`. |
+| `door_id` | string | yes | Departing residency. |
+| `epoch` | integer | yes | Departing epoch. |
+| `session_pubkey` | string | yes | Session key for this epoch. |
+| `shard_id` | string | yes | `shard_id` from Phase 1 (must have been `approved`). |
+| `core` | string | yes | UTF-8 string equal to the OSP `core` canonical JSON bytes for the unsigned `memory` envelope (the exact bytes the Door will sign). Max 64 KiB. |
+| `issued_at` | string | yes | Wanderer timestamp. |
+| `sig` | string | yes | Session-key signature over all other request fields. |
+
+#### Response `200` (commit)
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `phase` | string | yes | `"commit"`. |
+| `door_id` | string | yes | Echo. |
+| `epoch` | integer | yes | Echo. |
+| `shard_id` | string | yes | Echo. |
+| `door_cosig` | string | yes | Door Ed25519 signature over the raw UTF-8 bytes of `core` (not over a wrapper object). Base64url. Same semantics as `POST /door/attest` `door_cosig`. |
+| `received_at` | string | yes | Door timestamp. |
+| `door_sig` | string | yes | Door signature over `{ door_id, epoch, phase, shard_id, door_cosig, received_at }` (response authenticity). |
+
+The Wanderer places `door_cosig` into the record's `cosigners` array (typically a single element), soul-signs, and appends. **Only** this `door_cosig` value belongs in `cosigners`; Phase 1 `host_audit_sig` (if present) is never copied there.
 
 ### Auth / signing
 
-- **Request:** Session-key `sig` for the departing epoch.
-- **Response:** `door_sig` over the decision list; per-shard `door_cosig` for approvals.
+- **Review request:** Session-key `sig` for the departing epoch.
+- **Review response:** `door_sig` over the decision list; optional per-shard `host_audit_sig` (never soulchain `cosigners`).
+- **Commit request:** Session-key `sig`; Door MUST reject `shard_id` not approved in Phase 1 for this `(door_id, epoch)`.
+- **Commit response:** `door_cosig` MUST verify as Ed25519 over the exact `core` bytes under `door_pubkey` (same verification as `/door/attest`).
 
 ### Errors
 
 | `error.code` | Status | Meaning |
 |--------------|--------|---------|
+| `unsupported_phase` | `400` | `phase` not `"review"` or `"commit"`. |
 | `session_invalid` | `401` | Session not valid for cosign. |
 | `signature_invalid` | `401` | Request `sig` failed. |
 | `epoch_closed` | `409` | Cosign already completed for this epoch. |
-| `shard_count` | `422` | Fewer than 5 or more than 20 shards. |
-| `shard_invalid` | `422` | Shard text over limit or missing `shard_id`. |
-| `review_pending` | `503` | Host review not complete (Door MAY use async review; Wanderer retries). |
+| `shard_not_approved` | `403` | Commit `shard_id` was not approved in Phase 1. |
+| `shard_count` | `422` | Review: fewer than 5 or more than 20 shards. |
+| `shard_invalid` | `422` | Shard text over limit, missing `shard_id`, or invalid `core`. |
+| `review_pending` | `503` | Host review not complete (Door MAY use async review; Wanderer retries Phase 1). |
 
 ---
 
@@ -433,7 +477,7 @@ The Wanderer MUST NOT commit rejected shards to the soulchain. Approved shards a
 
 1. Typed request/response/frame types for all five endpoints (`hello`, `session`, `heartbeat`, `attest`, `cosign`).
 2. Door identity keypair generation and `sig` / `door_sig` / `door_cosig` helpers.
-3. OSP `core` cosigning for `/door/attest` (sign raw `core` bytes) and per-shard `door_cosig` for `/door/cosign`.
+3. OSP `core` cosigning for `/door/attest` and `/door/cosign` commit phase (sign raw `core` bytes); `/door/cosign` review phase returns approve/reject only — optional `host_audit_sig` is separate from soulchain `cosigners`.
 4. In-process transport implementing the same shapes (no network).
 5. WebSocket transport for `/door/session`.
 6. Contract tests shared with runtime integration suite (T2.4, T2.5).

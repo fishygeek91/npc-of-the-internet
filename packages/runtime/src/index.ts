@@ -11,6 +11,12 @@ export type { Brain, BrainMessage, CompleteOptions } from "./brain/types.js";
 export { ComposeError } from "./compose/errors.js";
 export { composeSelf } from "./compose/compose-self.js";
 export type { ComposedSelf, ComposeSelfOptions, MemoryIndexEntry } from "./compose/compose-self.js";
+export { generateJournal } from "./journal/generate-journal.js";
+export { JournalError } from "./journal/errors.js";
+export type { JournalErrorReason } from "./journal/errors.js";
+export { writeJournalFile } from "./journal/write-journal-file.js";
+export { move } from "./handover/move.js";
+export type { MoveOptions, MoveResult } from "./handover/move.js";
 export { distillTranscripts } from "./distill/distill-transcripts.js";
 export { DistillError } from "./distill/errors.js";
 export type { DistillErrorReason } from "./distill/errors.js";
@@ -29,24 +35,40 @@ export { SingleKeyKeyring } from "./keyring/single-key-keyring.js";
 export type { Keyring, SessionSigner } from "./keyring/types.js";
 export { SessionError } from "./session/errors.js";
 export { Session } from "./session/session.js";
-export type { HandleInboundResult, SessionOptions } from "./session/session.js";
+export type {
+  DepartOptions,
+  DepartResult,
+  HandleInboundResult,
+  SessionOptions
+} from "./session/session.js";
 export {
   AttestRequestSchema,
   AttestResponseSchema,
+  CandidateShardSchema,
+  CosignRequestSchema,
+  CosignResponseSchema,
   DOOR_PROTOCOL_VERSION,
   HeartbeatRequestSchema,
   HeartbeatResponseSchema,
   InboundFrameSchema,
-  OutboundFrameSchema
+  OutboundFrameSchema,
+  cosignCommitSigningPayload,
+  cosignReviewSigningPayload
 } from "./session/types.js";
 export type {
   AttestRequest,
   AttestResponse,
   Clock,
+  CosignCandidateShard,
+  CosignCommitSigningFields,
+  CosignRequest,
+  CosignResponse,
+  CosignReviewSigningFields,
   DoorConnection,
   HeartbeatRequest,
   HeartbeatResponse,
   InboundFrame,
   OutboundFrame,
+  ReviewDecision,
   Timer
 } from "./session/types.js";

@@ -347,14 +347,14 @@ Canonical form is critical for interoperable signing and CID computation (T1.1).
 
 Signing is ordered so payloads are never circular.
 
-**Cosigner (Door) payload — `core`:** canonical JSON of the envelope with **both `cosigners` and `sig` omitted**. Fields included: `spec`, `seq`, `prev`, `type`, `body`, `residency`. Each Door co-signature in `cosigners` is an Ed25519 signature over these `core` bytes under the Door identity key.
+**Cosigner (Door) payload — `core`:** canonical JSON of the envelope with **both `cosigners` and `sig` omitted**. Fields included: `spec`, `seq`, `prev`, `type`, `body`, `residency`. Each Door co-signature in `cosigners` is an Ed25519 signature over these `core` bytes under the Door identity key. This applies uniformly — including committed `memory` shards (`body.kind: "shard"`), where the signed material is the full envelope `core` (with `body.text` inside), **not** a separate shard-payload object such as `{ shard_id, text, door_id, epoch }`. Host review artifacts from `POST /door/cosign` Phase 1 (`host_audit_sig`, if any) are not envelope co-signatures and MUST NOT appear in `cosigners`.
 
 **Soul-key payload:** canonical JSON of the envelope with **only `sig` omitted**. Fields included: `spec`, `seq`, `prev`, `type`, `body`, `residency`, **and** `cosigners` (already filled). The soul key signs after cosigners are collected (or after deciding `cosigners: []` when none are required).
 
 **Append order (normative):**
 
 1. Build the unsigned envelope (`cosigners` unset / empty, no `sig`).
-2. If Door co-signatures are required: obtain each Door signature over `core` via the Door API (`POST /door/attest` for attestation kinds; `POST /door/cosign` for memory shards — see `spec/door/api.md`), then set `cosigners` to those signature strings (stable order: ascending base64url lexicographic sort of the signature strings).
+2. If Door co-signatures are required: obtain each Door signature over `core` via the Door API (`POST /door/attest` for attestation kinds; `POST /door/cosign` **commit** phase for memory shards — see `spec/door/api.md`), then set `cosigners` to those signature strings (stable order: ascending base64url lexicographic sort of the signature strings). For memory shards, the Wanderer first completes `/door/cosign` **review** (host approve/reject); only after building the unsigned envelope does it call **commit** with the `core` bytes, receiving `door_cosig` over the same `core` semantics as `/door/attest`.
 3. Compute the soul-key signature over the soul-key payload; set `sig`.
 4. Persist the full record; compute its CID.
 
