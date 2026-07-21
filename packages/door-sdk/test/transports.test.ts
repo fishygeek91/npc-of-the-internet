@@ -101,6 +101,71 @@ describe("HTTP transport", () => {
     expect(response.body.capabilities).toEqual(defaultPolicy.capabilities);
   });
 
+  it("hello with unsupported protocol_version returns unsupported_version", async () => {
+    const soul = generateKeypair();
+    const door = createDoor(soul.publicKey);
+    httpServer = new HttpDoorServer({ door });
+    const { baseUrl } = await httpServer.start();
+
+    const response = await postJson(baseUrl, "/door/hello", {
+      protocol_version: "door/0.2",
+      soul_pubkey: encodePublicKey(soul.publicKey)
+    });
+
+    expect(response.status).toBe(400);
+    expect((response.body.error as { code: string }).code).toBe("unsupported_version");
+  });
+
+  it("attest epoch_mismatch returns 409", async () => {
+    const soul = generateKeypair();
+    const session = generateKeypair();
+    const door = createDoor(soul.publicKey);
+    httpServer = new HttpDoorServer({ door });
+    const { baseUrl } = await httpServer.start();
+
+    const arrival = await postJson(
+      baseUrl,
+      "/door/attest",
+      signAttestRequest(
+        soul,
+        session,
+        {
+          protocol_version: DOOR_PROTOCOL_VERSION,
+          door_id: DOOR_ID,
+          epoch: EPOCH,
+          kind: "arrival",
+          core: CORE,
+          session_pubkey: encodePublicKey(session.publicKey),
+          issued_at: ISSUED_AT
+        },
+        true
+      )
+    );
+    expect(arrival.status).toBe(200);
+
+    const response = await postJson(
+      baseUrl,
+      "/door/attest",
+      signAttestRequest(
+        soul,
+        session,
+        {
+          protocol_version: DOOR_PROTOCOL_VERSION,
+          door_id: DOOR_ID,
+          epoch: EPOCH + 1,
+          kind: "departure",
+          core: '{"type":"attestation","kind":"departure"}',
+          session_pubkey: encodePublicKey(session.publicKey),
+          issued_at: ISSUED_AT
+        },
+        false
+      )
+    );
+
+    expect(response.status).toBe(409);
+    expect((response.body.error as { code: string }).code).toBe("epoch_mismatch");
+  });
+
   it("heartbeat with invalid signature returns 401", async () => {
     const soul = generateKeypair();
     const session = generateKeypair();

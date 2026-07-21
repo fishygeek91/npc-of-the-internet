@@ -199,10 +199,90 @@ describe("Door", () => {
 
     await expect(
       door.hello({
-        protocol_version: "door/0.0" as typeof DOOR_PROTOCOL_VERSION,
+        protocol_version: "door/0.0",
         soul_pubkey: encodePublicKey(soul.publicKey)
       })
     ).rejects.toMatchObject({ code: "unsupported_version" });
+  });
+
+  it("rejecting acceptArrival does not install session state (not_hosting)", async () => {
+    let allowArrival = true;
+    const door = createTestDoor({
+      ...defaultPolicy,
+      acceptArrival: () => {
+        if (!allowArrival) {
+          throw new Error("guild is full");
+        }
+      }
+    });
+    const rejectedSession = generateKeypair();
+
+    await establishArrival(door, soul, session, EPOCH);
+    expect(door.getActiveSessionPubkey()).toBe(encodePublicKey(session.publicKey));
+
+    allowArrival = false;
+    const rejectedArrival = signAttestRequest(
+      soul,
+      rejectedSession,
+      {
+        protocol_version: DOOR_PROTOCOL_VERSION,
+        door_id: DOOR_ID,
+        epoch: EPOCH + 1,
+        kind: "arrival",
+        core: CORE,
+        session_pubkey: encodePublicKey(rejectedSession.publicKey),
+        issued_at: ISSUED_AT
+      },
+      true
+    );
+
+    await expect(door.attest(rejectedArrival)).rejects.toMatchObject({
+      code: "not_hosting",
+      httpStatus: 403
+    });
+    expect(door.getActiveSessionPubkey()).toBe(encodePublicKey(session.publicKey));
+    expect(door.getActiveEpoch()).toBe(EPOCH);
+
+    const rejectedHeartbeat = {
+      protocol_version: DOOR_PROTOCOL_VERSION,
+      door_id: DOOR_ID,
+      epoch: EPOCH + 1,
+      session_pubkey: encodePublicKey(rejectedSession.publicKey),
+      seq: 1,
+      issued_at: ISSUED_AT
+    };
+    const rejectedHeartbeatSig = encodeSignature(
+      sign(canonicalize(rejectedHeartbeat), rejectedSession.privateKey)
+    );
+    await expect(
+      door.heartbeat({ ...rejectedHeartbeat, sig: rejectedHeartbeatSig })
+    ).rejects.toMatchObject({ code: "session_invalid" });
+  });
+
+  it("departure attest with wrong epoch returns epoch_mismatch", async () => {
+    const door = createTestDoor();
+    await establishArrival(door, soul, session, EPOCH);
+
+    const staleDeparture = signAttestRequest(
+      soul,
+      session,
+      {
+        protocol_version: DOOR_PROTOCOL_VERSION,
+        door_id: DOOR_ID,
+        epoch: EPOCH + 1,
+        kind: "departure",
+        core: '{"type":"attestation","kind":"departure"}',
+        session_pubkey: encodePublicKey(session.publicKey),
+        issued_at: ISSUED_AT
+      },
+      false
+    );
+
+    await expect(door.attest(staleDeparture)).rejects.toMatchObject({
+      code: "epoch_mismatch",
+      httpStatus: 409
+    });
+    expect(door.getActiveSessionPubkey()).toBe(encodePublicKey(session.publicKey));
   });
 
   it("arrival then heartbeat then departure lifecycle", async () => {

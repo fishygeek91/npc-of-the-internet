@@ -7,11 +7,9 @@ import {
   AttestRequestSchema,
   CosignRequestSchema,
   HeartbeatRequestSchema,
-  HelloRequestSchema,
   type AttestRequest,
   type CosignRequest,
-  type HeartbeatRequest,
-  type HelloRequest
+  type HeartbeatRequest
 } from "../schemas.js";
 
 /** Configuration for a minimal Node HTTP Door API server. */
@@ -50,10 +48,8 @@ export class HttpDoorServer {
     }
 
     const routes: Record<string, RouteHandler> = {
-      "/door/hello": async (body) => {
-        const request = parseWithSchema<HelloRequest>(HelloRequestSchema, body);
-        return this.door.hello(request);
-      },
+      // Hello: pass raw body so Door.hello can emit unsupported_version before schema parse.
+      "/door/hello": async (body) => this.door.hello(body),
       "/door/heartbeat": async (body) => {
         const request = parseWithSchema<HeartbeatRequest>(HeartbeatRequestSchema, body);
         return this.door.heartbeat(request);

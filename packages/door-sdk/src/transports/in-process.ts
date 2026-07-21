@@ -7,7 +7,6 @@ import type {
   DoorConnection,
   HeartbeatRequest,
   HeartbeatResponse,
-  HelloRequest,
   HelloResponse,
   OutboundFrame
 } from "../schemas.js";
@@ -35,7 +34,7 @@ export class InProcessDoorConnection implements DoorConnection {
   }
 
   /** `POST /door/hello` — exposed for transport parity tests. */
-  hello(req: HelloRequest): Promise<HelloResponse> {
+  hello(req: unknown): Promise<HelloResponse> {
     return this.door.hello(req);
   }
 

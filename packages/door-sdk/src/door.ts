@@ -20,7 +20,6 @@ import {
   type CandidateShard,
   type HeartbeatRequest,
   type HeartbeatResponse,
-  type HelloRequest,
   type HelloResponse,
   type InboundFrame,
   type OutboundFrame,
@@ -102,11 +101,8 @@ export class Door {
   }
 
   /** `POST /door/hello` — capability negotiation and signed community descriptor. */
-  async hello(req: HelloRequest): Promise<HelloResponse> {
-    const version =
-      typeof req === "object" && req !== null && "protocol_version" in req
-        ? req.protocol_version
-        : undefined;
+  async hello(req: unknown): Promise<HelloResponse> {
+    const version = readProtocolVersion(req);
     if (version !== undefined && version !== DOOR_PROTOCOL_VERSION) {
       throw DoorError.fromCode(
         "unsupported_version",
@@ -166,6 +162,22 @@ export class Door {
       if (!verify(payload, requestSig, this.soulPublicKey)) {
         throw DoorError.fromCode("signature_invalid", "arrival attest: invalid soul signature");
       }
+      // Host policy must approve before any session state mutation (not_hosting).
+      if (this.policy.acceptArrival !== undefined) {
+        try {
+          await this.policy.acceptArrival({
+            epoch: request.epoch,
+            sessionPubkey: request.session_pubkey,
+            core: request.core
+          });
+        } catch (error) {
+          if (error instanceof DoorError) {
+            throw error;
+          }
+          const message = error instanceof Error ? error.message : "host declined arrival";
+          throw DoorError.fromCode("not_hosting", message, undefined, error);
+        }
+      }
       this.activeSession = {
         epoch: request.epoch,
         sessionPubkey: request.session_pubkey
@@ -173,14 +185,14 @@ export class Door {
       this.sessionRetired = false;
       this.cosignState = null;
       this.lastHeartbeatSeq = 0;
-      if (this.policy.acceptArrival !== undefined) {
-        await this.policy.acceptArrival({
-          epoch: request.epoch,
-          sessionPubkey: request.session_pubkey,
-          core: request.core
-        });
-      }
     } else {
+      // Spec: epoch_mismatch (409) when Door has an active session with a different epoch.
+      if (this.activeSession !== null && this.activeSession.epoch !== request.epoch) {
+        throw DoorError.fromCode(
+          "epoch_mismatch",
+          `epoch_mismatch: expected ${String(this.activeSession.epoch)}, got ${String(request.epoch)}`
+        );
+      }
       this.requireActiveSession(request.door_id, request.epoch, request.session_pubkey);
       const sessionPublicKey = decodePublicKey(request.session_pubkey);
       if (!verify(payload, requestSig, sessionPublicKey)) {
@@ -636,4 +648,12 @@ export class Door {
       );
     }
   }
+}
+
+/** Read `protocol_version` from an untyped hello request body, if present. */
+function readProtocolVersion(req: unknown): unknown {
+  if (typeof req !== "object" || req === null || !("protocol_version" in req)) {
+    return undefined;
+  }
+  return Reflect.get(req, "protocol_version");
 }
