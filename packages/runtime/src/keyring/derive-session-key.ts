@@ -15,8 +15,8 @@ const SOUL_PRIVATE_KEY_LENGTH = 32;
  * Build HKDF `info` for session-key derivation: UTF-8(door_id) || 0x00 || ASCII decimal epoch.
  */
 export function buildSessionKeyInfo(doorId: string, epoch: number): Uint8Array {
-  if (!Number.isInteger(epoch) || epoch < 0) {
-    throw new KeyringError(`epoch must be a non-negative integer, got ${String(epoch)}`);
+  if (!Number.isInteger(epoch) || epoch < 1) {
+    throw new KeyringError(`epoch must be an integer >= 1, got ${String(epoch)}`);
   }
 
   const doorBytes = new TextEncoder().encode(doorId);

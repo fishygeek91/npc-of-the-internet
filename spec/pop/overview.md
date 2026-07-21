@@ -76,7 +76,7 @@ At the start of each residency epoch, the runtime derives a **new Ed25519 sessio
 
 The derivation function MUST be deterministic (no `Math.random()`, no wall-clock time). **Conformance vectors in `spec/pop/vectors/` are the final arbiter** when this prose and an implementation disagree; see `spec/pop/vectors/README.md` for the normative algorithm.
 
-**Algorithm (`pop/0.1`):** HKDF-SHA-512 with IKM = 32-byte soul private key, salt = UTF-8(`npc-pop/0.1/session-key`), info = UTF-8(`door_id`) || `0x00` || ASCII decimal `epoch` (no leading zeros except epoch `0`), OKM length 32 → Ed25519 seed → public key. Test cases live in `spec/pop/vectors/session-key-derivation.json`. Implementations MUST match those vectors.
+**Algorithm (`pop/0.1`):** HKDF-SHA-512 with IKM = 32-byte soul private key, salt = UTF-8(`npc-pop/0.1/session-key`), info = UTF-8(`door_id`) || `0x00` || ASCII decimal `epoch` (positive integer ≥ 1, no leading zeros), OKM length 32 → Ed25519 seed → public key. The `door_id` in `info` is the platform-scoped identifier (`platform:community-id`) with no `door:` prefix. Test cases live in `spec/pop/vectors/session-key-derivation.json`. Implementations MUST match those vectors.
 
 ### 4.2 Binding
 

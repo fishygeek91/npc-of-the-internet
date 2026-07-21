@@ -266,7 +266,11 @@ export class Session {
     };
   }
 
-  /** Stop heartbeat timer and reject future inbound frames. Idempotent. */
+  /**
+   * Stop heartbeat timer and reject future inbound frames. Idempotent.
+   * Callers ending a residency (e.g. T2.5 depart) MUST `stop()` then `await drainAppends()`
+   * before appending departure records so no heartbeat attestation races departure.
+   */
   stop(): void {
     if (!this.live) {
       return;
@@ -315,6 +319,10 @@ export class Session {
   }
 
   private async runHeartbeat(): Promise<void> {
+    if (!this.live) {
+      return;
+    }
+
     const head = await this.store.head();
     if (head === null) {
       throw new SessionError("heartbeat: store has no head");
@@ -339,6 +347,8 @@ export class Session {
       sig: heartbeatSig
     });
 
+    this.heartbeatSeq = seq;
+
     const heartbeatBody = {
       kind: "heartbeat" as const,
       pop_version: POP_VERSION,
@@ -359,8 +369,6 @@ export class Session {
         return encodeSignature(this.sessionSigner.sign(bytes));
       }
     });
-
-    this.heartbeatSeq = seq;
   }
 
   private async appendAttestation(params: {

@@ -8,7 +8,7 @@ import { DoorStub, DoorStubError } from "./helpers/door-stub.js";
 import { FakeClock } from "./helpers/fake-timer.js";
 import { DOOR, SOUL } from "./helpers/fixed-keys.js";
 
-const DOOR_ID = "discord:123456789012345678";
+const DOOR_ID = "discord:g";
 const EPOCH = 77;
 const ISSUED_AT = "2026-07-20T15:04:05.123Z";
 const CORE = '{"type":"attestation","kind":"arrival"}';
@@ -161,5 +161,44 @@ describe("DoorStub", () => {
     };
 
     expect(stub.verifyOutbound(wrongKeyOutbound)).toBe(false);
+  });
+
+  it("rejects heartbeat seq replay", async () => {
+    const stub = createStub();
+    const arrivalRequest = signAttestRequest(
+      keyring,
+      {
+        protocol_version: DOOR_PROTOCOL_VERSION,
+        door_id: DOOR_ID,
+        epoch: EPOCH,
+        kind: "arrival",
+        core: CORE,
+        session_pubkey: encodePublicKey(sessionSigner.publicKey),
+        issued_at: ISSUED_AT
+      },
+      true
+    );
+    await stub.attest(arrivalRequest);
+
+    const unsignedHeartbeat = {
+      protocol_version: DOOR_PROTOCOL_VERSION,
+      door_id: DOOR_ID,
+      epoch: EPOCH,
+      session_pubkey: encodePublicKey(sessionSigner.publicKey),
+      seq: 1,
+      issued_at: ISSUED_AT
+    };
+    const heartbeatPayload = canonicalize(unsignedHeartbeat);
+    const heartbeatSig = encodeSignature(sessionSigner.sign(heartbeatPayload));
+
+    await stub.heartbeat({ ...unsignedHeartbeat, sig: heartbeatSig });
+
+    const replaySig = encodeSignature(sessionSigner.sign(heartbeatPayload));
+    await expect(stub.heartbeat({ ...unsignedHeartbeat, sig: replaySig })).rejects.toThrow(
+      DoorStubError
+    );
+    await expect(stub.heartbeat({ ...unsignedHeartbeat, sig: replaySig })).rejects.toThrow(
+      /seq_replay/
+    );
   });
 });

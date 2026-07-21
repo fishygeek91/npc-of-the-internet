@@ -5,38 +5,38 @@
     {
       "description": "soul fill-byte 7, discord guild, epoch 1",
       "soulPrivateKeyFillByte": 7,
-      "doorId": "door:discord:guild123",
+      "doorId": "discord:guild123",
       "epoch": 1,
-      "expectedSessionPublicKey": "QugXZEBDEEVA4nTm0jG1--6Ab0iLJYkPGrNQfrMyQcA",
+      "expectedSessionPublicKey": "e9GbzZbNy0g0nwuI9TPy-vyQjHHHiK40cMZYpvppNlM",
       "samplePayload": "npc-pop/0.1 heartbeat ping",
-      "expectedSignature": "bDImLXtZBZtNxrR-UJl-VQeMlLuyaCinxib-SCF5E7UwNmQwAJE3Fbvr7I6vt53SM8tJbr3aOAZDrFwZQXrpDA"
+      "expectedSignature": "lvnkuohWiv1Pb-nxZJjNeQMRDYVrRH2SNlz1HPn1NnGQ-Y-QSnZtrVt_tMlKa5P8UR9qvOsrHyCsbmksK7hdAg"
     },
     {
-      "description": "soul fill-byte 7, matrix room, epoch 77",
+      "description": "soul fill-byte 7, matrix room, epoch 10",
       "soulPrivateKeyFillByte": 7,
-      "doorId": "door:matrix:room!abc:example.org",
-      "epoch": 77,
-      "expectedSessionPublicKey": "ZlMpoWadlj_P5DyhvsNHKzNv7sf3ZFwYrmw3_hB8Lh0",
+      "doorId": "matrix:room-abc",
+      "epoch": 10,
+      "expectedSessionPublicKey": "rVNa0Uc6ndUoa5OJ1GPQjrhkohjo6uOWSHUlAjCyil8",
       "samplePayload": "session-bound live output",
-      "expectedSignature": "2YT-d7g28StJKmrC5fAimvqpIRfFEy7kIHUK1l9ygwl9ajTTCJL9YYmclsfyf1exgYtrF_qK1FZY8fPzJdtPDw"
+      "expectedSignature": "KZTBJ8Kh1FNnA51iffyQdn3kA0-FO9ivcj0iL6RGTlshI3Hi2bLxfpUjgD9kFhB5gwsoDhEriUdroW4A2IdPCg"
     },
     {
-      "description": "soul fill-byte 7, epoch 0 (decimal zero)",
+      "description": "soul fill-byte 7, irc channel, epoch 77",
       "soulPrivateKeyFillByte": 7,
-      "doorId": "door:irc:libera#wanderer",
-      "epoch": 0,
-      "expectedSessionPublicKey": "iILe6NspQOCO3RqSlfPvOZcc-ToH5EOp4yvSInjPmjo",
-      "samplePayload": "epoch-zero binding",
-      "expectedSignature": "mRvCGI4_78yeGaUHCeZ11SXtMHDXJ19uP9TvXlYnS63XR_rpGfob_y7SBJj0rC2n41RJo42UU_rla8aCxwn_Dw"
+      "doorId": "irc:libera-wanderer",
+      "epoch": 77,
+      "expectedSessionPublicKey": "HYKackWYZ1FR6umTqu4ju_XfUEH0gdVv33EWJe8ezBI",
+      "samplePayload": "multi-digit epoch binding",
+      "expectedSignature": "WVJJJjx3v3FsyErMcyRyUIYJei9FgVjXXiAgDDTOOsNa18fDne8zlhJ2ssQjuOu-QW1ev9wI_CvELUnJpMCPBQ"
     },
     {
-      "description": "non-fill-byte soul seed (hex), web door, epoch 42",
-      "soulPrivateKeyHex": "0123456789abcdeffedcba9876543210112233445566778899aabbccddeeff00",
-      "doorId": "door:web:shrine.example",
-      "epoch": 42,
-      "expectedSessionPublicKey": "zvlRvYlR03zPr4Domq48k42E218Z4v9qSuwMoKSmuNw",
-      "samplePayload": "alternate soul material",
-      "expectedSignature": "4jtwf0LKtv5bp-hpQs2uBsfoKJkmDiFRwNdmDD9psD7Q53Fw1rFnjnCD10Rwt5rj1ifiEFCKxXBZNuvM3L7PCA"
+      "description": "soul fill-byte 11, web door, epoch 100",
+      "soulPrivateKeyFillByte": 11,
+      "doorId": "web:shrine.example",
+      "epoch": 100,
+      "expectedSessionPublicKey": "1fOiCkGRqvPZFgkgLkipLdu_invu7jMDdSZkxAYCHOo",
+      "samplePayload": "alternate fill-byte soul material",
+      "expectedSignature": "bsmNJAuyrP8G15y2P41AUBpaUtLnpILV36xD-vY19w1J3fr4K7EBk5ltUVqEK0aJ9qcu8CG1fzqaiKnTUGnoBQ"
     }
   ]
 }

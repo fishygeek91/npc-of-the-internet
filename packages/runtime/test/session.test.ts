@@ -309,4 +309,70 @@ describe("Session", () => {
       SessionError
     );
   });
+
+  it("increments heartbeat seq after Door ack even when attest fails", async () => {
+    const store = await buildGenesisStore();
+    const harness = createSessionHarness(store);
+    const session = await harness.start();
+
+    const originalAttest = harness.door.attest.bind(harness.door);
+    let heartbeatAttestCalls = 0;
+    harness.door.attest = async (request) => {
+      if (request.kind === "heartbeat") {
+        heartbeatAttestCalls += 1;
+        if (heartbeatAttestCalls === 1) {
+          throw new Error("simulated attest failure after heartbeat ack");
+        }
+      }
+      return originalAttest(request);
+    };
+
+    harness.timer.tick();
+    await session.drainAppends();
+    expect(session.lastHeartbeatError).not.toBeNull();
+
+    harness.timer.tick();
+    await session.drainAppends();
+    expect(session.lastHeartbeatError).toBeNull();
+
+    const records: OspRecord[] = [];
+    for await (const record of store.iterate()) {
+      records.push(record);
+    }
+    const heartbeats = records.filter(
+      (record) => record.type === "attestation" && record.body.kind === "heartbeat"
+    );
+    expect(heartbeats).toHaveLength(1);
+
+    session.stop();
+  });
+
+  it("stop fences queued heartbeat so no heartbeat attestation lands after stop", async () => {
+    const store = new PausingStore();
+    const genesis = await createGenesisRecord(SOUL);
+    await store.append(genesis.record);
+
+    const harness = createSessionHarness(store);
+    const session = await harness.start();
+
+    store.pauseNext();
+    harness.timer.tick();
+    session.stop();
+    store.resume();
+    await session.drainAppends();
+
+    const records: OspRecord[] = [];
+    for await (const record of store.iterate()) {
+      records.push(record);
+    }
+    const heartbeats = records.filter(
+      (record) => record.type === "attestation" && record.body.kind === "heartbeat"
+    );
+    expect(heartbeats).toHaveLength(0);
+
+    const arrivals = records.filter(
+      (record) => record.type === "attestation" && record.body.kind === "arrival"
+    );
+    expect(arrivals).toHaveLength(1);
+  });
 });

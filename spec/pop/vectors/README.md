@@ -7,7 +7,7 @@ Committed JSON fixtures for Proof-of-Presence (`pop/0.1`) cryptography. When thi
 Vectors are **not** generated at test time. To rebuild after changing the derivation algorithm or generator:
 
 ```bash
-pnpm --filter @npc/runtime generate:pop-vectors
+pnpm --filter "./packages/runtime" generate:pop-vectors
 ```
 
 Commit updated JSON under this directory in the same PR as any derivation or generator changes.
@@ -20,7 +20,7 @@ Given:
 
 - **IKM** — 32-byte soul private key (Ed25519 seed material)
 - **salt** — UTF-8 bytes of the literal string `npc-pop/0.1/session-key`
-- **info** — `UTF-8(door_id) || 0x00 || ASCII decimal(epoch)` where `epoch` is encoded with no leading zeros except the single digit `0` for epoch zero
+- **info** — `UTF-8(door_id) || 0x00 || ASCII decimal(epoch)` where `door_id` is the platform-scoped identifier (`platform:community-id`, e.g. `discord:guild123`) with **no** `door:` prefix, and `epoch` is a positive integer encoded in decimal with no leading zeros
 - **OKM length** — 32 bytes
 
 Compute:
@@ -43,15 +43,13 @@ Each case in `cases`:
 | Field | Description |
 |-------|-------------|
 | `description` | Human-readable case summary |
-| `soulPrivateKeyFillByte` | TEST-ONLY: 32-byte soul key filled with this byte (mutually exclusive with hex/base64url forms) |
-| `soulPrivateKeyHex` | Optional 64-char hex soul seed (when not a uniform fill pattern) |
-| `soulPrivateKeyBase64Url` | Optional base64url-encoded 32-byte soul seed |
-| `doorId` | Door identifier string passed into HKDF `info` |
-| `epoch` | Non-negative integer epoch passed into HKDF `info` |
+| `soulPrivateKeyFillByte` | TEST-ONLY: 32-byte soul key filled with this byte |
+| `doorId` | Door identifier string (`platform:community-id`) passed into HKDF `info` |
+| `epoch` | Positive integer epoch (≥ 1) passed into HKDF `info` |
 | `expectedSessionPublicKey` | Base64url-encoded derived session public key |
 | `samplePayload` | UTF-8 string signed with the derived session private key |
 | `expectedSignature` | Base64url-encoded Ed25519 signature over UTF-8(`samplePayload`) |
 
 ## TEST-ONLY keys
 
-The generator (`packages/runtime/scripts/generate-pop-vectors.ts`) uses **deterministic TEST-ONLY** soul private keys (fixed 32-byte fill pattern `7` for the primary cases, plus one non-fill hex seed). These keys exist only for conformance fixtures and must never be used in production or live soulchains.
+The generator (`packages/runtime/scripts/generate-pop-vectors.ts`) uses **deterministic TEST-ONLY** soul private keys (fixed 32-byte fill patterns). These keys exist only for conformance fixtures and must never be used in production or live soulchains.

@@ -62,6 +62,7 @@ export class DoorStub implements DoorConnection {
   private readonly soulPublicKey: Uint8Array;
   private readonly clock: Clock;
   private activeSession: ActiveSession | null = null;
+  private lastHeartbeatSeq = 0;
 
   constructor(options: DoorStubOptions) {
     this.doorId = options.doorId;
@@ -128,6 +129,12 @@ export class DoorStub implements DoorConnection {
 
     this.requireActiveSession(request.door_id, request.epoch, request.session_pubkey);
 
+    if (request.seq <= this.lastHeartbeatSeq) {
+      throw new DoorStubError(
+        `seq_replay: heartbeat seq ${String(request.seq)} <= last accepted ${String(this.lastHeartbeatSeq)}`
+      );
+    }
+
     const unsigned: UnsignedHeartbeatFields = {
       protocol_version: request.protocol_version,
       door_id: request.door_id,
@@ -142,6 +149,8 @@ export class DoorStub implements DoorConnection {
     if (!verify(payload, requestSig, sessionPublicKey)) {
       throw new DoorStubError("heartbeat: invalid session signature");
     }
+
+    this.lastHeartbeatSeq = request.seq;
 
     const receivedAt = this.clock.now();
     const accepted = true;
