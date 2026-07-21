@@ -156,6 +156,8 @@ export async function distillTranscripts(
   const clamped = piiFiltered.slice(0, MAX_SHARDS);
   const candidates = toCandidateShards(clamped);
 
+  // T2.5: if destroy fails (e.g. EPERM), prefer returning candidates and
+  // surfacing retained-transcript separately — do not force a re-distill.
   await source.destroy();
   return candidates;
 }

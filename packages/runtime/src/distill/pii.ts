@@ -3,11 +3,20 @@ import type { PiiCategory } from "./types.js";
 /** Standard-ish email local@domain pattern. */
 const EMAIL_PATTERN = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
 
-/** Digit groups with separators typical of phone numbers (7+ digits total). */
+/**
+ * Digit groups with separators typical of phone numbers (7+ digits total).
+ * Known false-positive without filtering: ISO dates and year ranges (see
+ * {@link isDateLikePhoneFalsePositive}); T3.1 should inherit that exclusion.
+ */
 const PHONE_PATTERN = /(?:\+?\d[\d\s().-]{6,}\d)/g;
 
 /** @handle tokens preceded by start-of-string or whitespace. */
 const HANDLE_PATTERN = /(?:^|\s)(@[A-Za-z0-9_]{2,})/g;
+
+/** ISO `YYYY-MM-DD` or four-digit year range `YYYY-YYYY` — not phone numbers. */
+function isDateLikePhoneFalsePositive(span: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}$/.test(span) || /^\d{4}-\d{4}$/.test(span);
+}
 
 function collectMatches(text: string, pattern: RegExp): string[] {
   const matches: string[] = [];
@@ -28,16 +37,19 @@ function isAllowlisted(span: string, allowlist: readonly string[] | undefined): 
   if (allowlist === undefined || allowlist.length === 0) {
     return false;
   }
-  return allowlist.some((entry) => entry === span || entry.includes(span));
+  return allowlist.some((entry) => entry === span);
 }
 
 function screenCategory(
   text: string,
   pattern: RegExp,
   category: PiiCategory,
-  allowlist: readonly string[] | undefined
+  allowlist: readonly string[] | undefined,
+  ignoreSpan?: (span: string) => boolean
 ): { ok: true } | { ok: false; category: PiiCategory } {
-  const matches = collectMatches(text, pattern);
+  const matches = collectMatches(text, pattern).filter(
+    (span) => ignoreSpan === undefined || !ignoreSpan(span)
+  );
   if (matches.length === 0) {
     return { ok: true };
   }
@@ -62,7 +74,13 @@ export function screenPii(
     return emailResult;
   }
 
-  const phoneResult = screenCategory(text, PHONE_PATTERN, "phone", allowlist);
+  const phoneResult = screenCategory(
+    text,
+    PHONE_PATTERN,
+    "phone",
+    allowlist,
+    isDateLikePhoneFalsePositive
+  );
   if (!phoneResult.ok) {
     return phoneResult;
   }

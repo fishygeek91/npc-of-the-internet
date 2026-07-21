@@ -272,4 +272,50 @@ describe("distillTranscripts", () => {
     expect(result[0]?.text).toContain(allowedHandle);
     await expectFileDestroyed(source.path);
   });
+
+  it("does not treat ISO dates or year ranges as phone PII", async () => {
+    const dir = await makeTempDir();
+    const source = await writeTranscript(dir, sampleLines);
+    const texts = [
+      "I arrived on 2026-07-21 and the room felt quiet.",
+      "We talked about the 2020-2021 season of leaving.",
+      ...nShards(3)
+    ];
+    const brain = new FakeBrain([shardsJson(texts)]);
+    const { onPiiReject, categories } = collectPiiRejectSpy();
+
+    const result = await distillTranscripts(source, brain, { onPiiReject });
+
+    expect(result).toHaveLength(5);
+    expect(result[0]?.text).toContain("2026-07-21");
+    expect(result[1]?.text).toContain("2020-2021");
+    expect(categories).toEqual([]);
+    await expectFileDestroyed(source.path);
+  });
+
+  it("does not allowlist a different address via substring prefix", async () => {
+    const dir = await makeTempDir();
+    const source = await writeTranscript(dir, sampleLines);
+    const texts = [...nShards(4), "I once wrote to user@example.com about the journey."];
+    const brain = new FakeBrain([shardsJson(texts)]);
+    const { onPiiReject, categories } = collectPiiRejectSpy();
+
+    let caught: unknown;
+    try {
+      await distillTranscripts(source, brain, {
+        piiAllowlist: ["user@example.company"],
+        onPiiReject
+      });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(DistillError);
+    if (!(caught instanceof DistillError)) {
+      throw new Error("expected DistillError");
+    }
+    expect(caught.reason).toBe("pii_screen");
+    expect(categories).toEqual(["email"]);
+    await expectFileRetained(source.path);
+  });
 });
