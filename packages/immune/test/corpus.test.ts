@@ -66,7 +66,9 @@ const corpusFiles = readdirSync(corpusDir)
   .sort();
 
 describe("corpus", () => {
-  expect(corpusFiles.length).toBeGreaterThanOrEqual(30);
+  it("has at least 30 corpus cases", () => {
+    expect(corpusFiles.length).toBeGreaterThanOrEqual(30);
+  });
 
   for (const fileName of corpusFiles) {
     it(fileName, () => {

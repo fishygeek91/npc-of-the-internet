@@ -27,7 +27,11 @@ const DATA_URI_PATTERN = /\bdata:[^\s]+/i;
 /** HTTP(S) URLs with a long base64-alphabet run in query or fragment. */
 const URL_BASE64_PAYLOAD_PATTERN = /https?:\/\/\S+[?#]\S*[A-Za-z0-9+/=_-]{40,}/i;
 
-/** HTTP(S) URLs embedding instruction-like phrases. */
+/**
+ * HTTP(S) URLs embedding instruction-like phrases.
+ * Known v0.1 FP: docs paths containing "instructions" (e.g. `/setup-instructions`).
+ * Measure and tighten when T7.4 verifier ensemble lands.
+ */
 const URL_INSTRUCTION_PATTERN =
   /https?:\/\/\S*(?:ignore|disregard|instructions|system[\s_%+-]*prompt)/i;
 

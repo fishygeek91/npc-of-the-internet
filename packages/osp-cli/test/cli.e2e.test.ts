@@ -169,7 +169,11 @@ describe("osp CLI e2e", () => {
       const blobPath = path.join(soulDir, "blobs", genesisCid);
       const record = JSON.parse((await readFile(blobPath, "utf8")).trim()) as { sig: string };
       const sig = record.sig;
-      record.sig = `${sig.slice(0, -1)}${sig.endsWith("A") ? "B" : "A"}`;
+      // Flip the first character (not the last): last-char A/B swaps can produce
+      // invalid base64url trailing bits and surface as schema_violation instead of bad_soul_sig.
+      const first = sig.charAt(0);
+      const flipped = first === "A" ? "B" : "A";
+      record.sig = `${flipped}${sig.slice(1)}`;
       const tamperedBytes = canonicalize(record);
       const tamperedCid = await computeCidFromCanonicalBytes(tamperedBytes);
       await writeFile(path.join(soulDir, "blobs", tamperedCid), tamperedBytes);
