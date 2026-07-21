@@ -1,4 +1,4 @@
-# Gitleaks config for NPC of the Internet.
+# Gitleaks config for NPC of the Internet (compatible with gitleaks 8.24.x used by CI).
 # Extends the default rule set; allowlists cover TEST-ONLY fixtures only.
 
 title = "npc-of-the-internet"
@@ -6,20 +6,13 @@ title = "npc-of-the-internet"
 [extend]
 useDefault = true
 
-[[allowlists]]
-description = "PoP/OSP conformance vectors use deterministic TEST-ONLY keys (never production secrets)"
+# Singular [allowlist] — required by gitleaks 8.24.x (CI pin via gitleaks-action).
+[allowlist]
+description = "TEST-ONLY PoP/OSP vectors, runtime test fixtures, and historical T2.4 false-positive commit"
 paths = [
-  '''spec/.+/vectors/.*'''
-]
-
-[[allowlists]]
-description = "Runtime tests use fixed fill-byte keys and fake door ids"
-paths = [
+  '''spec/.+/vectors/.*''',
   '''packages/runtime/test'''
 ]
-
-[[allowlists]]
-description = "Initial T2.4 commit still contains historical false positives later fixed on this branch"
 commits = [
   "3a698bdb4d6906ea8066ad2e5ed5ef0dbb13e5ed"
 ]
