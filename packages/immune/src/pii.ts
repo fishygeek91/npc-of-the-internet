@@ -1,17 +1,17 @@
-import type { PiiCategory } from "./types.js";
+import type { ScreenCategory } from "./types.js";
 
 /** Standard-ish email local@domain pattern. */
-const EMAIL_PATTERN = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
+export const EMAIL_PATTERN = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
 
 /**
  * Digit groups with separators typical of phone numbers (7+ digits total).
  * Known false-positive without filtering: ISO dates and year ranges (see
- * {@link isDateLikePhoneFalsePositive}); T3.1 should inherit that exclusion.
+ * {@link isDateLikePhoneFalsePositive}).
  */
-const PHONE_PATTERN = /(?:\+?\d[\d\s().-]{6,}\d)/g;
+export const PHONE_PATTERN = /(?:\+?\d[\d\s().-]{6,}\d)/g;
 
 /** @handle tokens preceded by start-of-string or whitespace. */
-const HANDLE_PATTERN = /(?:^|\s)(@[A-Za-z0-9_]{2,})/g;
+export const HANDLE_PATTERN = /(?:^|\s)(@[A-Za-z0-9_]{2,})/g;
 
 /** ISO `YYYY-MM-DD` or four-digit year range `YYYY-YYYY` — not phone numbers. */
 function isDateLikePhoneFalsePositive(span: string): boolean {
@@ -40,55 +40,42 @@ function isAllowlisted(span: string, allowlist: readonly string[] | undefined): 
   return allowlist.some((entry) => entry === span);
 }
 
-function screenCategory(
+function categorySuppressed(
   text: string,
   pattern: RegExp,
-  category: PiiCategory,
   allowlist: readonly string[] | undefined,
   ignoreSpan?: (span: string) => boolean
-): { ok: true } | { ok: false; category: PiiCategory } {
+): boolean {
   const matches = collectMatches(text, pattern).filter(
     (span) => ignoreSpan === undefined || !ignoreSpan(span)
   );
   if (matches.length === 0) {
-    return { ok: true };
+    return true;
   }
-  const allAllowlisted = matches.every((span) => isAllowlisted(span, allowlist));
-  if (allAllowlisted) {
-    return { ok: true };
-  }
-  return { ok: false, category };
+  return matches.every((span) => isAllowlisted(span, allowlist));
 }
 
-// T3.1: immune screen hook
 /**
- * Static PII screen for distiller shard text.
- * Replaced by the immune package static screen in T3.1.
+ * Collect all PII categories present in `text`.
+ * A category is omitted only when every match in that category is allowlisted.
  */
-export function screenPii(
+export function collectPiiCategories(
   text: string,
   allowlist?: readonly string[]
-): { ok: true } | { ok: false; category: PiiCategory } {
-  const emailResult = screenCategory(text, EMAIL_PATTERN, "email", allowlist);
-  if (!emailResult.ok) {
-    return emailResult;
+): ScreenCategory[] {
+  const categories: ScreenCategory[] = [];
+
+  if (!categorySuppressed(text, EMAIL_PATTERN, allowlist)) {
+    categories.push("pii.email");
   }
 
-  const phoneResult = screenCategory(
-    text,
-    PHONE_PATTERN,
-    "phone",
-    allowlist,
-    isDateLikePhoneFalsePositive
-  );
-  if (!phoneResult.ok) {
-    return phoneResult;
+  if (!categorySuppressed(text, PHONE_PATTERN, allowlist, isDateLikePhoneFalsePositive)) {
+    categories.push("pii.phone");
   }
 
-  const handleResult = screenCategory(text, HANDLE_PATTERN, "handle", allowlist);
-  if (!handleResult.ok) {
-    return handleResult;
+  if (!categorySuppressed(text, HANDLE_PATTERN, allowlist)) {
+    categories.push("pii.handle");
   }
 
-  return { ok: true };
+  return categories;
 }

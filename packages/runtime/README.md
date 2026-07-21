@@ -91,7 +91,7 @@ const brain = new FakeBrain(() =>
 );
 
 const shards: CandidateShard[] = await distillTranscripts(source, brain, {
-  onPiiReject: (category) => {
+  onScreenReject: (category) => {
     /* category only — never log shard text */
   },
 });
@@ -101,9 +101,9 @@ const shards: CandidateShard[] = await distillTranscripts(source, brain, {
 
 Prompt templates live at `src/prompts/distiller/` (TS string constants, strategy a).
 
-**Behavior:** Zod-parse Brain JSON (`{ shards: [{ text, tags? }] }`); one malformed-output retry; empty or over-length shards dropped (≤500 Unicode code points — reject, not truncate); built-in PII regex screen (email, phone, handle) with optional allowlist and category-only `onPiiReject` callback (`// T3.1: immune screen hook`); transcript destroyed only when validation passes and at least five shards remain.
+**Behavior:** Zod-parse Brain JSON (`{ shards: [{ text, tags? }] }`); one malformed-output retry; empty or over-length shards dropped (≤500 Unicode code points — reject, not truncate); each shard passes through `@npc/immune` `screenText` (PII + injection heuristics) with optional PII allowlist and category-only `onScreenReject` callback; failures use `DistillError` reason `"screen_reject"` with `categories` (never payload text); transcript destroyed only when validation passes and at least five shards remain.
 
-**Out of scope:** soulchain append (callers append after cosign in `Session.depart`); full immune static screen (T3.1).
+**Out of scope:** soulchain append (callers append after cosign in `Session.depart`).
 
 ## Session loop (T2.4)
 
@@ -132,8 +132,11 @@ import {
 | `heartbeatIntervalMs` | no | `600000` | Heartbeat period |
 | `maxHistoryMessages` | no | `40` | Rolling brain context cap |
 | `doorPublicKeys` | no | — | Passed to `composeSelf` / chain verify when cosigners present |
+| `onScreenReject` | no | — | Category-only callback when inbound text fails `@npc/immune` `screenText` (never receives payload text) |
 
 `Session.start` composes self from the verified chain, derives a session key via HKDF-SHA-512 (`deriveSessionKey(doorId, epoch)`), appends an arrival attestation, and arms the heartbeat timer. Inbound frames are handled with `handleInbound`; call `drainAppends()` in tests to await async chain writes. Call `stop()` to end the residency. Before departure (T2.5), call `stop()` then `await drainAppends()` so no heartbeat attestation races the departure record — `Session.depart` does this automatically.
+
+Inbound Door text is screened through `@npc/immune` `screenText` before any Brain call. On failure, `handleInbound` returns `{ ok: false, screened: true, categories }` — no outbound reply, no history update, no chain write; the session stays live. Optional `onScreenReject(category, "session.inbound")` logs category hits only.
 
 ### Keyring boundary
 

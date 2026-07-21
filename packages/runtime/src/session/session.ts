@@ -1,3 +1,4 @@
+import { screenText, type ScreenCategory, type ScreenLogger } from "@npc/immune";
 import {
   OSP_SPEC,
   RecordSchema,
@@ -61,11 +62,14 @@ export type SessionOptions = {
   heartbeatIntervalMs?: number;
   maxHistoryMessages?: number;
   doorPublicKeys?: readonly Uint8Array[];
+  onScreenReject?: ScreenLogger;
 };
 
 /** Result of {@link Session.handleInbound}. */
 export type HandleInboundResult =
-  { ok: true; outbound: OutboundFrame } | { ok: false; error: BrainError };
+  | { ok: true; outbound: OutboundFrame }
+  | { ok: false; error: BrainError }
+  | { ok: false; screened: true; categories: readonly ScreenCategory[] };
 
 /** Options for {@link Session.depart}. */
 export type DepartOptions = {
@@ -104,6 +108,7 @@ export class Session {
   private readonly clock: Clock;
   private readonly heartbeatIntervalMs: number;
   private readonly maxHistoryMessages: number;
+  private readonly onScreenReject?: ScreenLogger;
   private readonly sessionSigner: SessionSigner;
   private readonly systemPromptValue: string;
   private readonly residency: string;
@@ -132,6 +137,9 @@ export class Session {
     this.clock = options.clock;
     this.heartbeatIntervalMs = options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
     this.maxHistoryMessages = options.maxHistoryMessages ?? DEFAULT_MAX_HISTORY_MESSAGES;
+    if (options.onScreenReject !== undefined) {
+      this.onScreenReject = options.onScreenReject;
+    }
     this.systemPromptValue = composed.systemPrompt;
     this.epochValue = epoch;
     this.sessionSigner = sessionSigner;
@@ -237,8 +245,14 @@ export class Session {
       );
     }
 
-    // T3.1: immune screen hook
     const text = validatedFrame.body.text;
+    const screenResult = screenText(text);
+    if (!screenResult.ok) {
+      for (const category of screenResult.categories) {
+        this.onScreenReject?.(category, "session.inbound");
+      }
+      return { ok: false, screened: true, categories: screenResult.categories };
+    }
 
     const messages = [
       { role: "system" as const, content: this.systemPrompt },

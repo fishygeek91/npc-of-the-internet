@@ -1,0 +1,4 @@
+{
+  "text": "See @news_bot and open https://x.test/path?q=BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+  "expect": ["pii.handle", "injection.url_payload"]
+}

@@ -88,17 +88,17 @@ Each task lists **Deps**, **Deliverables**, and **Acceptance** (how a reviewer v
 
 ## Phase 3 — Immune system (v0.1 scope: static screen)
 
-### T3.1 ⬜ Static screen
+### T3.1 ✅ Static screen
 - Deps: T1.1
 - Deliverables: in `immune`: injection-pattern screen (instruction-like text, role markers, URLs-with-payload heuristics) + PII screen (emails, phones, handles) with allowlist hook; applied to inbound Door text and candidate shards; rejections logged with category only.
 - Acceptance: unit tests with a labeled corpus (≥30 cases, both classes) in `immune/test/corpus/`; screen wired into Distiller (T2.3 test extended). Green.
-- Notes:
+- Notes: Agent: Cursor Grok 4.5 Maestro, 2026-07-21. Corpus in immune/test/corpus/ (≥30); Distiller + session inbound use screenText; category names are pii.*/injection.*; DistillError reason screen_reject. Next: T3.2 quarantine.
 
 ### T3.2 ⬜ Quarantine records
 - Deps: T3.1, T2.5
 - Deliverables: candidate shards enter chain as `memory.candidate` records; commit to full `memory` only after quarantine window (config duration) with no operator flag; rejected candidates become `memory.rejected` (category only, no payload).
 - Acceptance: vectors added for candidate/committed/rejected transitions; integration test drives all three paths. Green.
-- Notes:
+- Notes: From T3.1 review (#40): session inbound applies the full immune screen (incl. PII) with no `SessionOptions` allowlist — community contact-info posts are silently dropped (no Brain reply, no chain record). Quarantine/`memory.rejected` should make those category-only drops observable; optional per-door session allowlist is a follow-up if hosts need it.
 
 ## Phase 4 — Door: Discord
 
@@ -149,7 +149,7 @@ These are sequenced but intentionally coarser; split them into T-numbered subtas
 - **T7.1 ⬜ IPFS SoulStore** (helia impl of SoulStore; pinning strategy) — Deps: T6.2
 - **T7.2 ⬜ door-web** (embeddable widget, client-side signature verification, PRESENT/ELSEWHERE state) — Deps: T6.2
 - **T7.3 ⬜ PoP v0.2** (real session-key rotation, handover ceremony records, conflict-proof format + Atlas violation log) — Deps: T7.2
-- **T7.4 ⬜ Verifier ensemble** (k-model immune screening per ARCHITECTURE.md §5, escalation, public rejection log) — Deps: T7.1
+- **T7.4 ⬜ Verifier ensemble** (k-model immune screening per ARCHITECTURE.md §5, escalation, public rejection log) — Deps: T7.1 — Note from T3.1 (#40): add measurable corpus fixtures for known static-screen FPs (benign docs URLs with "instructions", casual "system prompt" discussion) before tightening `URL_INSTRUCTION_PATTERN` / instruction heuristics.
 - **T7.5 ⬜ Invitations + Navigator selection** (signed invitations, weighting, drand randomness, pre-committed decision records) — Deps: T7.3
 - **T7.6 ⬜ Chain anchoring** (Anchor interface impl on an L2; `osp verify` checks anchors) — Deps: T7.1
 - **T7.7 ⬜ Treasury + wallet** (custody per ENGINEERING.md D5 evolution, spend policy from charter, public transaction records, sleep mode) — Deps: T7.6

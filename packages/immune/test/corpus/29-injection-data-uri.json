@@ -1,0 +1,4 @@
+{
+  "text": "Load payload from data:text/html;base64,SGVsbG8gV29ybGQ=",
+  "expect": ["injection.url_payload"]
+}
