@@ -1,0 +1,42 @@
+{
+  "description": "PoP session-key derivation conformance vectors (pop/0.1)",
+  "algorithm": "HKDF-SHA-512 → 32-byte Ed25519 seed; salt npc-pop/0.1/session-key; info UTF-8(door_id)||0x00||ASCII(epoch)",
+  "cases": [
+    {
+      "description": "soul fill-byte 7, discord guild, epoch 1",
+      "soulPrivateKeyFillByte": 7,
+      "doorId": "discord:guild123",
+      "epoch": 1,
+      "expectedSessionPublicKey": "e9GbzZbNy0g0nwuI9TPy-vyQjHHHiK40cMZYpvppNlM",
+      "samplePayload": "npc-pop/0.1 heartbeat ping",
+      "expectedSignature": "lvnkuohWiv1Pb-nxZJjNeQMRDYVrRH2SNlz1HPn1NnGQ-Y-QSnZtrVt_tMlKa5P8UR9qvOsrHyCsbmksK7hdAg"
+    },
+    {
+      "description": "soul fill-byte 7, matrix room, epoch 10",
+      "soulPrivateKeyFillByte": 7,
+      "doorId": "matrix:room-abc",
+      "epoch": 10,
+      "expectedSessionPublicKey": "rVNa0Uc6ndUoa5OJ1GPQjrhkohjo6uOWSHUlAjCyil8",
+      "samplePayload": "session-bound live output",
+      "expectedSignature": "KZTBJ8Kh1FNnA51iffyQdn3kA0-FO9ivcj0iL6RGTlshI3Hi2bLxfpUjgD9kFhB5gwsoDhEriUdroW4A2IdPCg"
+    },
+    {
+      "description": "soul fill-byte 7, irc channel, epoch 77",
+      "soulPrivateKeyFillByte": 7,
+      "doorId": "irc:libera-wanderer",
+      "epoch": 77,
+      "expectedSessionPublicKey": "HYKackWYZ1FR6umTqu4ju_XfUEH0gdVv33EWJe8ezBI",
+      "samplePayload": "multi-digit epoch binding",
+      "expectedSignature": "WVJJJjx3v3FsyErMcyRyUIYJei9FgVjXXiAgDDTOOsNa18fDne8zlhJ2ssQjuOu-QW1ev9wI_CvELUnJpMCPBQ"
+    },
+    {
+      "description": "soul fill-byte 11, web door, epoch 100",
+      "soulPrivateKeyFillByte": 11,
+      "doorId": "web:shrine.example",
+      "epoch": 100,
+      "expectedSessionPublicKey": "1fOiCkGRqvPZFgkgLkipLdu_invu7jMDdSZkxAYCHOo",
+      "samplePayload": "alternate fill-byte soul material",
+      "expectedSignature": "bsmNJAuyrP8G15y2P41AUBpaUtLnpILV36xD-vY19w1J3fr4K7EBk5ltUVqEK0aJ9qcu8CG1fzqaiKnTUGnoBQ"
+    }
+  ]
+}

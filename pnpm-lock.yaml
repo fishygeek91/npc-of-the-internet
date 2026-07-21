@@ -118,6 +118,12 @@ importers:
       '@anthropic-ai/sdk':
         specifier: ^0.112.4
         version: 0.112.4(zod@3.25.76)
+      '@noble/ed25519':
+        specifier: ^2.2.3
+        version: 2.3.0
+      '@noble/hashes':
+        specifier: ^1.7.1
+        version: 1.8.0
       '@npc/osp-core':
         specifier: workspace:*
         version: link:../osp-core
@@ -125,12 +131,6 @@ importers:
         specifier: ^3.24.2
         version: 3.25.76
     devDependencies:
-      '@noble/ed25519':
-        specifier: ^2.2.3
-        version: 2.3.0
-      '@noble/hashes':
-        specifier: ^1.7.1
-        version: 1.8.0
       '@types/node':
         specifier: ^22
         version: 22.20.1

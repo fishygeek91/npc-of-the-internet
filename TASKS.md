@@ -74,11 +74,11 @@ Each task lists **Deps**, **Deliverables**, and **Acceptance** (how a reviewer v
 - Acceptance: FakeBrain tests: shard count/length limits enforced, PII regex screen applied, transcripts deleted from disk after run. Green.
 - Notes:
 
-### T2.4 ⬜ Session loop
+### T2.4 ✅ Session loop (Cursor Grok 4.5 Maestro, 2026-07-21)
 - Deps: T2.2
 - Deliverables: residency session engine: receives Door messages, maintains rolling context, calls Brain, returns signed responses (session-key signature per PoP spec — v0.1: session key = derived subkey, recorded in an `attestation` record at arrival); writes heartbeat attestations on an injected timer.
 - Acceptance: integration test with FakeBrain + in-memory Door stub: scripted 20-message residency produces a verifying chain with arrival attestation + heartbeats. Green.
-- Notes:
+- Notes: Agent: Cursor Grok 4.5 Maestro, 2026-07-21. HKDF-SHA-512 session keys via `deriveSessionKey(doorId, epoch)`; `DoorStub` at `test/helpers/door-stub.ts`; integration test `test/session-integration.test.ts`. Next: T2.3 or T2.5.
 
 ### T2.5 ⬜ Departure + manual handover (v0.1)
 - Deps: T2.3, T2.4

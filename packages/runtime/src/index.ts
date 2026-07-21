@@ -11,3 +11,31 @@ export type { Brain, BrainMessage, CompleteOptions } from "./brain/types.js";
 export { ComposeError } from "./compose/errors.js";
 export { composeSelf } from "./compose/compose-self.js";
 export type { ComposedSelf, ComposeSelfOptions, MemoryIndexEntry } from "./compose/compose-self.js";
+export { KeyringError } from "./keyring/errors.js";
+export { buildSessionKeyInfo, SESSION_KEY_DERIVATION_SALT } from "./keyring/derive-session-key.js";
+export { loadSoulPrivateKeyFromPath } from "./keyring/load-soul-key.js";
+export { SingleKeyKeyring } from "./keyring/single-key-keyring.js";
+export type { Keyring, SessionSigner } from "./keyring/types.js";
+export { SessionError } from "./session/errors.js";
+export { Session } from "./session/session.js";
+export type { HandleInboundResult, SessionOptions } from "./session/session.js";
+export {
+  AttestRequestSchema,
+  AttestResponseSchema,
+  DOOR_PROTOCOL_VERSION,
+  HeartbeatRequestSchema,
+  HeartbeatResponseSchema,
+  InboundFrameSchema,
+  OutboundFrameSchema
+} from "./session/types.js";
+export type {
+  AttestRequest,
+  AttestResponse,
+  Clock,
+  DoorConnection,
+  HeartbeatRequest,
+  HeartbeatResponse,
+  InboundFrame,
+  OutboundFrame,
+  Timer
+} from "./session/types.js";

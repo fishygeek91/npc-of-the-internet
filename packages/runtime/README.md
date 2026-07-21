@@ -68,6 +68,54 @@ pnpm --filter @npc/runtime generate:goldens
 
 For integration tests, `test/helpers/memory-soul-store.ts` provides an in-memory `SoulStore` (reused by T2.4).
 
+## Session loop (T2.4)
+
+The residency session engine receives Door messages, maintains rolling brain context, signs outbound replies with a derived session key, and appends arrival/heartbeat attestations to the soulchain.
+
+```ts
+import {
+  Session,
+  SingleKeyKeyring,
+  FakeBrain,
+  type SessionOptions,
+} from "@npc/runtime";
+```
+
+### `Session.start` options
+
+| Option | Required | Default | Purpose |
+|--------|----------|---------|---------|
+| `store` | yes | — | Append-only `SoulStore` (genesis head required) |
+| `brain` | yes | — | `Brain` for replies |
+| `door` | yes | — | `DoorConnection` (`attest`, `heartbeat`) |
+| `keyring` | yes | — | `Keyring` — soul signing + session-key derivation |
+| `doorId` | yes | — | Door identifier (e.g. `discord:g`) |
+| `timer` | yes | — | Injectable `Timer` for heartbeat scheduling |
+| `clock` | yes | — | Injectable `Clock` for deterministic timestamps |
+| `heartbeatIntervalMs` | no | `600000` | Heartbeat period |
+| `maxHistoryMessages` | no | `40` | Rolling brain context cap |
+| `doorPublicKeys` | no | — | Passed to `composeSelf` / chain verify when cosigners present |
+
+`Session.start` composes self from the verified chain, derives a session key via HKDF-SHA-512 (`deriveSessionKey(doorId, epoch)`), appends an arrival attestation, and arms the heartbeat timer. Inbound frames are handled with `handleInbound`; call `drainAppends()` in tests to await async chain writes. Call `stop()` to end the residency.
+
+### Keyring boundary
+
+`Session` never touches raw soul private keys. Attestation soul-signatures and record sealing go through `Keyring.signWithSoulKey`; outbound frames and heartbeat/attest requests use `Keyring.deriveSessionKey(doorId, epoch)` (returns a `SessionSigner`). Production loads the soul key via `loadSoulPrivateKeyFromPath`; tests use `SingleKeyKeyring`.
+
+### PoP test vectors
+
+Regenerate HKDF session-key derivation vectors:
+
+```bash
+pnpm --filter @npc/runtime generate:pop-vectors
+```
+
+Vectors live under `spec/pop/vectors/`; the runner is `test/pop-vectors.test.ts`.
+
+### Door stub (integration tests)
+
+`test/helpers/door-stub.ts` implements an in-process `DoorConnection` for T2.4/T2.5 and future `door-sdk` contract tests. It verifies soul/session signatures, returns door co-signatures on `attest`, and exposes `verifyOutbound(frame)` for outbound frame checks. See `test/session-integration.test.ts` for the full 20-message residency acceptance test.
+
 ## Test
 
 ```bash
