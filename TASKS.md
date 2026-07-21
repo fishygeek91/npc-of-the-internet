@@ -102,11 +102,11 @@ Each task lists **Deps**, **Deliverables**, and **Acceptance** (how a reviewer v
 
 ## Phase 4 — Door: Discord
 
-### T4.1 ⬜ door-sdk
+### T4.1 ✅ door-sdk
 - Deps: T0.2, T1.1
 - Deliverables: `door-sdk` implementing the Door API contract from spec: hello/session/heartbeat/attest/cosign as a typed library (in-process transport for tests + ws transport); Door identity keypair + signing.
 - Acceptance: contract tests: sdk stub door passes the same integration suite used in T2.4/T2.5. Green.
-- Notes:
+- Notes: Agent: Cursor Grok 4.5 Maestro, 2026-07-21. Wire Zod schemas + signing in `@npc/door-sdk`; `Door` core + `HostPolicy`; in-process/`node:http`/`ws` transports; `door_cosig` = raw UTF-8 OSP `core` bytes (commit + attest); runtime re-exports types; `DoorStub` thin-wraps SDK. Contract + T2.4/T2.5 suites green. Follow-up: `spec/door/vectors/`. Next: T4.2.
 
 ### T4.2 ⬜ door-discord
 - Deps: T4.1, T2.5
