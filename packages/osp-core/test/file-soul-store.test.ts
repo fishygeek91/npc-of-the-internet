@@ -1,4 +1,4 @@
-import { mkdtemp, rm, readFile, writeFile, open as fsOpen } from "node:fs/promises";
+import { mkdtemp, rm, readFile, writeFile, open as fsOpen, access } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
@@ -9,6 +9,8 @@ import {
   signCore,
   generateKeypair,
   encodePublicKey,
+  encodeSignature,
+  decodeSignature,
   canonicalize,
   computeCidFromCanonicalBytes,
   CorruptionError,
@@ -603,5 +605,219 @@ describe("FileSoulStore", () => {
     } finally {
       await verified.close();
     }
+  });
+});
+
+describe("FileSoulStore.openReadOnly", () => {
+  let dir: string;
+  let soul: Ed25519Keypair;
+
+  beforeEach(async () => {
+    dir = await makeTempDir();
+    soul = generateKeypair();
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it("reads an intact chain without creating layout or lock files", async () => {
+    const writer = await FileSoulStore.open(dir);
+    try {
+      await appendGenesis(writer, soul);
+      const headAfterGenesis = await writer.head();
+      if (headAfterGenesis === null) {
+        throw new Error("expected head after genesis");
+      }
+
+      const memory = await createMemoryCandidateRecord(
+        soul,
+        1,
+        headAfterGenesis.cid,
+        "Read-only happy path."
+      );
+      await writer.append(memory.record);
+    } finally {
+      await writer.close();
+    }
+
+    const reader = await FileSoulStore.openReadOnly(dir);
+    try {
+      expect(reader.verification().valid).toBe(true);
+
+      const iterated = await collectRecords(reader);
+      expect(iterated).toHaveLength(2);
+      expect(iterated.map((record) => record.seq)).toEqual([0, 1]);
+
+      const head = await reader.head();
+      expect(head?.seq).toBe(1);
+    } finally {
+      await reader.close();
+    }
+
+    await expect(access(path.join(dir, LOCK_FILE))).rejects.toThrow();
+  });
+
+  it("opens while a writer holds .append.lock", async () => {
+    const writer = await FileSoulStore.open(dir);
+    try {
+      await appendGenesis(writer, soul);
+    } finally {
+      await writer.close();
+    }
+
+    const lockPath = path.join(dir, LOCK_FILE);
+    const lockFd = await fsOpen(lockPath, "wx");
+
+    try {
+      const reader = await FileSoulStore.openReadOnly(dir);
+      try {
+        expect(reader.verification().valid).toBe(true);
+        const iterated = await collectRecords(reader);
+        expect(iterated).toHaveLength(1);
+        expect(iterated[0]?.type).toBe("genesis");
+      } finally {
+        await reader.close();
+      }
+    } finally {
+      await lockFd.close();
+      await rm(lockPath, { force: true });
+    }
+  });
+
+  it("ignores a torn trailing line in memory without mutating the chain file", async () => {
+    const writer = await FileSoulStore.open(dir);
+    try {
+      await appendGenesis(writer, soul);
+      const headAfterGenesis = await writer.head();
+      if (headAfterGenesis === null) {
+        throw new Error("expected head after genesis");
+      }
+
+      const memory = await createMemoryCandidateRecord(
+        soul,
+        1,
+        headAfterGenesis.cid,
+        "Torn tail test."
+      );
+      await writer.append(memory.record);
+    } finally {
+      await writer.close();
+    }
+
+    const chainPath = path.join(dir, CHAIN_FILE);
+    const chainBytesBefore = await readFile(chainPath);
+    const partialSuffix = Buffer.from('{"seq":99,"partial":true');
+    await writeFile(chainPath, Buffer.concat([chainBytesBefore, partialSuffix]));
+
+    const reader = await FileSoulStore.openReadOnly(dir);
+    try {
+      expect(reader.verification().valid).toBe(false);
+      if (!reader.verification().valid) {
+        expect(
+          reader
+            .verification()
+            .failures.some((failure) => failure.message.includes("truncated trailing line"))
+        ).toBe(true);
+      }
+
+      const iterated = await collectRecords(reader);
+      expect(iterated).toHaveLength(2);
+      expect(iterated.map((record) => record.seq)).toEqual([0, 1]);
+
+      const head = await reader.head();
+      expect(head?.seq).toBe(1);
+    } finally {
+      await reader.close();
+    }
+
+    const chainBytesAfter = await readFile(chainPath);
+    expect(chainBytesAfter.equals(Buffer.concat([chainBytesBefore, partialSuffix]))).toBe(true);
+  });
+
+  it("reports verification failure without throwing and still exposes records", async () => {
+    const writer = await FileSoulStore.open(dir);
+    let genesisCid = "";
+    try {
+      const genesis = await appendGenesis(writer, soul);
+      genesisCid = genesis.cid;
+    } finally {
+      await writer.close();
+    }
+
+    const blobPath = path.join(dir, "blobs", genesisCid);
+    const blobBytes = await readFile(blobPath);
+    const record = JSON.parse(new TextDecoder().decode(blobBytes)) as { sig: string };
+    // Flip one signature byte while keeping valid base64url encoding (schema still passes).
+    const sigBytes = decodeSignature(record.sig);
+    sigBytes[0] = (sigBytes[0] ?? 0) ^ 0xff;
+    record.sig = encodeSignature(sigBytes);
+    const tamperedBytes = canonicalize(record);
+    const tamperedCid = await computeCidFromCanonicalBytes(tamperedBytes);
+    await writeFile(path.join(dir, "blobs", tamperedCid), tamperedBytes);
+    await writeFile(path.join(dir, CHAIN_FILE), Buffer.concat([tamperedBytes, Buffer.from("\n")]));
+
+    const reader = await FileSoulStore.openReadOnly(dir);
+    try {
+      expect(reader.verification().valid).toBe(false);
+      if (!reader.verification().valid) {
+        expect(reader.verification().failures.length).toBeGreaterThan(0);
+      }
+
+      const iterated = await collectRecords(reader);
+      expect(iterated).toHaveLength(1);
+      expect(iterated[0]?.seq).toBe(0);
+
+      const head = await reader.head();
+      expect(head?.seq).toBe(0);
+    } finally {
+      await reader.close();
+    }
+  });
+
+  it("reports verification failure for cosigned records opened without door keys", async () => {
+    const door = generateKeypair();
+    const writer = await FileSoulStore.open(dir, { doorPublicKeys: [door.publicKey] });
+    try {
+      const genesis = await appendGenesis(writer, soul);
+      const shard = await createCosignedShardRecord(soul, door, 1, genesis.cid, "Cosigned shard.");
+      await writer.append(shard.record);
+    } finally {
+      await writer.close();
+    }
+
+    const reader = await FileSoulStore.openReadOnly(dir);
+    try {
+      expect(reader.verification().valid).toBe(false);
+
+      const iterated = await collectRecords(reader);
+      expect(iterated).toHaveLength(2);
+      expect(iterated.map((record) => record.seq)).toEqual([0, 1]);
+    } finally {
+      await reader.close();
+    }
+  });
+
+  it("rejects append on a read-only store", async () => {
+    const writer = await FileSoulStore.open(dir);
+    try {
+      await appendGenesis(writer, soul);
+    } finally {
+      await writer.close();
+    }
+
+    const reader = await FileSoulStore.openReadOnly(dir);
+    try {
+      const memory = await createMemoryCandidateRecord(soul, 1, "bagu" + "a".repeat(57), "Nope.");
+      await expect(reader.append(memory.record)).rejects.toThrow(StorageError);
+      await expect(reader.append(memory.record)).rejects.toThrow("FileSoulStore is read-only");
+    } finally {
+      await reader.close();
+    }
+  });
+
+  it("throws StorageError when chain file is missing", async () => {
+    await expect(FileSoulStore.openReadOnly(dir)).rejects.toThrow(StorageError);
+    await expect(FileSoulStore.openReadOnly(dir)).rejects.toThrow(/chain file does not exist/);
   });
 });

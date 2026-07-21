@@ -116,11 +116,11 @@ Each task lists **Deps**, **Deliverables**, and **Acceptance** (how a reviewer v
 
 ## Phase 5 — Atlas
 
-### T5.1 ⬜ Atlas read API
+### T5.1 ✅ Atlas read API
 - Deps: T1.3
 - Deliverables: Fastify service in `atlas`: `/state` (present/traveling/sleeping + current door), `/chain/head`, `/records?type=&page=`, `/journals`; everything derived by reading the soulchain dir read-only.
 - Acceptance: unit tests over a fixture chain; API never writes. Green.
-- Notes:
+- Notes: `FileSoulStore.openReadOnly` (soft verify/torn tail, no lock); Fastify `/state` `/chain/head` `/records` `/journals` via ChainView cache; fixture `test/fixtures/multi-residency/`. Agent: Cursor Grok 4.5 Maestro, 2026-07-21. Next: T5.2. Issue #36.
 
 ### T5.2 ⬜ Atlas site
 - Deps: T5.1

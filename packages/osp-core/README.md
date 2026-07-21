@@ -34,6 +34,8 @@ OSP soulchain primitives: Zod record schemas, canonical JSON, Ed25519 signing, C
 
 **Open:** `FileSoulStore.open(dir)` validates the chain on load and **never** silently truncates torn writes. A partial trailing line (crash mid-append) or other corruption throws `CorruptionError`. Use `FileSoulStore.openWithRecovery(dir)` to remove a stale lock, truncate a torn trailing line, then open; it returns `{ store, truncatedBytes }`.
 
+**Read-only open:** `FileSoulStore.openReadOnly(dir)` requires an existing directory with `chain.jsonl` and `blobs/` (no `mkdir`, no lock). Torn trailing lines and verification failures are reported via `verification()` instead of throwing; intact records remain readable via `head`, `get`, and `iterate`. `append` throws `StorageError` ("read-only").
+
 **Canonical bytes:** only canonical JSON (from `canonicalize`) is written to `chain.jsonl` and blob files; CIDs are computed from those bytes.
 
 **Store errors:** `StorageError` (I/O), `CorruptionError` (torn/invalid chain on open; chain verification failures include optional `failures: ChainFailure[]`), `ConcurrentAppendError` (lock held), `ChainMismatchError` (`prev`/`seq` ≠ head on append).
