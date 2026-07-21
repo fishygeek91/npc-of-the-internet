@@ -1,12 +1,12 @@
 # Development Lifecycle
 
-AI end to end, with exactly **two human gates**: approval to begin work, and approval to go to production. Everything else — implementation, review, merge — is done by agents.
+AI end to end, with exactly **two human gates**: approval to begin work, and approval to go to production. Implementation and review are done by agents; **merge** is performed by the human (or by an agent explicitly instructed by the human after a reviewer verdict).
 
 ## The loop
 
 ```
 TASKS.md task ──► GitHub issue ──► [HUMAN GATE 1: `approved` label]
-     ──► branch ──► implementation ──► PR ──► CI green ──► AI review ──► merge
+     ──► branch ──► implementation ──► PR ──► [author stops] ──► AI review ──► [human merge]
      ──► ... ──► release candidate ──► [HUMAN GATE 2: production approval] ──► deploy/launch
 ```
 
@@ -34,11 +34,15 @@ Use the PR template. Title is a conventional commit (it becomes the squash commi
 
 Every PR gets a review from an AI agent **that did not author it** (typically Claude via the GitHub connector).
 
-**Mechanics:** because all agents authenticate as the repo owner, GitHub blocks formal reviews (approve / request-changes) on these PRs. AI reviews are therefore posted as **PR comments titled "🤖 AI Review — APPROVE / REQUEST CHANGES"** and are binding: a PR must not be merged until its latest AI Review comment says APPROVE. This is a procedural gate, not a GitHub-enforced one. The reviewer checks, in order: acceptance criteria met and verifiable · soulchain/crypto guardrails (AGENTS.md) respected · spec/schemas/vectors moved together · tests real (no weakened or skipped tests) · scope matches the issue. Reviewer either approves or requests changes with specific, actionable comments. Authors respond by pushing fixes, not by arguing scope.
+**Mechanics:** because all agents authenticate as the repo owner, GitHub blocks formal reviews (approve / request-changes) on these PRs. AI reviews are therefore posted as **PR comments** (often titled `🤖 AI Review — APPROVE` or `🤖 AI Review — REQUEST CHANGES`) and are binding: a PR must not be merged until a reviewer comment contains an explicit verdict — `LGTM`, `Approve`, or `APPROVE` (including the emoji title form above). This is a procedural gate, not a GitHub-enforced one. The reviewer checks, in order: acceptance criteria met and verifiable · soulchain/crypto guardrails (AGENTS.md) respected · spec/schemas/vectors moved together · tests real (no weakened or skipped tests) · scope matches the issue. Reviewer either approves or requests changes with specific, actionable comments. Authors respond by pushing fixes, not by arguing scope. **After opening a PR, the author must STOP** — see §7.
 
 ### 7. Merge
 
-Squash-merge when: CI green + AI reviewer approval + no unresolved review threads. The merging agent deletes the branch. No human approval needed here — humans see the work at gate 1 (scope) and gate 2 (production); the middle is agent territory.
+After opening a PR, **STOP**. Do not merge. Comment that the PR is ready for review, then end the session.
+
+Merging happens only after a reviewer comment containing an explicit verdict (`LGTM` / `Approve` / `APPROVE`, including title `🤖 AI Review — APPROVE`) exists, AND is performed by the **human** or an agent **explicitly instructed by the human**.
+
+Squash-merge + delete branch when: CI green + reviewer verdict + no unresolved threads.
 
 ### 8. Human gate 2 — production
 
@@ -50,9 +54,9 @@ Anything that touches the live being or the public requires explicit human appro
 
 ## Roles
 
-- **Builder agents** (Cursor): implement issues, open PRs, respond to review.
-- **Reviewer agent** (Claude, via GitHub PRs): reviews, approves/requests changes, merges, audits TASKS.md drift.
-- **Human**: approves work to begin, approves production, sets direction. Nothing else required.
+- **Builder** (Cursor): implement, open PRs, comment ready-for-review, **stop**, respond to review with fixes; never self-merge.
+- **Reviewer** (Claude via GitHub): reviews, inline comments, posts verdict; does **not** auto-merge.
+- **Human**: Gate 1, Gate 2 production, and **merge** (or explicitly instruct an agent to merge after LGTM).
 
 ## Failure handling
 
