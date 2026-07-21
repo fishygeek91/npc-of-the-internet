@@ -85,6 +85,26 @@ describe("isValidCid", () => {
     expect(CidSchema.safeParse(cid).success).toBe(true);
   });
 
+  it("accepts many CIDs from computeCid with varied records", async () => {
+    const sampleCount = 50;
+    const cids: string[] = [];
+
+    for (let i = 0; i < sampleCount; i++) {
+      const record = {
+        ...sampleRecord,
+        seq: sampleRecord.seq + i,
+        body: { kind: "shard", text: `I remember the rain. (${i})` }
+      };
+      cids.push(await computeCid(record));
+    }
+
+    for (const cid of cids) {
+      expect(isValidCid(cid)).toBe(true);
+      expect(cid.length).toBe(61);
+      expect(cid.startsWith("bagu")).toBe(true);
+    }
+  });
+
   it("rejects empty string", () => {
     expect(isValidCid("")).toBe(false);
     expect(CidSchema.safeParse("").success).toBe(false);

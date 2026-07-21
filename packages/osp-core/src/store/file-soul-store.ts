@@ -394,6 +394,7 @@ export class FileSoulStore implements SoulStore {
    * (idempotent retry after crash between blob and chain append).
    */
   private async writeBlobIdempotent(cid: string, bytes: Uint8Array): Promise<void> {
+    // invariant: cid is computed, not caller-supplied — assertion guards against a future refactor passing external input
     if (!isValidCid(cid)) {
       throw new StorageError(`invalid CID format: ${cid}`);
     }
@@ -515,6 +516,7 @@ export class FileSoulStore implements SoulStore {
 
     for (const lineBytes of lineBytesList) {
       const cid = await computeCidFromCanonicalBytes(lineBytes);
+      // invariant: cid is computed, not caller-supplied — assertion guards against a future refactor passing external input
       if (!isValidCid(cid)) {
         throw new StorageError(`invalid CID format: ${cid}`);
       }

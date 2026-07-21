@@ -481,12 +481,17 @@ describe("FileSoulStore", () => {
 
   it("rejects path traversal CID in get() before filesystem access", async () => {
     const store = await FileSoulStore.open(dir);
-    const sentinelPath = path.join(dir, "..", "sentinel");
+    // blobsDir is <dir>/blobs, so "../sentinel" resolves to <dir>/sentinel
+    const sentinelPath = path.join(dir, "sentinel");
     try {
       await appendGenesis(store, soul);
       await writeFile(sentinelPath, "traversal-success");
 
       await expect(store.get("../sentinel")).rejects.toThrow(StorageError);
+      await expect(store.get("../sentinel")).rejects.toThrow(/invalid CID format/);
+
+      // The error must not depend on the target existing — same error with it gone.
+      await rm(sentinelPath, { force: true });
       await expect(store.get("../sentinel")).rejects.toThrow(/invalid CID format/);
     } finally {
       await store.close();
