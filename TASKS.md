@@ -80,11 +80,11 @@ Each task lists **Deps**, **Deliverables**, and **Acceptance** (how a reviewer v
 - Acceptance: integration test with FakeBrain + in-memory Door stub: scripted 20-message residency produces a verifying chain with arrival attestation + heartbeats. Green.
 - Notes: Agent: Cursor Grok 4.5 Maestro, 2026-07-21. HKDF-SHA-512 session keys via `deriveSessionKey(doorId, epoch)`; `DoorStub` at `test/helpers/door-stub.ts`; integration test `test/session-integration.test.ts`. Next: T2.3 or T2.5.
 
-### T2.5 ⬜ Departure + manual handover (v0.1)
+### T2.5 ✅ Departure + manual handover (v0.1)
 - Deps: T2.3, T2.4
 - Deliverables: `depart` flow: distill → submit shards for cosign → append cosigned `memory` records + farewell `attestation`; `arrive` flow for next Door; operator CLI command `wanderer move <door>` orchestrating both; journal generation (markdown summary of residency) appended as part of the memory record body.
 - Acceptance: integration test: full reside→depart→arrive across two stub Doors yields one continuous verifying chain; journal file emitted. Green.
-- Notes:
+- Notes: Agent: Cursor Grok 4.5 Maestro, 2026-07-21. `Session.depart` calls `stop()` + `drainAppends()` before distill → journal → two-phase Door cosign (review then per-shard commit with core-bound `door_cosig`) → cosigned `memory` records → departure + travel attestations. `move()` orchestrates depart + `Session.start` at the next door; `wanderer move <door-id>` CLI bin. Integration test `test/handover-integration.test.ts` (reside→depart→arrive, journal file on disk). Next: T3.1.
 
 ## Phase 3 — Immune system (v0.1 scope: static screen)
 

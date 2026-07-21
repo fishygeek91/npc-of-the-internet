@@ -103,7 +103,7 @@ Prompt templates live at `src/prompts/distiller/` (TS string constants, strategy
 
 **Behavior:** Zod-parse Brain JSON (`{ shards: [{ text, tags? }] }`); one malformed-output retry; empty or over-length shards dropped (≤500 Unicode code points — reject, not truncate); built-in PII regex screen (email, phone, handle) with optional allowlist and category-only `onPiiReject` callback (`// T3.1: immune screen hook`); transcript destroyed only when validation passes and at least five shards remain.
 
-**Out of scope:** Door cosign, soulchain append, residency journal (T2.5); full immune static screen (T3.1).
+**Out of scope:** soulchain append (callers append after cosign in `Session.depart`); full immune static screen (T3.1).
 
 ## Session loop (T2.4)
 
@@ -124,7 +124,7 @@ import {
 |--------|----------|---------|---------|
 | `store` | yes | — | Append-only `SoulStore` (genesis head required) |
 | `brain` | yes | — | `Brain` for replies |
-| `door` | yes | — | `DoorConnection` (`attest`, `heartbeat`) |
+| `door` | yes | — | `DoorConnection` (`attest`, `heartbeat`, `cosign`) |
 | `keyring` | yes | — | `Keyring` — soul signing + session-key derivation |
 | `doorId` | yes | — | Door identifier (e.g. `discord:g`) |
 | `timer` | yes | — | Injectable `Timer` for heartbeat scheduling |
@@ -133,7 +133,7 @@ import {
 | `maxHistoryMessages` | no | `40` | Rolling brain context cap |
 | `doorPublicKeys` | no | — | Passed to `composeSelf` / chain verify when cosigners present |
 
-`Session.start` composes self from the verified chain, derives a session key via HKDF-SHA-512 (`deriveSessionKey(doorId, epoch)`), appends an arrival attestation, and arms the heartbeat timer. Inbound frames are handled with `handleInbound`; call `drainAppends()` in tests to await async chain writes. Call `stop()` to end the residency.
+`Session.start` composes self from the verified chain, derives a session key via HKDF-SHA-512 (`deriveSessionKey(doorId, epoch)`), appends an arrival attestation, and arms the heartbeat timer. Inbound frames are handled with `handleInbound`; call `drainAppends()` in tests to await async chain writes. Call `stop()` to end the residency. Before departure (T2.5), call `stop()` then `await drainAppends()` so no heartbeat attestation races the departure record — `Session.depart` does this automatically.
 
 ### Keyring boundary
 
@@ -151,7 +151,63 @@ Vectors live under `spec/pop/vectors/`; the runner is `test/pop-vectors.test.ts`
 
 ### Door stub (integration tests)
 
-`test/helpers/door-stub.ts` implements an in-process `DoorConnection` for T2.4/T2.5 and future `door-sdk` contract tests. It verifies soul/session signatures, returns door co-signatures on `attest`, and exposes `verifyOutbound(frame)` for outbound frame checks. See `test/session-integration.test.ts` for the full 20-message residency acceptance test.
+`test/helpers/door-stub.ts` implements an in-process `DoorConnection` for T2.4/T2.5 and future `door-sdk` contract tests. It verifies soul/session signatures, returns door co-signatures on `attest`, implements two-phase `cosign` (review then per-shard commit with core-bound `door_cosig`), retires the session on departure attest, and exposes `verifyOutbound(frame)` for outbound frame checks. See `test/session-integration.test.ts` for the full 20-message residency acceptance test.
+
+## Departure / handover (T2.5)
+
+End-of-residency departure and manual handover to the next Door.
+
+```ts
+import { Session, move, type DepartOptions } from "@npc/runtime";
+```
+
+### `Session.depart`
+
+Call on a live session to end the residency. Order of operations:
+
+1. `stop()` + `await drainAppends()` — no further heartbeats or inbound handling
+2. Distill transcripts → candidate shards (`distillTranscripts`)
+3. Generate residency journal markdown (`generateJournal`) and write a journal file (`writeJournalFile`)
+4. Two-phase Door cosign: `review` (approve/reject shards) then per-shard `commit` (core-bound `door_cosig`)
+5. Append cosigned `memory` records (journal embedded on the first approved shard's body)
+6. Append `departure` attestation (Door cosigned) and soul-signed `travel` attestation
+
+Returns `{ journalPath, journalMarkdown, approvedShardIds, rejectedShardIds }`. The session remains not-live after depart.
+
+### `move()`
+
+Orchestrates depart at the current door and `Session.start` at the next:
+
+```ts
+import { move } from "@npc/runtime";
+
+const { depart, session } = await move({
+  session,
+  transcript,
+  journalDir,
+  nextDoor,
+  nextDoorId,
+  arrive: { store, brain, keyring, timer, clock, doorPublicKeys },
+});
+```
+
+No Door session traffic is accepted on the departed session during the travel gap.
+
+### Operator CLI
+
+```bash
+wanderer move <door-id>
+```
+
+Bin at `packages/runtime/src/cli.ts` (`wanderer` in package `bin`). Production wiring is env-based (`SOUL_KEY_PATH`, `SOULCHAIN_DIR`, `TRANSCRIPT_PATH`, `JOURNAL_DIR`, `CURRENT_DOOR_ID`); tests inject `runMove` via `runWandererCli` deps.
+
+### Journal
+
+Markdown residency summary generated via Brain at depart time. Written to `journalDir` as a file; the same markdown is stored in the first approved `memory` record's `body.journal` field.
+
+### Integration test
+
+`test/handover-integration.test.ts` — full reside → depart → arrive across two stub Doors yields one continuous verifying chain; journal file on disk; epoch increments at the next door.
 
 ## Test
 

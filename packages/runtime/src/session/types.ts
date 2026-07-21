@@ -121,6 +121,139 @@ export const HeartbeatResponseSchema = z.object({
 
 export type HeartbeatResponse = z.infer<typeof HeartbeatResponseSchema>;
 
+/** Candidate memory shard submitted in `/door/cosign` review phase. */
+export const CandidateShardSchema = z.object({
+  shard_id: z.string().min(1),
+  text: z.string().min(1).max(500),
+  tags: z.array(z.string()).optional()
+});
+
+export type CosignCandidateShard = z.infer<typeof CandidateShardSchema>;
+
+const CosignReviewRequestSchema = z.object({
+  protocol_version: ProtocolVersionSchema,
+  phase: z.literal("review"),
+  door_id: DoorIdSchema,
+  epoch: EpochSchema,
+  session_pubkey: PublicKeyStringSchema,
+  farewell: z.string().max(500).optional(),
+  shards: z.array(CandidateShardSchema).min(5).max(20),
+  issued_at: IsoTimestampSchema,
+  sig: SignatureStringSchema
+});
+
+const CosignCommitRequestSchema = z.object({
+  protocol_version: ProtocolVersionSchema,
+  phase: z.literal("commit"),
+  door_id: DoorIdSchema,
+  epoch: EpochSchema,
+  session_pubkey: PublicKeyStringSchema,
+  shard_id: z.string().min(1),
+  core: z.string().min(1),
+  issued_at: IsoTimestampSchema,
+  sig: SignatureStringSchema
+});
+
+/** `POST /door/cosign` request body (review or commit phase). */
+export const CosignRequestSchema = z.discriminatedUnion("phase", [
+  CosignReviewRequestSchema,
+  CosignCommitRequestSchema
+]);
+
+export type CosignRequest = z.infer<typeof CosignRequestSchema>;
+
+/** Fields covered by `/door/cosign` review request `sig` (excludes `protocol_version`). */
+export type CosignReviewSigningFields = {
+  door_id: string;
+  epoch: number;
+  phase: "review";
+  session_pubkey: string;
+  shards: CosignCandidateShard[];
+  issued_at: string;
+  farewell?: string;
+};
+
+/** Canonical bytes for `/door/cosign` review request signatures per `spec/door/api.md`. */
+export function cosignReviewSigningPayload(
+  request: Omit<Extract<CosignRequest, { phase: "review" }>, "sig">
+): Uint8Array {
+  const fields: CosignReviewSigningFields = {
+    door_id: request.door_id,
+    epoch: request.epoch,
+    phase: request.phase,
+    session_pubkey: request.session_pubkey,
+    shards: request.shards,
+    issued_at: request.issued_at
+  };
+  if (request.farewell !== undefined) {
+    fields.farewell = request.farewell;
+  }
+  return canonicalize(fields);
+}
+
+/** Fields covered by `/door/cosign` commit request `sig` (excludes `protocol_version`). */
+export type CosignCommitSigningFields = {
+  door_id: string;
+  epoch: number;
+  phase: "commit";
+  session_pubkey: string;
+  shard_id: string;
+  core: string;
+  issued_at: string;
+};
+
+/** Canonical bytes for `/door/cosign` commit request signatures per `spec/door/api.md`. */
+export function cosignCommitSigningPayload(
+  request: Omit<Extract<CosignRequest, { phase: "commit" }>, "sig">
+): Uint8Array {
+  const fields: CosignCommitSigningFields = {
+    door_id: request.door_id,
+    epoch: request.epoch,
+    phase: request.phase,
+    session_pubkey: request.session_pubkey,
+    shard_id: request.shard_id,
+    core: request.core,
+    issued_at: request.issued_at
+  };
+  return canonicalize(fields);
+}
+
+const ReviewDecisionSchema = z.object({
+  shard_id: z.string().min(1),
+  status: z.enum(["approved", "rejected"]),
+  reason: z.string().optional(),
+  host_audit_sig: SignatureStringSchema.optional()
+});
+
+export type ReviewDecision = z.infer<typeof ReviewDecisionSchema>;
+
+const CosignReviewResponseSchema = z.object({
+  phase: z.literal("review"),
+  door_id: DoorIdSchema,
+  epoch: EpochSchema,
+  decisions: z.array(ReviewDecisionSchema),
+  received_at: IsoTimestampSchema,
+  door_sig: SignatureStringSchema
+});
+
+const CosignCommitResponseSchema = z.object({
+  phase: z.literal("commit"),
+  door_id: DoorIdSchema,
+  epoch: EpochSchema,
+  shard_id: z.string().min(1),
+  door_cosig: SignatureStringSchema,
+  received_at: IsoTimestampSchema,
+  door_sig: SignatureStringSchema
+});
+
+/** `POST /door/cosign` success response (review or commit phase). */
+export const CosignResponseSchema = z.discriminatedUnion("phase", [
+  CosignReviewResponseSchema,
+  CosignCommitResponseSchema
+]);
+
+export type CosignResponse = z.infer<typeof CosignResponseSchema>;
+
 const InboundFrameBodySchema = z.object({
   text: z.string().min(1).max(4000),
   author_id: z.string().min(1),
@@ -161,10 +294,11 @@ export const OutboundFrameSchema = z.object({
 export type OutboundFrame = z.infer<typeof OutboundFrameSchema>;
 
 /**
- * Door transport surface used by Session (attest + heartbeat in v0.1).
+ * Door transport surface used by Session (attest, heartbeat, cosign).
  * Implemented by network adapters and in-process `DoorStub` in tests.
  */
 export interface DoorConnection {
   attest(request: AttestRequest): Promise<AttestResponse>;
   heartbeat(request: HeartbeatRequest): Promise<HeartbeatResponse>;
+  cosign(request: CosignRequest): Promise<CosignResponse>;
 }

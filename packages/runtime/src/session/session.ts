@@ -15,14 +15,21 @@ import {
 import type { Brain } from "../brain/types.js";
 import { BrainError } from "../brain/errors.js";
 import { composeSelf } from "../compose/compose-self.js";
+import { distillTranscripts } from "../distill/distill-transcripts.js";
+import type { TranscriptSource } from "../distill/types.js";
+import { generateJournal } from "../journal/generate-journal.js";
+import { writeJournalFile } from "../journal/write-journal-file.js";
 import type { Keyring, SessionSigner } from "../keyring/types.js";
 import { SessionError } from "./errors.js";
 import {
   DOOR_PROTOCOL_VERSION,
   InboundFrameSchema,
   attestSigningPayload,
+  cosignCommitSigningPayload,
+  cosignReviewSigningPayload,
   type AttestRequest,
   type Clock,
+  type CosignRequest,
   type DoorConnection,
   type HeartbeatRequest,
   type InboundFrame,
@@ -59,6 +66,24 @@ export type SessionOptions = {
 /** Result of {@link Session.handleInbound}. */
 export type HandleInboundResult =
   { ok: true; outbound: OutboundFrame } | { ok: false; error: BrainError };
+
+/** Options for {@link Session.depart}. */
+export type DepartOptions = {
+  transcript: TranscriptSource;
+  journalDir: string;
+  /** Brain for distill + journal; defaults to session brain if omitted */
+  brain?: Brain;
+  toDoorId?: string;
+  farewell?: string;
+};
+
+/** Result of {@link Session.depart}. */
+export type DepartResult = {
+  journalPath: string;
+  journalMarkdown: string;
+  approvedShardIds: string[];
+  rejectedShardIds: string[];
+};
 
 type BrainHistoryMessage = {
   role: "user" | "assistant";
@@ -287,6 +312,210 @@ export class Session {
     await this.appendChain;
   }
 
+  /**
+   * End a residency: distill transcripts, cosign memory shards, append departure
+   * and travel attestations. Stops the session first; session remains not-live.
+   */
+  async depart(options: DepartOptions): Promise<DepartResult> {
+    if (!this.live) {
+      throw new SessionError("session is not live");
+    }
+
+    this.stop();
+    await this.drainAppends();
+
+    const brain = options.brain ?? this.brain;
+    const candidates = await distillTranscripts(options.transcript, brain);
+    const shardTexts = candidates.map((shard) => shard.text);
+
+    const journalMarkdown = await generateJournal(
+      { doorId: this.doorId, epoch: this.epochValue, shardTexts },
+      brain
+    );
+    const journalPath = await writeJournalFile(
+      options.journalDir,
+      this.doorId,
+      this.epochValue,
+      journalMarkdown
+    );
+
+    const sessionPubkeyEncoded = encodePublicKey(this.sessionPublicKeyValue);
+    const unsignedReview: Omit<Extract<CosignRequest, { phase: "review" }>, "sig"> = {
+      protocol_version: DOOR_PROTOCOL_VERSION,
+      phase: "review",
+      door_id: this.doorId,
+      epoch: this.epochValue,
+      session_pubkey: sessionPubkeyEncoded,
+      shards: candidates,
+      issued_at: this.clock.now(),
+      ...(options.farewell !== undefined ? { farewell: options.farewell } : {})
+    };
+    const reviewSig = encodeSignature(
+      this.sessionSigner.sign(cosignReviewSigningPayload(unsignedReview))
+    );
+    const reviewResponse = await this.door.cosign({
+      ...unsignedReview,
+      sig: reviewSig
+    });
+
+    if (reviewResponse.phase !== "review") {
+      throw new SessionError("unexpected cosign response phase");
+    }
+
+    const approvedSet = new Set<string>();
+    const rejectedShardIds: string[] = [];
+    for (const decision of reviewResponse.decisions) {
+      if (decision.status === "approved") {
+        approvedSet.add(decision.shard_id);
+      } else {
+        rejectedShardIds.push(decision.shard_id);
+      }
+    }
+
+    const approvedShardIds: string[] = [];
+    let isFirstApproved = true;
+
+    for (const shard of candidates) {
+      if (!approvedSet.has(shard.shard_id)) {
+        continue;
+      }
+      approvedShardIds.push(shard.shard_id);
+
+      const head = await this.store.head();
+      if (head === null) {
+        throw new SessionError("depart: store has no head");
+      }
+
+      const memoryBody: {
+        kind: "shard";
+        text: string;
+        distilled_at: string;
+        journal?: string;
+      } = {
+        kind: "shard",
+        text: shard.text,
+        distilled_at: this.clock.now()
+      };
+      if (isFirstApproved) {
+        memoryBody.journal = journalMarkdown;
+        isFirstApproved = false;
+      }
+
+      const seq = head.seq + 1;
+      const prev = head.cid;
+
+      const core = new TextDecoder().decode(
+        canonicalize(
+          corePayload({
+            spec: OSP_SPEC,
+            seq,
+            prev,
+            type: "memory",
+            body: memoryBody,
+            residency: this.residency
+          })
+        )
+      );
+
+      const unsignedCommit: Omit<Extract<CosignRequest, { phase: "commit" }>, "sig"> = {
+        protocol_version: DOOR_PROTOCOL_VERSION,
+        phase: "commit",
+        door_id: this.doorId,
+        epoch: this.epochValue,
+        session_pubkey: sessionPubkeyEncoded,
+        shard_id: shard.shard_id,
+        core,
+        issued_at: this.clock.now()
+      };
+      const commitSig = encodeSignature(
+        this.sessionSigner.sign(cosignCommitSigningPayload(unsignedCommit))
+      );
+      const commitResponse = await this.door.cosign({
+        ...unsignedCommit,
+        sig: commitSig
+      });
+
+      if (commitResponse.phase !== "commit") {
+        throw new SessionError("unexpected cosign commit response phase");
+      }
+
+      const { record } = await sealRecord(this.keyring, {
+        seq,
+        prev,
+        type: "memory",
+        body: memoryBody,
+        residency: this.residency,
+        cosigners: [commitResponse.door_cosig]
+      });
+      await this.store.append(record);
+    }
+
+    let chainHead = await this.store.head();
+    if (chainHead === null) {
+      throw new SessionError("depart: store has no head before departure");
+    }
+
+    const departureBody = {
+      kind: "departure" as const,
+      pop_version: POP_VERSION,
+      door_id: this.doorId,
+      epoch: this.epochValue,
+      at: this.clock.now()
+    };
+
+    await this.appendAttestation({
+      kind: "departure",
+      body: departureBody,
+      residency: this.residency,
+      seq: chainHead.seq + 1,
+      prev: chainHead.cid,
+      signAttest: (unsigned) => {
+        const bytes = attestSigningPayload(unsigned);
+        return encodeSignature(this.sessionSigner.sign(bytes));
+      }
+    });
+
+    chainHead = await this.store.head();
+    if (chainHead === null) {
+      throw new SessionError("depart: store has no head before travel");
+    }
+
+    const travelBody: {
+      kind: "travel";
+      pop_version: typeof POP_VERSION;
+      from_door_id: string;
+      from_epoch: number;
+      at: string;
+      to_door_id?: string;
+    } = {
+      kind: "travel",
+      pop_version: POP_VERSION,
+      from_door_id: this.doorId,
+      from_epoch: this.epochValue,
+      at: this.clock.now()
+    };
+    if (options.toDoorId !== undefined) {
+      travelBody.to_door_id = options.toDoorId;
+    }
+
+    const { record: travelRecord } = await sealRecord(this.keyring, {
+      seq: chainHead.seq + 1,
+      prev: chainHead.cid,
+      type: "attestation",
+      body: travelBody,
+      residency: this.residency,
+      cosigners: []
+    });
+    await this.store.append(travelRecord);
+
+    return {
+      journalPath,
+      journalMarkdown,
+      approvedShardIds,
+      rejectedShardIds
+    };
+  }
+
   private pushHistory(message: BrainHistoryMessage): void {
     this.history.push(message);
     while (this.history.length > this.maxHistoryMessages) {
@@ -372,7 +601,7 @@ export class Session {
   }
 
   private async appendAttestation(params: {
-    kind: "arrival" | "heartbeat";
+    kind: "arrival" | "heartbeat" | "departure";
     body: CreateRecordFields["body"];
     residency: string;
     seq: number;
@@ -493,7 +722,7 @@ async function sealRecord(
 
   const parsed = RecordSchema.safeParse(unsignedRecord);
   if (!parsed.success) {
-    throw new SessionError(`invalid attestation record: ${parsed.error.message}`);
+    throw new SessionError(`invalid record: ${parsed.error.message}`);
   }
 
   const record = parsed.data;
