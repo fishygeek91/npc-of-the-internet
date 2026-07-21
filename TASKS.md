@@ -52,7 +52,7 @@ Each task lists **Deps**, **Deliverables**, and **Acceptance** (how a reviewer v
 - Deps: T1.3
 - Deliverables: `osp` binary in `osp-cli`: `osp init` (genesis from `spec/osp/genesis.md` + new key), `osp verify <dir>`, `osp log <dir>` (human-readable chain listing), `osp show <cid>`.
 - Acceptance: README walkthrough: init → verify → log works on a fresh dir; e2e test scripts the same. Green.
-- Notes: `osp` bin at `packages/osp-cli/dist/cli.js`; charter auto-resolves in-repo; `soul.key` mode `0o600`; verify maps load-time chain failures to exit 1 and torn-store corruption to exit 2 with `openWithRecovery` guidance. Next: T2.1 Brain interface (parallel).
+- Notes: `osp` bin at `packages/osp-cli/dist/cli.js`; charter auto-resolves in-repo; `soul.key` mode `0o600`; verify maps load-time chain failures to exit 1 and torn-store corruption to exit 2 with `openWithRecovery` guidance. #17 follow-up: `extractTimestamp` key list aligned to spec bodies; `CorruptionError.failures` on chain verify open; e2e exit-code and `--door-key` coverage. Next: T2.1 Brain interface (parallel).
 
 ## Phase 2 — Runtime (the being)
 

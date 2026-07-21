@@ -9,10 +9,7 @@ import {
   generateKeypair
 } from "@npc/osp-core";
 
-import { CharterResolutionError, readCharterContents, resolveCharterPath } from "../charter.js";
-
-/** Exit code for usage errors and I/O failures. */
-export const EXIT_USAGE = 2;
+import { readCharterContents, resolveCharterPath } from "../charter.js";
 
 /** Options for {@link runInit}. */
 export type InitOptions = {
@@ -63,12 +60,4 @@ export async function runInit(options: InitOptions): Promise<InitResult> {
   }
 
   return { publicKey, genesisCid: cid };
-}
-
-/** Map init errors to CLI exit codes. */
-export function initExitCode(error: unknown): number {
-  if (error instanceof CharterResolutionError) {
-    return EXIT_USAGE;
-  }
-  return EXIT_USAGE;
 }

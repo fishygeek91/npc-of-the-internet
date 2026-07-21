@@ -547,10 +547,11 @@ export class FileSoulStore implements SoulStore {
       if (firstFailure !== undefined) {
         const cidPart = firstFailure.cid === undefined ? "" : ` (cid ${firstFailure.cid})`;
         throw new CorruptionError(
-          `chain verification failed: ${firstFailure.rule} at seq ${firstFailure.seq}${cidPart}: ${firstFailure.message}`
+          `chain verification failed: ${firstFailure.rule} at seq ${firstFailure.seq}${cidPart}: ${firstFailure.message}`,
+          { failures: verifyResult.failures }
         );
       }
-      throw new CorruptionError("chain verification failed");
+      throw new CorruptionError("chain verification failed", { failures: verifyResult.failures });
     }
 
     this.headInfo = verifyResult.head;
