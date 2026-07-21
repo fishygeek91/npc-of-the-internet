@@ -1,4 +1,4 @@
-import { computeCid, type OspRecord } from "@npc/osp-core";
+import { computeCid, parseResidency as parseOspResidency, type OspRecord } from "@npc/osp-core";
 
 import { AtlasError } from "./errors.js";
 
@@ -149,22 +149,16 @@ export function recordSummary(record: OspRecord): string {
   }
 }
 
-/** Parse `door:<platform>:<id>/epoch:<n>` into door id and epoch. */
+/**
+ * Parse a residency string into Atlas wire fields (`door_id`, `epoch`).
+ * Delegates to osp-core `parseResidency` so the residency grammar stays single-sourced.
+ */
 export function parseResidency(residency: string): { door_id: string; epoch: number } | null {
-  const match = /^door:([a-z0-9-]+:[A-Za-z0-9_-]+)\/epoch:(\d+)$/.exec(residency);
-  if (match === null) {
+  const parsed = parseOspResidency(residency);
+  if (parsed === null) {
     return null;
   }
-  const doorId = match[1];
-  const epochText = match[2];
-  if (doorId === undefined || epochText === undefined) {
-    return null;
-  }
-  const epoch = Number.parseInt(epochText, 10);
-  if (!Number.isFinite(epoch)) {
-    return null;
-  }
-  return { door_id: doorId, epoch };
+  return { door_id: parsed.doorId, epoch: parsed.epoch };
 }
 
 /**

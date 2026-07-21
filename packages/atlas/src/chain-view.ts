@@ -4,6 +4,7 @@ import * as path from "node:path";
 import {
   CorruptionError,
   FileSoulStore,
+  SchemaError,
   StorageError,
   type HeadInfo,
   type OspRecord
@@ -90,7 +91,12 @@ export class ChainView {
         await store.close();
       }
     } catch (error) {
-      if (error instanceof CorruptionError || error instanceof StorageError) {
+      // SchemaError: mid-chain shape skew (e.g. newer writer) — surface 503, do not 500.
+      if (
+        error instanceof CorruptionError ||
+        error instanceof StorageError ||
+        error instanceof SchemaError
+      ) {
         return this.storeSnapshot(fingerprint, {
           records: [],
           head: null,

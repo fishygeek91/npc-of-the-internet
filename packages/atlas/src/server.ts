@@ -34,8 +34,11 @@ export async function createAtlasServer(config: AtlasConfig): Promise<FastifyIns
       return;
     }
 
-    const message = error instanceof Error ? error.message : String(error);
-    void reply.status(500).send(atlasErrorToBody(new AtlasError("internal_error", message, 500)));
+    const detail = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`atlas internal_error: ${detail}\n`);
+    void reply
+      .status(500)
+      .send(atlasErrorToBody(new AtlasError("internal_error", "Internal server error", 500)));
   });
 
   app.addHook("onClose", async () => {
@@ -124,6 +127,9 @@ function replyIfUnreadable(snap: ChainSnapshot, reply: FastifyReply): boolean {
 function parseOptionalInt(value: string | undefined): number | undefined {
   if (value === undefined || value === "") {
     return undefined;
+  }
+  if (!/^-?\d+$/.test(value)) {
+    throw new AtlasError("invalid_request", `Invalid integer query parameter: ${value}`, 400);
   }
   const parsed = Number.parseInt(value, 10);
   if (!Number.isFinite(parsed)) {

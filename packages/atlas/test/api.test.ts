@@ -2,7 +2,12 @@ import { cp, mkdtemp, open, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { decodePublicKey, FileSoulStore } from "@npc/osp-core";
+import {
+  canonicalize,
+  computeCidFromCanonicalBytes,
+  decodePublicKey,
+  FileSoulStore
+} from "@npc/osp-core";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { createAtlasServer } from "../src/server.js";
@@ -341,6 +346,43 @@ describe("torn tail policy", () => {
 
     const afterBytes = await readFile(chainPath);
     expect(afterBytes.equals(truncated)).toBe(true);
+  });
+});
+
+describe("schema-invalid mid-chain records", () => {
+  it("returns 503 chain_unreadable on every endpoint (not 500)", async () => {
+    const copyDir = await makeTempDir("atlas-schema-skew-");
+    await cp(MULTI_RESIDENCY_FIXTURE_DIR, copyDir, { recursive: true });
+    const chainPath = join(copyDir, "chain.jsonl");
+    const chainText = await readFile(chainPath, "utf8");
+    const lines = chainText.split("\n").filter((line) => line.length > 0);
+    // Mutate a mid-chain line (not genesis, not head) with an unrecognized key.
+    const midIndex = 1;
+    const midLine = lines[midIndex];
+    if (midLine === undefined || lines.length < 3) {
+      throw new Error("fixture chain too short for mid-chain mutation");
+    }
+
+    const record = JSON.parse(midLine) as Record<string, unknown>;
+    record.future_field = "x";
+    const tamperedBytes = canonicalize(record);
+    const tamperedCid = await computeCidFromCanonicalBytes(tamperedBytes);
+    await writeFile(join(copyDir, "blobs", tamperedCid), tamperedBytes);
+    lines[midIndex] = new TextDecoder().decode(tamperedBytes);
+    await writeFile(chainPath, `${lines.join("\n")}\n`);
+
+    const app = await openServer(copyDir);
+    try {
+      for (const url of ["/state", "/chain/head", "/records", "/journals"]) {
+        const response = await app.inject({ method: "GET", url });
+        expect(response.statusCode).toBe(503);
+        expect(response.json()).toMatchObject({
+          error: { code: "chain_unreadable" }
+        });
+      }
+    } finally {
+      await app.close();
+    }
   });
 });
 

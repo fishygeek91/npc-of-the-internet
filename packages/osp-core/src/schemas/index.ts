@@ -18,7 +18,13 @@ export {
   AttestationBodySchema
 } from "./body.js";
 
-export { EnvelopeFieldsSchema, RecordSchemaBase, RecordSchema } from "./envelope.js";
+export {
+  EnvelopeFieldsSchema,
+  RecordSchemaBase,
+  RecordSchema,
+  RESIDENCY_RE,
+  parseResidency
+} from "./envelope.js";
 
 import type { z } from "zod";
 

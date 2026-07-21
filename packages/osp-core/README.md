@@ -6,7 +6,7 @@ OSP soulchain primitives: Zod record schemas, canonical JSON, Ed25519 signing, C
 
 | Area | Exports |
 |------|---------|
-| Schemas | `RecordSchema`, body schemas (`GenesisBodySchema`, …), `OspRecord` types |
+| Schemas | `RecordSchema`, body schemas (`GenesisBodySchema`, …), `OspRecord` types, `RESIDENCY_RE`, `parseResidency` |
 | Canonical JSON | `canonicalize` — sorted keys, no whitespace (UTF-16 code-unit order) |
 | Encoding | `encodeBase64Url`, `decodeBase64Url`, `encodePublicKey`, `decodePublicKey`, `encodeSignature`, `decodeSignature` |
 | Ed25519 | `generateKeypair`, `sign`, `verify` |
