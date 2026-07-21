@@ -15,7 +15,15 @@
               "minimum": 0
             },
             "prev": {
-              "type": ["string", "null"]
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^bagu[a-z2-7]{57}$"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "residency": {
               "type": ["string", "null"]
@@ -71,7 +79,15 @@
               "minimum": 0
             },
             "prev": {
-              "type": ["string", "null"]
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^bagu[a-z2-7]{57}$"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "residency": {
               "type": ["string", "null"]
@@ -171,7 +187,15 @@
               "minimum": 0
             },
             "prev": {
-              "type": ["string", "null"]
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^bagu[a-z2-7]{57}$"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "residency": {
               "type": ["string", "null"]
@@ -198,7 +222,8 @@
                 "evidence": {
                   "type": "array",
                   "items": {
-                    "type": "string"
+                    "type": "string",
+                    "pattern": "^bagu[a-z2-7]{57}$"
                   },
                   "minItems": 1
                 },
@@ -225,7 +250,15 @@
               "minimum": 0
             },
             "prev": {
-              "type": ["string", "null"]
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^bagu[a-z2-7]{57}$"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "residency": {
               "type": ["string", "null"]
@@ -279,7 +312,15 @@
               "minimum": 0
             },
             "prev": {
-              "type": ["string", "null"]
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^bagu[a-z2-7]{57}$"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "residency": {
               "type": ["string", "null"]
@@ -342,7 +383,15 @@
               "minimum": 0
             },
             "prev": {
-              "type": ["string", "null"]
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^bagu[a-z2-7]{57}$"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "residency": {
               "type": ["string", "null"]
@@ -538,7 +587,15 @@
               "minimum": 0
             },
             "prev": {
-              "type": ["string", "null"]
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^bagu[a-z2-7]{57}$"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "residency": {
               "type": ["string", "null"]

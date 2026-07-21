@@ -13,7 +13,15 @@
           "minimum": 0
         },
         "prev": {
-          "type": ["string", "null"]
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^bagu[a-z2-7]{57}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "residency": {
           "type": ["string", "null"]

@@ -20,7 +20,7 @@ import {
 } from "../src/index.js";
 
 const RESIDENCY = "door:discord:g/epoch:1";
-const WRONG_PREV_CID = "bagu4eraaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const WRONG_PREV_CID = "bagu" + "a".repeat(57);
 const CHAIN_FILE = "chain.jsonl";
 const LOCK_FILE = ".append.lock";
 

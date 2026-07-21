@@ -7,7 +7,7 @@ import { encodePublicKey, encodeSignature } from "../src/index.js";
 import { createRecord, signCore, soulPayload, verifyRecord } from "../src/record.js";
 import { SchemaError, VerificationError } from "../src/errors.js";
 
-const PREV_CID = "bagu4eraaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const PREV_CID = "bagu" + "a".repeat(57);
 const RESIDENCY = "door:discord:g/epoch:1";
 
 type RecordCase = {

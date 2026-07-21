@@ -26,7 +26,7 @@ Every soulchain record is a JSON object with the following top-level fields. The
 |---|---|---|---|
 | `spec` | string | yes | Must be exactly `"osp/0.1"` on every record. Identifies the schema version independently of package semver (see ENGINEERING.md D6). |
 | `seq` | unsigned integer | yes | Monotonic sequence number. **Genesis uses `seq: 0`.** Each subsequent record increments by exactly 1 (`1`, `2`, `3`, …). No gaps, no reuse. |
-| `prev` | string \| null | yes | CID of the previous record (see [CIDs](#cids)). **`null` only on the genesis record** (`seq: 0`). All other records must contain a valid CID string equal to the CID of record `seq - 1`. |
+| `prev` | string \| null | yes | When present, must be a CIDv1 base32 dag-json sha2-256 string (`bagu…`) as defined under [CIDs](#cids). CID of the previous record. **`null` only on the genesis record** (`seq: 0`). All other records must contain a valid CID string equal to the CID of record `seq - 1`. |
 | `type` | string | yes | One of: `genesis`, `memory`, `drift`, `decision`, `transaction`, `attestation`, `sleep` (see [Record types](#record-types)). |
 | `body` | object | yes | Type-specific payload. Schema depends on `type` (and, for `memory`, on `body.kind`). Must be a JSON object (never `null`). |
 | `residency` | string \| null | yes | Active residency descriptor when the record was authored. Format: `door:<platform>:<door-id>/epoch:<n>` (example: `door:discord:guild123/epoch:77`). **`null` only on genesis** — the being has no Door before first arrival. Empty string is invalid. |
@@ -150,7 +150,7 @@ An auditable personality change, citing evidence from committed memory shards. A
 | Field | Type | Required | Constraints |
 |---|---|---|---|
 | `summary` | string | yes | Short description of the personality change (first person or neutral prose). |
-| `evidence` | array of strings | yes | CIDs of **committed** `memory` records (`kind: "shard"`) supporting this drift. Minimum count enforced by charter / Vigil rules (≥N shards — exact N defined in charter; Vigil contest flow is v0.3+). Must contain at least one CID in v0.1 schema. |
+| `evidence` | array of strings | yes | Each element must be a CIDv1 base32 dag-json sha2-256 string (`bagu…`) as defined under [CIDs](#cids). CIDs of **committed** `memory` records (`kind: "shard"`) supporting this drift. Minimum count enforced by charter / Vigil rules (≥N shards — exact N defined in charter; Vigil contest flow is v0.3+). Must contain at least one CID in v0.1 schema. |
 | `effective_at` | string | yes | ISO 8601 UTC timestamp when the drift takes effect for composition. |
 
 ### Envelope notes

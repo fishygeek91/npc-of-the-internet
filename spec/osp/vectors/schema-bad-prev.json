@@ -1,0 +1,41 @@
+{
+  "description": "Record prev is not a valid bagu CID string",
+  "expected": "schema_violation",
+  "soulPublicKey": "6kpsY-KcUgq-9VB7Ey7F-ZVHdq6-vnuSQh7qaRRG0iw",
+  "doorPublicKeys": ["E5j2LG0aRXxRumpLXz29L2n8qTIWIY3ImX5Ba9F9k8o"],
+  "records": [
+    {
+      "spec": "osp/0.1",
+      "seq": 0,
+      "prev": null,
+      "residency": null,
+      "cosigners": [],
+      "sig": "N7-28uz8HA7Hi_4SFEx8_-FdJ53rk5jEGPuKuWnggMY0W4hFKELQU_E0IYAG7Sdfg7y4XXIfZUiHNGekFvQPBw",
+      "type": "genesis",
+      "body": {
+        "charter": "# Wanderer",
+        "soul_pubkey": "6kpsY-KcUgq-9VB7Ey7F-ZVHdq6-vnuSQh7qaRRG0iw",
+        "created_at": "2026-01-01T00:00:00.000Z"
+      }
+    },
+    {
+      "spec": "osp/0.1",
+      "seq": 1,
+      "prev": "../../../etc/passwd",
+      "residency": "door:discord:g/epoch:1",
+      "cosigners": [
+        "pg1UNx4NQF5c6l6EGCTZlyqWMDWRvPjU31i0h4YsG_xnBrGzUYnlFxT5V6QT0UsacBO8ZYAQJAwnUZYTDeZ-AQ"
+      ],
+      "sig": "7fNEWA3ToVPMQ4NtRqh_36So3DVcO2MoTgTYvR3M3oLFMr11_JyWDQfaLH5FpRJ6g33fz6wV08WffH4W9W8VBw",
+      "type": "attestation",
+      "body": {
+        "kind": "arrival",
+        "pop_version": "pop/0.1",
+        "door_id": "discord:g",
+        "epoch": 1,
+        "session_pubkey": "_RckOFqgx1tk-3jNYC-h2ZH96_drE8WO1wLqyDXp9hg",
+        "at": "2026-01-02T00:00:00.000Z"
+      }
+    }
+  ]
+}

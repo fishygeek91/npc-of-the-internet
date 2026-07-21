@@ -111,7 +111,7 @@ export const MemoryBodySchema = z.discriminatedUnion("kind", [
 export const DriftBodySchema = z
   .object({
     summary: z.string(),
-    evidence: z.array(z.string()).min(1),
+    evidence: z.array(CidSchema).min(1),
     effective_at: z.string()
   })
   .strict();

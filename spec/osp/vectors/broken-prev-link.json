@@ -40,12 +40,12 @@
     {
       "spec": "osp/0.1",
       "seq": 2,
-      "prev": "bagu4eraaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "prev": "baguaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "residency": "door:discord:g/epoch:1",
       "cosigners": [
-        "Lw73g1HxH7jHCZvH_jlKTDwkuOM3LbgmGHCfoDzyegjGT_CwafiSklaMO14WAWKfj76gXKsuHDg48DIRsZXJBQ"
+        "o1uUcQQWevPJcsdTAr9ewHSNGwJAdMm_NyG8olpefllpItCV08p7HID8eiUeR14vxZcFUUVjgk9sRQAYcYAJAQ"
       ],
-      "sig": "HQpBDpKDUyT8Py5JFpJWzZYrKSN9NKumWmgdOp30oAonLORfpzAxn68QCVODw8OIiiM_d8Dr4gTKy3kohFihBw",
+      "sig": "qCLkrWhqiDvI_KWipS8B9Ie8ag6HvtXYfCB0kovyaNzQ-8xMtdiAndQRNxrvn3xLI47m5m-1tTsPYlIAIS_CDQ",
       "type": "memory",
       "body": {
         "kind": "shard",

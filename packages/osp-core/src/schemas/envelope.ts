@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { CidSchema } from "../crypto/cid.js";
 import { decodeSignature } from "../encoding/base64url.js";
 import { EncodingError } from "../errors.js";
 import {
@@ -52,7 +53,7 @@ export const EnvelopeFieldsSchema = z
   .object({
     spec: z.literal(OSP_SPEC),
     seq: z.number().int().nonnegative(),
-    prev: z.string().nullable(),
+    prev: CidSchema.nullable(),
     residency: z.string().nullable(),
     cosigners: z.array(z.string()),
     sig: z.string()
