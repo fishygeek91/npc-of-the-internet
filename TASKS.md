@@ -68,11 +68,11 @@ Each task lists **Deps**, **Deliverables**, and **Acceptance** (how a reviewer v
 - Acceptance: golden-file test — same chain head twice → byte-identical output; composing a longer fixture chain includes drift + shards in prompt. Green.
 - Notes: `composeSelf(store, options?)` with `ComposeSelfOptions.doorPublicKeys` forwarded to verify only. Single materialize → `verifyRecords` → compose from same snapshot (plus store-head cross-check). Template strategy (a) TS const in `src/prompts/composer/system.ts`. Journal + drift evidence excluded from prompt. Goldens: `pnpm --filter @npc/runtime generate:goldens`. MemorySoulStore at `test/helpers/memory-soul-store.ts` for T2.4. Next: T2.4.
 
-### T2.3 ⬜ Distiller
+### T2.3 ✅ Distiller (Cursor Grok 4.5 Maestro, 2026-07-21)
 - Deps: T2.1, T1.1
 - Deliverables: end-of-residency distillation: transcripts → 5–20 candidate shards (first-person, ≤500 chars, PII-stripped) via Brain; transcript destruction after distillation; prompts in `runtime/src/prompts/distiller/`.
 - Acceptance: FakeBrain tests: shard count/length limits enforced, PII regex screen applied, transcripts deleted from disk after run. Green.
-- Notes:
+- Notes: Agent: Cursor Grok 4.5 Maestro, 2026-07-21. `distillTranscripts(source, brain, opts?)` → `CandidateShard[]` (Door cosign shape). Strategy (a) TS prompts in `src/prompts/distiller/`. Built-in PII regex + allowlist with `// T3.1: immune screen hook`; destroy transcripts only after successful validation. No chain/Door writes. Next: T2.5.
 
 ### T2.4 ✅ Session loop (Cursor Grok 4.5 Maestro, 2026-07-21)
 - Deps: T2.2

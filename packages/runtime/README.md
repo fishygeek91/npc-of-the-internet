@@ -68,6 +68,43 @@ pnpm --filter @npc/runtime generate:goldens
 
 For integration tests, `test/helpers/memory-soul-store.ts` provides an in-memory `SoulStore` (reused by T2.4).
 
+## Distiller (T2.3)
+
+End-of-residency distillation: transcript lines → 5–20 first-person candidate memory shards (Door cosign shape) via `Brain`.
+
+```ts
+import {
+  distillTranscripts,
+  FileTranscriptSource,
+  FakeBrain,
+  type CandidateShard,
+} from "@npc/runtime";
+
+const source = new FileTranscriptSource("/tmp/residency-transcript.jsonl");
+const brain = new FakeBrain(() =>
+  JSON.stringify({
+    shards: [
+      { text: "I remember feeling curious about the stars." },
+      // ... 4–19 more shards
+    ],
+  })
+);
+
+const shards: CandidateShard[] = await distillTranscripts(source, brain, {
+  onPiiReject: (category) => {
+    /* category only — never log shard text */
+  },
+});
+```
+
+`FileTranscriptSource` reads newline-delimited JSON; each line is `{ role: "user" | "assistant", text: string, author_id?: string }`. The file is deleted only after a successful run (`source.destroy()` on success).
+
+Prompt templates live at `src/prompts/distiller/` (TS string constants, strategy a).
+
+**Behavior:** Zod-parse Brain JSON (`{ shards: [{ text, tags? }] }`); one malformed-output retry; empty or over-length shards dropped (≤500 Unicode code points — reject, not truncate); built-in PII regex screen (email, phone, handle) with optional allowlist and category-only `onPiiReject` callback (`// T3.1: immune screen hook`); transcript destroyed only when validation passes and at least five shards remain.
+
+**Out of scope:** Door cosign, soulchain append, residency journal (T2.5); full immune static screen (T3.1).
+
 ## Session loop (T2.4)
 
 The residency session engine receives Door messages, maintains rolling brain context, signs outbound replies with a derived session key, and appends arrival/heartbeat attestations to the soulchain.
