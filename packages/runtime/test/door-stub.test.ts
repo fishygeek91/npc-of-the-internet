@@ -424,4 +424,56 @@ describe("DoorStub", () => {
       /epoch_closed/
     );
   });
+
+  it("re-arrival resets cosignState so a later epoch can review again", async () => {
+    const stub = createStub();
+    const epoch1 = EPOCH;
+    const epoch2 = EPOCH + 2;
+
+    await establishArrival(stub, keyring, epoch1);
+    const shards = sampleShards(5);
+    await stub.cosign(
+      signCosignReviewRequest(keyring, {
+        protocol_version: DOOR_PROTOCOL_VERSION,
+        phase: "review",
+        door_id: DOOR_ID,
+        epoch: epoch1,
+        session_pubkey: encodePublicKey(keyring.deriveSessionKey(DOOR_ID, epoch1).publicKey),
+        shards,
+        issued_at: ISSUED_AT
+      })
+    );
+
+    const departureRequest = signAttestRequest(
+      keyring,
+      {
+        protocol_version: DOOR_PROTOCOL_VERSION,
+        door_id: DOOR_ID,
+        epoch: epoch1,
+        kind: "departure",
+        core: '{"type":"attestation","kind":"departure"}',
+        session_pubkey: encodePublicKey(keyring.deriveSessionKey(DOOR_ID, epoch1).publicKey),
+        issued_at: ISSUED_AT
+      },
+      false
+    );
+    await stub.attest(departureRequest);
+
+    await establishArrival(stub, keyring, epoch2);
+    const reviewAgain = await stub.cosign(
+      signCosignReviewRequest(keyring, {
+        protocol_version: DOOR_PROTOCOL_VERSION,
+        phase: "review",
+        door_id: DOOR_ID,
+        epoch: epoch2,
+        session_pubkey: encodePublicKey(keyring.deriveSessionKey(DOOR_ID, epoch2).publicKey),
+        shards,
+        issued_at: ISSUED_AT
+      })
+    );
+
+    expect(reviewAgain.phase).toBe("review");
+    expect(reviewAgain.decisions).toHaveLength(5);
+    expect(reviewAgain.decisions.every((decision) => decision.status === "approved")).toBe(true);
+  });
 });

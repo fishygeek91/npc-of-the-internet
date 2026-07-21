@@ -315,6 +315,10 @@ export class Session {
   /**
    * End a residency: distill transcripts, cosign memory shards, append departure
    * and travel attestations. Stops the session first; session remains not-live.
+   *
+   * If the host rejects every shard, the journal file is still written but never
+   * reaches the chain (no memory record to carry `body.journal`); departure and
+   * travel still append. Revisit with quarantine in T3.2.
    */
   async depart(options: DepartOptions): Promise<DepartResult> {
     if (!this.live) {

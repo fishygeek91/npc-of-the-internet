@@ -11,8 +11,9 @@ const USAGE = `wanderer — NPC of the Internet operator CLI
 Usage:
   wanderer move <door-id>
 
-Production wiring (Ghost v0.1) is env-based and not yet implemented in-process.
-Required env (documented for operators; inject deps in tests):
+v0.1 shell: without an injected runMove (tests) this command exits 2.
+Production env → Door transport → runMove wiring is T4.1 (door-sdk / ws).
+Documented env names (not read by this binary yet):
   SOUL_KEY_PATH       path to soul private key file
   SOULCHAIN_DIR       soulchain directory
   TRANSCRIPT_PATH     residency transcript JSONL
@@ -31,7 +32,7 @@ export type MoveCliResult = {
   nextEpoch: number;
 };
 
-/** Injectable dependencies for {@link runWandererCli} (tests and future production wiring). */
+/** Injectable dependencies for {@link runWandererCli} (tests inject `runMove`). */
 export type WandererCliDeps = {
   runMove?: (doorId: string) => Promise<MoveCliResult>;
   writeStdout?: (line: string) => void;
@@ -91,10 +92,11 @@ export async function runWandererCli(
           usageError(writeStderr, "move requires a target door id");
         }
 
+        // T4.1: wire production runMove from env + door-sdk/ws transport (env names in USAGE only today).
         if (deps.runMove === undefined) {
           usageError(
             writeStderr,
-            "move is not configured: set operator env vars or inject runMove in tests"
+            "move is not configured: inject runMove in tests (production wiring is T4.1)"
           );
         }
 

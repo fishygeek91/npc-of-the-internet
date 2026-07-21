@@ -132,7 +132,11 @@ async function buildGenesisStore(): Promise<MemorySoulStore> {
   return store;
 }
 
-function createSessionHarness(store: SoulStore, brain: FakeBrain) {
+function createSessionHarness(
+  store: SoulStore,
+  brain: FakeBrain,
+  doorOptions?: { rejectShardIds?: ReadonlySet<string> }
+) {
   const clock = new FakeClock(CLOCK_START);
   const timer = new FakeTimer();
   const keyring = new SingleKeyKeyring(SOUL.privateKey);
@@ -140,7 +144,10 @@ function createSessionHarness(store: SoulStore, brain: FakeBrain) {
     doorId: DOOR_ID,
     doorKeypair: DOOR,
     soulPublicKey: SOUL.publicKey,
-    clock
+    clock,
+    ...(doorOptions?.rejectShardIds === undefined
+      ? {}
+      : { rejectShardIds: doorOptions.rejectShardIds })
   });
 
   return {
@@ -268,6 +275,58 @@ describe("Session.depart", () => {
     await expect(session.handleInbound(createInboundFrame("too late", "in-late"))).rejects.toThrow(
       SessionError
     );
+  });
+
+  it("rejected shards are absent from the chain; journal lands on first approved", async () => {
+    const store = await buildGenesisStore();
+    const transcriptDir = await makeTempDir("depart-reject-transcript-");
+    const journalDir = await makeTempDir("depart-reject-journal-");
+    const source = await writeTranscript(transcriptDir, sampleTranscriptLines());
+
+    const shardTexts = nShards(5);
+    const brain = new FakeBrain([shardsJson(shardTexts), SAMPLE_JOURNAL]);
+    const harness = createSessionHarness(store, brain, {
+      rejectShardIds: new Set(["shard-1"])
+    });
+    const session = await harness.start();
+
+    const result = await session.depart({
+      transcript: source,
+      journalDir
+    });
+
+    expect(result.rejectedShardIds).toEqual(["shard-1"]);
+    expect(result.approvedShardIds).toEqual(["shard-2", "shard-3", "shard-4", "shard-5"]);
+    await expect(access(result.journalPath)).resolves.toBeUndefined();
+
+    const records = await collectRecords(store);
+    const memoryShards = records.filter(
+      (record) => record.type === "memory" && record.body.kind === "shard"
+    );
+    expect(memoryShards).toHaveLength(4);
+
+    const chainTexts = memoryShards.map((record) => {
+      if (record.type === "memory" && record.body.kind === "shard") {
+        return record.body.text;
+      }
+      return "";
+    });
+    expect(chainTexts).not.toContain(shardTexts[0]);
+    expect(chainTexts).toEqual(shardTexts.slice(1));
+
+    const firstApproved = memoryShards[0];
+    if (firstApproved?.type === "memory" && firstApproved.body.kind === "shard") {
+      expect(firstApproved.body.text).toBe(shardTexts[1]);
+      expect(firstApproved.body.journal).toBe(SAMPLE_JOURNAL);
+    }
+    for (const later of memoryShards.slice(1)) {
+      if (later.type === "memory" && later.body.kind === "shard") {
+        expect(later.body.journal).toBeUndefined();
+      }
+    }
+
+    const chainResult = await verifyChain(store, { doorPublicKeys: [DOOR.publicKey] });
+    expect(chainResult.valid).toBe(true);
   });
 
   it("heartbeat in flight during depart does not append after departure", async () => {

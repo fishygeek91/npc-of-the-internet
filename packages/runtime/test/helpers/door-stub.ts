@@ -114,6 +114,9 @@ export class DoorStub implements DoorConnection {
         sessionPubkey: request.session_pubkey
       };
       this.sessionRetired = false;
+      // Clear prior-epoch cosign/heartbeat state so revisit-same-door works (T4.1).
+      this.cosignState = null;
+      this.lastHeartbeatSeq = 0;
     } else {
       this.requireActiveSession(request.door_id, request.epoch, request.session_pubkey);
       const sessionPublicKey = decodePublicKey(request.session_pubkey);
