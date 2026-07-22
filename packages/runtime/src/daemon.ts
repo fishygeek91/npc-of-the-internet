@@ -5,6 +5,7 @@ import { dirname } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import {
+  DoorError,
   DOOR_PROTOCOL_VERSION,
   HttpDoorConnection,
   sessionBindSigningPayload,
@@ -149,16 +150,61 @@ export async function startResidencyDaemon(
     session_sig: encodeSignature(sessionSigner.sign(bindPayload))
   };
 
+  let shuttingDown = false;
+
+  /** Compose healthcheck target: present only while the session WebSocket is connected. */
+  const setReadyFile = async (present: boolean): Promise<void> => {
+    if (present) {
+      const readyDir = dirname(config.readyFilePath);
+      if (readyDir !== ".") {
+        await mkdir(readyDir, { recursive: true });
+      }
+      await writeFile(config.readyFilePath, `${clock.now()}\n`, "utf8");
+      return;
+    }
+    try {
+      await unlink(config.readyFilePath);
+    } catch {
+      // best-effort
+    }
+  };
+
   // onInbound runs after construction, so `const` is safe for the closed-over client.
   const wsClient = new WsDoorSessionClient({
     wsBaseUrl,
     bind,
+    onConnectionChange: (connected) => {
+      if (shuttingDown) {
+        return;
+      }
+      void setReadyFile(connected)
+        .then(() => {
+          if (connected) {
+            logger.info({ readyFilePath: config.readyFilePath }, "ws_session_ready");
+          } else {
+            logger.warn("ws_session_disconnected");
+          }
+        })
+        .catch((error: unknown) => {
+          const message = error instanceof Error ? error.message : String(error);
+          logger.error({ err: message }, "ready_file_update_failed");
+        });
+    },
     onInbound: (frame) => {
       void (async () => {
         try {
           const result = await session.handleInbound(frame);
           if (result.ok) {
-            wsClient.sendOutbound(result.outbound);
+            try {
+              wsClient.sendOutbound(result.outbound);
+            } catch (error: unknown) {
+              // Ghost contract: replies are not queued across reconnect gaps.
+              if (error instanceof DoorError && error.code === "door_unavailable") {
+                logger.warn({ err: error.message }, "outbound_dropped_ws_down");
+                return;
+              }
+              throw error;
+            }
             return;
           }
           if ("screened" in result && result.screened) {
@@ -178,16 +224,8 @@ export async function startResidencyDaemon(
 
   await wsClient.connect();
 
-  const readyDir = dirname(config.readyFilePath);
-  if (readyDir !== ".") {
-    await mkdir(readyDir, { recursive: true });
-  }
-  await writeFile(config.readyFilePath, `${clock.now()}\n`, "utf8");
-
   logger.info({ doorId: config.doorId, epoch: session.epoch }, "residency_live");
   deps.onReady?.();
-
-  let shuttingDown = false;
 
   const shutdown = async (): Promise<void> => {
     if (shuttingDown) {
@@ -195,12 +233,7 @@ export async function startResidencyDaemon(
     }
     shuttingDown = true;
 
-    try {
-      await unlink(config.readyFilePath);
-    } catch {
-      // best-effort
-    }
-
+    await setReadyFile(false);
     await wsClient.close();
     session.stop();
     await session.drainAppends();
@@ -209,9 +242,14 @@ export async function startResidencyDaemon(
 
   if (!deps.skipSignals) {
     const onSignal = (): void => {
-      void shutdown().then(() => {
-        process.exit(0);
-      });
+      void shutdown()
+        .catch((error: unknown) => {
+          const message = error instanceof Error ? error.message : String(error);
+          logger.error({ err: message }, "shutdown_error");
+        })
+        .finally(() => {
+          process.exit(0);
+        });
     };
     process.once("SIGTERM", onSignal);
     process.once("SIGINT", onSignal);

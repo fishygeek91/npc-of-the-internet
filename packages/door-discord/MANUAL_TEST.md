@@ -100,7 +100,9 @@ docker compose --env-file ops/.env -f ops/compose.ghost.yml logs runtime 2>&1 | 
 docker compose --env-file ops/.env -f ops/compose.ghost.yml ps runtime
 ```
 
-Expect log line `residency_live` and health status `healthy` (ready file at `/tmp/npc-runtime.ready`).
+Expect log line `residency_live` and health status `healthy` (ready file at `/tmp/npc-runtime.ready` while the WS is connected).
+
+**Image CMD check:** if runtime exits immediately with `npc-runtime: not found`, the image still uses a broken bin shim — `ops/Dockerfile.runtime` must `CMD ["node", "dist/daemon.js"]`. With placeholder env, expect structured `boot_failed` naming the missing var instead.
 
 ### Confirm door-discord listeners
 
@@ -113,6 +115,8 @@ Both should report port **9090**.
 ### Discord round-trip
 
 Post a normal (non-bot) message in the bound channel. The Wanderer should reply via the WebSocket session path (runtime → door-discord → Discord).
+
+**Ghost contract — reconnect gaps:** outbound replies are **not queued**. If the Brain finishes a reply while the WS is down (reconnect backoff), the daemon logs `outbound_dropped_ws_down` and that reply is lost. Resend the Discord message after `ws_session_ready` / `healthy` returns — do not chase a single missed reply as a transport bug.
 
 ### Graceful stop (no auto-depart)
 

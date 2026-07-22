@@ -69,14 +69,16 @@ docker compose --env-file ops/.env -f ops/compose.ghost.yml up -d --build
 
 **Expected behavior after start:**
 
-- **runtime** runs `npc-runtime`: opens the soulchain, connects to door-discord on the compose network (`DOOR_HTTP_HOST` / `DOOR_HTTP_PORT`), arrives at the Door, and binds the session WebSocket. Logs `residency_live` when the ready file is written. Requires a valid soulchain (genesis or restored) and matching `SOUL_PUBLIC_KEY` / `ATLAS_DOOR_PUBKEYS` / `CURRENT_DOOR_ID`.
+- **runtime** runs `node dist/daemon.js` (image `CMD`; `pnpm deploy` does not emit an `npc-runtime` bin shim). It opens the soulchain, connects to door-discord on the compose network (`DOOR_HTTP_HOST` / `DOOR_HTTP_PORT`), arrives at the Door, and binds the session WebSocket. Logs `residency_live` after the first successful bind. Requires a valid soulchain (genesis or restored) and matching `SOUL_PUBLIC_KEY` / `ATLAS_DOOR_PUBKEYS` / `CURRENT_DOOR_ID`.
 - **door-discord** requires a real `DISCORD_BOT_TOKEN` and valid guild/channel IDs to stay healthy. Without them the container will crash-loop.
 - **atlas-api** serves on `http://127.0.0.1:8787` once the soulchain volume contains a valid chain (empty volume returns errors until genesis).
 - **backup** watches the soulchain volume and syncs to `BACKUP_RCLONE_REMOTE` when changes are detected.
 
-The runtime healthcheck probes `/tmp/npc-runtime.ready` (override with `NPC_RUNTIME_READY_FILE`). The file appears after the WebSocket session is bound; compose allows up to 90s start period before marking unhealthy.
+**Image entrypoint smoke (no Discord / incomplete env):** after `docker compose … build runtime`, a one-shot run with placeholder env should log `boot_failed` naming a missing/invalid var (e.g. `ATLAS_DOOR_PUBKEYS`) — **not** `npc-runtime: not found` or similar. That confirms `CMD ["node", "dist/daemon.js"]` is present in the deploy output.
 
-**SIGTERM / graceful stop:** `docker compose stop runtime` (or `down`) sends SIGTERM. The daemon removes the ready file, closes the WebSocket, calls `session.stop()`, drains pending soulchain appends, releases the writer lock, and exits. It does **not** run ceremonial depart (no distill, cosign, or departure attestation). Use `wanderer move` for a deliberate handover.
+The runtime healthcheck probes `/tmp/npc-runtime.ready` (override with `NPC_RUNTIME_READY_FILE`). The file is present only while the session WebSocket is connected (cleared on disconnect/reconnect backoff, rewritten on rebind). Compose allows up to 90s start period before marking unhealthy.
+
+**SIGTERM / graceful stop:** `docker compose stop runtime` (or `down`) sends SIGTERM. The daemon removes the ready file, closes the WebSocket, calls `session.stop()`, drains pending soulchain appends, releases the writer lock, and exits (even if shutdown steps throw). It does **not** run ceremonial depart (no distill, cosign, or departure attestation). Use `wanderer move` for a deliberate handover.
 
 ### 1.4 Soulchain volume writability smoke test
 
@@ -145,10 +147,10 @@ A healthy response is JSON describing present/traveling/sleeping state derived f
 docker compose --env-file ops/.env -f ops/compose.ghost.yml ps runtime
 ```
 
-`healthy` means `/tmp/npc-runtime.ready` exists. Follow logs for `residency_live`:
+`healthy` means `/tmp/npc-runtime.ready` exists — i.e. the session **WebSocket is currently connected**, not merely that the daemon process booted. During a WS drop + reconnect backoff the probe flips `unhealthy` until rebind. Follow logs for `residency_live` / `ws_session_ready` / `ws_session_disconnected`:
 
 ```bash
-docker compose --env-file ops/.env -f ops/compose.ghost.yml logs runtime 2>&1 | grep residency_live
+docker compose --env-file ops/.env -f ops/compose.ghost.yml logs runtime 2>&1 | grep -E 'residency_live|ws_session_'
 ```
 
 ### 3.4 Door coalesced HTTP + WebSocket
