@@ -6,10 +6,11 @@ import { encodePublicKey } from "@npc/osp-core";
 
 import { SOUL } from "./fixed-keys.js";
 
-export const TEST_GUILD_ID = "123456789012345678";
-export const TEST_CHANNEL_ID = "987654321098765432";
-export const TEST_OPERATOR_ID = "111222333444555666";
-export const TEST_REVIEW_CHANNEL_ID = "222333444555666777";
+/** Short fake snowflakes — long digit runs trip gitleaks `discord-client-id`. */
+export const TEST_GUILD_ID = "10001";
+export const TEST_CHANNEL_ID = "10002";
+export const TEST_OPERATOR_ID = "10004";
+export const TEST_REVIEW_CHANNEL_ID = "10006";
 
 const tempDirs: string[] = [];
 
