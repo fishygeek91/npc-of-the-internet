@@ -22,7 +22,7 @@ describe("formatStatusReply", () => {
   it("formats a present door with epoch and pending review count", () => {
     const reply = formatStatusReply({
       present: true,
-      doorId: "discord:123456789012345678",
+      doorId: "discord:10001",
       epoch: 3,
       sessionLive: true,
       pendingReviewCount: 2
@@ -37,7 +37,7 @@ describe("formatStatusReply", () => {
   it("formats an absent door before arrival", () => {
     const reply = formatStatusReply({
       present: false,
-      doorId: "discord:123456789012345678",
+      doorId: "discord:10001",
       epoch: null,
       sessionLive: false,
       pendingReviewCount: 0
@@ -103,7 +103,7 @@ describe("startDiscordDoor status command", () => {
       await gateway.emitCommand({
         kind: "status",
         interactionId: "ix-status-non-op",
-        userId: "999888777666555444",
+        userId: "10005",
         ephemeral: true
       });
       expect(gateway.ephemerals).toHaveLength(2);

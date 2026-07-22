@@ -8,9 +8,9 @@ import { SOUL } from "./helpers/fixed-keys.js";
 function baseEnv(): NodeJS.ProcessEnv {
   return {
     DISCORD_BOT_TOKEN: "token",
-    DISCORD_GUILD_ID: "123456789012345678",
-    DISCORD_CHANNEL_ID: "234567890123456789",
-    DISCORD_OPERATOR_IDS: "111222333444555666",
+    DISCORD_GUILD_ID: "10001",
+    DISCORD_CHANNEL_ID: "10002",
+    DISCORD_OPERATOR_IDS: "10004",
     DOOR_KEY_PATH: "/tmp/door.key",
     SOUL_PUBLIC_KEY: encodePublicKey(SOUL.publicKey)
   };
@@ -19,8 +19,8 @@ function baseEnv(): NodeJS.ProcessEnv {
 describe("loadDiscordDoorConfig", () => {
   it("loads a valid env map", () => {
     const config = loadDiscordDoorConfig(baseEnv());
-    expect(config.guildId).toBe("123456789012345678");
-    expect(config.operatorIds).toEqual(["111222333444555666"]);
+    expect(config.guildId).toBe("10001");
+    expect(config.operatorIds).toEqual(["10004"]);
     expect(config.reviewTimeoutMs).toBe(300_000);
   });
 
