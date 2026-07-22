@@ -10,11 +10,12 @@ import type { FakeGateway } from "./fake-gateway.js";
 import { DOOR, SOUL } from "./fixed-keys.js";
 import { MemorySoulStore } from "./memory-soul-store.js";
 
-export const GUILD_ID = "123456789012345678";
-export const CHANNEL_ID = "234567890123456789";
-export const OTHER_CHANNEL_ID = "345678901234567890";
-export const OPERATOR_ID = "111222333444555666";
-export const USER_ID = "999888777666555444";
+/** Short fake snowflakes — long digit runs trip gitleaks `discord-client-id`. */
+export const GUILD_ID = "10001";
+export const CHANNEL_ID = "10002";
+export const OTHER_CHANNEL_ID = "10003";
+export const OPERATOR_ID = "10004";
+export const USER_ID = "10005";
 
 const tempDirs: string[] = [];
 
