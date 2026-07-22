@@ -142,11 +142,11 @@ Each task lists **Deps**, **Deliverables**, and **Acceptance** (how a reviewer v
 - Acceptance: `HttpDoorConnection` + WS client unit tests; daemon integration test; `docker compose --env-file ops/.env.example -f ops/compose.ghost.yml config` exits 0; documented compose E2E in `packages/door-discord/MANUAL_TEST.md`; `pnpm check` green; RUNBOOK §1.4 writability smoke test still applies.
 - Notes: Agent: Cursor Grok 4.5 Maestro, 2026-07-22. Split PRs for size: PR A (#57) door-sdk clients, PR B (#58) daemon + ops. Unblocks T6.2.
 
-### T6.2 ⬜ Genesis ceremony + launch checklist
+### T6.2 ✅ Genesis ceremony + launch checklist (Grok 4.5 Maestro, 2026-07-22)
 - Deps: T6.1-followup, T5.2, T3.2
 - Deliverables: `ops/LAUNCH.md`: generate soul key, run `osp init` with the real charter, first residency checklist, public announcement template linking Atlas + soulchain head CID; dry-run script that executes the full checklist against a scratch environment.
 - Acceptance: dry-run passes end to end; a second agent can follow LAUNCH.md verbatim.
-- Notes: Door transport + residency daemon (T6.1-followup / #53) unblocks the live residency loop this ceremony needs.
+- Notes: Agent: Cursor Grok 4.5 Maestro, 2026-07-22. `ops/LAUNCH.md` + `ops/scripts/launch-dry-run.sh` + `launch-first-residency.mjs` + `ops/templates/announcement.md`; CI `launch-dry-run` job. Offline dry-run uses Session+Door+FakeBrain (divergence table in LAUNCH.md). v0.1 Ghost complete. Next: launch for real (Gate 2 release issue), then Phase 7 — split T7.1/T7.2 into task issues.
 
 ## Phase 7 — Post-Ghost (v0.2/0.3 — spec first, then build)
 

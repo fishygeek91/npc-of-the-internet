@@ -44,6 +44,21 @@ jobs:
       - name: Run offline restore drill
         run: bash ops/scripts/restore-drill.sh
 
+  launch-dry-run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install rclone
+        run: sudo apt-get update && sudo apt-get install -y rclone
+      - run: pnpm install --frozen-lockfile
+      - name: Run offline launch dry-run
+        run: bash ops/scripts/launch-dry-run.sh
+
   secret-scan:
     runs-on: ubuntu-latest
     permissions:
