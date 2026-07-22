@@ -1,0 +1,90 @@
+# Ghost v0.1 — Docker Compose stack for a single VPS.
+# Images also built and pushed by `.github/workflows/release.yml` on version tags.
+
+name: npc-ghost
+
+services:
+  # Idle placeholder — not a live residency loop. Door HTTP/WS client + residency
+  # daemon land in GitHub issue #53; until then this service only holds the stack up.
+  runtime:
+    build:
+      context: ..
+      dockerfile: ops/Dockerfile.runtime
+    image: ghcr.io/fishygeek91/npc-runtime:${NPC_IMAGE_TAG:-latest}
+    restart: unless-stopped
+    depends_on:
+      - door-discord
+    environment:
+      SOUL_KEY_PATH: /run/keys/soul.key
+      SOULCHAIN_DIR: /data/soulchain
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      NPC_BRAIN_MODEL: ${NPC_BRAIN_MODEL:-claude-sonnet-4-20250514}
+      NPC_BRAIN_MAX_TOKENS: ${NPC_BRAIN_MAX_TOKENS:-1024}
+      NPC_BRAIN_TIMEOUT_MS: ${NPC_BRAIN_TIMEOUT_MS:-60000}
+    volumes:
+      - soulchain:/data/soulchain
+      - ${SOUL_KEY_HOST_PATH}:/run/keys/soul.key:ro
+
+  door-discord:
+    build:
+      context: ..
+      dockerfile: ops/Dockerfile.door-discord
+    image: ghcr.io/fishygeek91/npc-door-discord:${NPC_IMAGE_TAG:-latest}
+    restart: unless-stopped
+    environment:
+      DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN}
+      DISCORD_GUILD_ID: ${DISCORD_GUILD_ID}
+      DISCORD_CHANNEL_ID: ${DISCORD_CHANNEL_ID}
+      DISCORD_OPERATOR_IDS: ${DISCORD_OPERATOR_IDS}
+      DISCORD_REVIEW_TIMEOUT_MS: ${DISCORD_REVIEW_TIMEOUT_MS:-300000}
+      DISCORD_REVIEW_CHANNEL_ID: ${DISCORD_REVIEW_CHANNEL_ID:-}
+      DISCORD_USER_RATE_PER_MIN: ${DISCORD_USER_RATE_PER_MIN:-20}
+      DISCORD_USER_BURST: ${DISCORD_USER_BURST:-5}
+      DISCORD_CHANNEL_RATE_PER_MIN: ${DISCORD_CHANNEL_RATE_PER_MIN:-60}
+      DISCORD_CHANNEL_BURST: ${DISCORD_CHANNEL_BURST:-15}
+      DISCORD_COMMUNITY_NAME: ${DISCORD_COMMUNITY_NAME:-Discord Door}
+      DISCORD_COMMUNITY_DESCRIPTION: ${DISCORD_COMMUNITY_DESCRIPTION:-A Discord channel hosting the Wanderer.}
+      DOOR_KEY_PATH: /run/keys/door.key
+      SOUL_PUBLIC_KEY: ${SOUL_PUBLIC_KEY}
+      DOOR_HTTP_HOST: "0.0.0.0"
+      DOOR_HTTP_PORT: "9090"
+    volumes:
+      - ${DOOR_KEY_HOST_PATH}:/run/keys/door.key:ro
+    expose:
+      - "9090"
+
+  atlas-api:
+    build:
+      context: ..
+      dockerfile: ops/Dockerfile.atlas-api
+    image: ghcr.io/fishygeek91/npc-atlas-api:${NPC_IMAGE_TAG:-latest}
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    environment:
+      ATLAS_CHAIN_DIR: /data/soulchain
+      ATLAS_PORT: "8787"
+      ATLAS_DOOR_PUBKEYS: ${ATLAS_DOOR_PUBKEYS:-}
+    volumes:
+      - soulchain:/data/soulchain:ro
+
+  backup:
+    build:
+      context: ..
+      dockerfile: ops/Dockerfile.backup
+    image: ghcr.io/fishygeek91/npc-backup:${NPC_IMAGE_TAG:-latest}
+    restart: unless-stopped
+    depends_on:
+      - runtime
+    environment:
+      BACKUP_SOURCE_DIR: /data/soulchain
+      BACKUP_RCLONE_REMOTE: ${BACKUP_RCLONE_REMOTE}
+      RCLONE_CONFIG: /config/rclone/rclone.conf
+      BACKUP_DEBOUNCE_SEC: ${BACKUP_DEBOUNCE_SEC:-5}
+      BACKUP_INTERVAL_SEC: ${BACKUP_INTERVAL_SEC:-300}
+    volumes:
+      - soulchain:/data/soulchain:ro
+      - ${RCLONE_CONFIG_HOST_PATH}:/config/rclone:ro
+
+volumes:
+  soulchain:

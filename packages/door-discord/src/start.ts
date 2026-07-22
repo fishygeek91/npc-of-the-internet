@@ -142,15 +142,17 @@ export async function startDiscordDoor(
       port: config.httpPort
     });
     const bound = await httpServer.start();
-    logger.info({ baseUrl: bound.baseUrl }, "door_http_listening");
+    logger.info(
+      { host: bound.host, port: bound.port, baseUrl: bound.baseUrl },
+      "door_http_listening"
+    );
 
     wsServer = new WsDoorSessionServer({
       door,
-      host: config.httpHost,
-      port: 0
+      server: httpServer.nodeServer
     });
     const wsBound = await wsServer.start();
-    logger.info({ url: wsBound.url }, "door_ws_listening");
+    logger.info({ host: wsBound.host, port: wsBound.port, url: wsBound.url }, "door_ws_listening");
   }
 
   const rateLimiter = new DualRateLimiter(

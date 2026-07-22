@@ -1,0 +1,17 @@
+# Example rclone config for the offline restore drill (restore-drill.sh).
+#
+# The drill script generates a temp config inline; this file documents the
+# local-backend pattern for manual testing or CI.
+#
+# Usage (after copying and adjusting paths):
+#   rclone sync /path/to/seed drilllocal:/path/to/remote --config ops/rclone/rclone.drill.conf.example
+#   rclone sync drilllocal:/path/to/remote /path/to/restored --config ops/rclone/rclone.drill.conf.example
+#
+# Replace /tmp/restore-drill-remote with your scratch remote root.
+
+[drilllocal]
+type = local
+nounc = true
+
+# Paths are specified on the command line as drilllocal:/absolute/path
+# e.g. drilllocal:/tmp/restore-drill-remote
