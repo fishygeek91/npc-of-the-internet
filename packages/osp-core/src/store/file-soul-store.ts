@@ -24,8 +24,9 @@ import {
 } from "../errors.js";
 import { verifyRecord } from "../record.js";
 import { RecordSchema, type OspRecord } from "../schemas/index.js";
-import { verifyRecords } from "../verify-chain.js";
+import { verifyRecords, type VerifyChainResult } from "../verify-chain.js";
 
+import type { ChainFailure } from "../chain-types.js";
 import type { AppendResult, FileSoulStoreOpenOptions, HeadInfo, SoulStore } from "./types.js";
 
 const CHAIN_FILE = "chain.jsonl";
@@ -74,8 +75,10 @@ export class FileSoulStore implements SoulStore {
   private readonly blobsDir: string;
   private readonly lockPath: string;
   private readonly doorPublicKeys: readonly Uint8Array[] | undefined;
+  private readonly readOnly: boolean;
   private headInfo: HeadInfo | null;
   private soulPublicKey: Uint8Array | null;
+  private verificationResult: VerifyChainResult;
   private lockFd: number | null;
   private closed: boolean;
 
@@ -83,15 +86,18 @@ export class FileSoulStore implements SoulStore {
     dir: string,
     doorPublicKeys: readonly Uint8Array[] | undefined,
     head: HeadInfo | null,
-    soulPublicKey: Uint8Array | null
+    soulPublicKey: Uint8Array | null,
+    readOnly = false
   ) {
     this.dir = dir;
     this.chainPath = path.join(dir, CHAIN_FILE);
     this.blobsDir = path.join(dir, BLOBS_DIR);
     this.lockPath = path.join(dir, LOCK_FILE);
     this.doorPublicKeys = doorPublicKeys;
+    this.readOnly = readOnly;
     this.headInfo = head;
     this.soulPublicKey = soulPublicKey;
+    this.verificationResult = { valid: true, head };
     this.lockFd = null;
     this.closed = false;
   }
@@ -105,6 +111,44 @@ export class FileSoulStore implements SoulStore {
     await store.ensureLayout();
     await store.loadChain();
     return store;
+  }
+
+  /**
+   * Open an existing soulchain directory for read-only access.
+   *
+   * Does not create directories or files, does not touch `.append.lock`, and does not truncate
+   * torn trailing lines. Verification failures and torn tails are reported via {@link verification}
+   * instead of throwing.
+   */
+  static async openReadOnly(
+    dir: string,
+    options?: FileSoulStoreOpenOptions
+  ): Promise<FileSoulStore> {
+    const absoluteDir = path.resolve(dir);
+
+    if (!existsSync(absoluteDir)) {
+      throw new StorageError(`soulchain directory does not exist: ${absoluteDir}`);
+    }
+
+    const chainPath = path.join(absoluteDir, CHAIN_FILE);
+    if (!existsSync(chainPath)) {
+      throw new StorageError(`chain file does not exist: ${chainPath}`);
+    }
+
+    const blobsDir = path.join(absoluteDir, BLOBS_DIR);
+    if (!existsSync(blobsDir)) {
+      throw new StorageError(`blobs directory does not exist: ${blobsDir}`);
+    }
+
+    const store = new FileSoulStore(absoluteDir, options?.doorPublicKeys, null, null, true);
+    await store.loadChainReadOnly();
+    return store;
+  }
+
+  /** Latest verification result from {@link open} or {@link openReadOnly} load. */
+  verification(): VerifyChainResult {
+    this.assertOpen();
+    return this.verificationResult;
   }
 
   /**
@@ -139,6 +183,10 @@ export class FileSoulStore implements SoulStore {
   /** Append a signed record to the chain and return its CID. */
   async append(record: OspRecord): Promise<AppendResult> {
     this.assertOpen();
+
+    if (this.readOnly) {
+      throw new StorageError("FileSoulStore is read-only");
+    }
 
     const parsed = RecordSchema.safeParse(record);
     if (!parsed.success) {
@@ -281,6 +329,15 @@ export class FileSoulStore implements SoulStore {
     });
 
     if (chainStat === null || chainStat.size === 0) {
+      return;
+    }
+
+    if (this.readOnly) {
+      const buffer = await readFile(this.chainPath);
+      const lineBytesList = splitChainLines(buffer);
+      for (const lineBytes of lineBytesList) {
+        yield this.parseRecordFromLineBytes(lineBytes, "chain line");
+      }
       return;
     }
 
@@ -490,6 +547,7 @@ export class FileSoulStore implements SoulStore {
       await FileSoulStore.fsyncDirectory(this.dir);
       this.headInfo = null;
       this.soulPublicKey = null;
+      this.verificationResult = { valid: true, head: null };
       return;
     }
 
@@ -498,6 +556,7 @@ export class FileSoulStore implements SoulStore {
     if (buffer.length === 0) {
       this.headInfo = null;
       this.soulPublicKey = null;
+      this.verificationResult = { valid: true, head: null };
       return;
     }
 
@@ -509,9 +568,108 @@ export class FileSoulStore implements SoulStore {
     if (lineBytesList.length === 0) {
       this.headInfo = null;
       this.soulPublicKey = null;
+      this.verificationResult = { valid: true, head: null };
       return;
     }
 
+    const records = await this.parseChainLineBytes(lineBytesList);
+
+    const verifyOptions: { doorPublicKeys?: readonly Uint8Array[] } = {};
+    if (this.doorPublicKeys !== undefined) {
+      verifyOptions.doorPublicKeys = this.doorPublicKeys;
+    }
+
+    const verifyResult = await verifyRecords(records, verifyOptions);
+    if (!verifyResult.valid) {
+      const firstFailure = verifyResult.failures[0];
+      if (firstFailure !== undefined) {
+        const cidPart = firstFailure.cid === undefined ? "" : ` (cid ${firstFailure.cid})`;
+        throw new CorruptionError(
+          `chain verification failed: ${firstFailure.rule} at seq ${firstFailure.seq}${cidPart}: ${firstFailure.message}`,
+          { failures: verifyResult.failures }
+        );
+      }
+      throw new CorruptionError("chain verification failed", { failures: verifyResult.failures });
+    }
+
+    this.headInfo = verifyResult.head;
+    this.verificationResult = { valid: true, head: verifyResult.head };
+    this.setSoulPublicKeyFromRecords(records);
+  }
+
+  /**
+   * Soft-load the on-disk chain for read-only access.
+   *
+   * Torn trailing lines are ignored in memory (not truncated on disk). Verification failures
+   * are recorded in {@link verificationResult} instead of throwing.
+   */
+  private async loadChainReadOnly(): Promise<void> {
+    const buffer = await readFile(this.chainPath);
+    if (buffer.length === 0) {
+      this.headInfo = null;
+      this.soulPublicKey = null;
+      this.verificationResult = { valid: true, head: null };
+      return;
+    }
+
+    const tornTail = buffer[buffer.length - 1] !== 0x0a;
+    const lineBytesList = splitChainLines(buffer);
+
+    if (lineBytesList.length === 0) {
+      this.headInfo = null;
+      this.soulPublicKey = null;
+      if (tornTail) {
+        this.verificationResult = {
+          valid: false,
+          failures: [
+            {
+              seq: 0,
+              rule: "schema_violation",
+              message: "truncated trailing line ignored in read-only open"
+            }
+          ]
+        };
+      } else {
+        this.verificationResult = { valid: true, head: null };
+      }
+      return;
+    }
+
+    const records = await this.parseChainLineBytes(lineBytesList);
+
+    const verifyOptions: { doorPublicKeys?: readonly Uint8Array[] } = {};
+    if (this.doorPublicKeys !== undefined) {
+      verifyOptions.doorPublicKeys = this.doorPublicKeys;
+    }
+
+    const verifyResult = await verifyRecords(records, verifyOptions);
+    const lastLine = lineBytesList[lineBytesList.length - 1];
+    if (lastLine === undefined) {
+      this.headInfo = null;
+    } else {
+      this.headInfo = await this.headInfoFromLineBytes(lastLine);
+    }
+    this.setSoulPublicKeyFromRecords(records);
+
+    const failures: ChainFailure[] = verifyResult.valid ? [] : [...verifyResult.failures];
+    if (tornTail) {
+      const lastSeq = this.headInfo?.seq ?? 0;
+      failures.push({
+        seq: lastSeq,
+        rule: "schema_violation",
+        message: "truncated trailing line ignored in read-only open"
+      });
+    }
+
+    if (!verifyResult.valid || tornTail) {
+      this.verificationResult = { valid: false, failures };
+    } else {
+      this.verificationResult = { valid: true, head: this.headInfo };
+    }
+  }
+
+  /** Parse canonical chain line bytes into raw record JSON, verifying blob integrity. */
+  private async parseChainLineBytes(lineBytesList: Uint8Array[]): Promise<unknown[]> {
     const records: unknown[] = [];
 
     for (const lineBytes of lineBytesList) {
@@ -550,26 +708,46 @@ export class FileSoulStore implements SoulStore {
       records.push(parsed);
     }
 
-    const verifyOptions: { doorPublicKeys?: readonly Uint8Array[] } = {};
-    if (this.doorPublicKeys !== undefined) {
-      verifyOptions.doorPublicKeys = this.doorPublicKeys;
+    return records;
+  }
+
+  /** Derive head info from a single canonical chain line. */
+  private async headInfoFromLineBytes(lineBytes: Uint8Array): Promise<HeadInfo> {
+    const cid = await computeCidFromCanonicalBytes(lineBytes);
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(new TextDecoder().decode(lineBytes));
+    } catch (error) {
+      throw new CorruptionError(`invalid JSON in chain head: ${nodeErrorMessage(error)}`);
     }
 
-    const verifyResult = await verifyRecords(records, verifyOptions);
-    if (!verifyResult.valid) {
-      const firstFailure = verifyResult.failures[0];
-      if (firstFailure !== undefined) {
-        const cidPart = firstFailure.cid === undefined ? "" : ` (cid ${firstFailure.cid})`;
-        throw new CorruptionError(
-          `chain verification failed: ${firstFailure.rule} at seq ${firstFailure.seq}${cidPart}: ${firstFailure.message}`,
-          { failures: verifyResult.failures }
-        );
-      }
-      throw new CorruptionError("chain verification failed", { failures: verifyResult.failures });
+    const schemaResult = RecordSchema.safeParse(parsed);
+    if (!schemaResult.success) {
+      throw new CorruptionError(`invalid record at chain head: ${schemaResult.error.message}`);
     }
 
-    this.headInfo = verifyResult.head;
+    return { cid, seq: schemaResult.data.seq };
+  }
 
+  /** Parse a chain line into a validated record (iterate helper). */
+  private parseRecordFromLineBytes(lineBytes: Uint8Array, context: string): OspRecord {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(new TextDecoder().decode(lineBytes));
+    } catch (error) {
+      throw new CorruptionError(`invalid JSON in ${context}: ${nodeErrorMessage(error)}`);
+    }
+
+    const schemaResult = RecordSchema.safeParse(parsed);
+    if (!schemaResult.success) {
+      throw new SchemaError(schemaResult.error.message);
+    }
+
+    return schemaResult.data;
+  }
+
+  /** Extract soul public key from genesis when present at seq 0. */
+  private setSoulPublicKeyFromRecords(records: unknown[]): void {
     const firstParsed = RecordSchema.safeParse(records[0]);
     if (firstParsed.success && firstParsed.data.type === "genesis") {
       this.soulPublicKey = decodePublicKey(firstParsed.data.body.soul_pubkey);

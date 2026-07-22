@@ -48,6 +48,23 @@ function doorIdFromResidency(residency: string): string {
   return withoutPrefix.slice(0, epochSuffix);
 }
 
+/**
+ * Parse a residency descriptor into Door id and epoch.
+ * Returns null when the string does not match {@link RESIDENCY_RE}.
+ */
+export function parseResidency(residency: string): { doorId: string; epoch: number } | null {
+  if (!RESIDENCY_RE.test(residency)) {
+    return null;
+  }
+  const epochSuffix = residency.lastIndexOf("/epoch:");
+  const epochText = residency.slice(epochSuffix + "/epoch:".length);
+  const epoch = Number.parseInt(epochText, 10);
+  if (!Number.isFinite(epoch)) {
+    return null;
+  }
+  return { doorId: doorIdFromResidency(residency), epoch };
+}
+
 /** Shared envelope fields present on every soulchain record. */
 export const EnvelopeFieldsSchema = z
   .object({
