@@ -1,9 +1,9 @@
 import type { RecordListItem } from "@npc/atlas";
 
+import { RECORDS_PER_PAGE } from "./constants.js";
 import type { RecordDetail } from "./load-site-data.js";
 
-/** Records per page for soul explorer listings. */
-export const RECORDS_PER_PAGE = 5;
+export { RECORDS_PER_PAGE };
 
 /** Paginated records view for static soul pages. */
 export type RecordsPageView = {
@@ -61,7 +61,7 @@ export function totalPages(total: number, perPage: number): number {
  */
 export function soulListPath(page: number, type?: string): string {
   if (type !== undefined) {
-    return page === 1 ? `/soul/type/${type}/` : `/soul/type/${type}/page/${page}`;
+    return page === 1 ? `/soul/type/${type}/` : `/soul/type/${type}/page/${page}/`;
   }
-  return page === 1 ? "/soul/" : `/soul/page/${page}`;
+  return page === 1 ? "/soul/" : `/soul/page/${page}/`;
 }

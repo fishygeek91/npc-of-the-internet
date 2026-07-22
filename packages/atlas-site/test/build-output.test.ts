@@ -35,6 +35,23 @@ describe("build output", () => {
     }
   });
 
+  it("fails fast when ATLAS_SITE_CHAIN_DIR override points at a missing chain", async () => {
+    try {
+      await execFileAsync("pnpm", ["build"], {
+        cwd: PACKAGE_DIR,
+        env: {
+          ...process.env,
+          ATLAS_SITE_CHAIN_DIR: "/nonexistent-atlas-site-chain-dir-for-test"
+        }
+      });
+      expect.fail("expected pnpm build to fail for a missing chain dir");
+    } catch (error) {
+      const err = error as { stderr?: string; stdout?: string; message?: string };
+      const combined = `${err.stderr ?? ""}\n${err.stdout ?? ""}\n${err.message ?? ""}`;
+      expect(combined).toMatch(/ATLAS_SITE_CHAIN_DIR/);
+    }
+  }, 120_000);
+
   it("produces expected static files after astro build", async () => {
     await execFileAsync("pnpm", ["build"], {
       cwd: PACKAGE_DIR,

@@ -11,12 +11,11 @@ import {
 } from "@npc/atlas";
 import { computeCid, verifyRecords, type OspRecord, type VerifyChainResult } from "@npc/osp-core";
 import { loadAtlasSiteConfig } from "./config.js";
+import { RECORDS_PER_PAGE } from "./constants.js";
 import { prettyPrintBody, toDisplayBody } from "./display-body.js";
 import { deriveJourney, type JourneyEntry } from "./journey.js";
 import { renderJournalHtml } from "./markdown.js";
 import { recordVerified } from "./verification.js";
-
-const RECORDS_PER_PAGE = 5;
 
 const RECORD_TYPES = [
   "genesis",
@@ -160,13 +159,48 @@ function buildEffectiveVerifyResult(
   };
 }
 
+/** Cache key for the active env so Astro pages share one load per build. */
+function envCacheKey(env: NodeJS.ProcessEnv): string {
+  return [
+    env.ATLAS_SITE_CHAIN_DIR ?? "",
+    env.ATLAS_SITE_DOOR_PUBKEYS ?? "",
+    env.ATLAS_SITE_BASE ?? ""
+  ].join("\0");
+}
+
+let cachedEnvKey: string | undefined;
+let cachedSiteData: Promise<AtlasSiteData> | undefined;
+
 /**
  * Load and derive all build-time data for the Atlas static site.
+ * Results are memoized per env fingerprint for the process lifetime (Astro builds
+ * call this from many pages; a real chain should not be re-verified per route).
  *
  * @param env - Optional environment map for configuration (defaults to `process.env`).
  * @throws {Error} when configuration is invalid or the soulchain is unreadable.
  */
 export async function loadSiteData(env?: NodeJS.ProcessEnv): Promise<AtlasSiteData> {
+  const resolvedEnv = env ?? process.env;
+  const key = envCacheKey(resolvedEnv);
+  if (cachedSiteData !== undefined && cachedEnvKey === key) {
+    return cachedSiteData;
+  }
+
+  cachedEnvKey = key;
+  cachedSiteData = loadSiteDataUncached(resolvedEnv).catch((error: unknown) => {
+    if (cachedEnvKey === key) {
+      cachedEnvKey = undefined;
+      cachedSiteData = undefined;
+    }
+    throw error;
+  });
+  return cachedSiteData;
+}
+
+/**
+ * Uncached load path used by {@link loadSiteData}.
+ */
+async function loadSiteDataUncached(env: NodeJS.ProcessEnv): Promise<AtlasSiteData> {
   const config = await loadAtlasSiteConfig(env);
 
   const view = new ChainView({

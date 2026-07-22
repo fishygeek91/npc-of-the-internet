@@ -33,7 +33,7 @@ pnpm --filter @npc/atlas-site preview
 
 | Variable | Required | Default | Purpose |
 |----------|----------|---------|---------|
-| `ATLAS_SITE_CHAIN_DIR` | yes | set by package `build` script to the fixture | Path to a soulchain directory (`chain.jsonl` + `blobs/`) |
+| `ATLAS_SITE_CHAIN_DIR` | yes* | `../atlas/test/fixtures/multi-residency` when unset in `pnpm build` | Path to a soulchain directory (`chain.jsonl` + `blobs/`). Caller-supplied values are respected (`${ATLAS_SITE_CHAIN_DIR:-…}`). |
 | `ATLAS_SITE_DOOR_PUBKEYS` | no | loaded from `fixture-meta.json` in the chain dir when present | Comma-separated base64url door public keys for cosignature verification |
 | `ATLAS_SITE_BASE` | no | `/` | Astro `base` path (use `/npc-of-the-internet/` for GitHub Pages) |
 

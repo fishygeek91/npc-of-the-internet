@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "astro dev",
-    "build": "ATLAS_SITE_CHAIN_DIR=../atlas/test/fixtures/multi-residency astro build",
+    "build": "ATLAS_SITE_CHAIN_DIR=\"${ATLAS_SITE_CHAIN_DIR:-../atlas/test/fixtures/multi-residency}\" astro build",
     "preview": "astro preview",
     "test": "vitest run"
   },
