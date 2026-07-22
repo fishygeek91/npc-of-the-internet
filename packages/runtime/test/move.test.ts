@@ -187,6 +187,15 @@ describe("move", () => {
 
     const records = await collectRecords(store);
 
+    const memoryCandidates = records.filter(
+      (record) => record.type === "memory" && record.body.kind === "candidate"
+    );
+    const memoryShards = records.filter(
+      (record) => record.type === "memory" && record.body.kind === "shard"
+    );
+    expect(memoryCandidates).toHaveLength(5);
+    expect(memoryShards).toHaveLength(0);
+
     const departureIndex = records.findIndex(
       (record) => record.type === "attestation" && record.body.kind === "departure"
     );

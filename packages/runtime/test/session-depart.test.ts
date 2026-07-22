@@ -15,6 +15,7 @@ import { FakeBrain } from "../src/brain/fake-brain.js";
 import { FileTranscriptSource } from "../src/distill/file-transcript-source.js";
 import type { TranscriptLine } from "../src/distill/types.js";
 import { SingleKeyKeyring } from "../src/keyring/single-key-keyring.js";
+import { shardIdFromText } from "../src/quarantine/shard-id.js";
 import { Session } from "../src/session/session.js";
 import { SessionError } from "../src/session/errors.js";
 import type { InboundFrame } from "../src/session/types.js";
@@ -195,13 +196,14 @@ async function collectRecords(store: SoulStore): Promise<OspRecord[]> {
 }
 
 describe("Session.depart", () => {
-  it("happy path appends memory shards, departure, travel; journal on first shard only", async () => {
+  it("happy path appends memory candidates, departure, travel; journal on file only", async () => {
     const store = await buildGenesisStore();
     const transcriptDir = await makeTempDir("depart-transcript-");
     const journalDir = await makeTempDir("depart-journal-");
     const source = await writeTranscript(transcriptDir, sampleTranscriptLines());
 
     const shardTexts = nShards(5);
+    const expectedShardIds = shardTexts.map((text) => shardIdFromText(text));
     const brain = new FakeBrain([shardsJson(shardTexts), SAMPLE_JOURNAL]);
     const harness = createSessionHarness(store, brain);
     const session = await harness.start();
@@ -213,23 +215,22 @@ describe("Session.depart", () => {
     });
 
     expect(result.journalMarkdown).toBe(SAMPLE_JOURNAL);
-    expect(result.approvedShardIds).toEqual([
-      "shard-1",
-      "shard-2",
-      "shard-3",
-      "shard-4",
-      "shard-5"
-    ]);
+    expect(result.approvedShardIds).toEqual(expectedShardIds);
     expect(result.rejectedShardIds).toEqual([]);
+    expect(result.candidateCids).toHaveLength(5);
     await expect(access(result.journalPath)).resolves.toBeUndefined();
     await expect(readFile(result.journalPath, "utf8")).resolves.toBe(SAMPLE_JOURNAL);
 
     const records = await collectRecords(store);
 
+    const memoryCandidates = records.filter(
+      (record) => record.type === "memory" && record.body.kind === "candidate"
+    );
     const memoryShards = records.filter(
       (record) => record.type === "memory" && record.body.kind === "shard"
     );
-    expect(memoryShards).toHaveLength(5);
+    expect(memoryCandidates).toHaveLength(5);
+    expect(memoryShards).toHaveLength(0);
 
     const departureIndex = records.findIndex(
       (record) => record.type === "attestation" && record.body.kind === "departure"
@@ -240,18 +241,14 @@ describe("Session.depart", () => {
     expect(departureIndex).toBeGreaterThan(-1);
     expect(travelIndex).toBeGreaterThan(departureIndex);
 
-    for (let index = 0; index < memoryShards.length; index += 1) {
-      const shardRecord = memoryShards[index];
-      const memoryIndex = records.indexOf(shardRecord);
+    for (let index = 0; index < memoryCandidates.length; index += 1) {
+      const candidateRecord = memoryCandidates[index];
+      const memoryIndex = records.indexOf(candidateRecord);
       expect(memoryIndex).toBeLessThan(departureIndex);
-      if (shardRecord.type === "memory" && shardRecord.body.kind === "shard") {
-        expect(shardRecord.body.text).toBe(shardTexts[index]);
-        if (index === 0) {
-          expect(shardRecord.body.journal).toBe(SAMPLE_JOURNAL);
-        } else {
-          expect(shardRecord.body.journal).toBeUndefined();
-        }
-        expect(shardRecord.cosigners.length).toBeGreaterThan(0);
+      if (candidateRecord.type === "memory" && candidateRecord.body.kind === "candidate") {
+        expect(candidateRecord.body.text).toBe(shardTexts[index]);
+        expect(candidateRecord.cosigners).toEqual([]);
+        expect("journal" in candidateRecord.body).toBe(false);
       }
     }
 
@@ -277,16 +274,18 @@ describe("Session.depart", () => {
     );
   });
 
-  it("rejected shards are absent from the chain; journal lands on first approved", async () => {
+  it("host-rejected shards append rejected records; approved shards become candidates", async () => {
     const store = await buildGenesisStore();
     const transcriptDir = await makeTempDir("depart-reject-transcript-");
     const journalDir = await makeTempDir("depart-reject-journal-");
     const source = await writeTranscript(transcriptDir, sampleTranscriptLines());
 
     const shardTexts = nShards(5);
+    const rejectedShardId = shardIdFromText(shardTexts[0]);
+    const expectedApprovedIds = shardTexts.slice(1).map((text) => shardIdFromText(text));
     const brain = new FakeBrain([shardsJson(shardTexts), SAMPLE_JOURNAL]);
     const harness = createSessionHarness(store, brain, {
-      rejectShardIds: new Set(["shard-1"])
+      rejectShardIds: new Set([rejectedShardId])
     });
     const session = await harness.start();
 
@@ -295,18 +294,30 @@ describe("Session.depart", () => {
       journalDir
     });
 
-    expect(result.rejectedShardIds).toEqual(["shard-1"]);
-    expect(result.approvedShardIds).toEqual(["shard-2", "shard-3", "shard-4", "shard-5"]);
+    expect(result.rejectedShardIds).toEqual([rejectedShardId]);
+    expect(result.approvedShardIds).toEqual(expectedApprovedIds);
+    expect(result.candidateCids).toHaveLength(4);
     await expect(access(result.journalPath)).resolves.toBeUndefined();
 
     const records = await collectRecords(store);
+    const memoryCandidates = records.filter(
+      (record) => record.type === "memory" && record.body.kind === "candidate"
+    );
     const memoryShards = records.filter(
       (record) => record.type === "memory" && record.body.kind === "shard"
     );
-    expect(memoryShards).toHaveLength(4);
+    const hostRejected = records.filter(
+      (record) =>
+        record.type === "memory" &&
+        record.body.kind === "rejected" &&
+        record.body.category === "host_rejected"
+    );
+    expect(memoryCandidates).toHaveLength(4);
+    expect(memoryShards).toHaveLength(0);
+    expect(hostRejected).toHaveLength(1);
 
-    const chainTexts = memoryShards.map((record) => {
-      if (record.type === "memory" && record.body.kind === "shard") {
+    const chainTexts = memoryCandidates.map((record) => {
+      if (record.type === "memory" && record.body.kind === "candidate") {
         return record.body.text;
       }
       return "";
@@ -314,14 +325,10 @@ describe("Session.depart", () => {
     expect(chainTexts).not.toContain(shardTexts[0]);
     expect(chainTexts).toEqual(shardTexts.slice(1));
 
-    const firstApproved = memoryShards[0];
-    if (firstApproved?.type === "memory" && firstApproved.body.kind === "shard") {
-      expect(firstApproved.body.text).toBe(shardTexts[1]);
-      expect(firstApproved.body.journal).toBe(SAMPLE_JOURNAL);
-    }
-    for (const later of memoryShards.slice(1)) {
-      if (later.type === "memory" && later.body.kind === "shard") {
-        expect(later.body.journal).toBeUndefined();
+    for (const candidate of memoryCandidates) {
+      if (candidate.type === "memory" && candidate.body.kind === "candidate") {
+        expect(candidate.cosigners).toEqual([]);
+        expect("journal" in candidate.body).toBe(false);
       }
     }
 

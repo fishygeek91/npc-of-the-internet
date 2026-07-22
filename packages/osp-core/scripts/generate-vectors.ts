@@ -102,23 +102,87 @@ async function createShardRecord(
   door: Ed25519Keypair,
   seq: number,
   prev: string,
-  text: string
+  text: string,
+  candidateCid?: string
 ) {
+  const body: {
+    kind: "shard";
+    text: string;
+    distilled_at: string;
+    candidate_cid?: string;
+  } = {
+    kind: "shard",
+    text,
+    distilled_at: "2026-01-02T01:00:00.000Z"
+  };
+  if (candidateCid !== undefined) {
+    body.candidate_cid = candidateCid;
+  }
   const fields = {
     seq,
     prev,
     type: "memory" as const,
-    body: {
-      kind: "shard" as const,
-      text,
-      distilled_at: "2026-01-02T01:00:00.000Z"
-    },
+    body,
     residency: RESIDENCY
   };
   const cosig = signCore(fields, door.privateKey);
   return createRecord({
     ...fields,
     cosigners: [cosig],
+    soulPrivateKey: soul.privateKey
+  });
+}
+
+/** Build a signed quarantine candidate memory (no door cosignature). */
+async function createCandidateRecord(
+  soul: Ed25519Keypair,
+  seq: number,
+  prev: string,
+  text: string
+) {
+  return createRecord({
+    seq,
+    prev,
+    type: "memory",
+    body: {
+      kind: "candidate",
+      text,
+      proposed_at: "2026-01-02T01:30:00.000Z"
+    },
+    residency: RESIDENCY,
+    cosigners: [],
+    soulPrivateKey: soul.privateKey
+  });
+}
+
+/** Build a signed rejected candidate memory (no door cosignature). */
+async function createRejectedRecord(
+  soul: Ed25519Keypair,
+  seq: number,
+  prev: string,
+  category: string,
+  candidateCid?: string
+) {
+  const body: {
+    kind: "rejected";
+    category: string;
+    rejected_at: string;
+    candidate_cid?: string;
+  } = {
+    kind: "rejected",
+    category,
+    rejected_at: "2026-01-02T02:00:00.000Z"
+  };
+  if (candidateCid !== undefined) {
+    body.candidate_cid = candidateCid;
+  }
+  return createRecord({
+    seq,
+    prev,
+    type: "memory",
+    body,
+    residency: RESIDENCY,
+    cosigners: [],
     soulPrivateKey: soul.privateKey
   });
 }
@@ -401,6 +465,91 @@ async function buildVectors(): Promise<VectorCase[]> {
     ]
   };
 
+  const quarantineGenesis = await createGenesisRecord(SOUL);
+  const quarantineArrival = await createArrivalRecord(
+    SOUL,
+    DOOR,
+    SESSION,
+    1,
+    quarantineGenesis.cid
+  );
+  const quarantineCandidate = await createCandidateRecord(
+    SOUL,
+    2,
+    quarantineArrival.cid,
+    "A quarantine candidate awaiting review."
+  );
+  const promotedShard = await createShardRecord(
+    SOUL,
+    DOOR,
+    3,
+    quarantineCandidate.cid,
+    "Committed shard after quarantine.",
+    quarantineCandidate.cid
+  );
+  const quarantineCandidateToShard: VectorCase = {
+    filename: "quarantine-candidate-to-shard.json",
+    description:
+      "Valid genesis → arrival → candidate → shard with candidate_cid linkage and door cosignature",
+    expected: "valid",
+    soulPublicKey: soulPub,
+    doorPublicKeys: [doorPub],
+    records: [
+      quarantineGenesis.record,
+      quarantineArrival.record,
+      quarantineCandidate.record,
+      promotedShard.record
+    ]
+  };
+
+  const rejectGenesis = await createGenesisRecord(SOUL);
+  const rejectArrival = await createArrivalRecord(SOUL, DOOR, SESSION, 1, rejectGenesis.cid);
+  const rejectCandidate = await createCandidateRecord(
+    SOUL,
+    2,
+    rejectArrival.cid,
+    "A candidate destined for rejection."
+  );
+  const rejectedRecord = await createRejectedRecord(
+    SOUL,
+    3,
+    rejectCandidate.cid,
+    "injection",
+    rejectCandidate.cid
+  );
+  const quarantineCandidateToRejected: VectorCase = {
+    filename: "quarantine-candidate-to-rejected.json",
+    description:
+      "Valid genesis → arrival → candidate → rejected with candidate_cid, category, and rejected_at",
+    expected: "valid",
+    soulPublicKey: soulPub,
+    doorPublicKeys: [doorPub],
+    records: [
+      rejectGenesis.record,
+      rejectArrival.record,
+      rejectCandidate.record,
+      rejectedRecord.record
+    ]
+  };
+
+  const schemaRejectedWithPayload: VectorCase = {
+    filename: "schema-rejected-with-payload.json",
+    description: "Rejected memory body includes smuggled text field (fails .strict schema)",
+    expected: "schema_violation",
+    soulPublicKey: soulPub,
+    doorPublicKeys: [doorPub],
+    records: [
+      rejectGenesis.record,
+      rejectArrival.record,
+      rejectCandidate.record,
+      mutateRecord(rejectedRecord.record, (draft) => {
+        if (draft.body.kind === "rejected") {
+          Object.assign(draft.body, { text: "must not appear" });
+        }
+      })
+    ]
+  };
+
   return [
     validMiniChain,
     badSoulSig,
@@ -417,7 +566,10 @@ async function buildVectors(): Promise<VectorCase[]> {
     schemaGenesisCosigners,
     schemaBadKeyLength,
     schemaBadPrev,
-    schemaBadEvidence
+    schemaBadEvidence,
+    quarantineCandidateToShard,
+    quarantineCandidateToRejected,
+    schemaRejectedWithPayload
   ];
 }
 

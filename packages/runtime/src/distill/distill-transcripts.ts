@@ -3,6 +3,7 @@ import type { ScreenCategory } from "@npc/immune";
 import type { Brain, BrainMessage } from "../brain/types.js";
 import { DISTILLER_RETRY } from "../prompts/distiller/retry.js";
 import { DISTILLER_SYSTEM } from "../prompts/distiller/system.js";
+import { assignShardIds } from "../quarantine/shard-id.js";
 import { DistillError } from "./errors.js";
 import { countCodePoints, parseBrainShards } from "./parse.js";
 import type { CandidateShard, DistillOptions, TranscriptLine, TranscriptSource } from "./types.js";
@@ -108,9 +109,14 @@ function applyImmuneScreen(
 }
 
 function toCandidateShards(shards: readonly ParsedShard[]): CandidateShard[] {
+  const shardIds = assignShardIds(shards.map((shard) => shard.text));
   return shards.map((shard, index) => {
+    const shardId = shardIds[index];
+    if (shardId === undefined) {
+      throw new DistillError("internal error: shard id assignment mismatch", "malformed_output");
+    }
     const candidate: CandidateShard = {
-      shard_id: `shard-${String(index + 1)}`,
+      shard_id: shardId,
       text: shard.text
     };
     if (shard.tags !== undefined) {

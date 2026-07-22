@@ -54,6 +54,9 @@ type ActiveSession = {
 type CosignEpochState = {
   reviewCompleted: boolean;
   approvedShardIds: Set<string>;
+  /** Bound at review; commit may run after departure using this binding. */
+  epoch: number;
+  sessionPubkey: string;
 };
 
 type UnsignedHeartbeatFields = Omit<HeartbeatRequest, "sig">;
@@ -500,7 +503,9 @@ export class Door {
 
     this.cosignState = {
       reviewCompleted: true,
-      approvedShardIds
+      approvedShardIds,
+      epoch: request.epoch,
+      sessionPubkey: request.session_pubkey
     };
 
     const receivedAt = this.clock.now();
@@ -535,7 +540,26 @@ export class Door {
       );
     }
 
-    this.requireActiveSession(request.door_id, request.epoch, request.session_pubkey);
+    // Commit may run after departure (quarantine window). Bind to the review
+    // session instead of requireActiveSession, which fails once retired.
+    if (request.door_id !== this.doorId) {
+      throw DoorError.fromCode(
+        "session_invalid",
+        `door_id mismatch: expected ${this.doorId}, got ${request.door_id}`
+      );
+    }
+    if (request.epoch !== this.cosignState.epoch) {
+      throw DoorError.fromCode(
+        "session_invalid",
+        `epoch mismatch: expected ${String(this.cosignState.epoch)}, got ${String(request.epoch)}`
+      );
+    }
+    if (request.session_pubkey !== this.cosignState.sessionPubkey) {
+      throw DoorError.fromCode(
+        "session_invalid",
+        "session_pubkey does not match the review-phase session"
+      );
+    }
 
     if (request.core.length === 0) {
       throw DoorError.fromCode("shard_invalid", "shard_invalid: commit core must not be empty");

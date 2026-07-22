@@ -10,15 +10,18 @@ const USAGE = `wanderer — NPC of the Internet operator CLI
 
 Usage:
   wanderer move <door-id>
+  wanderer quarantine commit
+  wanderer quarantine flag <candidate-cid> [--category <cat>]
 
-v0.1 shell: without an injected runMove (tests) this command exits 2.
-Production env → Door transport → runMove wiring is T4.1 (door-sdk / ws).
+v0.1 shell: without injected runMove / runQuarantineCommit / runQuarantineFlag (tests) these commands exit 2.
+Production env → Door transport wiring is T4.1 (door-sdk / ws).
 Documented env names (not read by this binary yet):
-  SOUL_KEY_PATH       path to soul private key file
-  SOULCHAIN_DIR       soulchain directory
-  TRANSCRIPT_PATH     residency transcript JSONL
-  JOURNAL_DIR         directory for emitted journal markdown
-  CURRENT_DOOR_ID     door id of the active residency
+  SOUL_KEY_PATH              path to soul private key file
+  SOULCHAIN_DIR              soulchain directory
+  TRANSCRIPT_PATH            residency transcript JSONL
+  JOURNAL_DIR                directory for emitted journal markdown
+  CURRENT_DOOR_ID            door id of the active residency
+  NPC_QUARANTINE_WINDOW_MS   quarantine window before commit (default 86400000)
 
 Exit codes:
   0  success
@@ -32,9 +35,17 @@ export type MoveCliResult = {
   nextEpoch: number;
 };
 
-/** Injectable dependencies for {@link runWandererCli} (tests inject `runMove`). */
+/** Result printed after a successful `quarantine commit` command. */
+export type CommitCliResult = {
+  committedCount: number;
+  ripeningCount: number;
+};
+
+/** Injectable dependencies for {@link runWandererCli} (tests inject handlers). */
 export type WandererCliDeps = {
   runMove?: (doorId: string) => Promise<MoveCliResult>;
+  runQuarantineCommit?: () => Promise<CommitCliResult>;
+  runQuarantineFlag?: (candidateCid: string, category?: string) => Promise<void>;
   writeStdout?: (line: string) => void;
   writeStderr?: (line: string) => void;
 };
@@ -104,6 +115,66 @@ export async function runWandererCli(
         writeStdout(`Journal: ${result.journalPath}`);
         writeStdout(`Arrived at ${result.nextDoorId} (epoch ${String(result.nextEpoch)})`);
         return 0;
+      }
+
+      case "quarantine": {
+        const quarantineSubcommand = argv[3];
+        if (quarantineSubcommand === undefined) {
+          usageError(writeStderr, "quarantine requires a subcommand: commit | flag");
+        }
+
+        switch (quarantineSubcommand) {
+          case "commit": {
+            if (deps.runQuarantineCommit === undefined) {
+              usageError(
+                writeStderr,
+                "quarantine commit is not configured: inject runQuarantineCommit in tests (production wiring is T4.1)"
+              );
+            }
+
+            const result = await deps.runQuarantineCommit();
+            writeStdout(`Committed ${String(result.committedCount)} shard(s)`);
+            writeStdout(`Ripening ${String(result.ripeningCount)} candidate(s)`);
+            return 0;
+          }
+
+          case "flag": {
+            const { values, positionals } = parseArgs({
+              args: argv.slice(4),
+              options: {
+                category: { type: "string" }
+              },
+              allowPositionals: true
+            });
+
+            const candidateCid = positionals[0];
+            if (candidateCid === undefined) {
+              usageError(writeStderr, "quarantine flag requires a candidate CID");
+            }
+
+            if (deps.runQuarantineFlag === undefined) {
+              usageError(
+                writeStderr,
+                "quarantine flag is not configured: inject runQuarantineFlag in tests (production wiring is T4.1)"
+              );
+            }
+
+            const category = values.category;
+            await deps.runQuarantineFlag(
+              candidateCid,
+              typeof category === "string" ? category : undefined
+            );
+            writeStdout(`Flagged candidate ${candidateCid}`);
+            return 0;
+          }
+
+          default:
+            usageError(
+              writeStderr,
+              `unknown quarantine subcommand: ${quarantineSubcommand} (expected commit | flag)`
+            );
+        }
+        break;
       }
 
       case "--help":

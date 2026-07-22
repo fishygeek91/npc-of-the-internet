@@ -28,6 +28,21 @@ export type {
   TranscriptSource
 } from "./distill/types.js";
 export type { ScreenCategory } from "@npc/immune";
+export type { QuarantineConfig } from "./quarantine/config.js";
+export { loadQuarantineConfig } from "./quarantine/config.js";
+export { QuarantineError } from "./quarantine/errors.js";
+export type { QuarantineErrorReason } from "./quarantine/errors.js";
+export { resolveJournalPath } from "./quarantine/resolve-journal-path.js";
+export { isCandidateRipe, scanQuarantineState } from "./quarantine/scan.js";
+export type { QuarantineCandidate, QuarantineScan } from "./quarantine/scan.js";
+export { assignShardIds, shardIdFromText } from "./quarantine/shard-id.js";
+export { commitQuarantinedShards } from "./quarantine/commit.js";
+export type {
+  CommitQuarantineResult,
+  CommitQuarantinedShardsOptions
+} from "./quarantine/commit.js";
+export { flagCandidate } from "./quarantine/flag.js";
+export type { FlagCandidateOptions } from "./quarantine/flag.js";
 export { KeyringError } from "./keyring/errors.js";
 export { buildSessionKeyInfo, SESSION_KEY_DERIVATION_SALT } from "./keyring/derive-session-key.js";
 export { loadSoulPrivateKeyFromPath } from "./keyring/load-soul-key.js";

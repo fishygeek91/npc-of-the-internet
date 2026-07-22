@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { FakeBrain } from "../src/brain/fake-brain.js";
 import { distillTranscripts, DistillError, FileTranscriptSource } from "../src/index.js";
 import type { ScreenCategory, TranscriptLine } from "../src/index.js";
+import { shardIdFromText } from "../src/quarantine/shard-id.js";
 
 const SCREEN_CATEGORIES: readonly ScreenCategory[] = [
   "pii.email",
@@ -83,7 +84,7 @@ describe("distillTranscripts", () => {
     { role: "assistant", text: "They feel distant but familiar." }
   ];
 
-  it("returns shard-1 through shard-5 on the happy path and destroys the transcript", async () => {
+  it("returns content-derived shard ids on the happy path and destroys the transcript", async () => {
     const dir = await makeTempDir();
     const source = await writeTranscript(dir, sampleLines);
     const texts = nShards(5);
@@ -98,7 +99,7 @@ describe("distillTranscripts", () => {
       if (shard === undefined || expectedText === undefined) {
         throw new Error("expected shard and matching text");
       }
-      expect(shard.shard_id).toBe(`shard-${String(index + 1)}`);
+      expect(shard.shard_id).toBe(shardIdFromText(expectedText));
       expect(shard.text).toBe(expectedText);
     }
     await expectFileDestroyed(source.path);
@@ -282,7 +283,7 @@ describe("distillTranscripts", () => {
     await expectFileRetained(source.path);
   });
 
-  it("clamps more than twenty valid shards to shard-1 through shard-20", async () => {
+  it("clamps more than twenty valid shards to the first twenty content-derived ids", async () => {
     const dir = await makeTempDir();
     const source = await writeTranscript(dir, sampleLines);
     const texts = nShards(22);
@@ -297,7 +298,7 @@ describe("distillTranscripts", () => {
       if (shard === undefined || expectedText === undefined) {
         throw new Error("expected shard and matching text");
       }
-      expect(shard.shard_id).toBe(`shard-${String(index + 1)}`);
+      expect(shard.shard_id).toBe(shardIdFromText(expectedText));
       expect(shard.text).toBe(expectedText);
     }
     await expectFileDestroyed(source.path);

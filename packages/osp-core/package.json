@@ -8,7 +8,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "generate:schema": "tsx scripts/generate-json-schema.ts",
-    "generate:vectors": "tsx scripts/generate-vectors.ts",
+    "generate:vectors": "tsx scripts/generate-vectors.ts && prettier --write ../../spec/osp/vectors/*.json",
     "test": "vitest run"
   },
   "dependencies": {
