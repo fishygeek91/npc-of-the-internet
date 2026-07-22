@@ -12,3 +12,11 @@ Environment variable names and purposes only. **Never commit values.**
 | `ATLAS_PORT` | TCP port for the Atlas read API HTTP server (default: `8787`). |
 | `ATLAS_DOOR_PUBKEYS` | Comma-separated base64url Ed25519 **public** door keys for cosignature verification (public config, not secret). |
 | `SOUL_KEY_PATH` | Filesystem path to the Wanderer soul private key file (32-byte raw bytes or base64url text). |
+| `DISCORD_BOT_TOKEN` | Discord bot token for `@npc/door-discord`. |
+| `DOOR_KEY_PATH` | Filesystem path to the Door Ed25519 private key file (32-byte raw bytes or base64url text). |
+| `SOUL_PUBLIC_KEY` | Wanderer soul Ed25519 public key (base64url) for Door session verification (public config). |
+| `DISCORD_GUILD_ID` | Discord guild snowflake bound to this Door (public config). |
+| `DISCORD_CHANNEL_ID` | Discord channel snowflake for residency relay (public config). |
+| `DISCORD_OPERATOR_IDS` | Comma-separated Discord user snowflakes allowed to cosign/status (public config). |
+| `DISCORD_REVIEW_TIMEOUT_MS` | Cosign review wait; timeout rejects shards (default `300000`). |
+| `DOOR_HTTP_HOST` / `DOOR_HTTP_PORT` | Door REST/WS listen address for T6.1 (defaults `127.0.0.1` / `9090`). |
