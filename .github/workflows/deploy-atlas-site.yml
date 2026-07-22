@@ -1,0 +1,54 @@
+# Build the Atlas static site from the T5.1 fixture chain and publish to GitHub Pages.
+# Requires: Settings → Pages → Source = GitHub Actions.
+# Soft-fails the deploy step when Pages is not yet enabled so main stays green.
+name: Deploy Atlas Site
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: deploy-atlas-site
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build workspace dependencies
+        run: pnpm --filter @npc/osp-core --filter @npc/atlas build
+      - name: Build Atlas site from fixture chain
+        working-directory: packages/atlas-site
+        env:
+          ATLAS_SITE_CHAIN_DIR: ${{ github.workspace }}/packages/atlas/test/fixtures/multi-residency
+          ATLAS_SITE_BASE: /npc-of-the-internet/
+        run: pnpm build
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: packages/atlas-site/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    continue-on-error: true
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

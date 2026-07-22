@@ -1,0 +1,29 @@
+---
+import type { RecordListItem } from "@npc/atlas";
+
+import { withBase } from "../lib/paths.ts";
+
+interface Props {
+  records: RecordListItem[];
+}
+
+const { records } = Astro.props;
+const base = import.meta.env.BASE_URL;
+---
+
+<ul class="record-list">
+  {
+    records.map((record) => (
+      <li class="record-list__item">
+        <p class="record-list__kind">
+          <a href={withBase(`/soul/${record.cid}/`, base)}>{record.kind}</a>
+        </p>
+        <p class="record-list__meta">
+          seq {record.seq}
+          {record.issued_at !== null && <> · {record.issued_at}</>}
+          {record.summary !== record.kind && <> · {record.summary}</>}
+        </p>
+      </li>
+    ))
+  }
+</ul>

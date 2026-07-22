@@ -1,0 +1,11 @@
+---
+interface Props {
+  verified: boolean;
+}
+
+const { verified } = Astro.props;
+const className = verified ? "verification-badge verification-badge--verified" : "verification-badge verification-badge--unverified";
+const label = verified ? "Verified" : "Unverified";
+---
+
+<span class={className}>{label}</span>

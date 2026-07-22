@@ -1,0 +1,30 @@
+---
+import { withBase } from "../lib/paths.ts";
+
+interface Props {
+  recordTypes: string[];
+  activeType?: string;
+}
+
+const { recordTypes, activeType } = Astro.props;
+const base = import.meta.env.BASE_URL;
+---
+
+<div class="type-filter" role="navigation" aria-label="Record type filter">
+  <a
+    class:list={["type-filter__chip", { "type-filter__chip--active": activeType === undefined }]}
+    href={withBase("/soul/", base)}
+  >
+    All
+  </a>
+  {
+    recordTypes.map((type) => (
+      <a
+        class:list={["type-filter__chip", { "type-filter__chip--active": activeType === type }]}
+        href={withBase(`/soul/type/${type}/`, base)}
+      >
+        {type}
+      </a>
+    ))
+  }
+</div>

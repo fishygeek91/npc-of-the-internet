@@ -1,0 +1,50 @@
+---
+import PaginationNav from "../../../components/PaginationNav.astro";
+import RecordsList from "../../../components/RecordsList.astro";
+import TypeFilter from "../../../components/TypeFilter.astro";
+import VerificationBadge from "../../../components/VerificationBadge.astro";
+import BaseLayout from "../../../layouts/BaseLayout.astro";
+import { loadSiteData } from "../../../lib/load-site-data.ts";
+import { totalPages, RECORDS_PER_PAGE } from "../../../lib/pagination.ts";
+
+export async function getStaticPaths() {
+  const data = await loadSiteData();
+  const pages = totalPages(data.totalRecords, RECORDS_PER_PAGE);
+  const paths = [];
+
+  for (let page = 2; page <= pages; page += 1) {
+    const pageData = data.recordsPages[page - 1];
+    if (pageData === undefined) {
+      continue;
+    }
+    paths.push({
+      params: { page: String(page) },
+      props: { pageData }
+    });
+  }
+
+  return paths;
+}
+
+const { pageData } = Astro.props;
+const data = await loadSiteData();
+---
+
+<BaseLayout
+  title={`Soul — page ${pageData.page}`}
+  description="Paginated explorer for the Atlas soulchain."
+  current="soul"
+>
+  <h1 class="page-title">Soul</h1>
+  <p class="lead">
+  Page {pageData.page} · <VerificationBadge verified={pageData.verified} />
+  </p>
+
+  <TypeFilter recordTypes={data.recordTypes} />
+  <RecordsList records={pageData.records} />
+  <PaginationNav
+    page={pageData.page}
+    total={pageData.total}
+    perPage={pageData.per_page}
+  />
+</BaseLayout>

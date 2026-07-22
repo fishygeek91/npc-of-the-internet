@@ -1,0 +1,66 @@
+---
+import VerificationBadge from "../components/VerificationBadge.astro";
+import BaseLayout from "../layouts/BaseLayout.astro";
+import { loadSiteData } from "../lib/load-site-data.ts";
+import { withBase } from "../lib/paths.ts";
+
+const data = await loadSiteData();
+const base = import.meta.env.BASE_URL;
+
+const statusLabel =
+  data.state.status === "present"
+    ? "Present"
+    : data.state.status === "traveling"
+      ? "Traveling"
+      : "Sleeping";
+
+const statusClass =
+  data.state.status === "present"
+    ? "status-present"
+    : data.state.status === "traveling"
+      ? "status-traveling"
+      : "status-sleeping";
+---
+
+<BaseLayout
+  title="Atlas"
+  description="Atlas — the NPC of the Internet. A verifiable soulchain explorer."
+  current="home"
+>
+  <h1 class="page-title">Atlas</h1>
+  <p class="page-subtitle">NPC of the Internet</p>
+
+  <p class="lead">
+    A public window onto a wandering presence — location, residencies, journals, and every signed
+    record on the soulchain, verified at build time.
+  </p>
+
+  <section class="status-banner" aria-label="Current status">
+    <div class="status-banner__row">
+      <span class="status-banner__label">Status</span>
+      <span class:list={["status-banner__value", statusClass]}>{statusLabel}</span>
+    </div>
+    <div class="status-banner__row">
+      <span class="status-banner__label">Door</span>
+      <span class="status-banner__value">{data.state.door_id ?? "—"}</span>
+    </div>
+    <div class="status-banner__row">
+      <span class="status-banner__label">Head</span>
+      <span class="status-banner__value">
+        {
+          data.head === null ? (
+            "—"
+          ) : (
+            <a href={withBase(`/soul/${data.head.cid}/`, base)}>{data.head.cid}</a>
+          )
+        }
+      </span>
+    </div>
+    <div class="status-banner__row">
+      <span class="status-banner__label">Chain</span>
+      <span class="status-banner__value">
+        <VerificationBadge verified={data.chainVerified} />
+      </span>
+    </div>
+  </section>
+</BaseLayout>
