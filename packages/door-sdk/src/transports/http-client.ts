@@ -14,10 +14,13 @@ import {
   type DoorConnection,
   type HeartbeatRequest,
   type HeartbeatResponse,
+  type HelloRequest,
   type HelloResponse
 } from "../schemas.js";
 
 const JSON_CONTENT_TYPE = "application/json";
+/** Max characters of a non-Door error body retained in {@link DoorError.details}. */
+const MAX_ERROR_BODY_CHARS = 512;
 
 /** Options for {@link HttpDoorConnection}. */
 export type HttpDoorConnectionOptions = {
@@ -37,7 +40,7 @@ export class HttpDoorConnection implements DoorConnection {
   }
 
   /** `POST /door/hello` — discover Door identity and capabilities. */
-  hello(req: unknown): Promise<HelloResponse> {
+  hello(req: HelloRequest): Promise<HelloResponse> {
     return this.post("/door/hello", req, HelloResponseSchema);
   }
 
@@ -107,7 +110,25 @@ export class HttpDoorConnection implements DoorConnection {
     return new DoorError(
       "door_unavailable",
       `door unavailable: HTTP ${String(httpStatus)}`,
-      httpStatus
+      httpStatus,
+      { body: summarizeErrorBody(json) }
     );
   }
+}
+
+/**
+ * Compact, non-secret-safe summary of an unexpected error response body for operator logs.
+ * Truncates long JSON so proxy/gateway payloads stay readable in {@link DoorError.details}.
+ */
+function summarizeErrorBody(json: unknown): string {
+  let raw: string;
+  try {
+    raw = JSON.stringify(json);
+  } catch {
+    raw = Object.prototype.toString.call(json);
+  }
+  if (raw.length <= MAX_ERROR_BODY_CHARS) {
+    return raw;
+  }
+  return `${raw.slice(0, MAX_ERROR_BODY_CHARS)}…`;
 }

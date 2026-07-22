@@ -1,3 +1,5 @@
+import { createServer } from "node:http";
+
 import {
   canonicalize,
   encodePublicKey,
@@ -314,6 +316,47 @@ describe("HttpDoorConnection", () => {
       httpStatus: 409
     });
   });
+
+  it("preserves a non-Door error body snippet in details", async () => {
+    const proxyBody = { message: "bad gateway from upstream proxy" };
+    const server = createServer((_req, res) => {
+      res.writeHead(502, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(proxyBody));
+    });
+    await new Promise<void>((resolve) => {
+      server.listen(0, "127.0.0.1", () => resolve());
+    });
+    const address = server.address();
+    if (address === null || typeof address === "string") {
+      throw new Error("expected TCP listen address");
+    }
+
+    try {
+      const client = new HttpDoorConnection({
+        baseUrl: `http://127.0.0.1:${String(address.port)}`
+      });
+      await expect(
+        client.hello({
+          protocol_version: DOOR_PROTOCOL_VERSION,
+          soul_pubkey: encodePublicKey(env.soul.publicKey)
+        })
+      ).rejects.toMatchObject({
+        code: "door_unavailable",
+        httpStatus: 502,
+        details: { body: JSON.stringify(proxyBody) }
+      });
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => {
+          if (error !== undefined && error !== null) {
+            reject(error);
+            return;
+          }
+          resolve();
+        });
+      });
+    }
+  });
 });
 
 describe("WsDoorSessionClient", () => {
@@ -434,6 +477,72 @@ describe("WsDoorSessionClient", () => {
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect(connectAttempts).toBe(1);
     await client.close();
+  });
+
+  it("close during in-flight connect does not leave a live socket", async () => {
+    const epoch = EPOCH + 13;
+    await establishArrival(epoch);
+    const bind = sessionBindParams(env.session, DOOR_ID, epoch);
+
+    type Listener = (...args: never[]) => void;
+    let readyState = WebSocket.CONNECTING;
+    const onceListeners = new Map<string, Listener[]>();
+    let closeCalls = 0;
+
+    const deferredSocket: WebSocketLike = {
+      get readyState() {
+        return readyState;
+      },
+      send() {
+        // unused
+      },
+      close() {
+        closeCalls += 1;
+        readyState = WebSocket.CLOSED;
+        const listeners = onceListeners.get("close") ?? [];
+        onceListeners.delete("close");
+        for (const listener of listeners) {
+          listener(1000, Buffer.alloc(0));
+        }
+      },
+      on() {
+        // unused for this race
+      },
+      once(event, listener) {
+        const list = onceListeners.get(event) ?? [];
+        list.push(listener as Listener);
+        onceListeners.set(event, list);
+      },
+      removeAllListeners(event) {
+        if (event === undefined) {
+          onceListeners.clear();
+          return;
+        }
+        onceListeners.delete(event);
+      }
+    };
+
+    const client = new WsDoorSessionClient({
+      wsBaseUrl: env.wsBaseUrl,
+      bind,
+      createWebSocket: () => deferredSocket
+    });
+
+    const connectPromise = client.connect();
+    await client.close();
+
+    readyState = WebSocket.OPEN;
+    const openListeners = onceListeners.get("open") ?? [];
+    for (const listener of openListeners) {
+      listener();
+    }
+
+    await expect(connectPromise).rejects.toThrow(/closed/);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(client.isConnected()).toBe(false);
+    expect(closeCalls).toBeGreaterThanOrEqual(1);
+    expect(env.wsServer.getActiveClients().size).toBe(0);
   });
 
   it("reconnects after the server drops the connection", async () => {

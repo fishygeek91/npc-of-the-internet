@@ -95,6 +95,8 @@ export class WsDoorSessionClient {
   private currentBackoffMs: number;
 
   private socket: WebSocketLike | null = null;
+  /** Socket created by an in-flight `connect()` before it is assigned to {@link socket}. */
+  private openingSocket: WebSocketLike | null = null;
   private intentionallyClosed = false;
   private bindFailed = false;
   private reconnectGeneration = 0;
@@ -157,25 +159,26 @@ export class WsDoorSessionClient {
 
   /**
    * Stop reconnect attempts and close the session socket.
-   * Safe to call multiple times.
+   * Safe to call multiple times. Also tears down an in-flight `connect()` socket
+   * so a late `open` cannot reattach after shutdown.
    */
   async close(): Promise<void> {
     this.intentionallyClosed = true;
     this.cancelReconnect();
+    const opening = this.openingSocket;
     const socket = this.socket;
+    this.openingSocket = null;
     this.socket = null;
     this.connectPromise = null;
-    if (socket === null) {
-      return;
+
+    const closers: Promise<void>[] = [];
+    if (opening !== null) {
+      closers.push(awaitSocketClose(opening));
     }
-    await new Promise<void>((resolve) => {
-      if (socket.readyState === WebSocket.CLOSED) {
-        resolve();
-        return;
-      }
-      socket.once("close", () => resolve());
-      socket.close();
-    });
+    if (socket !== null && socket !== opening) {
+      closers.push(awaitSocketClose(socket));
+    }
+    await Promise.all(closers);
   }
 
   private buildSessionUrl(): string {
@@ -192,14 +195,31 @@ export class WsDoorSessionClient {
     return new Promise((resolve, reject) => {
       const url = this.buildSessionUrl();
       const socket = this.createWebSocket(url);
+      this.openingSocket = socket;
 
       let settled = false;
+
+      const settleClosedDuringConnect = (): void => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        this.openingSocket = null;
+        this.connectPromise = null;
+        reject(new Error("WsDoorSessionClient is closed"));
+      };
 
       const settleOpen = (): void => {
         if (settled) {
           return;
         }
+        if (this.intentionallyClosed) {
+          settleClosedDuringConnect();
+          socket.close();
+          return;
+        }
         settled = true;
+        this.openingSocket = null;
         this.currentBackoffMs = this.initialBackoffMs;
         this.socket = socket;
         this.onConnectionChange?.(true);
@@ -212,12 +232,20 @@ export class WsDoorSessionClient {
         }
         settled = true;
         this.bindFailed = true;
+        this.openingSocket = null;
         this.connectPromise = null;
         reject(DoorError.fromCode("session_invalid", message));
       };
 
       socket.once("open", () => {
         queueMicrotask(() => {
+          if (this.intentionallyClosed) {
+            settleClosedDuringConnect();
+            if (socket.readyState !== WebSocket.CLOSED) {
+              socket.close();
+            }
+            return;
+          }
           if (this.bindFailed || socket.readyState !== WS_OPEN) {
             return;
           }
@@ -226,7 +254,14 @@ export class WsDoorSessionClient {
       });
 
       socket.once("close", (code) => {
+        if (this.openingSocket === socket) {
+          this.openingSocket = null;
+        }
         if (!settled) {
+          if (this.intentionallyClosed) {
+            settleClosedDuringConnect();
+            return;
+          }
           if (code === WS_SESSION_BIND_FAILED) {
             this.bindFailed = true;
             settleBindFailure("session binding failed");
@@ -251,6 +286,7 @@ export class WsDoorSessionClient {
       socket.on("error", (error) => {
         if (!settled) {
           settled = true;
+          this.openingSocket = null;
           this.connectPromise = null;
           reject(
             DoorError.fromCode("door_unavailable", "WebSocket connection error", undefined, error)
@@ -396,4 +432,15 @@ export class WsDoorSessionClient {
     }
     return data.toString("utf8");
   }
+}
+
+/** Close a socket and resolve when the `close` event fires (or immediately if already closed). */
+function awaitSocketClose(socket: WebSocketLike): Promise<void> {
+  if (socket.readyState === WebSocket.CLOSED) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    socket.once("close", () => resolve());
+    socket.close();
+  });
 }

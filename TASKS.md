@@ -136,11 +136,17 @@ Each task lists **Deps**, **Deliverables**, and **Acceptance** (how a reviewer v
 - Acceptance: `docker compose -f ops/compose.ghost.yml config` valid; runbook steps executable by an agent with no prior context; restore drill documented + scripted.
 - Notes: WS coalesced onto HTTP `:9090` (`HttpDoorServer.nodeServer`); runtime image is idle placeholder until #53 (Door client + residency daemon). Compose + backup + restore-drill + RUNBOOK shipped. Next: #53, then T6.2.
 
+### T6.1-followup ⏳ Door transport + residency daemon (Cursor Grok 4.5 Maestro, 2026-07-22)
+- Deps: T6.1, T4.1
+- Deliverables: `@npc/door-sdk` `HttpDoorConnection` + `WsDoorSessionClient`; `@npc/runtime` `npc-runtime` residency daemon; ops touch-up; cross-container MANUAL_TEST; changeset.
+- Acceptance: client unit tests; daemon integration; compose config valid; MANUAL_TEST compose E2E; `pnpm check` green.
+- Notes: Agent: Cursor Grok 4.5 Maestro, 2026-07-22. PR A (#57): door-sdk network clients. PR B (#58): daemon + ops (stacked).
+
 ### T6.2 ⬜ Genesis ceremony + launch checklist
 - Deps: T6.1, T5.2, T3.2
 - Deliverables: `ops/LAUNCH.md`: generate soul key, run `osp init` with the real charter, first residency checklist, public announcement template linking Atlas + soulchain head CID; dry-run script that executes the full checklist against a scratch environment.
 - Acceptance: dry-run passes end to end; a second agent can follow LAUNCH.md verbatim.
-- Notes:
+- Notes: Blocked on T6.1-followup (#53) for the live residency loop.
 
 ## Phase 7 — Post-Ghost (v0.2/0.3 — spec first, then build)
 
@@ -161,5 +167,5 @@ These are sequenced but intentionally coarser; split them into T-numbered subtas
 
 ## Critical path to launch
 
-T0.1 → T0.2 → T1.1 → T1.2 → T1.3 → T2.2 → T2.4 → T2.5 → T3.2 → T4.1 → T4.2 → T6.1 → T6.2
+T0.1 → T0.2 → T1.1 → T1.2 → T1.3 → T2.2 → T2.4 → T2.5 → T3.2 → T4.1 → T4.2 → T6.1 → T6.1-followup → T6.2
 (T1.4, T2.1, T2.3, T3.1, T5.x can proceed in parallel where deps allow.)
