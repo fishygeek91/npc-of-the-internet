@@ -74,6 +74,24 @@ docker compose --env-file ops/.env -f ops/compose.ghost.yml up -d --build
 - **atlas-api** serves on `http://127.0.0.1:8787` once the soulchain volume contains a valid chain (empty volume returns errors until genesis).
 - **backup** watches the soulchain volume and syncs to `BACKUP_RCLONE_REMOTE` when changes are detected.
 
+### 1.4 Soulchain volume writability smoke test
+
+The runtime image pre-creates `/data/soulchain` owned by `npc` so a **fresh** named volume inherits write access for `USER npc`. Confirm:
+
+```bash
+docker compose --env-file ops/.env -f ops/compose.ghost.yml run --rm --no-deps \
+  --entrypoint sh \
+  runtime -c "touch /data/soulchain/.wtest && rm /data/soulchain/.wtest"
+```
+
+Exit code `0` means the volume is writable. If this fails with `Permission denied`, the volume was likely created by an older image as `root:root` — either recreate it (`docker compose … down -v` then `up`, **destroys data**) or fix ownership once:
+
+```bash
+docker compose --env-file ops/.env -f ops/compose.ghost.yml run --rm --no-deps --user root \
+  --entrypoint sh \
+  runtime -c "chown -R npc:npc /data/soulchain"
+```
+
 ---
 
 ## 2. Stop
@@ -178,13 +196,7 @@ node packages/osp-cli/dist/cli.js verify ./_soulchain-snapshot \
   --door-key "$(grep '^ATLAS_DOOR_PUBKEYS=' ops/.env | cut -d= -f2- | cut -d, -f1)"
 ```
 
-If you have multiple door keys, repeat `--door-key` for each (fixture keys shown as an example):
-
-```bash
-node packages/osp-cli/dist/cli.js verify ./_soulchain-snapshot \
-  --door-key E5j2LG0aRXxRumpLXz29L2n8qTIWIY3ImX5Ba9F9k8o \
-  --door-key Q6cucUQBdi32a2jCbfvfJoKq7J8kdOykYT5CSg-6_Tw
-```
+If you have multiple door keys, repeat `--door-key` for each value in `ATLAS_DOOR_PUBKEYS`. For the offline fixture chain used by the restore drill, read public keys from `packages/atlas/test/fixtures/multi-residency/fixture-meta.json` (`doorPublicKeys` array) — those are TEST-ONLY fill-byte keys, not production secrets.
 
 Exit code `0` means the chain is valid. Exit code `1` means verification failed (printed rule failures). Exit code `2` means corruption or I/O error — see [Crash recovery](#6-crash-recovery) before proceeding.
 

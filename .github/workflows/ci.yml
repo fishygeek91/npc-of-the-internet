@@ -39,7 +39,8 @@ jobs:
       - name: Install rclone
         run: sudo apt-get update && sudo apt-get install -y rclone
       - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter @npc/osp-cli build
+      # Build osp-cli and its workspace deps (osp-core) so tsc can resolve @npc/osp-core.
+      - run: pnpm --filter @npc/osp-cli... build
       - name: Run offline restore drill
         run: bash ops/scripts/restore-drill.sh
 

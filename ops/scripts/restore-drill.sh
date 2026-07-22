@@ -83,16 +83,30 @@ mkdir -p "$RESTORED_DIR"
 log "rclone sync: remote → restored"
 rclone sync "drilllocal:${REMOTE_DIR}" "$RESTORED_DIR" --config "$RCLONE_CONF" -v
 
-# 6. Verify restored chain
-DOOR_KEY_1="E5j2LG0aRXxRumpLXz29L2n8qTIWIY3ImX5Ba9F9k8o"
-DOOR_KEY_2="Q6cucUQBdi32a2jCbfvfJoKq7J8kdOykYT5CSg-6_Tw"
+# 6. Verify restored chain — public keys from fixture-meta.json (TEST-ONLY; not secrets)
+FIXTURE_META="${FIXTURE_DIR}/fixture-meta.json"
+[[ -f "$FIXTURE_META" ]] || die "fixture-meta.json missing at $FIXTURE_META"
+
+VERIFY_ARGS=()
+while IFS= read -r key; do
+  [[ -n "$key" ]] || continue
+  VERIFY_ARGS+=(--door-key "$key")
+done < <(
+  node --input-type=module -e "
+import { readFileSync } from \"node:fs\";
+const meta = JSON.parse(readFileSync(process.argv[1], \"utf8\"));
+for (const key of meta.doorPublicKeys ?? []) {
+  if (typeof key === \"string\" && key.length > 0) process.stdout.write(key + \"\\n\");
+}
+" "$FIXTURE_META"
+)
+
+[[ ${#VERIFY_ARGS[@]} -gt 0 ]] || die "no doorPublicKeys found in $FIXTURE_META"
 
 log "Running osp verify on restored chain"
 (
   cd "$REPO_ROOT"
-  node "$OSP_BIN" verify "$RESTORED_DIR" \
-    --door-key "$DOOR_KEY_1" \
-    --door-key "$DOOR_KEY_2"
+  node "$OSP_BIN" verify "$RESTORED_DIR" "${VERIFY_ARGS[@]}"
 )
 
 log "SUCCESS: restore drill passed — fixture chain restored and verified offline"
