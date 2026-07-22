@@ -39,7 +39,9 @@ COPY --from=build /out /app
 RUN mkdir -p /data/soulchain && chown npc:npc /data/soulchain
 
 WORKDIR /app
-ENV PATH="/app/node_modules/.bin:${PATH}"
 USER npc
 
-CMD ["npc-runtime"]
+# pnpm deploy does not emit a .bin shim for this package's own `bin` entry —
+# invoke the built entrypoint directly (package.json `bin.npc-runtime` remains
+# for local/dev installs).
+CMD ["node", "dist/daemon.js"]

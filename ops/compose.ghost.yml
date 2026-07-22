@@ -10,6 +10,9 @@ services:
       dockerfile: ops/Dockerfile.runtime
     image: ghcr.io/fishygeek91/npc-runtime:${NPC_IMAGE_TAG:-latest}
     restart: unless-stopped
+    # Start after door-discord is created (no health condition — Door has no
+    # compose healthcheck). If Door is still booting, runtime exits on hello
+    # failure and `restart: unless-stopped` retries.
     depends_on:
       - door-discord
     environment:

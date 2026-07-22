@@ -278,7 +278,7 @@ pnpm --filter @npc/runtime build
 node packages/runtime/dist/daemon.js
 ```
 
-Or after install: `npc-runtime` (bin in `@npc/runtime`).
+Or after install: `npc-runtime` (bin in `@npc/runtime`). Ghost image `CMD` is `node dist/daemon.js` — `pnpm deploy` does not create an `npc-runtime` shim in the image.
 
 ### Environment variables
 
@@ -294,6 +294,6 @@ Or after install: `npc-runtime` (bin in `@npc/runtime`).
 | `NPC_BRAIN_MODEL` | no | `claude-sonnet-4-20250514` | Model id |
 | `NPC_BRAIN_MAX_TOKENS` | no | `1024` | Default max output tokens |
 | `NPC_BRAIN_TIMEOUT_MS` | no | `60000` | Request timeout (ms) |
-| `NPC_RUNTIME_READY_FILE` | no | `/tmp/npc-runtime.ready` | Readiness probe path (written after WS bind) |
+| `NPC_RUNTIME_READY_FILE` | no | `/tmp/npc-runtime.ready` | Compose healthcheck path (present only while the session WS is connected) |
 
 Graceful shutdown (SIGTERM/SIGINT): remove ready file → close WS → `session.stop()` → `drainAppends()` → `store.close()` → exit 0.
