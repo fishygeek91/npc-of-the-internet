@@ -8,7 +8,7 @@ Four services share one named Docker volume (`soulchain`):
 
 | Service | Image | Role | Soulchain access |
 |---------|-------|------|------------------|
-| **runtime** | `ghcr.io/fishygeek91/npc-runtime` | Wanderer process (currently an **idle placeholder** until the Door HTTP/WS client and residency daemon land in [issue #53](https://github.com/fishygeek91/npc-of-the-internet/issues/53)) | read-write |
+| **runtime** | `ghcr.io/fishygeek91/npc-runtime` | Residency daemon (`npc-runtime`): soulchain writer, Door HTTP/WS client, live Session loop | read-write |
 | **door-discord** | `ghcr.io/fishygeek91/npc-door-discord` | Discord Door relay; HTTP REST and WebSocket coalesced on port **9090** | none |
 | **atlas-api** | `ghcr.io/fishygeek91/npc-atlas-api` | Read-only Atlas API on host port **8787** | read-only |
 | **backup** | `ghcr.io/fishygeek91/npc-backup` | Append-triggered `rclone` sync to remote storage | read-only |
@@ -69,14 +69,18 @@ docker compose --env-file ops/.env -f ops/compose.ghost.yml up -d --build
 
 **Expected behavior after start:**
 
-- **runtime** logs an idle-placeholder message and sleeps. It does not run a residency loop until [issue #53](https://github.com/fishygeek91/npc-of-the-internet/issues/53) ships.
+- **runtime** runs `npc-runtime`: opens the soulchain, connects to door-discord on the compose network (`DOOR_HTTP_HOST` / `DOOR_HTTP_PORT`), arrives at the Door, and binds the session WebSocket. Logs `residency_live` when the ready file is written. Requires a valid soulchain (genesis or restored) and matching `SOUL_PUBLIC_KEY` / `ATLAS_DOOR_PUBKEYS` / `CURRENT_DOOR_ID`.
 - **door-discord** requires a real `DISCORD_BOT_TOKEN` and valid guild/channel IDs to stay healthy. Without them the container will crash-loop.
 - **atlas-api** serves on `http://127.0.0.1:8787` once the soulchain volume contains a valid chain (empty volume returns errors until genesis).
 - **backup** watches the soulchain volume and syncs to `BACKUP_RCLONE_REMOTE` when changes are detected.
 
+The runtime healthcheck probes `/tmp/npc-runtime.ready` (override with `NPC_RUNTIME_READY_FILE`). The file appears after the WebSocket session is bound; compose allows up to 90s start period before marking unhealthy.
+
+**SIGTERM / graceful stop:** `docker compose stop runtime` (or `down`) sends SIGTERM. The daemon removes the ready file, closes the WebSocket, calls `session.stop()`, drains pending soulchain appends, releases the writer lock, and exits. It does **not** run ceremonial depart (no distill, cosign, or departure attestation). Use `wanderer move` for a deliberate handover.
+
 ### 1.4 Soulchain volume writability smoke test
 
-The runtime image pre-creates `/data/soulchain` owned by `npc` so a **fresh** named volume inherits write access for `USER npc`. Confirm:
+Required after the `npc-runtime` CMD swap (and on any fresh volume). The runtime image pre-creates `/data/soulchain` owned by `npc` so a **fresh** named volume inherits write access for `USER npc`. Confirm:
 
 ```bash
 docker compose --env-file ops/.env -f ops/compose.ghost.yml run --rm --no-deps \
@@ -135,7 +139,19 @@ curl -sS http://127.0.0.1:8787/state
 
 A healthy response is JSON describing present/traveling/sleeping state derived from the soulchain. Connection refused means atlas-api is not running or not bound to 8787.
 
-### 3.3 Door coalesced HTTP + WebSocket
+### 3.3 Runtime readiness
+
+```bash
+docker compose --env-file ops/.env -f ops/compose.ghost.yml ps runtime
+```
+
+`healthy` means `/tmp/npc-runtime.ready` exists. Follow logs for `residency_live`:
+
+```bash
+docker compose --env-file ops/.env -f ops/compose.ghost.yml logs runtime 2>&1 | grep residency_live
+```
+
+### 3.4 Door coalesced HTTP + WebSocket
 
 door-discord listens on a **single** port for both REST and WebSocket (`DOOR_HTTP_HOST` / `DOOR_HTTP_PORT`, default `0.0.0.0:9090` inside the container). Confirm both listeners in logs:
 
@@ -145,7 +161,7 @@ docker compose --env-file ops/.env -f ops/compose.ghost.yml logs door-discord 2>
 
 You should see `door_http_listening` and `door_ws_listening` both reporting port **9090**. The port is not published to the host in the default compose file; runtime reaches it on the internal Docker network.
 
-### 3.4 Backup activity
+### 3.5 Backup activity
 
 ```bash
 docker compose --env-file ops/.env -f ops/compose.ghost.yml logs backup 2>&1 | tail -20

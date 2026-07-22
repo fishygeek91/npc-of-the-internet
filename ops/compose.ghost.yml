@@ -4,8 +4,6 @@
 name: npc-ghost
 
 services:
-  # Idle placeholder — not a live residency loop. Door HTTP/WS client + residency
-  # daemon land in GitHub issue #53; until then this service only holds the stack up.
   runtime:
     build:
       context: ..
@@ -17,6 +15,10 @@ services:
     environment:
       SOUL_KEY_PATH: /run/keys/soul.key
       SOULCHAIN_DIR: /data/soulchain
+      DOOR_HTTP_HOST: door-discord
+      DOOR_HTTP_PORT: "9090"
+      CURRENT_DOOR_ID: discord:${DISCORD_GUILD_ID}
+      ATLAS_DOOR_PUBKEYS: ${ATLAS_DOOR_PUBKEYS:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       NPC_BRAIN_MODEL: ${NPC_BRAIN_MODEL:-claude-sonnet-4-20250514}
       NPC_BRAIN_MAX_TOKENS: ${NPC_BRAIN_MAX_TOKENS:-1024}
@@ -24,6 +26,12 @@ services:
     volumes:
       - soulchain:/data/soulchain
       - ${SOUL_KEY_HOST_PATH}:/run/keys/soul.key:ro
+    healthcheck:
+      test: ["CMD", "test", "-f", "/tmp/npc-runtime.ready"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 90s
 
   door-discord:
     build:

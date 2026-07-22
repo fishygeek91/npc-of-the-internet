@@ -112,7 +112,7 @@ Each task lists **Deps**, **Deliverables**, and **Acceptance** (how a reviewer v
 - Deps: T4.1, T2.5
 - Deliverables: Discord adapter (discord.js): binds one guild channel to a residency; relays messages both ways; rate limiting; host operator commands (`/wanderer status`, cosign approval flow via reaction or command); config via env.
 - Acceptance: integration test against a mocked discord.js client runs a full residency; manual test doc `packages/door-discord/MANUAL_TEST.md` for a real server. Green.
-- Notes: Agent: Cursor Grok 4.5 Maestro, 2026-07-21. DiscordGateway seam + ReviewGatedDoor (timeout→rejected); FakeGateway residency integration (post-T3.2 candidates); MANUAL_TEST uses package harness until wanderer CLI Door client lands in T6.1. Next: T6.1 (needs T5.1) or T5.2.
+- Notes: Agent: Cursor Grok 4.5 Maestro, 2026-07-21. DiscordGateway seam + ReviewGatedDoor (timeout→rejected); FakeGateway residency integration (post-T3.2 candidates); MANUAL_TEST in-process harness. Deferred Door HTTP/WS client for cross-container Session resolved in T6.1-followup (#53). Next: T6.1 (needs T5.1) or T5.2.
 
 ## Phase 5 — Atlas
 
@@ -134,19 +134,19 @@ Each task lists **Deps**, **Deliverables**, and **Acceptance** (how a reviewer v
 - Deps: T4.2, T5.1
 - Deliverables: `ops/compose.ghost.yml` (runtime + door-discord + atlas-api), Dockerfiles, soulchain volume + append-triggered backup sidecar (rclone), `ops/SECRETS.md`, `ops/RUNBOOK.md` (start, stop, upgrade-with-verify, restore-from-backup, crash recovery).
 - Acceptance: `docker compose -f ops/compose.ghost.yml config` valid; runbook steps executable by an agent with no prior context; restore drill documented + scripted.
-- Notes: WS coalesced onto HTTP `:9090` (`HttpDoorServer.nodeServer`); runtime image is idle placeholder until #53 (Door client + residency daemon). Compose + backup + restore-drill + RUNBOOK shipped. Next: #53, then T6.2.
+- Notes: WS coalesced onto HTTP `:9090` (`HttpDoorServer.nodeServer`); runtime image was idle placeholder until T6.1-followup (#53). Compose + backup + restore-drill + RUNBOOK shipped. Follow-up: T6.1-followup (#53), then T6.2.
 
-### T6.1-followup ⏳ Door transport + residency daemon (Cursor Grok 4.5 Maestro, 2026-07-22)
+### T6.1-followup ✅ Door transport + residency daemon (Cursor Grok 4.5 Maestro, 2026-07-22)
 - Deps: T6.1, T4.1
-- Deliverables: `@npc/door-sdk` `HttpDoorConnection` + `WsDoorSessionClient`; `@npc/runtime` `npc-runtime` residency daemon; ops touch-up; cross-container MANUAL_TEST; changeset.
-- Acceptance: client unit tests; daemon integration; compose config valid; MANUAL_TEST compose E2E; `pnpm check` green.
-- Notes: Agent: Cursor Grok 4.5 Maestro, 2026-07-22. PR A (#57): door-sdk network clients. PR B (#58): daemon + ops (stacked).
+- Deliverables: `@npc/door-sdk` `HttpDoorConnection` + `WsDoorSessionClient`; `@npc/runtime` `npc-runtime` residency daemon (SIGTERM graceful shutdown, ready file health signal); ops touch-up (`Dockerfile.runtime` CMD, compose env + healthcheck, RUNBOOK/SECRETS); cross-container MANUAL_TEST section; changeset.
+- Acceptance: `HttpDoorConnection` + WS client unit tests; daemon integration test; `docker compose --env-file ops/.env.example -f ops/compose.ghost.yml config` exits 0; documented compose E2E in `packages/door-discord/MANUAL_TEST.md`; `pnpm check` green; RUNBOOK §1.4 writability smoke test still applies.
+- Notes: Agent: Cursor Grok 4.5 Maestro, 2026-07-22. Split PRs for size: PR A (#57) door-sdk clients, PR B (#58) daemon + ops. Unblocks T6.2.
 
 ### T6.2 ⬜ Genesis ceremony + launch checklist
-- Deps: T6.1, T5.2, T3.2
+- Deps: T6.1-followup, T5.2, T3.2
 - Deliverables: `ops/LAUNCH.md`: generate soul key, run `osp init` with the real charter, first residency checklist, public announcement template linking Atlas + soulchain head CID; dry-run script that executes the full checklist against a scratch environment.
 - Acceptance: dry-run passes end to end; a second agent can follow LAUNCH.md verbatim.
-- Notes: Blocked on T6.1-followup (#53) for the live residency loop.
+- Notes: Door transport + residency daemon (T6.1-followup / #53) unblocks the live residency loop this ceremony needs.
 
 ## Phase 7 — Post-Ghost (v0.2/0.3 — spec first, then build)
 
