@@ -1,0 +1,70 @@
+---
+import VerificationBadge from "../../components/VerificationBadge.astro";
+import BaseLayout from "../../layouts/BaseLayout.astro";
+import { loadSiteData } from "../../lib/load-site-data.ts";
+import { withBase } from "../../lib/paths.ts";
+
+export async function getStaticPaths() {
+  const data = await loadSiteData();
+  return data.records.map((record) => ({
+    params: { cid: record.cid },
+    props: { record }
+  }));
+}
+
+const { record } = Astro.props;
+const base = import.meta.env.BASE_URL;
+---
+
+<BaseLayout
+  title={`Record ${record.seq}`}
+  description={`${record.kind} — soulchain record ${record.seq}.`}
+  current="soul"
+>
+  <h1 class="page-title">{record.kind}</h1>
+  <p class="lead">
+    seq {record.seq} · <VerificationBadge verified={record.verified} />
+  </p>
+
+  <section class="record-detail">
+    <dl class="record-detail__meta">
+      <div>
+        <dt>Issued</dt>
+        <dd>{record.issued_at ?? "—"}</dd>
+      </div>
+      <div>
+        <dt>Residency</dt>
+        <dd>{record.residency ?? "—"}</dd>
+      </div>
+      <div>
+        <dt>Previous</dt>
+        <dd>
+          {
+            record.prev === null ? (
+              "—"
+            ) : (
+              <a href={withBase(`/soul/${record.prev}/`, base)}>{record.prev}</a>
+            )
+          }
+        </dd>
+      </div>
+      <div>
+        <dt>Cosigners</dt>
+        <dd>
+          {
+            record.cosigners.length === 0 ? (
+              "—"
+            ) : (
+              <ul class="cosigner-list">
+                {record.cosigners.map((cosigner) => <li>{cosigner}</li>)}
+              </ul>
+            )
+          }
+        </dd>
+      </div>
+    </dl>
+
+    <h2 class="page-subtitle">Body</h2>
+    <pre class="record-detail__body">{record.displayBodyJson}</pre>
+  </section>
+</BaseLayout>

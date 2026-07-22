@@ -10,7 +10,8 @@
       "@npc/immune",
       "@npc/door-sdk",
       "@npc/door-discord",
-      "@npc/atlas"
+      "@npc/atlas",
+      "@npc/atlas-site"
     ]
   ],
   "linked": [],

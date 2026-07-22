@@ -1,0 +1,40 @@
+---
+import BaseLayout from "../../layouts/BaseLayout.astro";
+import { loadSiteData } from "../../lib/load-site-data.ts";
+import { withBase } from "../../lib/paths.ts";
+
+const data = await loadSiteData();
+const base = import.meta.env.BASE_URL;
+---
+
+<BaseLayout
+  title="Journals"
+  description="Distilled journal entries from Atlas memory shards."
+  current="journals"
+>
+  <h1 class="page-title">Journals</h1>
+  <p class="lead">
+    Distilled notes from memory shards — the only durable prose the Wanderer leaves behind.
+  </p>
+
+  {
+    data.journals.length === 0 ? (
+      <p>No journals found in the chain.</p>
+    ) : (
+      <ul class="journal-list">
+        {
+          data.journals.map((entry) => (
+            <li class="journal-list__item">
+              <p class="journal-list__title">
+                <a href={withBase(`/journals/${entry.cid}/`, base)}>
+                  {entry.door_id} · epoch {entry.epoch}
+                </a>
+              </p>
+              <p class="journal-list__meta">{entry.cid}</p>
+            </li>
+          ))
+        }
+      </ul>
+    )
+  }
+</BaseLayout>

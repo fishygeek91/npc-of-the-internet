@@ -12,3 +12,4 @@ _tmp_*
 *.pem
 *.key
 *.p12
+**/.astro/

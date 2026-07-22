@@ -1,0 +1,42 @@
+---
+import BaseLayout from "../layouts/BaseLayout.astro";
+import { loadSiteData } from "../lib/load-site-data.ts";
+import { withBase } from "../lib/paths.ts";
+
+const data = await loadSiteData();
+const base = import.meta.env.BASE_URL;
+---
+
+<BaseLayout
+  title="Journey"
+  description="Timeline of Atlas residencies across doors and epochs."
+  current="journey"
+>
+  <h1 class="page-title">Journey</h1>
+  <p class="lead">
+    Every door the Wanderer has entered, reconstructed from arrival attestations — oldest first,
+    nothing invented beyond the chain.
+  </p>
+
+  {
+    data.journey.length === 0 ? (
+      <p>No arrivals recorded yet.</p>
+    ) : (
+      <ol class="timeline">
+        {
+          data.journey.map((entry) => (
+            <li class="timeline__item">
+              <p class="timeline__meta">
+                Epoch {entry.epoch} · {entry.at}
+              </p>
+              <p class="timeline__door">{entry.door_id}</p>
+              <p>
+                <a href={withBase(`/soul/${entry.cid}/`, base)}>Arrival record</a>
+              </p>
+            </li>
+          ))
+        }
+      </ol>
+    )
+  }
+</BaseLayout>

@@ -1,0 +1,34 @@
+---
+import PaginationNav from "../../components/PaginationNav.astro";
+import RecordsList from "../../components/RecordsList.astro";
+import TypeFilter from "../../components/TypeFilter.astro";
+import VerificationBadge from "../../components/VerificationBadge.astro";
+import BaseLayout from "../../layouts/BaseLayout.astro";
+import { loadSiteData } from "../../lib/load-site-data.ts";
+
+const data = await loadSiteData();
+const pageData = data.recordsPages[0];
+
+if (pageData === undefined) {
+  throw new Error("Expected at least one records page from loadSiteData");
+}
+---
+
+<BaseLayout
+  title="Soul"
+  description="Paginated explorer for the Atlas soulchain."
+  current="soul"
+>
+  <h1 class="page-title">Soul</h1>
+  <p class="lead">
+    {data.totalRecords} records · <VerificationBadge verified={data.chainVerified} />
+  </p>
+
+  <TypeFilter recordTypes={data.recordTypes} />
+  <RecordsList records={pageData.records} />
+  <PaginationNav
+    page={pageData.page}
+    total={pageData.total}
+    perPage={pageData.per_page}
+  />
+</BaseLayout>

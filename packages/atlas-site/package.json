@@ -1,0 +1,24 @@
+{
+  "name": "@npc/atlas-site",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "astro dev",
+    "build": "ATLAS_SITE_CHAIN_DIR=../atlas/test/fixtures/multi-residency astro build",
+    "preview": "astro preview",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@npc/atlas": "workspace:*",
+    "@npc/osp-core": "workspace:*",
+    "astro": "^5.7.10",
+    "marked": "^15.0.12",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "typescript": "^5.6.0",
+    "vitest": "^3.0.0"
+  }
+}

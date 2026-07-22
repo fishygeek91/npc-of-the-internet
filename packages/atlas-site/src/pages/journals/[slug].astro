@@ -1,0 +1,27 @@
+---
+import BaseLayout from "../../layouts/BaseLayout.astro";
+import { loadSiteData } from "../../lib/load-site-data.ts";
+
+export async function getStaticPaths() {
+  const data = await loadSiteData();
+  return data.journals.map((entry) => ({
+    params: { slug: entry.cid },
+    props: { entry }
+  }));
+}
+
+const { entry } = Astro.props;
+---
+
+<BaseLayout
+  title={entry.journal}
+  description={`Journal from ${entry.door_id}, epoch ${entry.epoch}.`}
+  current="journals"
+>
+  <h1 class="page-title">{entry.journal}</h1>
+  <p class="journal-list__meta">
+    {entry.door_id} · epoch {entry.epoch}
+  </p>
+
+  <article class="journal-body" set:html={entry.html} />
+</BaseLayout>

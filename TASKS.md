@@ -122,11 +122,11 @@ Each task lists **Deps**, **Deliverables**, and **Acceptance** (how a reviewer v
 - Acceptance: unit tests over a fixture chain; API never writes. Green.
 - Notes: `FileSoulStore.openReadOnly` (soft verify/torn tail, no lock); Fastify `/state` `/chain/head` `/records` `/journals` via ChainView cache; fixture `test/fixtures/multi-residency/`. Agent: Cursor Grok 4.5 Maestro, 2026-07-21. Next: T5.2. Issue #36.
 
-### T5.2 ⬜ Atlas site
+### T5.2 ✅ Atlas site
 - Deps: T5.1
 - Deliverables: Astro static site: home (current location banner), journey timeline, journal pages, soul explorer (record list + detail w/ verification badge); builds from fixture chain in CI; deploy workflow to GitHub Pages (ENGINEERING.md D4).
 - Acceptance: `pnpm build` in atlas produces the site from the fixture chain; CI deploy workflow present. Green.
-- Notes:
+- Notes: Package `@npc/atlas-site` (Astro static, build-time `ChainView`/`derive*` + `verifyRecords`). Default chain: `packages/atlas/test/fixtures/multi-residency/`. Deploy: `.github/workflows/deploy-atlas-site.yml` (enable Pages → GitHub Actions; deploy job soft-fails until then). ENGINEERING D1 tree still lists site under `atlas/` — site lives in `atlas-site` per #47. Agent: Cursor Grok 4.5 Maestro, 2026-07-21. Next: T6.1 (after T4.2) then T6.2.
 
 ## Phase 6 — Ship Ghost (v0.1)
 

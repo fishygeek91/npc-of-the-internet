@@ -1,0 +1,44 @@
+---
+import PaginationNav from "../../../../components/PaginationNav.astro";
+import RecordsList from "../../../../components/RecordsList.astro";
+import TypeFilter from "../../../../components/TypeFilter.astro";
+import VerificationBadge from "../../../../components/VerificationBadge.astro";
+import BaseLayout from "../../../../layouts/BaseLayout.astro";
+import { loadSiteData } from "../../../../lib/load-site-data.ts";
+import { deriveRecordsPageView } from "../../../../lib/pagination.ts";
+
+export async function getStaticPaths() {
+  const data = await loadSiteData();
+  return data.recordTypes.map((type) => ({
+    params: { type }
+  }));
+}
+
+const { type } = Astro.params;
+if (type === undefined) {
+  throw new Error("Missing record type param");
+}
+
+const data = await loadSiteData();
+const pageData = deriveRecordsPageView(data.records, data.chainVerified, { type, page: 1 });
+---
+
+<BaseLayout
+  title={`Soul — ${type}`}
+  description={`Soulchain records of type ${type}.`}
+  current="soul"
+>
+  <h1 class="page-title">Soul</h1>
+  <p class="lead">
+    Type: {type} · <VerificationBadge verified={pageData.verified} />
+  </p>
+
+  <TypeFilter recordTypes={data.recordTypes} activeType={type} />
+  <RecordsList records={pageData.records} />
+  <PaginationNav
+    page={pageData.page}
+    total={pageData.total}
+    perPage={pageData.per_page}
+    type={type}
+  />
+</BaseLayout>

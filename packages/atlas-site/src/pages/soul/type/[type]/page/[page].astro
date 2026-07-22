@@ -1,0 +1,64 @@
+---
+import PaginationNav from "../../../../../components/PaginationNav.astro";
+import RecordsList from "../../../../../components/RecordsList.astro";
+import TypeFilter from "../../../../../components/TypeFilter.astro";
+import VerificationBadge from "../../../../../components/VerificationBadge.astro";
+import BaseLayout from "../../../../../layouts/BaseLayout.astro";
+import { loadSiteData } from "../../../../../lib/load-site-data.ts";
+import {
+  deriveRecordsPageView,
+  RECORDS_PER_PAGE,
+  totalPages
+} from "../../../../../lib/pagination.ts";
+
+export async function getStaticPaths() {
+  const data = await loadSiteData();
+  const paths = [];
+
+  for (const type of data.recordTypes) {
+    const filtered = data.records.filter((record) => record.type === type);
+    const pages = totalPages(filtered.length, RECORDS_PER_PAGE);
+
+    for (let page = 2; page <= pages; page += 1) {
+      paths.push({
+        params: { type, page: String(page) }
+      });
+    }
+  }
+
+  return paths;
+}
+
+const { type, page: pageParam } = Astro.params;
+if (type === undefined || pageParam === undefined) {
+  throw new Error("Missing type or page param");
+}
+
+const page = Number(pageParam);
+if (!Number.isInteger(page) || page < 2) {
+  throw new Error(`Invalid page number: ${pageParam}`);
+}
+
+const data = await loadSiteData();
+const pageData = deriveRecordsPageView(data.records, data.chainVerified, { type, page });
+---
+
+<BaseLayout
+  title={`Soul — ${type} — page ${pageData.page}`}
+  description={`Soulchain records of type ${type}, page ${pageData.page}.`}
+  current="soul"
+>
+  <h1 class="page-title">Soul</h1>
+  <p class="lead">
+    Type: {type} · page {pageData.page} · <VerificationBadge verified={pageData.verified} />
+  </p>
+
+  <TypeFilter recordTypes={data.recordTypes} activeType={type} />
+  <RecordsList records={pageData.records} />
+  <PaginationNav
+    page={pageData.page}
+    total={pageData.total}
+    perPage={pageData.per_page}
+    type={type}
+  />
+</BaseLayout>
