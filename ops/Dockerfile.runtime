@@ -39,7 +39,7 @@ COPY --from=build /out /app
 RUN mkdir -p /data/soulchain && chown npc:npc /data/soulchain
 
 WORKDIR /app
+ENV PATH="/app/node_modules/.bin:${PATH}"
 USER npc
 
-# Idle placeholder until issue #53 lands (Door HTTP/WS client + residency daemon).
-CMD ["sh", "-c", "echo 'npc-runtime: idle placeholder — awaiting GitHub issue #53 (Door client + residency daemon); not a live residency loop' && exec sleep infinity"]
+CMD ["npc-runtime"]
