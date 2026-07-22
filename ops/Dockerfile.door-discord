@@ -1,0 +1,38 @@
+# syntax=docker/dockerfile:1
+
+FROM node:22-bookworm-slim AS build
+
+RUN corepack enable && corepack prepare pnpm@9.15.9 --activate
+
+WORKDIR /app
+
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
+COPY packages/atlas/package.json packages/atlas/
+COPY packages/atlas-site/package.json packages/atlas-site/
+COPY packages/door-discord/package.json packages/door-discord/
+COPY packages/door-sdk/package.json packages/door-sdk/
+COPY packages/immune/package.json packages/immune/
+COPY packages/osp-cli/package.json packages/osp-cli/
+COPY packages/osp-core/package.json packages/osp-core/
+COPY packages/runtime/package.json packages/runtime/
+
+RUN pnpm install --frozen-lockfile
+
+COPY packages/osp-core packages/osp-core
+COPY packages/door-sdk packages/door-sdk
+COPY packages/door-discord packages/door-discord
+
+RUN pnpm --filter @npc/door-discord... build
+RUN pnpm --filter @npc/door-discord deploy --prod /out
+
+FROM node:22-slim AS runtime
+
+RUN groupadd --system npc && useradd --system --gid npc --create-home --home-dir /home/npc npc
+
+COPY --from=build /out /app
+
+WORKDIR /app
+ENV PATH="/app/node_modules/.bin:${PATH}"
+USER npc
+
+CMD ["door-discord"]

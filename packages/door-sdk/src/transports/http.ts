@@ -92,6 +92,20 @@ export class HttpDoorServer {
     });
   }
 
+  /**
+   * Underlying Node `http.Server` after {@link start} has resolved.
+   * Attach WebSocket upgrades (e.g. `WsDoorSessionServer`) to share the same listener.
+   *
+   * @throws {Error} When called before {@link start} completes.
+   */
+  get nodeServer(): Server {
+    const server = this.server;
+    if (server === null) {
+      throw new Error("HttpDoorServer is not started; call start() first");
+    }
+    return server;
+  }
+
   /** Stop the HTTP server and release the listen socket. */
   stop(): Promise<void> {
     const server = this.server;

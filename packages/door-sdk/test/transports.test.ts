@@ -14,6 +14,7 @@ import { DOOR_PROTOCOL_VERSION } from "../src/schemas.js";
 import type { AttestRequest, HeartbeatRequest } from "../src/schemas.js";
 import { attestSigningPayload, generateDoorKeypair } from "../src/signing.js";
 import { HttpDoorServer } from "../src/transports/http.js";
+import { WsDoorSessionServer } from "../src/transports/ws.js";
 
 const DOOR_ID = "discord:http";
 const EPOCH = 11;
@@ -210,5 +211,47 @@ describe("HTTP transport", () => {
 
     expect(response.status).toBe(401);
     expect((response.body.error as { code: string }).code).toBe("signature_invalid");
+  });
+});
+
+describe("HTTP + WS coalesced listener", () => {
+  let httpServer: HttpDoorServer | null = null;
+  let wsServer: WsDoorSessionServer | null = null;
+
+  afterEach(async () => {
+    if (wsServer !== null) {
+      await wsServer.stop();
+      wsServer = null;
+    }
+    if (httpServer !== null) {
+      await httpServer.stop();
+      httpServer = null;
+    }
+  });
+
+  it("nodeServer throws before start", () => {
+    const soul = generateKeypair();
+    const door = createDoor(soul.publicKey);
+    httpServer = new HttpDoorServer({ door });
+    expect(() => httpServer.nodeServer).toThrow("HttpDoorServer is not started");
+  });
+
+  it("shares the HTTP listen port when WS attaches via nodeServer", async () => {
+    const soul = generateKeypair();
+    const door = createDoor(soul.publicKey);
+    httpServer = new HttpDoorServer({ door });
+    const httpBound = await httpServer.start();
+    wsServer = new WsDoorSessionServer({ door, server: httpServer.nodeServer });
+    const wsBound = await wsServer.start();
+
+    expect(wsBound.port).toBe(httpBound.port);
+    expect(wsBound.host).toBe(httpBound.host);
+    expect(wsBound.url).toBe(`ws://${httpBound.host}:${String(httpBound.port)}/door/session`);
+
+    const response = await postJson(httpBound.baseUrl, "/door/hello", {
+      protocol_version: DOOR_PROTOCOL_VERSION,
+      soul_pubkey: encodePublicKey(soul.publicKey)
+    });
+    expect(response.status).toBe(200);
   });
 });

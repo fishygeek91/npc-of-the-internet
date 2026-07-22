@@ -21,7 +21,7 @@ Discord Door adapter: one guild channel becomes a Door. Wraps `@npc/door-sdk` `D
 | `SOUL_PUBLIC_KEY` | yes | Wanderer soul public key (base64url) |
 | `DISCORD_REVIEW_TIMEOUT_MS` | no | Cosign review wait (default `300000`). **Timeout rejects.** |
 | `DISCORD_REVIEW_CHANNEL_ID` | no | Alternate channel/thread for review posts |
-| `DOOR_HTTP_HOST` / `DOOR_HTTP_PORT` | no | Door REST listen (default `127.0.0.1:9090`) |
+| `DOOR_HTTP_HOST` / `DOOR_HTTP_PORT` | no | Door REST + WebSocket session listen (default `127.0.0.1:9090`; WS path `/door/session`) |
 | `DISCORD_USER_RATE_PER_MIN` / `DISCORD_USER_BURST` | no | Per-user inbound token bucket |
 | `DISCORD_CHANNEL_RATE_PER_MIN` / `DISCORD_CHANNEL_BURST` | no | Per-channel inbound token bucket |
 

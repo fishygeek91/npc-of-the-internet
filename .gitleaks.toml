@@ -18,5 +18,7 @@ paths = [
 commits = [
   "3a698bdb4d6906ea8066ad2e5ed5ef0dbb13e5ed",
   # T4.1 (#41): temporary discord-snowflake door_id fixture in schemas/signing tests (fixed in later commit)
-  "bf8bbe081cf0772c5543ab97aa57f2e9027c93e3"
+  "bf8bbe081cf0772c5543ab97aa57f2e9027c93e3",
+  # T6.1 (#54): restore-drill hardcoded fixture door public keys as DOOR_KEY_* (false-positive generic-api-key; keys now read from fixture-meta.json)
+  "d947b495fbf830a6d1a5d0c60554785c9348a4ba"
 ]

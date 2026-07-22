@@ -1,0 +1,20 @@
+# Backup sidecar: watches soulchain volume and syncs to rclone remote.
+# Build context: repo root (see ops/compose.ghost.yml backup service).
+# syntax=docker/dockerfile:1
+
+FROM alpine:3.21
+
+RUN apk add --no-cache bash inotify-tools rclone \
+  && addgroup -S npc \
+  && adduser -S -G npc -h /home/npc npc
+
+COPY ops/scripts/backup-watch.sh /usr/local/bin/backup-watch.sh
+RUN chmod +x /usr/local/bin/backup-watch.sh
+
+ENV BACKUP_SOURCE_DIR=/data/soulchain \
+    BACKUP_DEBOUNCE_SEC=5 \
+    BACKUP_INTERVAL_SEC=300
+
+USER npc
+
+ENTRYPOINT ["/usr/local/bin/backup-watch.sh"]

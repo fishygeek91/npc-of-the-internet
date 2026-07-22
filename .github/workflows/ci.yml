@@ -20,6 +20,30 @@ jobs:
       - run: pnpm lint
       - run: pnpm test
 
+  compose-config:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Ghost compose file
+        run: docker compose --env-file ops/.env.example -f ops/compose.ghost.yml config
+
+  restore-drill:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install rclone
+        run: sudo apt-get update && sudo apt-get install -y rclone
+      - run: pnpm install --frozen-lockfile
+      # Build osp-cli and its workspace deps (osp-core) so tsc can resolve @npc/osp-core.
+      - run: pnpm --filter @npc/osp-cli... build
+      - name: Run offline restore drill
+        run: bash ops/scripts/restore-drill.sh
+
   secret-scan:
     runs-on: ubuntu-latest
     permissions:

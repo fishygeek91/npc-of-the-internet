@@ -130,11 +130,11 @@ Each task lists **Deps**, **Deliverables**, and **Acceptance** (how a reviewer v
 
 ## Phase 6 — Ship Ghost (v0.1)
 
-### T6.1 ⬜ Ops: compose + backup
+### T6.1 ✅ Ops: compose + backup (Grok 4.5 Maestro, 2026-07-22)
 - Deps: T4.2, T5.1
 - Deliverables: `ops/compose.ghost.yml` (runtime + door-discord + atlas-api), Dockerfiles, soulchain volume + append-triggered backup sidecar (rclone), `ops/SECRETS.md`, `ops/RUNBOOK.md` (start, stop, upgrade-with-verify, restore-from-backup, crash recovery).
 - Acceptance: `docker compose -f ops/compose.ghost.yml config` valid; runbook steps executable by an agent with no prior context; restore drill documented + scripted.
-- Notes:
+- Notes: WS coalesced onto HTTP `:9090` (`HttpDoorServer.nodeServer`); runtime image is idle placeholder until #53 (Door client + residency daemon). Compose + backup + restore-drill + RUNBOOK shipped. Next: #53, then T6.2.
 
 ### T6.2 ⬜ Genesis ceremony + launch checklist
 - Deps: T6.1, T5.2, T3.2

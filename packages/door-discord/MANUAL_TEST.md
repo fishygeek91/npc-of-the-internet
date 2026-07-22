@@ -62,7 +62,7 @@ What you should see:
 ## 5. Verify the chain
 
 ```bash
-pnpm --filter @npc/osp-cli exec osp verify --dir "$SOULCHAIN_DIR"
+pnpm --filter @npc/osp-cli exec osp verify "$SOULCHAIN_DIR"
 ```
 
 Expect a valid chain with `memory.candidate` records from depart (not committed `memory.shard` until a later quarantine commit).
@@ -73,4 +73,4 @@ Expect a valid chain with `memory.candidate` records from depart (not committed 
 pnpm --filter @npc/door-discord start
 ```
 
-Starts Discord + `HttpDoorServer` / `WsDoorSessionServer` for T6.1 compose. Runtime Door HTTP client wiring is out of scope for T4.2.
+Starts Discord + coalesced Door HTTP/WS on `DOOR_HTTP_HOST:DOOR_HTTP_PORT` (REST + `WS /door/session` on the same listener) for T6.1 compose. Runtime Door HTTP client wiring is out of scope for T4.2.
