@@ -268,3 +268,32 @@ Production handlers are not wired yet (same pattern as `wanderer move`); tests i
 ```bash
 pnpm --filter @npc/runtime test
 ```
+
+## Residency daemon (`npc-runtime`)
+
+Long-running process that opens the soulchain, arrives at a Door via HTTP, binds the session WebSocket, and maintains inbound → outbound handling until SIGTERM/SIGINT. Does not auto-depart (`cosign.manual` requires a host).
+
+```bash
+pnpm --filter @npc/runtime build
+node packages/runtime/dist/daemon.js
+```
+
+Or after install: `npc-runtime` (bin in `@npc/runtime`). Ghost image `CMD` is `node dist/daemon.js` — `pnpm deploy` does not create an `npc-runtime` shim in the image.
+
+### Environment variables
+
+| Variable | Required | Default | Purpose |
+|----------|----------|---------|---------|
+| `SOUL_KEY_PATH` | yes | — | Path to soul private key file (32 raw bytes or base64url) |
+| `SOULCHAIN_DIR` | yes | — | Append-only soulchain directory |
+| `DOOR_HTTP_HOST` | yes | — | Door HTTP/WS connect host |
+| `DOOR_HTTP_PORT` | yes | — | Door HTTP/WS connect port |
+| `CURRENT_DOOR_ID` | yes | — | Expected Door id (e.g. `discord:123…`); must match Door hello |
+| `ATLAS_DOOR_PUBKEYS` | yes | — | Comma-separated base64url Door public keys for chain verify |
+| `ANTHROPIC_API_KEY` | yes | — | Brain API key (see Brain section) |
+| `NPC_BRAIN_MODEL` | no | `claude-sonnet-4-20250514` | Model id |
+| `NPC_BRAIN_MAX_TOKENS` | no | `1024` | Default max output tokens |
+| `NPC_BRAIN_TIMEOUT_MS` | no | `60000` | Request timeout (ms) |
+| `NPC_RUNTIME_READY_FILE` | no | `/tmp/npc-runtime.ready` | Compose healthcheck path (present only while the session WS is connected) |
+
+Graceful shutdown (SIGTERM/SIGINT): remove ready file → close WS → `session.stop()` → `drainAppends()` → `store.close()` → exit 0.

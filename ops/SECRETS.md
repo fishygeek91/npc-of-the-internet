@@ -17,7 +17,8 @@ Environment variable names and purposes only. **Never commit values.**
 | `SOULCHAIN_DIR` | In-container soulchain directory for runtime (compose sets `/data/soulchain`). |
 | `ATLAS_CHAIN_DIR` | Filesystem path to the soulchain directory read by the Atlas API (`chain.jsonl` + `blobs/`). |
 | `ATLAS_PORT` | TCP port for the Atlas read API HTTP server (default: `8787`). |
-| `ATLAS_DOOR_PUBKEYS` | Comma-separated base64url Ed25519 **public** door keys for cosignature verification (public config, not secret). |
+| `ATLAS_DOOR_PUBKEYS` | Comma-separated base64url Ed25519 **public** door keys for cosignature verification (public config, not secret). Passed to runtime for chain verify and to atlas-api. |
+| `CURRENT_DOOR_ID` | Door id of the active residency (public config, not secret). Ghost compose derives `discord:${DISCORD_GUILD_ID}`; must match the Door hello response. |
 | `DISCORD_BOT_TOKEN` | Discord bot token for `@npc/door-discord`. |
 | `DOOR_KEY_PATH` | In-container path to the Door Ed25519 private key file (compose sets `/run/keys/door.key`). |
 | `SOUL_PUBLIC_KEY` | Wanderer soul Ed25519 public key (base64url) for Door session verification (public config). |
@@ -32,7 +33,8 @@ Environment variable names and purposes only. **Never commit values.**
 | `DISCORD_CHANNEL_BURST` | Per-channel burst allowance before rate limiting (default `15`). |
 | `DISCORD_COMMUNITY_NAME` | Human-readable community name advertised by the Door (public config). |
 | `DISCORD_COMMUNITY_DESCRIPTION` | Short community description for the Door (public config). |
-| `DOOR_HTTP_HOST` / `DOOR_HTTP_PORT` | Door listen address for **both** REST and WebSocket on a single coalesced port (Ghost compose: `0.0.0.0` / `9090`). Not published to the host by default. |
+| `DOOR_HTTP_HOST` / `DOOR_HTTP_PORT` | Door **listen** address for REST + WebSocket on a single coalesced port. door-discord binds `0.0.0.0:9090` in Ghost compose. runtime **connects** to `door-discord:9090` on the internal Docker network. Not published to the host by default. |
+| `NPC_RUNTIME_READY_FILE` | Path written when the residency WebSocket is live (default `/tmp/npc-runtime.ready`). Used by compose healthcheck; optional override. |
 | `BACKUP_SOURCE_DIR` | In-container soulchain directory watched by the backup sidecar (compose sets `/data/soulchain`). |
 | `BACKUP_RCLONE_REMOTE` | rclone remote path for soulchain backup (e.g. `ghost-remote:npc/soulchain`). Required for backup sidecar. |
 | `BACKUP_DEBOUNCE_SEC` | Seconds to wait after a change before syncing (default `5`). |

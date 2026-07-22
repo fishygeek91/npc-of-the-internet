@@ -2,7 +2,7 @@
 
 End-to-end walkthrough for a human or agent with Discord access. CI does **not** run this.
 
-> **Note:** Production `wanderer move` CLI Door transport wiring lands with T6.1. This package ships an in-process residency harness (`pnpm --filter @npc/door-discord manual-residency`) that uses the same `Session` + adapter Door path as the integration test, against a live Discord channel.
+> **Note:** Production cross-container residency uses `npc-runtime` in the Ghost compose stack (T6.1-followup, issue #53). This package also ships an in-process residency harness (`pnpm --filter @npc/door-discord manual-residency`) that uses the same `Session` + adapter Door path as the integration test, against a live Discord channel.
 
 ## 1. Create the Discord bot
 
@@ -73,4 +73,61 @@ Expect a valid chain with `memory.candidate` records from depart (not committed 
 pnpm --filter @npc/door-discord start
 ```
 
-Starts Discord + coalesced Door HTTP/WS on `DOOR_HTTP_HOST:DOOR_HTTP_PORT` (REST + `WS /door/session` on the same listener) for T6.1 compose. Runtime Door HTTP client wiring is out of scope for T4.2.
+Starts Discord + coalesced Door HTTP/WS on `DOOR_HTTP_HOST:DOOR_HTTP_PORT` (REST + `WS /door/session` on the same listener). Runtime connects via `@npc/door-sdk` HTTP/WS clients (`npc-runtime` in compose).
+
+## 7. Cross-container Session (compose)
+
+End-to-end check of **runtime ↔ door-discord** over the Ghost compose network on port **9090**.
+
+### Prerequisites
+
+1. Soul and door keys on the host (`ops/.env.example` paths or your overrides); `SOUL_PUBLIC_KEY` and `ATLAS_DOOR_PUBKEYS` match those keys.
+2. `ops/.env` filled from `ops/.env.example` with a real `DISCORD_BOT_TOKEN`, guild/channel IDs, and `ANTHROPIC_API_KEY`.
+3. Valid soulchain on the `soulchain` volume — run `osp init` into a staging dir and copy into the volume, or restore from backup (see `ops/RUNBOOK.md` §5). An empty volume prevents runtime from arriving.
+
+### Start the stack
+
+From repo root:
+
+```bash
+docker compose --env-file ops/.env -f ops/compose.ghost.yml up -d --build
+```
+
+### Confirm runtime is live
+
+```bash
+docker compose --env-file ops/.env -f ops/compose.ghost.yml logs runtime 2>&1 | grep residency_live
+docker compose --env-file ops/.env -f ops/compose.ghost.yml ps runtime
+```
+
+Expect log line `residency_live` and health status `healthy` (ready file at `/tmp/npc-runtime.ready` while the WS is connected).
+
+**Image CMD check:** if runtime exits immediately with `npc-runtime: not found`, the image still uses a broken bin shim — `ops/Dockerfile.runtime` must `CMD ["node", "dist/daemon.js"]`. With placeholder env, expect structured `boot_failed` naming the missing var instead.
+
+### Confirm door-discord listeners
+
+```bash
+docker compose --env-file ops/.env -f ops/compose.ghost.yml logs door-discord 2>&1 | grep -E 'door_http_listening|door_ws_listening'
+```
+
+Both should report port **9090**.
+
+### Discord round-trip
+
+Post a normal (non-bot) message in the bound channel. The Wanderer should reply via the WebSocket session path (runtime → door-discord → Discord).
+
+**Ghost contract — reconnect gaps:** outbound replies are **not queued**. If the Brain finishes a reply while the WS is down (reconnect backoff), the daemon logs `outbound_dropped_ws_down` and that reply is lost. Resend the Discord message after `ws_session_ready` / `healthy` returns — do not chase a single missed reply as a transport bug.
+
+### Graceful stop (no auto-depart)
+
+```bash
+docker compose --env-file ops/.env -f ops/compose.ghost.yml stop runtime
+```
+
+SIGTERM removes the ready file, closes the WS, drains appends, and releases `.append.lock`. It does **not** run ceremonial depart. Restart and confirm `residency_live` again:
+
+```bash
+docker compose --env-file ops/.env -f ops/compose.ghost.yml start runtime
+```
+
+If restart fails with a stale lock, see `ops/RUNBOOK.md` §6 (crash recovery).

@@ -1,5 +1,12 @@
 export const packageName = "@npc/runtime";
 
+export type { DaemonConfig } from "./daemon-config.js";
+export { loadDaemonConfig } from "./daemon-config.js";
+export { DaemonError } from "./daemon-errors.js";
+export type { DaemonErrorReason } from "./daemon-errors.js";
+export type { ResidencyDaemonDeps, ResidencyDaemonHandle } from "./daemon.js";
+export { startResidencyDaemon } from "./daemon.js";
+
 export type { BrainConfig } from "./brain/config.js";
 export { loadBrainConfig } from "./brain/config.js";
 export { AnthropicBrain } from "./brain/anthropic-brain.js";

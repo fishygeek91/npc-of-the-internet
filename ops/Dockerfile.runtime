@@ -41,5 +41,7 @@ RUN mkdir -p /data/soulchain && chown npc:npc /data/soulchain
 WORKDIR /app
 USER npc
 
-# Idle placeholder until issue #53 lands (Door HTTP/WS client + residency daemon).
-CMD ["sh", "-c", "echo 'npc-runtime: idle placeholder — awaiting GitHub issue #53 (Door client + residency daemon); not a live residency loop' && exec sleep infinity"]
+# pnpm deploy does not emit a .bin shim for this package's own `bin` entry —
+# invoke the built entrypoint directly (package.json `bin.npc-runtime` remains
+# for local/dev installs).
+CMD ["node", "dist/daemon.js"]
