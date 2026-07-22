@@ -94,11 +94,11 @@ Each task lists **Deps**, **Deliverables**, and **Acceptance** (how a reviewer v
 - Acceptance: unit tests with a labeled corpus (≥30 cases, both classes) in `immune/test/corpus/`; screen wired into Distiller (T2.3 test extended). Green.
 - Notes: Agent: Cursor Grok 4.5 Maestro, 2026-07-21. Corpus in immune/test/corpus/ (≥30); Distiller + session inbound use screenText; category names are pii.*/injection.*; DistillError reason screen_reject. Next: T3.2 quarantine.
 
-### T3.2 ⬜ Quarantine records
+### T3.2 ✅ Quarantine records
 - Deps: T3.1, T2.5
 - Deliverables: candidate shards enter chain as `memory.candidate` records; commit to full `memory` only after quarantine window (config duration) with no operator flag; rejected candidates become `memory.rejected` (category only, no payload).
 - Acceptance: vectors added for candidate/committed/rejected transitions; integration test drives all three paths. Green.
-- Notes: From T3.1 review (#40): session inbound applies the full immune screen (incl. PII) with no `SessionOptions` allowlist — community contact-info posts are silently dropped (no Brain reply, no chain record). Quarantine/`memory.rejected` should make those category-only drops observable; optional per-door session allowlist is a follow-up if hosts need it.
+- Notes: Agent: Cursor Grok 4.5 Maestro, 2026-07-21. Depart appends candidate/rejected; commitQuarantinedShards + flagCandidate + CLI; Door commit bound to review session after departure; vectors quarantine-candidate-to-shard/rejected + schema-rejected-with-payload. Next: T4.2.
 
 ## Phase 4 — Door: Discord
 

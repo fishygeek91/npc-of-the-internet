@@ -217,10 +217,14 @@ describe("handover integration (reside → depart → arrive)", () => {
 
     records = await collectRecords(store);
 
+    const memoryCandidates = records.filter(
+      (record) => record.type === "memory" && record.body.kind === "candidate"
+    );
     const memoryShards = records.filter(
       (record) => record.type === "memory" && record.body.kind === "shard"
     );
-    expect(memoryShards).toHaveLength(5);
+    expect(memoryCandidates).toHaveLength(5);
+    expect(memoryShards).toHaveLength(0);
 
     const departureIndex = records.findIndex(
       (record) => record.type === "attestation" && record.body.kind === "departure"
@@ -239,18 +243,14 @@ describe("handover integration (reside → depart → arrive)", () => {
     expect(travelIndex).toBeGreaterThan(departureIndex);
     expect(arrivalIndex).toBeGreaterThan(travelIndex);
 
-    for (let index = 0; index < memoryShards.length; index += 1) {
-      const shardRecord = memoryShards[index];
-      const memoryIndex = records.indexOf(shardRecord);
+    for (let index = 0; index < memoryCandidates.length; index += 1) {
+      const candidateRecord = memoryCandidates[index];
+      const memoryIndex = records.indexOf(candidateRecord);
       expect(memoryIndex).toBeLessThan(departureIndex);
-      if (shardRecord.type === "memory" && shardRecord.body.kind === "shard") {
-        expect(shardRecord.body.text).toBe(shardTexts[index]);
-        if (index === 0) {
-          expect(shardRecord.body.journal).toBe(SAMPLE_JOURNAL);
-        } else {
-          expect(shardRecord.body.journal).toBeUndefined();
-        }
-        expect(shardRecord.cosigners.length).toBeGreaterThan(0);
+      if (candidateRecord.type === "memory" && candidateRecord.body.kind === "candidate") {
+        expect(candidateRecord.body.text).toBe(shardTexts[index]);
+        expect(candidateRecord.cosigners).toEqual([]);
+        expect("journal" in candidateRecord.body).toBe(false);
       }
     }
 

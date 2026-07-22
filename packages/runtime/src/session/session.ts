@@ -26,7 +26,6 @@ import {
   DOOR_PROTOCOL_VERSION,
   InboundFrameSchema,
   attestSigningPayload,
-  cosignCommitSigningPayload,
   cosignReviewSigningPayload,
   type AttestRequest,
   type Clock,
@@ -87,6 +86,8 @@ export type DepartResult = {
   journalMarkdown: string;
   approvedShardIds: string[];
   rejectedShardIds: string[];
+  /** CIDs of appended `memory` records with `kind: "candidate"`. */
+  candidateCids: string[];
 };
 
 type BrainHistoryMessage = {
@@ -327,12 +328,14 @@ export class Session {
   }
 
   /**
-   * End a residency: distill transcripts, cosign memory shards, append departure
-   * and travel attestations. Stops the session first; session remains not-live.
+   * End a residency: distill transcripts, cosign shard review, append quarantine
+   * memory records (`rejected` for immune screen drops and host rejections,
+   * `candidate` for host-approved shards), then departure and travel attestations.
+   * Stops the session first; session remains not-live.
    *
-   * If the host rejects every shard, the journal file is still written but never
-   * reaches the chain (no memory record to carry `body.journal`); departure and
-   * travel still append. Revisit with quarantine in T3.2.
+   * The journal file is always written to disk; it is not embedded on chain until
+   * a later commit step promotes candidates to `kind: "shard"`. Departure and
+   * travel append even when every shard is rejected.
    */
   async depart(options: DepartOptions): Promise<DepartResult> {
     if (!this.live) {
@@ -343,7 +346,12 @@ export class Session {
     await this.drainAppends();
 
     const brain = options.brain ?? this.brain;
-    const candidates = await distillTranscripts(options.transcript, brain);
+    const screenCategories = new Set<ScreenCategory>();
+    const candidates = await distillTranscripts(options.transcript, brain, {
+      onScreenReject: (category) => {
+        screenCategories.add(category);
+      }
+    });
     const shardTexts = candidates.map((shard) => shard.text);
 
     const journalMarkdown = await generateJournal(
@@ -391,7 +399,47 @@ export class Session {
     }
 
     const approvedShardIds: string[] = [];
-    let isFirstApproved = true;
+    const candidateCids: string[] = [];
+
+    for (const category of screenCategories) {
+      const head = await this.store.head();
+      if (head === null) {
+        throw new SessionError("depart: store has no head");
+      }
+
+      await this.appendMemoryRecord({
+        seq: head.seq + 1,
+        prev: head.cid,
+        body: {
+          kind: "rejected",
+          category,
+          rejected_at: this.clock.now()
+        },
+        cosigners: []
+      });
+    }
+
+    for (const decision of reviewResponse.decisions) {
+      if (decision.status !== "rejected") {
+        continue;
+      }
+
+      const head = await this.store.head();
+      if (head === null) {
+        throw new SessionError("depart: store has no head");
+      }
+
+      await this.appendMemoryRecord({
+        seq: head.seq + 1,
+        prev: head.cid,
+        body: {
+          kind: "rejected",
+          category: "host_rejected",
+          rejected_at: this.clock.now()
+        },
+        cosigners: []
+      });
+    }
 
     for (const shard of candidates) {
       if (!approvedSet.has(shard.shard_id)) {
@@ -404,68 +452,17 @@ export class Session {
         throw new SessionError("depart: store has no head");
       }
 
-      const memoryBody: {
-        kind: "shard";
-        text: string;
-        distilled_at: string;
-        journal?: string;
-      } = {
-        kind: "shard",
-        text: shard.text,
-        distilled_at: this.clock.now()
-      };
-      if (isFirstApproved) {
-        memoryBody.journal = journalMarkdown;
-        isFirstApproved = false;
-      }
-
-      const seq = head.seq + 1;
-      const prev = head.cid;
-
-      const core = new TextDecoder().decode(
-        canonicalize(
-          corePayload({
-            spec: OSP_SPEC,
-            seq,
-            prev,
-            type: "memory",
-            body: memoryBody,
-            residency: this.residency
-          })
-        )
-      );
-
-      const unsignedCommit: Omit<Extract<CosignRequest, { phase: "commit" }>, "sig"> = {
-        protocol_version: DOOR_PROTOCOL_VERSION,
-        phase: "commit",
-        door_id: this.doorId,
-        epoch: this.epochValue,
-        session_pubkey: sessionPubkeyEncoded,
-        shard_id: shard.shard_id,
-        core,
-        issued_at: this.clock.now()
-      };
-      const commitSig = encodeSignature(
-        this.sessionSigner.sign(cosignCommitSigningPayload(unsignedCommit))
-      );
-      const commitResponse = await this.door.cosign({
-        ...unsignedCommit,
-        sig: commitSig
+      const { cid } = await this.appendMemoryRecord({
+        seq: head.seq + 1,
+        prev: head.cid,
+        body: {
+          kind: "candidate",
+          text: shard.text,
+          proposed_at: this.clock.now()
+        },
+        cosigners: []
       });
-
-      if (commitResponse.phase !== "commit") {
-        throw new SessionError("unexpected cosign commit response phase");
-      }
-
-      const { record } = await sealRecord(this.keyring, {
-        seq,
-        prev,
-        type: "memory",
-        body: memoryBody,
-        residency: this.residency,
-        cosigners: [commitResponse.door_cosig]
-      });
-      await this.store.append(record);
+      candidateCids.push(cid);
     }
 
     let chainHead = await this.store.head();
@@ -530,7 +527,8 @@ export class Session {
       journalPath,
       journalMarkdown,
       approvedShardIds,
-      rejectedShardIds
+      rejectedShardIds,
+      candidateCids
     };
   }
 
@@ -616,6 +614,24 @@ export class Session {
         return encodeSignature(this.sessionSigner.sign(bytes));
       }
     });
+  }
+
+  private async appendMemoryRecord(params: {
+    seq: number;
+    prev: string;
+    body: CreateRecordFields["body"];
+    cosigners: readonly string[];
+  }): Promise<{ cid: string }> {
+    const { record, cid } = await sealRecord(this.keyring, {
+      seq: params.seq,
+      prev: params.prev,
+      type: "memory",
+      body: params.body,
+      residency: this.residency,
+      cosigners: [...params.cosigners]
+    });
+    await this.store.append(record);
+    return { cid };
   }
 
   private async appendAttestation(params: {

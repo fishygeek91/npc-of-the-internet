@@ -84,13 +84,14 @@ export async function createShardRecord(
   seq: number,
   prev: string,
   text: string,
-  opts?: { journal?: string }
+  opts?: { journal?: string; candidateCid?: string }
 ): Promise<CreateRecordResult> {
   const body: {
     kind: "shard";
     text: string;
     distilled_at: string;
     journal?: string;
+    candidate_cid?: string;
   } = {
     kind: "shard",
     text,
@@ -98,6 +99,9 @@ export async function createShardRecord(
   };
   if (opts?.journal !== undefined) {
     body.journal = opts.journal;
+  }
+  if (opts?.candidateCid !== undefined) {
+    body.candidate_cid = opts.candidateCid;
   }
 
   const fields = {
@@ -142,17 +146,28 @@ export async function createRejectedRecord(
   soul: Ed25519Keypair,
   seq: number,
   prev: string,
-  category: string
+  category: string,
+  opts?: { candidateCid?: string }
 ): Promise<CreateRecordResult> {
+  const body: {
+    kind: "rejected";
+    category: string;
+    candidate_cid?: string;
+    rejected_at: string;
+  } = {
+    kind: "rejected",
+    category,
+    rejected_at: "2026-01-02T02:00:00.000Z"
+  };
+  if (opts?.candidateCid !== undefined) {
+    body.candidate_cid = opts.candidateCid;
+  }
+
   return createRecord({
     seq,
     prev,
     type: "memory",
-    body: {
-      kind: "rejected",
-      category,
-      rejected_at: "2026-01-02T02:00:00.000Z"
-    },
+    body,
     residency: RESIDENCY,
     cosigners: [],
     soulPrivateKey: soul.privateKey

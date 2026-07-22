@@ -385,6 +385,56 @@ describe("DoorStub", () => {
     expect(verify(coreBytes, doorCosig, DOOR.publicKey)).toBe(true);
   });
 
+  it("cosign commit succeeds after departure when review completed", async () => {
+    const stub = createStub();
+    await establishArrival(stub, keyring, EPOCH);
+
+    const shards = sampleShards(5);
+    await stub.cosign(
+      signCosignReviewRequest(keyring, {
+        protocol_version: DOOR_PROTOCOL_VERSION,
+        phase: "review",
+        door_id: DOOR_ID,
+        epoch: EPOCH,
+        session_pubkey: encodePublicKey(sessionSigner.publicKey),
+        shards,
+        issued_at: ISSUED_AT
+      })
+    );
+
+    const departureRequest = signAttestRequest(
+      keyring,
+      {
+        protocol_version: DOOR_PROTOCOL_VERSION,
+        door_id: DOOR_ID,
+        epoch: EPOCH,
+        kind: "departure",
+        core: '{"type":"attestation","kind":"departure"}',
+        session_pubkey: encodePublicKey(sessionSigner.publicKey),
+        issued_at: ISSUED_AT
+      },
+      false
+    );
+    await stub.attest(departureRequest);
+
+    const shardId = shards[0].shard_id;
+    const commitResponse = await stub.cosign(
+      signCosignCommitRequest(keyring, {
+        protocol_version: DOOR_PROTOCOL_VERSION,
+        phase: "commit",
+        door_id: DOOR_ID,
+        epoch: EPOCH,
+        session_pubkey: encodePublicKey(sessionSigner.publicKey),
+        shard_id: shardId,
+        core: MEMORY_CORE,
+        issued_at: ISSUED_AT
+      })
+    );
+
+    expect(commitResponse.phase).toBe("commit");
+    expect(commitResponse.shard_id).toBe(shardId);
+  });
+
   it("departure attest clears session and refuses heartbeat afterward", async () => {
     const stub = createStub();
     await establishArrival(stub, keyring, EPOCH);

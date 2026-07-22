@@ -103,7 +103,7 @@ Prompt templates live at `src/prompts/distiller/` (TS string constants, strategy
 
 **Behavior:** Zod-parse Brain JSON (`{ shards: [{ text, tags? }] }`); one malformed-output retry; empty or over-length shards dropped (≤500 Unicode code points — reject, not truncate); each shard passes through `@npc/immune` `screenText` (PII + injection heuristics) with optional PII allowlist and category-only `onScreenReject` callback; failures use `DistillError` reason `"screen_reject"` with `categories` (never payload text); transcript destroyed only when validation passes and at least five shards remain.
 
-**Out of scope:** soulchain append (callers append after cosign in `Session.depart`).
+**Out of scope:** soulchain append (callers append `memory.candidate` at depart; see Quarantine T3.2).
 
 ## Session loop (T2.4)
 
@@ -171,11 +171,12 @@ Call on a live session to end the residency. Order of operations:
 1. `stop()` + `await drainAppends()` — no further heartbeats or inbound handling
 2. Distill transcripts → candidate shards (`distillTranscripts`)
 3. Generate residency journal markdown (`generateJournal`) and write a journal file (`writeJournalFile`)
-4. Two-phase Door cosign: `review` (approve/reject shards) then per-shard `commit` (core-bound `door_cosig`)
-5. Append cosigned `memory` records (journal embedded on the first approved shard's body)
-6. Append `departure` attestation (Door cosigned) and soul-signed `travel` attestation
+4. Two-phase Door cosign: `review` (approve/reject shards)
+5. Append `memory.rejected` for immune-screen drops and host rejections (category only, no shard text)
+6. Append `memory.candidate` records for host-approved shards (`cosigners: []`; text on chain, not yet composed)
+7. Append `departure` attestation (Door cosigned) and soul-signed `travel` attestation
 
-Returns `{ journalPath, journalMarkdown, approvedShardIds, rejectedShardIds }`. The session remains not-live after depart.
+Returns `{ journalPath, journalMarkdown, approvedShardIds, rejectedShardIds, candidateCids }`. The session remains not-live after depart. Candidates are **not** committed shards yet — see Quarantine (T3.2).
 
 ### `move()`
 
@@ -200,17 +201,63 @@ No Door session traffic is accepted on the departed session during the travel ga
 
 ```bash
 wanderer move <door-id>
+wanderer quarantine commit
+wanderer quarantine flag <candidate-cid> [--category <cat>]
 ```
 
-Bin at `packages/runtime/src/cli.ts` (`wanderer` in package `bin`). Production wiring is env-based (`SOUL_KEY_PATH`, `SOULCHAIN_DIR`, `TRANSCRIPT_PATH`, `JOURNAL_DIR`, `CURRENT_DOOR_ID`); tests inject `runMove` via `runWandererCli` deps.
+Bin at `packages/runtime/src/cli.ts` (`wanderer` in package `bin`). Production wiring is env-based (`SOUL_KEY_PATH`, `SOULCHAIN_DIR`, `TRANSCRIPT_PATH`, `JOURNAL_DIR`, `CURRENT_DOOR_ID`, `NPC_QUARANTINE_WINDOW_MS`); tests inject `runMove`, `runQuarantineCommit`, and `runQuarantineFlag` via `runWandererCli` deps.
 
 ### Journal
 
-Markdown residency summary generated via Brain at depart time. Written to `journalDir` as a file; the same markdown is stored in the first approved `memory` record's `body.journal` field.
+Markdown residency summary generated via Brain at depart time. Written to `journalDir` as a file; the same markdown is attached to the first committed `memory.shard` record's `body.journal` field when `commitQuarantinedShards` runs (see Quarantine).
 
 ### Integration test
 
 `test/handover-integration.test.ts` — full reside → depart → arrive across two stub Doors yields one continuous verifying chain; journal file on disk; epoch increments at the next door.
+
+## Quarantine (T3.2)
+
+After depart, approved distillation output lives on the soulchain as `memory.candidate` records (not `memory.shard`). Host rejections and immune-screen drops become category-only `memory.rejected` records. Full shards enter composition only after a deferred commit step.
+
+```ts
+import {
+  commitQuarantinedShards,
+  flagCandidate,
+  loadQuarantineConfig,
+  resolveJournalPath,
+} from "@npc/runtime";
+```
+
+### Lifecycle
+
+1. **Depart** — `Session.depart` appends `memory.candidate` (approved shards) and `memory.rejected` (drops/rejections). Departure/travel attestations always append, even when every shard is rejected.
+2. **Quarantine window** — candidates ripen for `NPC_QUARANTINE_WINDOW_MS` (default 24h) before they can commit.
+3. **Operator flag** — `flagCandidate({ store, keyring, candidateCid, clock, category? })` appends a `memory.rejected` referencing the candidate CID (category only).
+4. **Commit** — `commitQuarantinedShards({ store, keyring, door, doorId, epoch, clock, quarantineWindowMs, journalMarkdown? })` promotes ripe, unflagged candidates to cosigned `memory.shard` records. Returns `{ committedCids, ripeningCids, skippedCids }`.
+
+`composeSelf` includes only committed `memory.shard` texts — candidates and rejections are excluded (see fixture B goldens and `test/quarantine-integration.test.ts`).
+
+### v0.1 constraints
+
+- **Door session binding:** `commitQuarantinedShards` must use the same long-lived `DoorConnection` instance that ran the depart-time `review` cosign (`approvedShardIds` remain in Door memory). A fresh Door handle cannot commit after departure.
+- **All-rejected gap:** if every candidate is rejected or flagged, no shard ever commits and the residency journal never reaches the chain — it remains on disk only until a future task wires journal-only persistence.
+
+### Environment
+
+| Variable | Required | Default | Purpose |
+|----------|----------|---------|---------|
+| `NPC_QUARANTINE_WINDOW_MS` | no | `86400000` | Ms before a candidate may commit to `memory.shard` |
+
+Load via `loadQuarantineConfig()`; inject a plain `env` object in tests.
+
+### Operator CLI
+
+```bash
+wanderer quarantine commit    # promote ripe candidates (stdout: committed / ripening counts)
+wanderer quarantine flag <candidate-cid> [--category <cat>]
+```
+
+Production handlers are not wired yet (same pattern as `wanderer move`); tests inject `runQuarantineCommit` / `runQuarantineFlag` on `runWandererCli`.
 
 ## Test
 
