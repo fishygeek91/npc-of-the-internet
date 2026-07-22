@@ -346,6 +346,7 @@ export class Session {
     await this.drainAppends();
 
     const brain = options.brain ?? this.brain;
+    // One rejected record per unique screen category (v0.1: count of drops is not preserved).
     const screenCategories = new Set<ScreenCategory>();
     const candidates = await distillTranscripts(options.transcript, brain, {
       onScreenReject: (category) => {

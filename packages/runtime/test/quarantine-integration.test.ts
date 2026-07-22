@@ -187,6 +187,7 @@ describe("quarantine integration", () => {
     expect(earlyCommit.committedCids).toHaveLength(0);
     expect(earlyCommit.ripeningCids).toHaveLength(4);
     expect(earlyCommit.skippedCids).toHaveLength(0);
+    expect(earlyCommit.journalAttached).toBe(false);
 
     const flaggedCid = departResult.candidateCids[0];
     if (flaggedCid === undefined) {
@@ -229,6 +230,7 @@ describe("quarantine integration", () => {
     expect(commitResult.committedCids).toHaveLength(3);
     expect(commitResult.ripeningCids).toHaveLength(0);
     expect(commitResult.skippedCids).toEqual([flaggedCid]);
+    expect(commitResult.journalAttached).toBe(true);
 
     records = await collectRecords(store);
     const committedShards = records.filter(
@@ -272,6 +274,30 @@ describe("quarantine integration", () => {
       expect(journalShard.body.journal).toBe(departResult.journalMarkdown);
     }
 
+    // Flagging a candidate that already has a committed shard is rejected.
+    const committedCandidateCid = (() => {
+      for (const shard of committedShards) {
+        if (shard.type === "memory" && shard.body.kind === "shard") {
+          const linked = shard.body.candidate_cid;
+          if (linked !== undefined) {
+            return linked;
+          }
+        }
+      }
+      return undefined;
+    })();
+    if (committedCandidateCid === undefined) {
+      throw new Error("expected committed candidate_cid");
+    }
+    await expect(
+      flagCandidate({
+        store,
+        keyring,
+        candidateCid: committedCandidateCid,
+        clock
+      })
+    ).rejects.toMatchObject({ reason: "already_committed" });
+
     const secondCommit = await commitQuarantinedShards({
       store,
       keyring,
@@ -279,9 +305,19 @@ describe("quarantine integration", () => {
       doorId: DOOR_ID,
       epoch: session.epoch,
       clock,
-      quarantineWindowMs: QUARANTINE_WINDOW_MS
+      quarantineWindowMs: QUARANTINE_WINDOW_MS,
+      journalMarkdown: departResult.journalMarkdown
     });
     expect(secondCommit.committedCids).toHaveLength(0);
+    expect(secondCommit.journalAttached).toBe(false);
+
+    const journalShardsAfterSecond = (await collectRecords(store)).filter(
+      (record) =>
+        record.type === "memory" &&
+        record.body.kind === "shard" &&
+        record.body.journal !== undefined
+    );
+    expect(journalShardsAfterSecond).toHaveLength(1);
 
     const chainBytes = await serializeChainBytes(store);
     expect(chainBytes).not.toContain(hostRejectedText);

@@ -1,7 +1,6 @@
 import {
   OSP_SPEC,
   canonicalize,
-  computeCid,
   corePayload,
   encodePublicKey,
   encodeSignature,
@@ -41,11 +40,22 @@ export type CommitQuarantineResult = {
   ripeningCids: string[];
   /** Candidate CIDs skipped because rejected or already committed. */
   skippedCids: string[];
+  /**
+   * True when this call embedded `journalMarkdown` on a newly committed shard.
+   * False when the journal was omitted (already on chain for the residency,
+   * no eligible commit, or `journalMarkdown` was not provided).
+   */
+  journalAttached: boolean;
 };
 
 /**
  * Promote ripe, unflagged quarantine candidates to committed `memory.shard` records.
  * Idempotent: already-committed or rejected candidates are reported in `skippedCids`.
+ *
+ * Journal attachment is chain-aware: `journalMarkdown` is embedded on at most one
+ * shard per residency (skips if any existing shard for that residency already
+ * carries `body.journal`). Pass `journalMarkdown` until a run reports
+ * `journalAttached: true`, then stop.
  */
 export async function commitQuarantinedShards(
   options: CommitQuarantinedShardsOptions
@@ -57,7 +67,9 @@ export async function commitQuarantinedShards(
 
   const sessionSigner = options.keyring.deriveSessionKey(options.doorId, options.epoch);
   const sessionPubkeyEncoded = encodePublicKey(sessionSigner.publicKey);
-  let journalAttached = options.journalMarkdown === undefined;
+  /** Residencies that received a journal on a shard during this call. */
+  const journalsAttachedThisCall = new Set<string>();
+  let journalAttached = false;
 
   for (const candidate of scan.candidates) {
     const { cid } = candidate;
@@ -87,11 +99,18 @@ export async function commitQuarantinedShards(
       kind: "shard",
       text: candidate.text,
       candidate_cid: cid,
+      // Commit-time stamp; candidates retain the original `proposed_at`.
       distilled_at: options.clock.now()
     };
 
-    if (!journalAttached && options.journalMarkdown !== undefined) {
+    const canAttachJournal =
+      options.journalMarkdown !== undefined &&
+      !scan.residenciesWithJournal.has(candidate.residency) &&
+      !journalsAttachedThisCall.has(candidate.residency);
+
+    if (canAttachJournal && options.journalMarkdown !== undefined) {
       memoryBody.journal = options.journalMarkdown;
+      journalsAttachedThisCall.add(candidate.residency);
       journalAttached = true;
     }
 
@@ -134,7 +153,7 @@ export async function commitQuarantinedShards(
         throw new QuarantineError("unexpected cosign commit response phase", "commit_failed");
       }
 
-      const { record } = await sealQuarantineRecord(options.keyring, {
+      const { record, cid: sealedCid } = await sealQuarantineRecord(options.keyring, {
         seq,
         prev,
         type: "memory",
@@ -143,7 +162,7 @@ export async function commitQuarantinedShards(
         cosigners: [commitResponse.door_cosig]
       });
       await options.store.append(record);
-      committedCids.push(await computeCid(record));
+      committedCids.push(sealedCid);
     } catch (error) {
       if (error instanceof QuarantineError) {
         throw error;
@@ -153,5 +172,5 @@ export async function commitQuarantinedShards(
     }
   }
 
-  return { committedCids, ripeningCids, skippedCids };
+  return { committedCids, ripeningCids, skippedCids, journalAttached };
 }

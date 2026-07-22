@@ -233,7 +233,7 @@ import {
 1. **Depart** — `Session.depart` appends `memory.candidate` (approved shards) and `memory.rejected` (drops/rejections). Departure/travel attestations always append, even when every shard is rejected.
 2. **Quarantine window** — candidates ripen for `NPC_QUARANTINE_WINDOW_MS` (default 24h) before they can commit.
 3. **Operator flag** — `flagCandidate({ store, keyring, candidateCid, clock, category? })` appends a `memory.rejected` referencing the candidate CID (category only).
-4. **Commit** — `commitQuarantinedShards({ store, keyring, door, doorId, epoch, clock, quarantineWindowMs, journalMarkdown? })` promotes ripe, unflagged candidates to cosigned `memory.shard` records. Returns `{ committedCids, ripeningCids, skippedCids }`.
+4. **Commit** — `commitQuarantinedShards({ store, keyring, door, doorId, epoch, clock, quarantineWindowMs, journalMarkdown? })` promotes ripe, unflagged candidates to cosigned `memory.shard` records. Returns `{ committedCids, ripeningCids, skippedCids, journalAttached }`.
 
 `composeSelf` includes only committed `memory.shard` texts — candidates and rejections are excluded (see fixture B goldens and `test/quarantine-integration.test.ts`).
 
@@ -241,6 +241,10 @@ import {
 
 - **Door session binding:** `commitQuarantinedShards` must use the same long-lived `DoorConnection` instance that ran the depart-time `review` cosign (`approvedShardIds` remain in Door memory). A fresh Door handle cannot commit after departure.
 - **All-rejected gap:** if every candidate is rejected or flagged, no shard ever commits and the residency journal never reaches the chain — it remains on disk only until a future task wires journal-only persistence.
+- **Journal attach:** pass `journalMarkdown` until a commit run reports `journalAttached: true`, then stop. Attachment is chain-aware (at most one journal-bearing shard per residency).
+- **Screen drop dedup:** depart emits one `memory.rejected` per unique immune-screen category; the *count* of drops sharing a category is not preserved.
+- **Strict quarantine scan:** `scanQuarantineState` throws on malformed `candidate_cid` cross-references or unparseable candidate timestamps (assumes schema-validated local appends).
+- **`distilled_at`:** set at commit time; candidates keep the original `proposed_at`.
 
 ### Environment
 

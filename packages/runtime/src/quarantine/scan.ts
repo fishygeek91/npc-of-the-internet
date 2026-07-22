@@ -16,6 +16,8 @@ export type QuarantineScan = {
   candidates: QuarantineCandidate[];
   rejectedCandidateCids: ReadonlySet<string>;
   committedCandidateCids: ReadonlySet<string>;
+  /** Residencies that already have a committed shard carrying `body.journal`. */
+  residenciesWithJournal: ReadonlySet<string>;
 };
 
 function parseIsoToMs(iso: string): number {
@@ -53,6 +55,7 @@ export async function scanQuarantineState(store: SoulStore): Promise<QuarantineS
   const candidates: QuarantineCandidate[] = [];
   const rejectedCandidateCids = new Set<string>();
   const committedCandidateCids = new Set<string>();
+  const residenciesWithJournal = new Set<string>();
 
   for await (const record of store.iterate()) {
     if (record.type !== "memory") {
@@ -93,12 +96,16 @@ export async function scanQuarantineState(store: SoulStore): Promise<QuarantineS
         assertValidCandidateCid(candidateCid, `shard record at seq ${String(record.seq)}`);
         committedCandidateCids.add(candidateCid);
       }
+      if (body.journal !== undefined && record.residency !== null) {
+        residenciesWithJournal.add(record.residency);
+      }
     }
   }
 
   return {
     candidates,
     rejectedCandidateCids,
-    committedCandidateCids
+    committedCandidateCids,
+    residenciesWithJournal
   };
 }

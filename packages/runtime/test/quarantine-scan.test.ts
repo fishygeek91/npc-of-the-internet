@@ -24,6 +24,8 @@ describe("scanQuarantineState", () => {
     expect(candidate?.proposedAt).toBe("2026-01-02T01:30:00.000Z");
     expect(scan.rejectedCandidateCids.size).toBe(0);
     expect(scan.committedCandidateCids.size).toBe(0);
+    // Fixture B's second shard carries body.journal.
+    expect(scan.residenciesWithJournal.has(RESIDENCY)).toBe(true);
   });
 
   it("indexes rejected and committed candidate_cid references", async () => {

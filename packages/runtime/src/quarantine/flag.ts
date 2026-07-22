@@ -34,6 +34,13 @@ export async function flagCandidate(options: FlagCandidateOptions): Promise<void
     );
   }
 
+  if (scan.committedCandidateCids.has(options.candidateCid)) {
+    throw new QuarantineError(
+      `candidate already committed: ${options.candidateCid}`,
+      "already_committed"
+    );
+  }
+
   const head = await options.store.head();
   if (head === null) {
     throw new QuarantineError("flag: store has no head", "flag_failed");
