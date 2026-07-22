@@ -20,8 +20,6 @@ import type { DiscordGateway, GatewayCommand, GatewayMessage, GatewayReaction } 
 export type DiscordJsGatewayOptions = {
   token: string;
   guildId: string;
-  channelId: string;
-  operatorIds: readonly string[];
 };
 
 /**
@@ -80,17 +78,27 @@ export class DiscordJsGateway implements DiscordGateway {
       void this.dispatchCommand(interaction);
     });
 
-    await this.client.login(this.options.token);
-    await new Promise<void>((resolve, reject) => {
-      this.client.once(Events.ClientReady, (readyClient) => {
+    // Register ready/error before login so we never miss a fast ready event.
+    const ready = new Promise<void>((resolve, reject) => {
+      const onReady = (readyClient: { user: { id: string } }): void => {
+        cleanup();
         this.readyBotId = readyClient.user.id;
         resolve();
-      });
-      this.client.once(Events.Error, (error) => {
+      };
+      const onError = (error: Error): void => {
+        cleanup();
         reject(error);
-      });
+      };
+      const cleanup = (): void => {
+        this.client.off(Events.ClientReady, onReady);
+        this.client.off(Events.Error, onError);
+      };
+      this.client.once(Events.ClientReady, onReady);
+      this.client.once(Events.Error, onError);
     });
 
+    await this.client.login(this.options.token);
+    await ready;
     await this.registerSlashCommands();
   }
 
@@ -236,9 +244,9 @@ export class DiscordJsGateway implements DiscordGateway {
     if (handler === null) {
       return;
     }
-    this.pendingEphemeral.set(interaction.id, interaction);
     const sub = interaction.options.getSubcommand();
     if (sub === "status") {
+      this.pendingEphemeral.set(interaction.id, interaction);
       await handler({
         kind: "status",
         interactionId: interaction.id,
@@ -248,6 +256,7 @@ export class DiscordJsGateway implements DiscordGateway {
       return;
     }
     if (sub === "approve" || sub === "reject") {
+      this.pendingEphemeral.set(interaction.id, interaction);
       const shardId = interaction.options.getString("shard_id", true);
       await handler({
         kind: sub,

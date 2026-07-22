@@ -92,9 +92,7 @@ export async function startDiscordDoor(
     options.gateway ??
     new DiscordJsGateway({
       token: config.botToken,
-      guildId: config.guildId,
-      channelId: config.channelId,
-      operatorIds: config.operatorIds
+      guildId: config.guildId
     });
 
   const reviewChannelId = config.reviewChannelId ?? config.channelId;
@@ -212,9 +210,15 @@ export async function startDiscordDoor(
     reviewGate.handleReaction(reaction);
   });
 
+  const operatorIds = new Set(config.operatorIds);
+
   gateway.onCommand(async (command) => {
     try {
       if (command.kind === "status") {
+        if (!operatorIds.has(command.userId)) {
+          await gateway.replyEphemeral(command.interactionId, "Ignored (not an operator).");
+          return;
+        }
         await gateway.replyEphemeral(command.interactionId, formatStatusReply(readStatus()));
         return;
       }
@@ -243,6 +247,7 @@ export async function startDiscordDoor(
       present,
       doorId,
       epoch,
+      // T6.1: distinguish WS session attachment from Door active epoch, or drop this field.
       sessionLive: present,
       pendingReviewCount: reviewGate.pendingCount()
     };

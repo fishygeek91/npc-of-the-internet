@@ -99,6 +99,15 @@ describe("startDiscordDoor status command", () => {
       expect(reply.content).toContain("presence: absent");
       expect(reply.content).toContain(`door_id: \`${doorIdForGuild(TEST_GUILD_ID)}\``);
       expect(handle.status().present).toBe(false);
+
+      await gateway.emitCommand({
+        kind: "status",
+        interactionId: "ix-status-non-op",
+        userId: "999888777666555444",
+        ephemeral: true
+      });
+      expect(gateway.ephemerals).toHaveLength(2);
+      expect(gateway.ephemerals[1]?.content).toBe("Ignored (not an operator).");
     } finally {
       await handle.stop();
     }

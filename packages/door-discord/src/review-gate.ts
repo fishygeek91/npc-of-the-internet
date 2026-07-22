@@ -128,12 +128,20 @@ export class ReviewGate {
     }
   }
 
-  /** Handle `/wanderer approve|reject <shard_id>` from an allowlisted operator. */
+  /**
+   * Handle `/wanderer approve|reject <shard_id>` from an allowlisted operator.
+   * Returns false when the caller is not an operator or `shard_id` is not pending
+   * in the current review round (avoids a misleading "Recorded" reply for typos).
+   */
   handleCommand(command: GatewayCommand): boolean {
     if (command.kind !== "approve" && command.kind !== "reject") {
       return false;
     }
     if (!this.options.operatorIds.has(command.userId)) {
+      return false;
+    }
+    const pending = this.pending;
+    if (pending === null || !pending.remaining.has(command.shardId)) {
       return false;
     }
     this.record(command.shardId, command.kind === "approve" ? "approved" : "rejected");

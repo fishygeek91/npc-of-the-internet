@@ -113,6 +113,44 @@ describe("ReviewGate approvals", () => {
     expect(gate.decideShard(shard("s3"))).toBe("rejected");
   });
 
+  it("ignores approve for a shard id not in the pending round", async () => {
+    const gateway = new FakeGateway();
+    await gateway.start();
+    const clock = new TestClock("2026-07-21T00:00:00.000Z");
+    const gate = new ReviewGate({
+      gateway,
+      reviewChannelId: CHANNEL_ID,
+      operatorIds: new Set([OPERATOR_ID]),
+      timeoutMs: 5_000,
+      clock,
+      sleep: briefSleep
+    });
+    gateway.onReaction((reaction) => {
+      gate.handleReaction(reaction);
+    });
+
+    const collect = gate.collect([shard("s5")]);
+    const reviewMsg = await waitForReviewMessage(gateway, "s5");
+    expect(
+      gate.handleCommand({
+        kind: "approve",
+        interactionId: "ix-typo",
+        userId: OPERATOR_ID,
+        shardId: "typo-id",
+        ephemeral: true
+      })
+    ).toBe(false);
+
+    await gateway.emitReaction({
+      messageId: reviewMsg.id,
+      channelId: CHANNEL_ID,
+      userId: OPERATOR_ID,
+      emoji: APPROVE_EMOJI
+    });
+    await collect;
+    expect(gate.decideShard(shard("s5"))).toBe("approved");
+  });
+
   it("rejects on timeout by default", async () => {
     const gateway = new FakeGateway();
     await gateway.start();
