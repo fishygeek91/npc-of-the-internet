@@ -20,9 +20,9 @@
  */
 
 import { access, writeFile } from "node:fs/promises";
-import { constants as fsConstants } from "node:fs";
-import { writeFileSync } from "node:fs";
+import { constants as fsConstants, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
+import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
@@ -129,9 +129,8 @@ async function collectRecords(store) {
  * @param {string} kind
  */
 function countAttestations(records, kind) {
-  return records.filter(
-    (record) => record.type === "attestation" && record.body.kind === kind
-  ).length;
+  return records.filter((record) => record.type === "attestation" && record.body.kind === kind)
+    .length;
 }
 
 async function main() {
@@ -161,8 +160,9 @@ async function main() {
   const { Door, generateDoorKeypair, InProcessDoorConnection } = await importDist(
     "packages/door-sdk/dist/index.js"
   );
-  const { FakeBrain, loadSoulPrivateKeyFromPath, Session, SingleKeyKeyring } =
-    await importDist("packages/runtime/dist/index.js");
+  const { FakeBrain, loadSoulPrivateKeyFromPath, Session, SingleKeyKeyring } = await importDist(
+    "packages/runtime/dist/index.js"
+  );
 
   const soulPrivateKey = loadSoulPrivateKeyFromPath(soulKeyPath);
   const keyring = new SingleKeyKeyring(soulPrivateKey);
