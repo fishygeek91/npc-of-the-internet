@@ -51,8 +51,8 @@ Internally the script runs: `osp init` → `launch-first-residency.mjs` → `osp
 | Discord | None | Real bot + guild/channel ([`MANUAL_TEST.md`](../packages/door-discord/MANUAL_TEST.md)) |
 | Docker Compose | Not started (compose config still validated in CI by T6.1) | `docker compose … up` per [RUNBOOK §1](RUNBOOK.md#1-start) |
 | Atlas | Loopback `atlas-api` + `/state` | Host `:8787` + optional GitHub Pages site (Gate 2) |
-| Backup | Local rclone remote in scratch dir | Production `BACKUP_RCLONE_REMOTE` + host `rclone.conf` |
-| Soul key | Scratch from `osp init` (destroyed after) | Custodied at `SOUL_KEY_HOST_PATH`; key backup separate from chain backup |
+| Backup | Local rclone remote; syncs `chain.jsonl` + `blobs/` only (excludes `soul.key` / door keys, matching the sidecar) | Production sidecar: blobs-first then `chain.jsonl` to `BACKUP_RCLONE_REMOTE` — never keys |
+| Soul key | Scratch from `osp init` (destroyed after); never included in dry-run backup remote | Custodied at `SOUL_KEY_HOST_PATH`; key backup separate from chain backup |
 
 ---
 
@@ -77,12 +77,25 @@ Complete these before any production ceremony step.
 
    Replace every `replace-me` placeholder. Variable names and purposes: [`ops/SECRETS.md`](SECRETS.md). Do **not** set `SOUL_PUBLIC_KEY` or `ATLAS_DOOR_PUBKEYS` until the keys in sections 1–2 exist.
 
-5. **Host paths** — create key and rclone directories (adjust paths if you override `SOUL_KEY_HOST_PATH`, `DOOR_KEY_HOST_PATH`, or `RCLONE_CONFIG_HOST_PATH`):
+5. **Host paths** — create key and rclone directories, then set `SOUL_KEY_HOST_PATH`, `DOOR_KEY_HOST_PATH`, and `RCLONE_CONFIG_HOST_PATH` in `ops/.env` to match.
+
+   > **Warning — persistent custody only.** `ops/.env.example` defaults to `/tmp/npc-ghost/…` for local smoke tests. **`/tmp` is wiped on reboot** on most hosts. For a real launch, point those three variables at a **persistent** directory (for example `/var/lib/npc-ghost/…`) and use that path in every command below. Treat `/tmp` defaults as rehearsal-only — losing `soul.key` to a reboot loses continuity of authorship.
 
    ```bash
-   mkdir -p /tmp/npc-ghost/keys /tmp/npc-ghost/rclone
-   touch /tmp/npc-ghost/rclone/rclone.conf
-   chmod 600 /tmp/npc-ghost/rclone/rclone.conf
+   # Production example — replace with your persistent host paths
+   sudo mkdir -p /var/lib/npc-ghost/keys /var/lib/npc-ghost/rclone
+   sudo chown "$(whoami):$(whoami)" /var/lib/npc-ghost /var/lib/npc-ghost/keys /var/lib/npc-ghost/rclone
+   touch /var/lib/npc-ghost/rclone/rclone.conf
+   chmod 700 /var/lib/npc-ghost/keys
+   chmod 600 /var/lib/npc-ghost/rclone/rclone.conf
+   ```
+
+   Then in `ops/.env` (names only — see [`SECRETS.md`](SECRETS.md)):
+
+   ```bash
+   SOUL_KEY_HOST_PATH=/var/lib/npc-ghost/keys/soul.key
+   DOOR_KEY_HOST_PATH=/var/lib/npc-ghost/keys/door.key
+   RCLONE_CONFIG_HOST_PATH=/var/lib/npc-ghost/rclone
    ```
 
 6. **Backup remote** — configure `rclone.conf` at `RCLONE_CONFIG_HOST_PATH` and set `BACKUP_RCLONE_REMOTE` in `ops/.env` to a dedicated production path (for example `ghost-remote:npc/soulchain`). Validate with [RUNBOOK §5.1](RUNBOOK.md#51-offline-restore-drill-development--ci) offline first:
@@ -111,8 +124,8 @@ The Wanderer's **soul private key is created only by `osp init`** — not by `op
 **Option A — raw 32 bytes (matches compose mount):**
 
 ```bash
-openssl rand -out /tmp/npc-ghost/keys/door.key 32
-chmod 600 /tmp/npc-ghost/keys/door.key
+openssl rand -out /var/lib/npc-ghost/keys/door.key 32
+chmod 600 /var/lib/npc-ghost/keys/door.key
 ```
 
 **Option B — programmatic keypair** (after `pnpm --filter @npc/door-sdk build`):
@@ -123,7 +136,7 @@ import { writeFileSync } from \"node:fs\";
 import { generateDoorKeypair } from \"./packages/door-sdk/dist/index.js\";
 import { encodeBase64Url, encodePublicKey } from \"./packages/osp-core/dist/index.js\";
 const kp = generateDoorKeypair();
-const path = \"/tmp/npc-ghost/keys/door.key\";
+const path = \"/var/lib/npc-ghost/keys/door.key\";
 writeFileSync(path, encodeBase64Url(kp.privateKey), { mode: 0o600 });
 process.stdout.write(\"Door public key: \" + encodePublicKey(kp.publicKey) + \"\\n\");
 "
@@ -138,10 +151,10 @@ import { loadDoorKeypairFromPath } from \"./packages/door-discord/dist/load-door
 import { encodePublicKey } from \"./packages/osp-core/dist/index.js\";
 const kp = loadDoorKeypairFromPath(process.argv[1]);
 process.stdout.write(encodePublicKey(kp.publicKey) + \"\\n\");
-" /tmp/npc-ghost/keys/door.key
+" /var/lib/npc-ghost/keys/door.key
 ```
 
-Set `DOOR_KEY_HOST_PATH=/tmp/npc-ghost/keys/door.key` (or your path) and paste the printed base64url value into `ATLAS_DOOR_PUBKEYS` in `ops/.env`.
+Set `DOOR_KEY_HOST_PATH=/var/lib/npc-ghost/keys/door.key` (or your persistent path from §0) and paste the printed base64url value into `ATLAS_DOOR_PUBKEYS` in `ops/.env`.
 
 ---
 
@@ -166,10 +179,10 @@ Genesis CID: <cid>
 3. **Move soul private key to custody** (not copy-only):
 
    ```bash
-   install -m 600 "$STAGING/soul.key" /tmp/npc-ghost/keys/soul.key
+   install -m 600 "$STAGING/soul.key" /var/lib/npc-ghost/keys/soul.key
    ```
 
-   Ensure `SOUL_KEY_HOST_PATH` in `ops/.env` points at that file. Store a second offline backup of `soul.key` per your key-management policy before proceeding.
+   Ensure `SOUL_KEY_HOST_PATH` in `ops/.env` points at that file (same persistent path as §0 — not `/tmp`). Store a second offline backup of `soul.key` per your key-management policy before proceeding.
 
 4. **Verify the staging chain** before seeding production:
 

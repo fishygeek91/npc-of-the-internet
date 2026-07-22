@@ -165,8 +165,15 @@ type = local
 nounc = true
 EOF
 
-log "rclone sync: chain → remote"
-rclone sync "$CHAIN_DIR" "drilllocal:${REMOTE_DIR}" --config "$RCLONE_CONF" -v
+# Match production backup shape: chain.jsonl + blobs/ only — never private keys
+# (see ops/RUNBOOK.md backup sidecar and LAUNCH.md custody rules).
+log "rclone sync: chain → remote (chain.jsonl + blobs only)"
+rclone sync "$CHAIN_DIR" "drilllocal:${REMOTE_DIR}" --config "$RCLONE_CONF" \
+  --exclude "soul.key" \
+  --exclude "door.key" \
+  --exclude "door.pubkey" \
+  --exclude "dry-run-meta.json" \
+  -v
 
 log "Destroying local chain copy"
 rm -rf "$CHAIN_DIR"
@@ -174,6 +181,11 @@ rm -rf "$CHAIN_DIR"
 mkdir -p "$RESTORED_DIR"
 log "rclone sync: remote → restored"
 rclone sync "drilllocal:${REMOTE_DIR}" "$RESTORED_DIR" --config "$RCLONE_CONF" -v
+
+[[ -f "${RESTORED_DIR}/chain.jsonl" ]] || die "restored chain.jsonl missing"
+[[ -d "${RESTORED_DIR}/blobs" ]] || die "restored blobs/ missing"
+[[ ! -e "${RESTORED_DIR}/soul.key" ]] || die "restored tree must not contain soul.key"
+[[ ! -e "${RESTORED_DIR}/door.key" ]] || die "restored tree must not contain door.key"
 
 log "osp verify on restored chain"
 (
