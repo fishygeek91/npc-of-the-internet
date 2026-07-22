@@ -108,11 +108,11 @@ Each task lists **Deps**, **Deliverables**, and **Acceptance** (how a reviewer v
 - Acceptance: contract tests: sdk stub door passes the same integration suite used in T2.4/T2.5. Green.
 - Notes: Agent: Cursor Grok 4.5 Maestro, 2026-07-21. Wire Zod schemas + signing in `@npc/door-sdk`; `Door` core + `HostPolicy`; in-process/`node:http`/`ws` transports; `door_cosig` = raw UTF-8 OSP `core` bytes (commit + attest); runtime re-exports types; `DoorStub` thin-wraps SDK. Contract + T2.4/T2.5 suites green. Follow-up: `spec/door/vectors/`. Next: T4.2.
 
-### T4.2 ⬜ door-discord
+### T4.2 ✅ door-discord
 - Deps: T4.1, T2.5
 - Deliverables: Discord adapter (discord.js): binds one guild channel to a residency; relays messages both ways; rate limiting; host operator commands (`/wanderer status`, cosign approval flow via reaction or command); config via env.
 - Acceptance: integration test against a mocked discord.js client runs a full residency; manual test doc `packages/door-discord/MANUAL_TEST.md` for a real server. Green.
-- Notes:
+- Notes: Agent: Cursor Grok 4.5 Maestro, 2026-07-21. DiscordGateway seam + ReviewGatedDoor (timeout→rejected); FakeGateway residency integration (post-T3.2 candidates); MANUAL_TEST uses package harness until wanderer CLI Door client lands in T6.1. Next: T6.1 (needs T5.1) or T5.2.
 
 ## Phase 5 — Atlas
 
