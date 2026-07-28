@@ -26,7 +26,8 @@ RUN pnpm --filter @npc/atlas deploy --prod /out
 
 FROM node:22-slim AS runtime
 
-RUN groupadd --system npc && useradd --system --gid npc --create-home --home-dir /home/npc npc
+# Container uid/gid pinned to 10001 so host bind-mounted keys/rclone owned 10001:10001 are readable on Linux VPS (#84). macOS Docker Desktop remaps ownership and hides the bug.
+RUN groupadd --gid 10001 npc && useradd --uid 10001 --gid npc --create-home --home-dir /home/npc npc
 
 COPY --from=build /out /app
 

@@ -10,6 +10,8 @@ Environment variable names and purposes only. **Never commit values.**
 | `NPC_BRAIN_TIMEOUT_MS` | HTTP timeout in milliseconds for Anthropic API requests (default: `60000`). |
 | `NPC_QUARANTINE_WINDOW_MS` | Milliseconds a distillation candidate must ripen before commit to `memory.shard` (default: `86400000` — 24 hours). Runtime env; not yet wired in Ghost compose. |
 | `NPC_IMAGE_TAG` | Docker image tag for all Ghost stack services (default: `latest`). Set to `local` when using locally built images. |
+| `NPC_CONTAINER_UID` | Container user id for `npc` in all Ghost images (fixed `10001`). Host `keys/` and `rclone/` bind mounts must be owned by this uid. Not a secret — documented constant. |
+| `NPC_CONTAINER_GID` | Container group id for `npc` in all Ghost images (fixed `10001`). Same ownership requirement for host bind mounts. Not a secret — documented constant. |
 | `SOUL_KEY_HOST_PATH` | Host filesystem path to the soul private key file mounted read-only into runtime at `/run/keys/soul.key`. |
 | `DOOR_KEY_HOST_PATH` | Host filesystem path to the door private key file mounted read-only into door-discord at `/run/keys/door.key`. |
 | `RCLONE_CONFIG_HOST_PATH` | Host directory containing `rclone.conf`, mounted read-only into the backup sidecar at `/config/rclone`. |

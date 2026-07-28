@@ -96,6 +96,12 @@ services:
     volumes:
       - soulchain:/data/soulchain:ro
       - ${RCLONE_CONFIG_HOST_PATH}:/config/rclone:ro
+    healthcheck:
+      test: ["CMD", "test", "-r", "/config/rclone/rclone.conf"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
 
 volumes:
   soulchain:

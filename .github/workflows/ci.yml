@@ -59,6 +59,13 @@ jobs:
       - name: Run offline launch dry-run
         run: bash ops/scripts/launch-dry-run.sh
 
+  uid-mount-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Linux bind-mount uid/gid check (#84)
+        run: bash ops/scripts/uid-mount-check.sh
+
   secret-scan:
     runs-on: ubuntu-latest
     permissions:

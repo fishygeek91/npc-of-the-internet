@@ -148,6 +148,12 @@ Each task lists **Deps**, **Deliverables**, and **Acceptance** (how a reviewer v
 - Acceptance: dry-run passes end to end; a second agent can follow LAUNCH.md verbatim.
 - Notes: Agent: Cursor Grok 4.5 Maestro, 2026-07-22. `ops/LAUNCH.md` + `ops/scripts/launch-dry-run.sh` + `launch-first-residency.mjs` + `ops/templates/announcement.md`; CI `launch-dry-run` job. Offline dry-run uses Session+Door+FakeBrain (divergence table in LAUNCH.md). v0.1 Ghost complete. Next: launch for real (Gate 2 release issue), then Phase 7 — split T7.1/T7.2 into task issues.
 
+### Bug #84 ✅ Ops: pin container uid/gid for key/rclone mounts (Cursor Grok 4.5 Maestro, 2026-07-28)
+- Deps: T6.2
+- Deliverables: Pin `npc` to uid/gid `10001` in all Ghost Dockerfiles; align RUNBOOK.ghost / LAUNCH / RUNBOOK / SECRETS host `chown`; loud EACCES on soul/door key load; backup fail-fast + healthcheck when rclone.conf unreadable; Linux CI `uid-mount-check.sh`.
+- Acceptance: Fresh VPS following RUNBOOK.ghost.md boots runtime+door and can read keys; wrong-ownership mounts fail loudly; backup unhealthy when rclone unreadable; `pnpm check` green; Linux CI mount check green.
+- Notes: Agent: Cursor Grok 4.5 Maestro, 2026-07-28. Pinned `npc` to 10001:10001 across runtime/door/atlas/backup images; runbooks chown keys+rclone to 10001; backup exits + healthcheck on unreadable rclone.conf; key loaders emit permissions+10001 hint; CI `uid-mount-check` job (Linux-only). Gate-2 still needs #62/#63/#64.
+
 ## Phase 7 — Post-Ghost (v0.2/0.3 — spec first, then build)
 
 These are sequenced but intentionally coarser; split them into T-numbered subtasks (same format) when their phase begins.

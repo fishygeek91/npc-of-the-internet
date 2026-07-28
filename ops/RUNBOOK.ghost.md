@@ -258,8 +258,18 @@ bind-mounted read-only. **Never** use `/tmp` (wiped on reboot). Use:
 ```bash
 sudo mkdir -p /var/lib/npc-ghost/keys /var/lib/npc-ghost/rclone
 sudo chown -R ghost:ghost /var/lib/npc-ghost
-chmod 700 /var/lib/npc-ghost /var/lib/npc-ghost/keys /var/lib/npc-ghost/rclone
+chmod 700 /var/lib/npc-ghost
 ```
+
+The parent `/var/lib/npc-ghost` can stay owned by `ghost:ghost` so you can
+`scp` keys and manage files as the operator. The **bind-mounted subtrees**
+`keys/` and `rclone/` must be owned by the container user instead — see below.
+
+All Ghost images run as `npc` with uid **10001** and gid **10001**. Linux bind
+mounts preserve host ownership: if `keys/` is `ghost:ghost`, runtime and
+door-discord cannot read the mounted key files and will fail at startup. (Docker
+Desktop on macOS remaps ownership, which masks this locally — on a Linux VPS it
+is mandatory.)
 
 ### 5c. Copy the keys from your Mac
 
@@ -271,9 +281,11 @@ scp /path/to/soul.key ghost:/var/lib/npc-ghost/keys/soul.key
 scp /path/to/door.key ghost:/var/lib/npc-ghost/keys/door.key
 ```
 
-Back on the server, restrict them:
+Back on the server, hand ownership to the container user and restrict them:
 
 ```bash
+sudo chown -R 10001:10001 /var/lib/npc-ghost/keys
+chmod 700 /var/lib/npc-ghost/keys
 chmod 600 /var/lib/npc-ghost/keys/*
 ```
 
@@ -298,7 +310,17 @@ Walk-through for B2: `n` (new remote) → name it `ghost-remote` → storage typ
 
 ```bash
 cp ~/.config/rclone/rclone.conf /var/lib/npc-ghost/rclone/rclone.conf
+sudo chown -R 10001:10001 /var/lib/npc-ghost/rclone
+chmod 700 /var/lib/npc-ghost/rclone
 chmod 600 /var/lib/npc-ghost/rclone/rclone.conf
+```
+
+Or, if you copied keys and rclone config in one session:
+
+```bash
+sudo chown -R 10001:10001 /var/lib/npc-ghost/keys /var/lib/npc-ghost/rclone
+chmod 700 /var/lib/npc-ghost/keys /var/lib/npc-ghost/rclone
+chmod 600 /var/lib/npc-ghost/keys/* /var/lib/npc-ghost/rclone/rclone.conf
 ```
 
 Test it:
@@ -392,6 +414,16 @@ ghostc ps
 All four services should show `Up` (runtime shows `healthy` after its
 start period; it may restart once or twice while door-discord boots — that's
 the designed behavior, `restart: unless-stopped` retries the hello).
+
+Confirm bind-mounted secrets are readable inside the containers (exit 0 =
+readable; permission denied means host ownership is wrong — fix with
+`sudo chown -R 10001:10001` on the affected host path):
+
+```bash
+ghostc exec runtime sh -c 'cat /run/keys/soul.key > /dev/null'
+ghostc exec door-discord sh -c 'cat /run/keys/door.key > /dev/null'
+ghostc exec backup sh -c 'test -r /config/rclone/rclone.conf'
+```
 
 ```bash
 ghostc logs -f runtime        # Ctrl+C to stop following
