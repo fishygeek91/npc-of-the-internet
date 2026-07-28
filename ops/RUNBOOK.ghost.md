@@ -1,0 +1,499 @@
+# Ghost Deployment Runbook — Hetzner VPS
+
+This is the complete, start-from-zero guide for deploying the npc-ghost Compose
+stack (`ops/compose.ghost.yml`) to a Hetzner Cloud VPS. It assumes you have
+never set up a server before. Follow it top to bottom; each step tells you
+where you're typing (your Mac, or the server) and what you should see.
+
+**Security posture (decided):** the server accepts **inbound SSH only**.
+Atlas (`:8787`) is NOT open to the internet. You reach it via SSH tunnel from
+your Mac. When Atlas goes public (Gate 2), we add a Cloudflare Tunnel —
+outbound-only, no ports opened. Everything else the Ghost does (Discord,
+Anthropic, rclone backups) is outbound and needs no open ports.
+
+---
+
+## 0. What you'll end up with
+
+- A Hetzner **CX22** VPS (2 vCPU, 4 GB RAM, ~€4/mo) running Ubuntu 24.04
+- A non-root user `ghost` that you log into with an SSH key (no passwords)
+- A firewall (Hetzner Cloud Firewall + ufw) allowing only SSH
+- Docker + Compose running the four Ghost containers from GHCR images
+- Keys at `/var/lib/npc-ghost/keys/`, rclone config at `/var/lib/npc-ghost/rclone/`
+- Automatic security updates, automatic container restarts on reboot
+- Offsite soulchain backups via the backup sidecar (rclone → B2/R2)
+
+Estimated time: 60–90 minutes.
+
+---
+
+## 1. On your Mac: create an SSH key
+
+An SSH key is a pair of files: a private key (stays on your Mac, is the
+secret) and a public key (goes on the server, is safe to share). It replaces
+passwords entirely.
+
+Open Terminal on your Mac and run:
+
+```bash
+ssh-keygen -t ed25519 -C "ghost-vps" -f ~/.ssh/ghost_vps
+```
+
+- When asked for a passphrase, set one (recommended) or press Enter twice for none.
+- This creates `~/.ssh/ghost_vps` (private — never share, never commit) and
+  `~/.ssh/ghost_vps.pub` (public).
+
+Print the public key and copy the whole output line to your clipboard:
+
+```bash
+cat ~/.ssh/ghost_vps.pub
+```
+
+It looks like `ssh-ed25519 AAAA... ghost-vps`.
+
+---
+
+## 2. Create the Hetzner server
+
+1. Sign up at https://console.hetzner.cloud (they may ask for ID or a small
+   card verification — normal for them, anti-fraud).
+2. Create a **New Project** (call it `npc-ghost`).
+3. In the project, click **Add Server** and choose:
+   - **Location:** Ashburn, VA (`ash`) — closest US region to you; Falkenstein
+     (Germany) is fine too and slightly cheaper.
+   - **Image:** Ubuntu 24.04
+   - **Type:** Shared vCPU → x86 → **CX22** (2 vCPU / 4 GB / 40 GB).
+     If CX22 isn't offered in your region, **CPX21** is the equivalent.
+   - **Networking:** leave Public IPv4 + IPv6 checked.
+   - **SSH keys:** click **Add SSH key**, paste the public key you copied in
+     step 1, name it `macbook`. **Select it.** (This is what lets you in —
+     don't skip it.)
+   - Skip volumes, backups (Hetzner's paid snapshot backups are optional —
+     the Ghost has its own backup sidecar), placement groups, cloud-init.
+   - **Name:** `wanderer-1` (the box hosts the Wanderer across milestones;
+     the *stack* it runs today is Ghost-shaped, but the server outlives v0.1)
+4. Click **Create & Buy Now**. In ~30 seconds you'll see the server with a
+   public IP like `5.161.x.x`. Note that IP — it's `YOUR_SERVER_IP` below.
+
+### 2a. Hetzner Cloud Firewall (outer wall)
+
+Still in the Hetzner console: **Firewalls → Create Firewall**.
+
+- Name: `wanderer-fw`
+- Inbound rules: **delete everything except** one rule:
+  - TCP, port **22**, source `0.0.0.0/0` and `::/0` (SSH from anywhere).
+- Outbound: leave unrestricted (Ghost needs outbound Discord/Anthropic/rclone).
+- Apply to → select `wanderer-1`.
+
+This filters traffic before it even reaches the server. We'll add ufw on the
+server too — two walls, in case one is ever misconfigured.
+
+---
+
+## 3. First login and basic hardening
+
+From your Mac:
+
+```bash
+ssh -i ~/.ssh/ghost_vps root@YOUR_SERVER_IP
+```
+
+Type `yes` when asked about the fingerprint (first-connection normal). You're
+now root on the server. Everything in sections 3–7 is typed **on the server**.
+
+### 3a. Update the OS
+
+```bash
+apt update && apt upgrade -y
+```
+
+If it mentions a new kernel, `reboot`, wait 30 seconds, and SSH back in.
+
+### 3b. Create the `ghost` user (day-to-day user; root stays for emergencies)
+
+```bash
+adduser ghost          # invents a password when prompted — pick a strong one, save it in your password manager
+usermod -aG sudo ghost # lets ghost run admin commands with sudo
+```
+
+Copy your SSH key to the new user so you can log in as `ghost` directly:
+
+```bash
+mkdir -p /home/ghost/.ssh
+cp /root/.ssh/authorized_keys /home/ghost/.ssh/
+chown -R ghost:ghost /home/ghost/.ssh
+chmod 700 /home/ghost/.ssh && chmod 600 /home/ghost/.ssh/authorized_keys
+```
+
+### 3c. Lock down SSH (keys only, no root login)
+
+```bash
+nano /etc/ssh/sshd_config
+```
+
+(nano basics: arrow keys to move, edit text, then Ctrl+O Enter to save,
+Ctrl+X to exit.)
+
+Find and set these lines (remove any leading `#`):
+
+```
+PermitRootLogin no
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+```
+
+Ubuntu 24.04 also ships override files that can re-enable passwords; neutralize them:
+
+```bash
+rm -f /etc/ssh/sshd_config.d/50-cloud-init.conf
+systemctl restart ssh
+```
+
+**IMPORTANT — do not close this terminal yet.** Open a SECOND terminal on
+your Mac and confirm you can still get in as ghost:
+
+```bash
+ssh -i ~/.ssh/ghost_vps ghost@YOUR_SERVER_IP
+```
+
+Only when that works, close the root session. If it doesn't work, fix it from
+the still-open root session (or worst case, use the "Console" button in the
+Hetzner web UI, which is a screen-and-keyboard into the machine).
+
+### 3d. Make SSH-ing convenient (on your Mac)
+
+Add this to `~/.ssh/config` on your **Mac** (create the file if it doesn't exist):
+
+```
+Host ghost
+    HostName YOUR_SERVER_IP
+    User ghost
+    IdentityFile ~/.ssh/ghost_vps
+```
+
+Now `ssh ghost` is all you ever type.
+
+### 3e. Server firewall (ufw — inner wall)
+
+As `ghost` on the server (commands now use `sudo`):
+
+```bash
+sudo ufw default deny incoming
+sudo ufw default allow outgoing
+sudo ufw allow 22/tcp
+sudo ufw enable        # answer y
+sudo ufw status verbose
+```
+
+You should see: deny (incoming), allow (outgoing), 22/tcp ALLOW. Port 8787 is
+NOT allowed — that's intentional.
+
+### 3f. Fail2ban (bans IPs that spam SSH login attempts)
+
+```bash
+sudo apt install -y fail2ban
+sudo systemctl enable --now fail2ban
+```
+
+Defaults are fine for SSH.
+
+### 3g. Automatic security updates
+
+```bash
+sudo apt install -y unattended-upgrades
+sudo dpkg-reconfigure -plow unattended-upgrades   # choose "Yes"
+```
+
+The server now patches itself. (Kernel updates still occasionally want a
+reboot — see §9 maintenance.)
+
+---
+
+## 4. Install Docker
+
+On the server, use Docker's official convenience script:
+
+```bash
+curl -fsSL https://get.docker.com | sudo sh
+sudo usermod -aG docker ghost
+```
+
+Log out and back in (`exit`, then `ssh ghost`) so the group change applies. Verify:
+
+```bash
+docker --version && docker compose version
+```
+
+Both should print versions without `sudo`.
+
+---
+
+## 5. Put the Ghost's files on the server
+
+### 5a. Get the repo (for the compose file and ops scripts)
+
+```bash
+sudo apt install -y git
+git clone https://github.com/fishygeek91/npc-of-the-internet.git ~/npc
+cd ~/npc
+```
+
+You are NOT building images here — the compose file pulls prebuilt images
+from GHCR (pushed by `.github/workflows/release.yml` on version tags).
+If the GHCR packages are private, log in first:
+create a GitHub token (github.com → Settings → Developer settings → Personal
+access tokens → classic, scope `read:packages` only), then:
+
+```bash
+docker login ghcr.io -u fishygeek91    # paste the token as the password
+```
+
+If the packages are public, skip that.
+
+### 5b. Create the persistent host directories
+
+Per the compose file, keys and rclone config live on the host and are
+bind-mounted read-only. **Never** use `/tmp` (wiped on reboot). Use:
+
+```bash
+sudo mkdir -p /var/lib/npc-ghost/keys /var/lib/npc-ghost/rclone
+sudo chown -R ghost:ghost /var/lib/npc-ghost
+chmod 700 /var/lib/npc-ghost /var/lib/npc-ghost/keys /var/lib/npc-ghost/rclone
+```
+
+### 5c. Copy the keys from your Mac
+
+On your **Mac** (assuming your local `soul.key` / `door.key` exist — generate
+them per the repo's ops/SECRETS.md if not):
+
+```bash
+scp /path/to/soul.key ghost:/var/lib/npc-ghost/keys/soul.key
+scp /path/to/door.key ghost:/var/lib/npc-ghost/keys/door.key
+```
+
+Back on the server, restrict them:
+
+```bash
+chmod 600 /var/lib/npc-ghost/keys/*
+```
+
+**Also keep an offline copy of `soul.key` somewhere that is not this server
+and not your Mac alone** — e.g. a USB stick and/or your password manager's
+file attachment. If `soul.key` is lost, the being's identity is gone.
+
+### 5d. rclone config (offsite backups — do not skip)
+
+The backup sidecar rclones the soulchain to a remote. Backblaze B2 free tier
+(10 GB) is plenty. On the **server**:
+
+```bash
+sudo apt install -y rclone
+rclone config
+```
+
+Walk-through for B2: `n` (new remote) → name it `ghost-remote` → storage type
+`b2` → paste the keyID and applicationKey from your Backblaze account
+(create a bucket, e.g. `npc-soulchain`, and an app key scoped to that bucket)
+→ accept defaults → `q` to quit. Then put the config where compose expects it:
+
+```bash
+cp ~/.config/rclone/rclone.conf /var/lib/npc-ghost/rclone/rclone.conf
+chmod 600 /var/lib/npc-ghost/rclone/rclone.conf
+```
+
+Test it:
+
+```bash
+rclone lsd ghost-remote:    # should list your bucket, no errors
+```
+
+`BACKUP_RCLONE_REMOTE` in .env will be `ghost-remote:npc-soulchain/soulchain`
+(remote-name:bucket/path).
+
+### 5e. Fill in the environment file
+
+```bash
+cd ~/npc
+cp ops/.env.example ops/.env
+chmod 600 ops/.env
+nano ops/.env
+```
+
+Replace every placeholder. The important ones:
+
+| Variable | Set to |
+|---|---|
+| `NPC_IMAGE_TAG` | the release tag you're deploying (e.g. `v0.1.0`) — pin a tag, avoid `latest` |
+| `SOUL_KEY_HOST_PATH` | `/var/lib/npc-ghost/keys/soul.key` |
+| `DOOR_KEY_HOST_PATH` | `/var/lib/npc-ghost/keys/door.key` |
+| `RCLONE_CONFIG_HOST_PATH` | `/var/lib/npc-ghost/rclone` |
+| `ANTHROPIC_API_KEY` | your real key — and set a **monthly spend limit** in the Anthropic console first |
+| `DISCORD_BOT_TOKEN` / guild / channel / operator IDs | your real Discord values |
+| `SOUL_PUBLIC_KEY` | the REAL soul public key — the .env.example value is a test fixture |
+| `ATLAS_DOOR_PUBKEYS` | the REAL door public key(s) — same warning |
+| `BACKUP_RCLONE_REMOTE` | `ghost-remote:npc-soulchain/soulchain` |
+
+Sanity-check that compose can parse everything:
+
+```bash
+docker compose --env-file ops/.env -f ops/compose.ghost.yml config >/dev/null && echo OK
+```
+
+---
+
+## 6. Keep Atlas off the public internet
+
+The compose file publishes `8787:8787`. Docker publishes ports by talking
+directly to the kernel, **bypassing ufw** — a known Docker gotcha. The
+Hetzner Cloud Firewall (outer wall, §2a) still blocks it, but belt-and-
+suspenders: bind it to localhost only. Create a small override file:
+
+```bash
+cat > ~/npc/ops/compose.override.yml <<'EOF'
+services:
+  atlas-api:
+    ports: !override
+      - "127.0.0.1:8787:8787"
+EOF
+```
+
+We'll include this file in every compose command. Now 8787 answers only on
+the server itself — reachable by you via SSH tunnel, by nobody else.
+
+---
+
+## 7. Launch
+
+```bash
+cd ~/npc
+docker compose --env-file ops/.env \
+  -f ops/compose.ghost.yml -f ops/compose.override.yml \
+  pull
+docker compose --env-file ops/.env \
+  -f ops/compose.ghost.yml -f ops/compose.override.yml \
+  up -d
+```
+
+That's a lot to type; make an alias. Add to `~/.bashrc` on the server:
+
+```bash
+echo "alias ghostc='docker compose --env-file ~/npc/ops/.env -f ~/npc/ops/compose.ghost.yml -f ~/npc/ops/compose.override.yml'" >> ~/.bashrc
+source ~/.bashrc
+```
+
+From now on: `ghostc up -d`, `ghostc ps`, `ghostc logs -f runtime`, etc.
+
+### 7a. Verify
+
+```bash
+ghostc ps
+```
+
+All four services should show `Up` (runtime shows `healthy` after its
+start period; it may restart once or twice while door-discord boots — that's
+the designed behavior, `restart: unless-stopped` retries the hello).
+
+```bash
+ghostc logs -f runtime        # Ctrl+C to stop following
+ghostc logs door-discord | tail -50
+curl http://127.0.0.1:8787/   # atlas answers locally
+```
+
+Then the real test: talk to the Wanderer in your Discord channel.
+
+### 7b. Verify from your Mac that nothing is exposed
+
+On your **Mac**:
+
+```bash
+nc -zv -w 3 YOUR_SERVER_IP 22     # should succeed
+nc -zv -w 3 YOUR_SERVER_IP 8787   # should TIME OUT / refuse — this is correct
+```
+
+To use Atlas from your Mac, open an SSH tunnel:
+
+```bash
+ssh -N -L 8787:127.0.0.1:8787 ghost
+```
+
+Leave that running; `http://localhost:8787` in your Mac's browser is now the
+server's Atlas. Ctrl+C to close the tunnel.
+
+### 7c. Verify backups actually run
+
+After the runtime has written something to the soulchain:
+
+```bash
+ghostc logs backup | tail -20
+rclone ls ghost-remote:npc-soulchain/soulchain
+```
+
+You should see files in the bucket. **A backup you haven't seen restore is
+not a backup** — once, copy a file back down with `rclone copy` and eyeball it.
+
+---
+
+## 8. Going public later (Gate 2): Cloudflare Tunnel
+
+When the Atlas site (GitHub Pages) needs to call the Atlas API publicly, do
+NOT open 8787. Instead:
+
+1. Get a domain (~$10/yr) and add it to a free Cloudflare account.
+2. On the server: install `cloudflared`, `cloudflared tunnel login`, create a
+   tunnel, route e.g. `atlas.yourdomain.com` → `http://127.0.0.1:8787`.
+3. Run cloudflared as a systemd service (their docs have the one-liner).
+
+The tunnel is an **outbound** connection from the server to Cloudflare — the
+firewall stays exactly as it is, the server's IP stays hidden, Cloudflare
+gives you HTTPS, caching, and rate limiting in front of Atlas. This can also
+be added to compose as a fifth service later.
+
+---
+
+## 9. Routine operations
+
+**Deploy a new release** (after CI pushes new images for tag `vX.Y.Z`):
+
+```bash
+nano ~/npc/ops/.env      # bump NPC_IMAGE_TAG=vX.Y.Z
+ghostc pull && ghostc up -d
+```
+
+**Reboot safety:** `restart: unless-stopped` + Docker's systemd service means
+everything comes back on its own after a reboot. Test it once: `sudo reboot`,
+wait a minute, `ssh ghost`, `ghostc ps`.
+
+**Check disk space** occasionally: `df -h /` and clean old images with
+`docker image prune -af` after upgrades.
+
+**Monthly:** `sudo apt update && sudo apt upgrade -y`, reboot if
+`/var/run/reboot-required` exists.
+
+**Monitoring on the cheap:** point a free uptime checker at Discord-side
+behavior, or (post-Gate 2) at the tunnel URL. Until then,
+`ghostc ps` when you think of it.
+
+---
+
+## 10. If something goes wrong
+
+| Symptom | Likely cause / fix |
+|---|---|
+| Locked out of SSH | Hetzner console → server → "Console" button (web keyboard) |
+| `runtime` restart-looping forever | `ghostc logs runtime` — usually bad key path, bad `SOUL_PUBLIC_KEY`, or door-discord failing first |
+| `door-discord` up but bot offline in Discord | bad token, or bot not invited to the guild with the right intents |
+| `backup` erroring | `rclone lsd ghost-remote:` on the host — if that fails, fix rclone.conf and `ghostc restart backup` |
+| Anthropic errors in runtime logs | check API key, and check you haven't hit the spend cap you set (good problem: the cap worked) |
+| `permission denied` on docker | you skipped the re-login after `usermod -aG docker` |
+
+---
+
+## Security summary (what you built)
+
+- Inbound: SSH only, key-only auth, no root login, fail2ban, two firewalls
+- Atlas bound to localhost; public exposure only ever via Cloudflare Tunnel
+- Keys: `0600`, root-owned dir `0700`, offline copy of `soul.key` elsewhere
+- Secrets in `ops/.env` (`0600`), never committed
+- OS patches itself; containers restart themselves
+- Soulchain backed up offsite continuously by the backup sidecar
+- Anthropic spend capped at the account level
