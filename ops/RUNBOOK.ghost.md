@@ -293,6 +293,22 @@ chmod 600 /var/lib/npc-ghost/keys/*
 and not your Mac alone** — e.g. a USB stick and/or your password manager's
 file attachment. If `soul.key` is lost, the being's identity is gone.
 
+**Rotating keys later:** once `keys/` is owned by `10001:10001` with mode
+`0700`, `ghost` can no longer `scp` directly into that directory. To replace a
+key, stage it in the home directory and move it in as root:
+
+```bash
+# On Mac:
+scp /path/to/new-soul.key ghost:~/soul.key.new
+# On server:
+sudo mv ~/soul.key.new /var/lib/npc-ghost/keys/soul.key
+sudo chown 10001:10001 /var/lib/npc-ghost/keys/soul.key
+chmod 600 /var/lib/npc-ghost/keys/soul.key
+```
+
+Same pattern for `door.key`. Restart affected services after rotation
+(`ghostc restart runtime` / `ghostc restart door-discord`).
+
 ### 5d. rclone config (offsite backups — do not skip)
 
 The backup sidecar rclones the soulchain to a remote. Backblaze B2 free tier

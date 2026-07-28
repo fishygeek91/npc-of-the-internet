@@ -107,7 +107,7 @@ WRONG_KEY_OUT="$(
 WRONG_KEY_RC=$?
 set -e
 if [[ "$WRONG_KEY_RC" -eq 0 ]]; then
-  die "expected unreadable wrong-owned soul.key inside runtime, but cat succeeded"
+  die "expected unreadable wrong-owned soul.key inside runtime, but cat succeeded:\n${WRONG_KEY_OUT}"
 fi
 log "OK wrong-owned key rejected (exit ${WRONG_KEY_RC})"
 
@@ -139,12 +139,26 @@ fi
 log "OK backup fail-fast on unreadable rclone.conf (exit ${WRONG_BACKUP_RC})"
 
 log "Correct ownership: backup must pass the rclone.conf readability guard"
-# Entry point starts the watch loop; run a one-shot readability probe as npc instead.
-docker run --rm \
-  --entrypoint sh \
-  -v "${RCLONE_RIGHT}:/config/rclone:ro" \
-  "$BACKUP_IMAGE" \
-  -c 'test -r /config/rclone/rclone.conf'
-log "OK correctly-owned rclone.conf readable"
+mkdir -p "${WORK_TMP}/empty-soulchain"
+set +e
+RIGHT_BACKUP_OUT="$(
+  timeout 5 docker run --rm \
+    -e BACKUP_RCLONE_REMOTE="ghost-remote:npc/soulchain" \
+    -e RCLONE_CONFIG="/config/rclone/rclone.conf" \
+    -v "${RCLONE_RIGHT}:/config/rclone:ro" \
+    -v "${WORK_TMP}/empty-soulchain:/data/soulchain:ro" \
+    "$BACKUP_IMAGE" 2>&1
+)"
+RIGHT_BACKUP_RC=$?
+set -e
+# timeout exits 124 when the watch loop is still running — that means the guard passed.
+# Exit 1 with "permissions" would mean the guard failed incorrectly.
+if printf '%s\n' "$RIGHT_BACKUP_OUT" | grep -q "permissions"; then
+  die "backup incorrectly failed permissions guard on correctly-owned rclone.conf:\n${RIGHT_BACKUP_OUT}"
+fi
+if [[ "$RIGHT_BACKUP_RC" -eq 1 ]]; then
+  die "backup exited 1 on correctly-owned rclone.conf:\n${RIGHT_BACKUP_OUT}"
+fi
+log "OK correctly-owned rclone.conf passes backup entrypoint (exit ${RIGHT_BACKUP_RC})"
 
 log "All uid/gid mount checks passed"

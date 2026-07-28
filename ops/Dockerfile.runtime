@@ -36,7 +36,7 @@ COPY --from=build /out /app
 # Pre-create the soulchain mountpoint as npc so a fresh named volume inherits
 # npc:npc ownership (Docker copy-on-first-use). Without this, the volume is
 # root:root and USER npc cannot write — breaking RUNBOOK restore one-shots and
-# future residency writes (#53).
+# future residency writes (#53). Upgrading pre-10001 volumes: RUNBOOK §1.4.
 RUN mkdir -p /data/soulchain && chown npc:npc /data/soulchain
 
 WORKDIR /app

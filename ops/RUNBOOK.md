@@ -106,8 +106,12 @@ Exit code `0` means the volume is writable. If this fails with `Permission denie
 ```bash
 docker compose --env-file ops/.env -f ops/compose.ghost.yml run --rm --no-deps --user root \
   --entrypoint sh \
-  runtime -c "chown -R npc:npc /data/soulchain"
+  runtime -c "chown -R 10001:10001 /data/soulchain"
 ```
+
+Images that predate the uid **10001** pin may leave an existing named volume
+owned by the old system uid (~999) instead of `root:root`. The same one-shot
+`chown` fixes that; fresh Gate-2 installs never hit this.
 
 ---
 
