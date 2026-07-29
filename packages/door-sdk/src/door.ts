@@ -444,9 +444,10 @@ export class Door {
   }
 
   /**
-   * Validate cosign session binding and request signature without mutating state.
-   * Call before any side effects (e.g. Discord review posts) so unauthenticated
-   * requests cannot reach host channels. Does not run shard business validation.
+   * Validate cosign session binding, request signature, and review shard count
+   * without mutating state. Call before any side effects (e.g. Discord review
+   * posts) so unauthenticated or oversized requests cannot reach host channels.
+   * Per-shard field validation remains in {@link cosignReview}.
    */
   protected verifyCosignRequest(request: CosignRequest): void {
     if (request.door_id !== this.doorId) {
@@ -465,6 +466,14 @@ export class Door {
       }
 
       this.requireActiveSession(request.door_id, request.epoch, request.session_pubkey);
+
+      // Bound review volume before any host-channel side effects (ReviewGatedDoor).
+      if (request.shards.length < 5 || request.shards.length > 20) {
+        throw DoorError.fromCode(
+          "shard_count",
+          `shard_count: expected 5–20 shards, got ${String(request.shards.length)}`
+        );
+      }
 
       const payload = cosignReviewSigningPayload(request);
       const requestSig = decodeSignature(request.sig);
@@ -522,13 +531,6 @@ export class Door {
     request: Extract<CosignRequest, { phase: "review" }>
   ): Promise<Extract<CosignResponse, { phase: "review" }>> {
     this.verifyCosignRequest(request);
-
-    if (request.shards.length < 5 || request.shards.length > 20) {
-      throw DoorError.fromCode(
-        "shard_count",
-        `shard_count: expected 5–20 shards, got ${String(request.shards.length)}`
-      );
-    }
 
     const seenShardIds = new Set<string>();
     for (const shard of request.shards) {

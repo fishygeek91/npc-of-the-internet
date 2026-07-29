@@ -474,6 +474,25 @@ describe("Door", () => {
     );
   });
 
+  it("cosign review with too many shards → shard_count", async () => {
+    const door = createTestDoor();
+    await establishArrival(door, soul, session, EPOCH);
+
+    const reviewRequest = signCosignReviewRequest(session, {
+      protocol_version: DOOR_PROTOCOL_VERSION,
+      phase: "review",
+      door_id: DOOR_ID,
+      epoch: EPOCH,
+      session_pubkey: encodePublicKey(session.publicKey),
+      shards: sampleShards(21),
+      issued_at: ISSUED_AT
+    });
+
+    await expect(door.cosign(reviewRequest)).rejects.toBeInstanceOf(DoorError);
+    await expect(door.cosign(reviewRequest)).rejects.toMatchObject({ code: "shard_count" });
+    await expect(door.cosign(reviewRequest)).rejects.toThrow(/expected 5–20 shards/);
+  });
+
   it("cosign review then commit; door_cosig verifies; second review → epoch_closed", async () => {
     const { door, doorKeypair } = createDoor({ soulPublicKey: soul.publicKey });
     await establishArrival(door, soul, session, EPOCH);

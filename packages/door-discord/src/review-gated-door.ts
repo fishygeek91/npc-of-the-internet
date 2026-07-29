@@ -12,8 +12,9 @@ import type { ReviewGate } from "./review-gate.js";
  * Door subclass that awaits Discord host review before the sync `decideShard` phase.
  * Commit cosign passes through after the same auth verify (same instance required post-depart).
  *
- * Auth/signature checks run via {@link Door.verifyCosignRequest} **before** any review-gate
- * Discord side effects so unauthenticated requests cannot post attacker text to the host channel.
+ * Auth/signature/shard-count checks run via {@link Door.verifyCosignRequest} **before**
+ * any review-gate Discord side effects so unauthenticated or oversized requests cannot
+ * post attacker text to the host channel.
  *
  * Optional outbound listener fires after successful verification so adapters can
  * relay WS outbounds to Discord without re-entering {@link handleOutbound}.

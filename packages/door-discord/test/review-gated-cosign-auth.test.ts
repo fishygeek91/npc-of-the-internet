@@ -162,6 +162,55 @@ describe("ReviewGatedDoor cosign auth before Discord side effects", () => {
     await handle.stop();
   });
 
+  it("authenticated oversized shard array posts zero gateway messages", async () => {
+    const gateway = new FakeGateway();
+    const clock = new TestClock(CLOCK_START);
+    const config = await testConfig({ reviewTimeoutMs: 2_000 });
+    const doorId = doorIdForGuild(config.guildId);
+    const session = generateKeypair();
+
+    const handle = await startDiscordDoor({
+      config,
+      gateway,
+      clock,
+      sleep: async (ms) => {
+        await new Promise<void>((resolve) => {
+          setTimeout(resolve, Math.min(ms, 5));
+        });
+      },
+      disableServers: true
+    });
+
+    await handle.connection.attest(signAttestArrival(SOUL, session, doorId));
+
+    const oversizedShards = Array.from({ length: 21 }, (_, index) => ({
+      shard_id: `flood_${String(index + 1)}`,
+      text: `Flood shard ${String(index + 1)}`
+    }));
+    const beforeSent = gateway.sent.length;
+    const beforeReactions = gateway.reactions.length;
+    const reviewRequest = signCosignReview(session, {
+      protocol_version: DOOR_PROTOCOL_VERSION,
+      phase: "review",
+      door_id: doorId,
+      epoch: EPOCH,
+      session_pubkey: encodePublicKey(session.publicKey),
+      shards: oversizedShards,
+      issued_at: ISSUED_AT
+    });
+
+    await expect(handle.door.cosign(reviewRequest)).rejects.toBeInstanceOf(DoorError);
+    await expect(handle.door.cosign(reviewRequest)).rejects.toMatchObject({
+      code: "shard_count"
+    });
+
+    expect(gateway.sent.length).toBe(beforeSent);
+    expect(gateway.reactions.length).toBe(beforeReactions);
+    expect(reviewMessageCount(gateway)).toBe(0);
+
+    await handle.stop();
+  });
+
   it("valid cosign review still posts review messages to the gateway", async () => {
     const gateway = new FakeGateway();
     const clock = new TestClock(CLOCK_START);
