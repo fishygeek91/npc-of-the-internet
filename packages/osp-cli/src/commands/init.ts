@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
 
 import {
@@ -23,19 +23,50 @@ export type InitResult = {
   genesisCid: string;
 };
 
+/** True when the caught value is a Node.js errno exception with the given code. */
+function isErrnoCode(error: unknown, code: string): boolean {
+  if (typeof error !== "object" || error === null || !("code" in error)) {
+    return false;
+  }
+  return error.code === code;
+}
+
 /**
  * Initialize a new soulchain directory with a fresh key and genesis record.
+ *
+ * Refuses when `soul.key` or `chain.jsonl` already exists in the target directory
+ * (no `--force`). The key is created with exclusive `wx` so concurrent inits cannot
+ * interleave. Guards run before any key material is generated.
  */
 export async function runInit(options: InitOptions): Promise<InitResult> {
   const targetDir = path.resolve(options.dir);
   const charterPath = resolveCharterPath(options.charterPath);
   const charter = readCharterContents(charterPath);
 
+  const soulKeyPath = path.join(targetDir, "soul.key");
+  const chainPath = path.join(targetDir, "chain.jsonl");
+
+  if (existsSync(soulKeyPath)) {
+    throw new Error(`refusing to init: soul.key already exists at ${soulKeyPath}`);
+  }
+  if (existsSync(chainPath)) {
+    throw new Error(`refusing to init: chain.jsonl already exists at ${chainPath}`);
+  }
+
   mkdirSync(targetDir, { recursive: true });
 
   const keypair = generateKeypair();
-  const soulKeyPath = path.join(targetDir, "soul.key");
-  writeFileSync(soulKeyPath, encodeBase64Url(keypair.privateKey), { mode: 0o600 });
+  try {
+    writeFileSync(soulKeyPath, encodeBase64Url(keypair.privateKey), {
+      flag: "wx",
+      mode: 0o600
+    });
+  } catch (error) {
+    if (isErrnoCode(error, "EEXIST")) {
+      throw new Error(`refusing to init: soul.key already exists at ${soulKeyPath}`);
+    }
+    throw error;
+  }
 
   const publicKey = encodePublicKey(keypair.publicKey);
   const { record, cid } = await createRecord({

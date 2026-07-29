@@ -178,6 +178,12 @@ Each task lists **Deps**, **Deliverables**, and **Acceptance** (how a reviewer v
 - Acceptance: Failing-auth cosign requests produce zero gateway messages; existing approval-flow tests green; `pnpm check` green.
 - Notes: Agent: Cursor Grok 4.5 Maestro, 2026-07-29. `protected verifyCosignRequest` covers review (active session + sig + 5–20 shard count) and commit (cosignState bind + sig). Immune host-channel screen deferred — auth-first fixes the P0; adding `@npc/immune` would expand door-discord prod/Docker graph (see Bug #62).
 
+### Bug #85 ✅ osp-cli: refuse init when soul.key or chain.jsonl exists (Cursor Grok 4.5 Maestro, 2026-07-29)
+- Deps: T1.4
+- Deliverables: Guard `osp init` before keygen — refuse if `soul.key` or `chain.jsonl` exists (exit 2, name the file, no `--force`); exclusive `wx` + mode `0o600` key create; `osp verify` via `FileSoulStore.openReadOnly` + `verification()` (no layout create).
+- Acceptance: Existing key/chain → refused + bytes unchanged; fresh dir → succeeds; verify on empty dir does not create files; torn tail → exit 1; `pnpm check` green; changeset.
+- Notes: Agent: Cursor Grok 4.5 Maestro, 2026-07-29. Pre-flight `existsSync` before `generateKeypair`; `writeFileSync` with `flag: "wx"`. Verify torn tail now exits 1 (was 2 + recovery hint via RW open). No `--force`.
+
 ## Phase 7 — Post-Ghost (v0.2/0.3 — spec first, then build)
 
 These are sequenced but intentionally coarser; split them into T-numbered subtasks (same format) when their phase begins.
