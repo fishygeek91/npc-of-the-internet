@@ -1,5 +1,15 @@
 # @npc/runtime
 
+## 0.1.1
+
+### Patch Changes
+
+- 53d007d: Loud, actionable permission errors when soul/door key files are unreadable (uid/gid 10001 mount contract, #84).
+- Updated dependencies [d8d7e36]
+  - @npc/door-sdk@0.1.1
+  - @npc/osp-core@0.1.1
+  - @npc/immune@0.1.1
+
 ## 0.1.0
 
 ### Minor Changes
