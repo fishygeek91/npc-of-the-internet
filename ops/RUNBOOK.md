@@ -21,7 +21,7 @@ The backup sidecar (`ops/scripts/backup-watch.sh`) uploads in this order on each
 
 1. `blobs/` → remote `blobs/` (`rclone copy` — **never** `rclone sync` on upload; remote blobs are never deleted)
 2. **Size-regression guard:** if local `chain.jsonl` bytes < remote tip size, refuse with ERROR unless `ALLOW_CHAIN_SHRINK=1`
-3. `chain.jsonl` → remote `chain.jsonl` (`rclone copyto` with `--backup-dir ${remote}/history/<YYYYMMDDTHHMMSSZ>` so prior tips are preserved)
+3. `chain.jsonl` → remote `chain.jsonl` (`rclone copyto` with `--backup-dir ${remote}/history/<YYYYMMDDTHHMMSSZ>-<pid>` so prior tips are preserved; pid suffix avoids same-second collisions)
 4. Touches `BACKUP_OK_PATH` (default `/tmp/backup.ok`) only after full success
 
 Set `BACKUP_ONCE=1` to run one upload cycle and exit (used by restore drills).
@@ -32,7 +32,7 @@ Remote layout:
 ${BACKUP_RCLONE_REMOTE}/
   blobs/
   chain.jsonl
-  history/<UTC>/chain.jsonl
+  history/<UTC>-<pid>/chain.jsonl
 ```
 
 Blobs are uploaded before the chain file so a restore never references blob CIDs that have not yet reached the remote. The `history/` tree is the anti-clobber guarantee — B2 bucket versioning is **not** required. After any restore, always run `osp verify` before starting the stack. If a crash left a torn trailing line or a stale `.append.lock`, recover with `FileSoulStore.openWithRecovery` (see [Crash recovery](#6-crash-recovery)) before verifying.

@@ -317,7 +317,7 @@ Delegate to [RUNBOOK §5](RUNBOOK.md#5-restore-from-backup).
    docker compose --env-file ops/.env -f ops/compose.ghost.yml logs backup 2>&1 | tail -30
    ```
 
-   Expect `Copying blobs/`, then `Copying chain.jsonl` (with `backup-dir history/…`), then `Sync complete (marker`. Confirm remote layout includes `blobs/`, live `chain.jsonl`, and `history/<UTC>/` archives ([RUNBOOK.ghost §7c](RUNBOOK.ghost.md#7c-verify-backups-actually-run)).
+   Expect `Copying blobs/`, then `Copying chain.jsonl` (with `backup-dir history/…`), then `Sync complete (marker`. Confirm remote layout includes `blobs/`, live `chain.jsonl`, and `history/<UTC>-<pid>/` archives ([RUNBOOK.ghost §7c](RUNBOOK.ghost.md#7c-verify-backups-actually-run)).
 
 2. **Offline drill** (toolchain sanity):
 

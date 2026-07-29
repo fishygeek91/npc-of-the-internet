@@ -167,7 +167,7 @@ ALLOW_CHAIN_SHRINK="" run_backup_once "$WORK_DIR" || die "BACKUP_ONCE failed aft
 [[ -f "$BLOB_REMOTE" ]] || die "remote blob was deleted after local deletion (rclone sync regression): $BLOB_REL"
 log "Phase B2 OK: remote retained blob ${BLOB_REL}"
 
-log "Phase B3: successful overwrite must leave history/<UTC>/chain.jsonl"
+log "Phase B3: successful overwrite must leave history/<UTC>-<pid>/chain.jsonl"
 # Grow the chain so copyto replaces the tip (identical files may be skipped).
 printf "\n" >> "${WORK_DIR}/chain.jsonl"
 # Recreate the deleted blob locally so the tree is otherwise healthy (copy is fine either way).

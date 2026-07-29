@@ -5,7 +5,7 @@
 # Durability contract (Bug #63):
 #   - blobs/ are content-addressed and immutable → rclone copy (never sync/delete).
 #   - chain.jsonl is append-only → refuse size regression unless ALLOW_CHAIN_SHRINK=1;
-#     overwritten tips are preserved under remote/history/<UTC> via --backup-dir.
+#     overwritten tips are preserved under remote/history/<UTC>-<pid>/ via --backup-dir.
 #   - A successful sync touches BACKUP_OK_PATH (healthcheck consumer: issue #72).
 set -euo pipefail
 
@@ -56,25 +56,33 @@ stat_mtime() {
   fi
 }
 
-# Bytes of remote chain.jsonl, or 0 if the object is absent / unreadable.
-# Uses lsjson so a missing tip is distinguishable from a zero-byte tip.
+# Bytes of remote chain.jsonl, or 0 if the object is absent.
+# Returns 1 (no stdout size) on unknown rclone errors so callers refuse upload
+# rather than treating a transient failure as "remote size 0" and bypassing the
+# shrink guard. rclone exit 3/4 = not found → size 0.
 remote_chain_size() {
   local remote_chain="$1"
-  local json
-  if ! json="$(rclone lsjson "$remote_chain" "${RCLONE_ARGS[@]}" 2>/dev/null)"; then
-    echo "0"
-    return 0
+  local json rc=0
+  json="$(rclone lsjson "$remote_chain" "${RCLONE_ARGS[@]}" 2>/dev/null)" || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    # rclone: 3 = directory not found, 4 = file not found
+    if [[ "$rc" -eq 3 || "$rc" -eq 4 ]]; then
+      echo "0"
+      return 0
+    fi
+    echo "[backup-watch] ERROR: rclone lsjson failed for ${remote_chain} (exit ${rc}); refusing to guess remote size" >&2
+    return 1
   fi
   if [[ -z "$json" || "$json" == "[]" ]]; then
     echo "0"
     return 0
   fi
-  # Prefer Size from the first JSON object; fall back to 0 on parse failure.
+  # Prefer Size from the first JSON object; refuse on unparseable payload.
   local size
   size="$(printf "%s" "$json" | sed -n 's/.*"Size"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' | head -n 1)"
   if [[ -z "$size" ]]; then
-    echo "0"
-    return 0
+    echo "[backup-watch] ERROR: could not parse Size from rclone lsjson for ${remote_chain}" >&2
+    return 1
   fi
   echo "$size"
 }
@@ -101,7 +109,10 @@ sync_backup() {
   rclone copy "$blobs_src" "${remote}/blobs" "${RCLONE_ARGS[@]}"
 
   local_size="$(stat_size "$chain_src")"
-  remote_size="$(remote_chain_size "$remote_chain")"
+  if ! remote_size="$(remote_chain_size "$remote_chain")"; then
+    log "ERROR: could not determine remote chain.jsonl size; refusing upload (shrink guard cannot run safely)"
+    return 1
+  fi
 
   if (( local_size < remote_size )); then
     if [[ "$ALLOW_CHAIN_SHRINK" != "1" ]]; then
@@ -111,8 +122,9 @@ sync_backup() {
     log "WARN: ALLOW_CHAIN_SHRINK=1 — uploading smaller chain.jsonl (local=${local_size} remote=${remote_size}); previous tip moves to history/"
   fi
 
-  # Preserve the prior tip under history/<UTC>/ before overwriting the live tip.
-  history_ts="$(date -u +"%Y%m%dT%H%M%SZ")"
+  # Preserve the prior tip under history/<UTC>-<pid>/ before overwriting the live tip.
+  # Pid suffix avoids same-second collisions when two overwrites share a UTC second.
+  history_ts="$(date -u +"%Y%m%dT%H%M%SZ")-$$"
   log "Copying chain.jsonl → ${remote_chain} (backup-dir history/${history_ts})"
   rclone copyto "$chain_src" "$remote_chain" \
     --backup-dir "${remote}/history/${history_ts}" \

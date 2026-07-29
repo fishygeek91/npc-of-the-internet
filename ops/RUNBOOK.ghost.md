@@ -352,10 +352,10 @@ rclone lsd ghost-remote:    # should list your bucket, no errors
 ${BACKUP_RCLONE_REMOTE}/
   blobs/
   chain.jsonl
-  history/<UTC>/chain.jsonl
+  history/<UTC>-<pid>/chain.jsonl
 ```
 
-Upload uses `rclone copy` for blobs (never deletes remote orphans) and `rclone copyto` with `--backup-dir` for the chain tip. Prior tips land under `history/<UTC>/`. **B2 bucket versioning is not required** — `history/` is the durability guarantee.
+Upload uses `rclone copy` for blobs (never deletes remote orphans) and `rclone copyto` with `--backup-dir` for the chain tip. Prior tips land under `history/<UTC>-<pid>/`. **B2 bucket versioning is not required** — `history/` is the durability guarantee.
 
 ### 5e. Fill in the environment file
 
@@ -486,7 +486,7 @@ rclone ls ghost-remote:npc-soulchain/soulchain
 rclone ls ghost-remote:npc-soulchain/soulchain/history
 ```
 
-You should see `blobs/`, the live `chain.jsonl` tip, and archived tips under `history/<UTC>/chain.jsonl`. Each successful chain overwrite adds a new `history/<UTC>/` folder; **B2 bucket versioning is not required** for this guarantee.
+You should see `blobs/`, the live `chain.jsonl` tip, and archived tips under `history/<UTC>-<pid>/chain.jsonl`. Each successful chain overwrite adds a new `history/<UTC>-<pid>/` folder; **B2 bucket versioning is not required** for this guarantee.
 
 **A backup you haven't seen restore is not a backup** — once, copy a file back down with `rclone copy` and eyeball it. For a full drill including anti-clobber proofs, run `bash ops/scripts/restore-drill.sh` on a workstation ([RUNBOOK §5.1](RUNBOOK.md#51-offline-restore-drill-development--ci)).
 
