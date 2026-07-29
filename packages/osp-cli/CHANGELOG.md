@@ -1,5 +1,12 @@
 # @npc/osp-cli
 
+## 0.1.1
+
+### Patch Changes
+
+- ceb551c: Refuse osp init when soul.key or chain.jsonl already exists; exclusive wx key create; verify opens read-only (#85).
+  - @npc/osp-core@0.1.1
+
 ## 0.1.0
 
 ### Minor Changes

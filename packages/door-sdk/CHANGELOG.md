@@ -1,5 +1,12 @@
 # @npc/door-sdk
 
+## 0.1.1
+
+### Patch Changes
+
+- d8d7e36: Verify cosign session binding and signatures before Discord review-gate posts (fixes unauthenticated attacker text in host channel, #65).
+  - @npc/osp-core@0.1.1
+
 ## 0.1.0
 
 ### Minor Changes
