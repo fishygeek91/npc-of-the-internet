@@ -27,6 +27,13 @@ jobs:
       - name: Validate Ghost compose file
         run: docker compose --env-file ops/.env.example -f ops/compose.ghost.yml config
 
+  image-cmd-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Ghost image CMD smoke (#62)
+        run: bash ops/scripts/image-cmd-smoke.sh
+
   restore-drill:
     runs-on: ubuntu-latest
     steps:

@@ -102,7 +102,7 @@ docker compose --env-file ops/.env -f ops/compose.ghost.yml ps runtime
 
 Expect log line `residency_live` and health status `healthy` (ready file at `/tmp/npc-runtime.ready` while the WS is connected).
 
-**Image CMD check:** if runtime exits immediately with `npc-runtime: not found`, the image still uses a broken bin shim — `ops/Dockerfile.runtime` must `CMD ["node", "dist/daemon.js"]`. With placeholder env, expect structured `boot_failed` naming the missing var instead.
+**Image CMD check:** if runtime exits immediately with `npc-runtime: not found`, the image still uses a broken bin shim — `ops/Dockerfile.runtime` must `CMD ["node", "dist/daemon.js"]`. With placeholder env, expect structured `boot_failed` naming the missing var instead. Same for door-discord: if it exits with `door-discord: not found`, the image still uses a broken bin shim — `ops/Dockerfile.door-discord` must `CMD ["node", "dist/server.js"]`. With placeholder env, expect structured `boot_failed` instead.
 
 ### Confirm door-discord listeners
 

@@ -81,11 +81,15 @@ docker compose --env-file ops/.env -f ops/compose.ghost.yml up -d --build
 **Expected behavior after start:**
 
 - **runtime** runs `node dist/daemon.js` (image `CMD`; `pnpm deploy` does not emit an `npc-runtime` bin shim). It opens the soulchain, connects to door-discord on the compose network (`DOOR_HTTP_HOST` / `DOOR_HTTP_PORT`), arrives at the Door, and binds the session WebSocket. Logs `residency_live` after the first successful bind. Requires a valid soulchain (genesis or restored) and matching `SOUL_PUBLIC_KEY` / `ATLAS_DOOR_PUBKEYS` / `CURRENT_DOOR_ID`.
-- **door-discord** requires a real `DISCORD_BOT_TOKEN` and valid guild/channel IDs to stay healthy. Without them the container will crash-loop.
-- **atlas-api** serves on `http://127.0.0.1:8787` once the soulchain volume contains a valid chain (empty volume returns errors until genesis).
+- **door-discord** runs `node dist/server.js` (image `CMD`; `pnpm deploy` does not emit a `door-discord` bin shim). It requires a real `DISCORD_BOT_TOKEN` and valid guild/channel IDs to stay healthy. Without them the container will crash-loop.
+- **atlas-api** runs `node dist/server.js` (image `CMD`; same `pnpm deploy` own-bin trap). It serves on `http://127.0.0.1:8787` once the soulchain volume contains a valid chain (empty volume returns errors until genesis).
 - **backup** watches the soulchain volume and syncs to `BACKUP_RCLONE_REMOTE` when changes are detected.
 
-**Image entrypoint smoke (no Discord / incomplete env):** after `docker compose … build runtime`, a one-shot run with placeholder env should log `boot_failed` naming a missing/invalid var (e.g. `ATLAS_DOOR_PUBKEYS`) — **not** `npc-runtime: not found` or similar. That confirms `CMD ["node", "dist/daemon.js"]` is present in the deploy output.
+**Image entrypoint smoke (no Discord / incomplete env):** after `docker compose … build`, one-shot runs with placeholder env confirm each image `CMD` is `node dist/…`, not a missing bin shim:
+
+- **runtime:** logs structured `boot_failed` naming a missing/invalid var (e.g. `ATLAS_DOOR_PUBKEYS`) — **not** `npc-runtime: not found`. Expect `CMD ["node", "dist/daemon.js"]`.
+- **door-discord:** exits with structured `boot_failed` — **not** `door-discord: not found`. Expect `CMD ["node", "dist/server.js"]`.
+- **atlas-api:** does not die with `atlas-api: not found`. Expect `CMD ["node", "dist/server.js"]`.
 
 The runtime healthcheck probes `/tmp/npc-runtime.ready` (override with `NPC_RUNTIME_READY_FILE`). The file is present only while the session WebSocket is connected (cleared on disconnect/reconnect backoff, rewritten on rebind). Compose allows up to 90s start period before marking unhealthy.
 
