@@ -5,7 +5,7 @@ import {
   CorruptionError,
   decodePublicKey,
   FileSoulStore,
-  verifyChain,
+  StorageError,
   type ChainFailure
 } from "@npc/osp-core";
 
@@ -44,8 +44,10 @@ function isExistingDirectory(resolvedDir: string): boolean {
 }
 
 /**
- * Open a soulchain directory and verify the full chain.
- * Returns exit code 0 when valid, 1 when verification fails, 2 on I/O or corruption.
+ * Open a soulchain directory read-only and report its verification result.
+ * Returns exit code 0 when valid, 1 when verification fails, 2 on I/O or missing layout.
+ *
+ * Does not create `blobs/` or `chain.jsonl`. Torn tails surface as verification failures.
  */
 export async function runVerify(options: VerifyOptions): Promise<number> {
   const resolvedDir = path.resolve(options.dir);
@@ -63,8 +65,12 @@ export async function runVerify(options: VerifyOptions): Promise<number> {
   try {
     const openOptions =
       doorPublicKeys === undefined ? undefined : { doorPublicKeys: doorPublicKeys };
-    store = await FileSoulStore.open(options.dir, openOptions);
+    store = await FileSoulStore.openReadOnly(options.dir, openOptions);
   } catch (error) {
+    if (error instanceof StorageError) {
+      writeStderr(error.message);
+      return EXIT_USAGE;
+    }
     if (error instanceof CorruptionError) {
       if (error.failures !== undefined && error.failures.length > 0) {
         printFailures(error.failures);
@@ -80,9 +86,7 @@ export async function runVerify(options: VerifyOptions): Promise<number> {
   }
 
   try {
-    const verifyOptions =
-      doorPublicKeys === undefined ? undefined : { doorPublicKeys: doorPublicKeys };
-    const result = await verifyChain(store, verifyOptions);
+    const result = store.verification();
 
     if (result.valid) {
       return 0;

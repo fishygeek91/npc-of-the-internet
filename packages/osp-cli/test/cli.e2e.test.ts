@@ -187,6 +187,84 @@ describe("osp CLI e2e", () => {
     }
   });
 
+  it("refuses init when soul.key already exists and leaves key bytes unchanged", async () => {
+    const soulDir = await mkdtemp(path.join(tmpdir(), "osp-cli-init-key-"));
+    const soulKeyPath = path.join(soulDir, "soul.key");
+    const sentinel = Buffer.from("sentinel-soul-key-bytes-do-not-clobber", "utf8");
+
+    try {
+      await writeFile(soulKeyPath, sentinel, { mode: 0o600 });
+      const beforeBytes = await readFile(soulKeyPath);
+
+      const result = runCliAllowFail(["init", soulDir, "--charter", charterPath], repoRoot);
+      expect(result.status).toBe(2);
+      expect(result.stderr).toMatch(/soul\.key already exists/);
+
+      const afterBytes = await readFile(soulKeyPath);
+      expect(afterBytes.equals(beforeBytes)).toBe(true);
+    } finally {
+      await rm(soulDir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses init when chain.jsonl exists without soul.key", async () => {
+    const soulDir = await mkdtemp(path.join(tmpdir(), "osp-cli-init-chain-"));
+    const chainPath = path.join(soulDir, "chain.jsonl");
+    const sentinel = Buffer.from('{"seq":0,"note":"preexisting-chain"}\n', "utf8");
+
+    try {
+      await writeFile(chainPath, sentinel);
+      const beforeBytes = await readFile(chainPath);
+
+      const result = runCliAllowFail(["init", soulDir, "--charter", charterPath], repoRoot);
+      expect(result.status).toBe(2);
+      expect(result.stderr).toMatch(/chain\.jsonl already exists/);
+
+      const afterBytes = await readFile(chainPath);
+      expect(afterBytes.equals(beforeBytes)).toBe(true);
+      expect(existsSync(path.join(soulDir, "soul.key"))).toBe(false);
+    } finally {
+      await rm(soulDir, { recursive: true, force: true });
+    }
+  });
+
+  it("verify on empty directory exits 2 and does not create chain layout", async () => {
+    const emptyDir = await mkdtemp(path.join(tmpdir(), "osp-cli-verify-empty-"));
+
+    try {
+      const result = runCliAllowFail(["verify", emptyDir], repoRoot);
+      expect(result.status).toBe(2);
+      expect(result.stderr).toMatch(/chain file does not exist|blobs directory does not exist/);
+      expect(existsSync(path.join(emptyDir, "chain.jsonl"))).toBe(false);
+      expect(existsSync(path.join(emptyDir, "blobs"))).toBe(false);
+    } finally {
+      await rm(emptyDir, { recursive: true, force: true });
+    }
+  });
+
+  it("verify reports torn trailing line as exit 1 without mutating chain", async () => {
+    const soulDir = await mkdtemp(path.join(tmpdir(), "osp-cli-verify-torn-"));
+
+    try {
+      const init = runCli(["init", soulDir, "--charter", charterPath], repoRoot);
+      expect(init.status).toBe(0);
+
+      const chainPath = path.join(soulDir, "chain.jsonl");
+      const chainBytesBefore = await readFile(chainPath);
+      const partialSuffix = Buffer.from('{"seq":99,"partial":true');
+      await writeFile(chainPath, Buffer.concat([chainBytesBefore, partialSuffix]));
+
+      const result = runCliAllowFail(["verify", soulDir], repoRoot);
+      expect(result.status).toBe(1);
+      expect(result.stdout).toMatch(/truncated trailing line/);
+
+      const chainBytesAfter = await readFile(chainPath);
+      expect(chainBytesAfter.equals(Buffer.concat([chainBytesBefore, partialSuffix]))).toBe(true);
+    } finally {
+      await rm(soulDir, { recursive: true, force: true });
+    }
+  });
+
   it("verify accepts --door-key for cosigned shards and rejects wrong keys", async () => {
     const soulDir = await mkdtemp(path.join(tmpdir(), "osp-cli-door-key-"));
     const door = generateKeypair();
