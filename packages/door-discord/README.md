@@ -7,7 +7,7 @@ Discord Door adapter: one guild channel becomes a Door. Wraps `@npc/door-sdk` `D
 - **`startDiscordDoor(options)`** — boot Door HTTP/WS servers (optional), Discord gateway, review gate, and channel relay
 - **`loadDiscordDoorConfig(env)`** — Zod-validated env config (inject `env` in tests)
 - **`DiscordGateway`** — thin seam over discord.js (`DiscordJsGateway` in prod; `FakeGateway` in tests)
-- **`ReviewGate` / `ReviewGatedDoor`** — async host approval before sync `decideShard` (timeout → **rejected**)
+- **`ReviewGate` / `ReviewGatedDoor`** — async host approval before sync `decideShard` (timeout → **rejected**); `ReviewGatedDoor` verifies session binding + cosign signature **before** posting shards to Discord
 
 ## Config (env)
 
