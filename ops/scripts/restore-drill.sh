@@ -90,7 +90,8 @@ FIXTURE_META="${FIXTURE_DIR}/fixture-meta.json"
 VERIFY_ARGS=()
 while IFS= read -r key; do
   [[ -n "$key" ]] || continue
-  VERIFY_ARGS+=(--door-key "$key")
+  # Equals form required: base64url keys may start with '-' and confuse parseArgs.
+  VERIFY_ARGS+=(--door-key="$key")
 done < <(
   node --input-type=module -e "
 import { readFileSync } from \"node:fs\";
