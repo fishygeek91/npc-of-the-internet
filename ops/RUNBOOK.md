@@ -434,4 +434,4 @@ docker compose --env-file ops/.env -f ops/compose.ghost.yml run --rm --no-deps \
 docker compose --env-file ops/.env -f ops/compose.ghost.yml up -d
 ```
 
-**Operational note:** truncating a torn tail discards the incomplete record. That is correct crash-only semantics — the partial append never committed. After recovery, check backup remote freshness; if the remote tip still holds the torn line, restore from `history/<UTC>/chain.jsonl` or re-upload with `ALLOW_CHAIN_SHRINK=1` only after confirming the smaller local chain is correct (backup uploads blobs-first, so a torn local tail may not yet have been uploaded).
+**Operational note:** truncating a torn tail discards the incomplete record. That is correct crash-only semantics — the partial append never committed. After recovery, check backup remote freshness; if the remote tip still holds the torn line, restore from `history/<UTC>-<pid>/chain.jsonl` or re-upload with `ALLOW_CHAIN_SHRINK=1` only after confirming the smaller local chain is correct (backup uploads blobs-first, so a torn local tail may not yet have been uploaded).
