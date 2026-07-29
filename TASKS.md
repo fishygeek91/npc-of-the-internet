@@ -170,7 +170,7 @@ Each task lists **Deps**, **Deliverables**, and **Acceptance** (how a reviewer v
 - Deps: T6.1, Bug #63
 - Deliverables: Bind atlas-api `ports:` to `127.0.0.1:8787:8787` in `ops/compose.ghost.yml` with ufw-bypass comment; remove RUNBOOK.ghost §6 override heredoc + drop override from §7/`ghostc`; align LAUNCH.md + RUNBOOK.md; CI assert rendered config contains `127.0.0.1:8787`.
 - Acceptance: `docker compose -f ops/compose.ghost.yml config` shows `127.0.0.1` binding with no override file; docs consistent; `pnpm check` green. Ops-only (`no-changeset`).
-- Notes: Agent: Cursor Grok 4.5 Maestro, 2026-07-29. Base compose binds `127.0.0.1:8787:8787`; override heredoc deleted as redundant. CI `compose-config` asserts long-form `host_ip: 127.0.0.1` + `published: "8787"`.
+- Notes: Agent: Cursor Grok 4.5 Maestro, 2026-07-29. Base compose binds `127.0.0.1:8787:8787`; override heredoc deleted as redundant. CI `compose-config` asserts every rendered `ports[].host_ip` is `127.0.0.1` and atlas-api publishes `8787` (review follow-up).
 
 ## Phase 7 — Post-Ghost (v0.2/0.3 — spec first, then build)
 
