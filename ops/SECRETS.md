@@ -41,4 +41,6 @@ Environment variable names and purposes only. **Never commit values.**
 | `BACKUP_RCLONE_REMOTE` | rclone remote path for soulchain backup (e.g. `ghost-remote:npc/soulchain`). Required for backup sidecar. |
 | `BACKUP_DEBOUNCE_SEC` | Seconds to wait after a change before syncing (default `5`). |
 | `BACKUP_INTERVAL_SEC` | Periodic safety sync interval in seconds (default `300`). |
+| `ALLOW_CHAIN_SHRINK` | Ops override: set to `1` only intentionally to allow uploading a smaller `chain.jsonl` than the remote tip. Default unset (refuse size regression). |
+| `BACKUP_OK_PATH` | Filesystem path touched after a successful backup cycle (default `/tmp/backup.ok`). Healthcheck consumer: issue #72. |
 | `RCLONE_CONFIG` | In-container path to rclone config file (compose sets `/config/rclone/rclone.conf`). |

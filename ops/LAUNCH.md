@@ -51,7 +51,7 @@ Internally the script runs: `osp init` → `launch-first-residency.mjs` → `osp
 | Discord | None | Real bot + guild/channel ([`MANUAL_TEST.md`](../packages/door-discord/MANUAL_TEST.md)) |
 | Docker Compose | Not started (compose config still validated in CI by T6.1) | `docker compose … up` per [RUNBOOK §1](RUNBOOK.md#1-start) |
 | Atlas | Loopback `atlas-api` + `/state` | Host `:8787` + optional GitHub Pages site (Gate 2) |
-| Backup | Local rclone remote; syncs `chain.jsonl` + `blobs/` only (excludes `soul.key` / door keys, matching the sidecar) | Production sidecar: blobs-first then `chain.jsonl` to `BACKUP_RCLONE_REMOTE` — never keys |
+| Backup | Local rclone remote; `rclone copy` blobs + `copyto` chain (excludes `soul.key` / door keys, matching the sidecar) | Production sidecar: blobs-first `copy`, then `chain.jsonl` with `history/` tip archival to `BACKUP_RCLONE_REMOTE` — never keys |
 | Soul key | Scratch from `osp init` (destroyed after); never included in dry-run backup remote | Custodied at `SOUL_KEY_HOST_PATH`; key backup separate from chain backup |
 
 ---
@@ -311,13 +311,13 @@ Note the `cid` field as **Head CID**. Genesis CID came from section 2 init stdou
 
 Delegate to [RUNBOOK §5](RUNBOOK.md#5-restore-from-backup).
 
-1. **Sidecar activity** — after chain appends from residency, confirm backup logs show blobs-first sync ([§3.5](RUNBOOK.md#35-backup-activity)):
+1. **Sidecar activity** — after chain appends from residency, confirm backup logs show blobs-first upload ([§3.5](RUNBOOK.md#35-backup-activity)):
 
    ```bash
    docker compose --env-file ops/.env -f ops/compose.ghost.yml logs backup 2>&1 | tail -30
    ```
 
-   Expect `Syncing blobs/`, then `Syncing chain.jsonl`, then `Sync complete`.
+   Expect `Copying blobs/`, then `Copying chain.jsonl` (with `backup-dir history/…`), then `Sync complete (marker`. Confirm remote layout includes `blobs/`, live `chain.jsonl`, and `history/<UTC>-<pid>/` archives ([RUNBOOK.ghost §7c](RUNBOOK.ghost.md#7c-verify-backups-actually-run)).
 
 2. **Offline drill** (toolchain sanity):
 

@@ -160,6 +160,12 @@ Each task lists **Deps**, **Deliverables**, and **Acceptance** (how a reviewer v
 - Acceptance: All three Ghost app images start without exit-127; smoke script green in CI; `pnpm check` green; RUNBOOK/MANUAL_TEST describe the node CMDs.
 - Notes: Agent: Cursor Grok 4.5 Maestro, 2026-07-29. Mirrored runtime own-bin workaround; smoke fails only on exit 127 / known bin-miss strings. Also narrowed `Dockerfile.door-discord` build to prod filters (`osp-core`/`door-sdk`/`door-discord`) so `...` does not pull `@npc/runtime`→`@npc/immune` devDeps without COPY. Ops-only (no changeset). Gate-2 still needs #63/#64.
 
+### Bug #63 ✅ Ops: backup sidecar anti-clobber (Cursor Grok 4.5 Maestro, 2026-07-29)
+- Deps: T6.1, Bug #84
+- Deliverables: Harden `ops/scripts/backup-watch.sh` — `rclone copy` for blobs (never sync/delete), chain size-regression guard + `ALLOW_CHAIN_SHRINK=1` override, `--backup-dir` history for `chain.jsonl`, `/tmp/backup.ok` on success, `BACKUP_ONCE=1` for drills; extend `restore-drill.sh` anti-clobber assertions; align `launch-dry-run.sh`; update RUNBOOK.md / RUNBOOK.ghost.md / LAUNCH.md / SECRETS.md / `.env.example`.
+- Acceptance: Drill proves truncated local chain cannot clobber remote; local blob deletion never deletes remotely; docs updated; `pnpm check` green. Ops-only (`no-changeset`).
+- Notes: Agent: Cursor Grok 4.5 Maestro, 2026-07-29. Chose `--backup-dir history/<UTC>/` over B2 versioning (CI-testable, provider-agnostic). Compose healthcheck age-of-`backup.ok` still deferred to #72. Gate-2 still needs #64.
+
 ## Phase 7 — Post-Ghost (v0.2/0.3 — spec first, then build)
 
 These are sequenced but intentionally coarser; split them into T-numbered subtasks (same format) when their phase begins.

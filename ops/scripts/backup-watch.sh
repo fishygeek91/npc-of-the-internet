@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 # Append-triggered soulchain backup via rclone.
-# Watches BACKUP_SOURCE_DIR and debounces sync to BACKUP_RCLONE_REMOTE.
+# Watches BACKUP_SOURCE_DIR and debounces uploads to BACKUP_RCLONE_REMOTE.
+#
+# Durability contract (Bug #63):
+#   - blobs/ are content-addressed and immutable → rclone copy (never sync/delete).
+#   - chain.jsonl is append-only → refuse size regression unless ALLOW_CHAIN_SHRINK=1;
+#     overwritten tips are preserved under remote/history/<UTC>-<pid>/ via --backup-dir.
+#   - A successful sync touches BACKUP_OK_PATH (healthcheck consumer: issue #72).
 set -euo pipefail
 
 # Primary env (T6.1 spec); aliases match ops/compose.ghost.yml from Workstream A
@@ -9,6 +15,9 @@ BACKUP_RCLONE_REMOTE="${BACKUP_RCLONE_REMOTE:-${BACKUP_REMOTE:-}}"
 BACKUP_DEBOUNCE_SEC="${BACKUP_DEBOUNCE_SEC:-5}"
 BACKUP_INTERVAL_SEC="${BACKUP_INTERVAL_SEC:-300}"
 RCLONE_CONFIG="${RCLONE_CONFIG:-${BACKUP_RCLONE_CONFIG:-}}"
+ALLOW_CHAIN_SHRINK="${ALLOW_CHAIN_SHRINK:-}"
+BACKUP_OK_PATH="${BACKUP_OK_PATH:-/tmp/backup.ok}"
+BACKUP_ONCE="${BACKUP_ONCE:-}"
 
 if [[ -z "$BACKUP_RCLONE_REMOTE" ]]; then
   echo "[backup-watch] ERROR: BACKUP_RCLONE_REMOTE is required (e.g. ghostbackup:soulchain)" >&2
@@ -29,10 +38,62 @@ log() {
   echo "[backup-watch] $(date -u +"%Y-%m-%dT%H:%M:%SZ") $*"
 }
 
+stat_size() {
+  local path="$1"
+  if stat -c%s "$path" >/dev/null 2>&1; then
+    stat -c%s "$path"
+  else
+    stat -f%z "$path"
+  fi
+}
+
+stat_mtime() {
+  local path="$1"
+  if stat -c%Y "$path" >/dev/null 2>&1; then
+    stat -c%Y "$path"
+  else
+    stat -f%m "$path"
+  fi
+}
+
+# Bytes of remote chain.jsonl, or 0 if the object is absent.
+# Returns 1 (no stdout size) on unknown rclone errors so callers refuse upload
+# rather than treating a transient failure as "remote size 0" and bypassing the
+# shrink guard. rclone exit 3/4 = not found → size 0.
+remote_chain_size() {
+  local remote_chain="$1"
+  local json rc=0
+  json="$(rclone lsjson "$remote_chain" "${RCLONE_ARGS[@]}" 2>/dev/null)" || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    # rclone: 3 = directory not found, 4 = file not found
+    if [[ "$rc" -eq 3 || "$rc" -eq 4 ]]; then
+      echo "0"
+      return 0
+    fi
+    echo "[backup-watch] ERROR: rclone lsjson failed for ${remote_chain} (exit ${rc}); refusing to guess remote size" >&2
+    return 1
+  fi
+  if [[ -z "$json" || "$json" == "[]" ]]; then
+    echo "0"
+    return 0
+  fi
+  # Prefer Size from the first JSON object; refuse on unparseable payload.
+  local size
+  size="$(printf "%s" "$json" | sed -n 's/.*"Size"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' | head -n 1)"
+  if [[ -z "$size" ]]; then
+    echo "[backup-watch] ERROR: could not parse Size from rclone lsjson for ${remote_chain}" >&2
+    return 1
+  fi
+  echo "$size"
+}
+
+# Upload soulchain to remote. Returns 0 on success or benign skip; 1 on shrink refuse / rclone failure.
 sync_backup() {
   local blobs_src="${BACKUP_SOURCE_DIR}/blobs"
   local chain_src="${BACKUP_SOURCE_DIR}/chain.jsonl"
   local remote="${BACKUP_RCLONE_REMOTE}"
+  local remote_chain="${remote}/chain.jsonl"
+  local local_size remote_size history_ts
 
   if [[ ! -d "$blobs_src" ]]; then
     log "WARN: blobs directory missing: $blobs_src"
@@ -43,13 +104,35 @@ sync_backup() {
     return 0
   fi
 
-  log "Syncing blobs/ → ${remote}/blobs/"
-  rclone sync "$blobs_src" "${remote}/blobs" "${RCLONE_ARGS[@]}"
+  # Blobs are immutable CIDs — copy only; never delete remote orphans.
+  log "Copying blobs/ → ${remote}/blobs/ (append-only; never deletes remote)"
+  rclone copy "$blobs_src" "${remote}/blobs" "${RCLONE_ARGS[@]}"
 
-  log "Syncing chain.jsonl → ${remote}/chain.jsonl (copyto for last-write consistency)"
-  rclone copyto "$chain_src" "${remote}/chain.jsonl" "${RCLONE_ARGS[@]}"
+  local_size="$(stat_size "$chain_src")"
+  if ! remote_size="$(remote_chain_size "$remote_chain")"; then
+    log "ERROR: could not determine remote chain.jsonl size; refusing upload (shrink guard cannot run safely)"
+    return 1
+  fi
 
-  log "Sync complete"
+  if (( local_size < remote_size )); then
+    if [[ "$ALLOW_CHAIN_SHRINK" != "1" ]]; then
+      log "ERROR: refusing to upload smaller chain.jsonl (local=${local_size} remote=${remote_size}); set ALLOW_CHAIN_SHRINK=1 to override"
+      return 1
+    fi
+    log "WARN: ALLOW_CHAIN_SHRINK=1 — uploading smaller chain.jsonl (local=${local_size} remote=${remote_size}); previous tip moves to history/"
+  fi
+
+  # Preserve the prior tip under history/<UTC>-<pid>/ before overwriting the live tip.
+  # Prefer BASHPID so debounce/periodic subshells get distinct suffixes within one second;
+  # fall back to $$ for non-bash shells (cross-process uniqueness still holds).
+  history_ts="$(date -u +"%Y%m%dT%H%M%SZ")-${BASHPID:-$$}"
+  log "Copying chain.jsonl → ${remote_chain} (backup-dir history/${history_ts})"
+  rclone copyto "$chain_src" "$remote_chain" \
+    --backup-dir "${remote}/history/${history_ts}" \
+    "${RCLONE_ARGS[@]}"
+
+  touch "$BACKUP_OK_PATH"
+  log "Sync complete (marker ${BACKUP_OK_PATH})"
 }
 
 DEBOUNCE_PID=""
@@ -85,41 +168,6 @@ cleanup() {
 }
 trap cleanup EXIT
 
-(
-  while true; do
-    sleep "$BACKUP_INTERVAL_SEC"
-    log "Periodic safety sync (every ${BACKUP_INTERVAL_SEC}s)"
-    sync_backup || log "WARN: periodic sync failed"
-  done
-) &
-PERIODIC_PID=$!
-
-log "Starting backup watch"
-log "  source:   $BACKUP_SOURCE_DIR"
-log "  remote:   $BACKUP_RCLONE_REMOTE"
-log "  debounce: ${BACKUP_DEBOUNCE_SEC}s"
-log "  interval: ${BACKUP_INTERVAL_SEC}s"
-
-sync_backup
-
-stat_mtime() {
-  local path="$1"
-  if stat -c%Y "$path" >/dev/null 2>&1; then
-    stat -c%Y "$path"
-  else
-    stat -f%m "$path"
-  fi
-}
-
-stat_size() {
-  local path="$1"
-  if stat -c%s "$path" >/dev/null 2>&1; then
-    stat -c%s "$path"
-  else
-    stat -f%z "$path"
-  fi
-}
-
 blob_signature() {
   local blobs_dir="${BACKUP_SOURCE_DIR}/blobs"
   if [[ ! -d "$blobs_dir" ]]; then
@@ -132,6 +180,31 @@ blob_signature() {
           find "$blobs_dir" -type f -exec stat -f%z {} + 2>/dev/null | awk '{s+=$1} END {print s+0}')"
   echo "${count}:${size}"
 }
+
+log "Starting backup watch"
+log "  source:   $BACKUP_SOURCE_DIR"
+log "  remote:   $BACKUP_RCLONE_REMOTE"
+log "  debounce: ${BACKUP_DEBOUNCE_SEC}s"
+log "  interval: ${BACKUP_INTERVAL_SEC}s"
+log "  ok path:  $BACKUP_OK_PATH"
+if [[ "$BACKUP_ONCE" == "1" ]]; then
+  log "  mode:     once (BACKUP_ONCE=1)"
+  if sync_backup; then
+    exit 0
+  fi
+  exit 1
+fi
+
+(
+  while true; do
+    sleep "$BACKUP_INTERVAL_SEC"
+    log "Periodic safety sync (every ${BACKUP_INTERVAL_SEC}s)"
+    sync_backup || log "WARN: periodic sync failed"
+  done
+) &
+PERIODIC_PID=$!
+
+sync_backup || log "WARN: initial sync failed"
 
 if command -v inotifywait >/dev/null 2>&1; then
   log "Using inotifywait for change detection"
