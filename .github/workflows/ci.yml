@@ -25,7 +25,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Validate Ghost compose file
-        run: docker compose --env-file ops/.env.example -f ops/compose.ghost.yml config
+        run: |
+          # #64: every published port must bind 127.0.0.1 (Docker bypasses ufw).
+          docker compose --env-file ops/.env.example -f ops/compose.ghost.yml config --format json \
+            | python3 -c '
+          import json, sys
+          cfg = json.load(sys.stdin)
+          ports = [
+              (name, p)
+              for name, svc in cfg.get("services", {}).items()
+              for p in (svc.get("ports") or [])
+          ]
+          if not ports:
+              raise SystemExit("expected at least one published port (atlas-api)")
+          bad = [(n, p) for n, p in ports if p.get("host_ip") != "127.0.0.1"]
+          if bad:
+              raise SystemExit(f"published ports must bind 127.0.0.1: {bad}")
+          atlas = [p for n, p in ports if n == "atlas-api"]
+          if not any(str(p.get("published")) == "8787" for p in atlas):
+              raise SystemExit("atlas-api must publish 8787 on 127.0.0.1")
+          print("compose-config: localhost bind OK", ports)
+          '
 
   image-cmd-smoke:
     runs-on: ubuntu-latest

@@ -70,8 +70,9 @@ services:
       dockerfile: ops/Dockerfile.atlas-api
     image: ghcr.io/fishygeek91/npc-atlas-api:${NPC_IMAGE_TAG:-latest}
     restart: unless-stopped
+    # Docker published ports bypass ufw — always bind 127.0.0.1 unless Gate-2-approved.
     ports:
-      - "8787:8787"
+      - "127.0.0.1:8787:8787"
     environment:
       ATLAS_CHAIN_DIR: /data/soulchain
       ATLAS_PORT: "8787"
