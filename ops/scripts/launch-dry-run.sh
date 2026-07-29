@@ -168,13 +168,13 @@ EOF
 
 # Match production backup shape: chain.jsonl + blobs/ only — never private keys
 # (see ops/RUNBOOK.md backup sidecar and LAUNCH.md custody rules).
-log "rclone sync: chain → remote (chain.jsonl + blobs only)"
-rclone sync "$CHAIN_DIR" "drilllocal:${REMOTE_DIR}" --config "$RCLONE_CONF" \
-  --exclude "soul.key" \
-  --exclude "door.key" \
-  --exclude "door.pubkey" \
-  --exclude "dry-run-meta.json" \
-  -v
+log "backup-watch: chain → remote (chain.jsonl + blobs only)"
+BACKUP_SOURCE_DIR="$CHAIN_DIR" \
+  BACKUP_RCLONE_REMOTE="drilllocal:${REMOTE_DIR}" \
+  RCLONE_CONFIG="$RCLONE_CONF" \
+  BACKUP_ONCE=1 \
+  BACKUP_OK_PATH="${DRILL_TMP}/backup.ok" \
+  bash "${REPO_ROOT}/ops/scripts/backup-watch.sh"
 
 log "Destroying local chain copy"
 rm -rf "$CHAIN_DIR"

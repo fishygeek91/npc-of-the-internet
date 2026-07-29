@@ -11,18 +11,31 @@ Four services share one named Docker volume (`soulchain`):
 | **runtime** | `ghcr.io/fishygeek91/npc-runtime` | Residency daemon (`npc-runtime`): soulchain writer, Door HTTP/WS client, live Session loop | read-write |
 | **door-discord** | `ghcr.io/fishygeek91/npc-door-discord` | Discord Door relay; HTTP REST and WebSocket coalesced on port **9090** | none |
 | **atlas-api** | `ghcr.io/fishygeek91/npc-atlas-api` | Read-only Atlas API on host port **8787** | read-only |
-| **backup** | `ghcr.io/fishygeek91/npc-backup` | Append-triggered `rclone` sync to remote storage | read-only |
+| **backup** | `ghcr.io/fishygeek91/npc-backup` | Append-triggered `rclone` backup to remote storage | read-only |
 
 Host-mounted secrets (paths configured in `ops/.env`): soul private key, door private key, and `rclone.conf`. Only **runtime** writes to the soulchain volume. **atlas-api** and **backup** mount it read-only.
 
 ### Backup semantics
 
-The backup sidecar (`ops/scripts/backup-watch.sh`) syncs in this order on each run:
+The backup sidecar (`ops/scripts/backup-watch.sh`) uploads in this order on each run:
 
-1. `blobs/` → remote `blobs/` (`rclone sync`)
-2. `chain.jsonl` → remote `chain.jsonl` (`rclone copyto`)
+1. `blobs/` → remote `blobs/` (`rclone copy` — **never** `rclone sync` on upload; remote blobs are never deleted)
+2. **Size-regression guard:** if local `chain.jsonl` bytes < remote tip size, refuse with ERROR unless `ALLOW_CHAIN_SHRINK=1`
+3. `chain.jsonl` → remote `chain.jsonl` (`rclone copyto` with `--backup-dir ${remote}/history/<YYYYMMDDTHHMMSSZ>` so prior tips are preserved)
+4. Touches `BACKUP_OK_PATH` (default `/tmp/backup.ok`) only after full success
 
-Blobs are uploaded before the chain file so a restore never references blob CIDs that have not yet reached the remote. After any restore, always run `osp verify` before starting the stack. If a crash left a torn trailing line or a stale `.append.lock`, recover with `FileSoulStore.openWithRecovery` (see [Crash recovery](#6-crash-recovery)) before verifying.
+Set `BACKUP_ONCE=1` to run one upload cycle and exit (used by restore drills).
+
+Remote layout:
+
+```
+${BACKUP_RCLONE_REMOTE}/
+  blobs/
+  chain.jsonl
+  history/<UTC>/chain.jsonl
+```
+
+Blobs are uploaded before the chain file so a restore never references blob CIDs that have not yet reached the remote. The `history/` tree is the anti-clobber guarantee — B2 bucket versioning is **not** required. After any restore, always run `osp verify` before starting the stack. If a crash left a torn trailing line or a stale `.append.lock`, recover with `FileSoulStore.openWithRecovery` (see [Crash recovery](#6-crash-recovery)) before verifying.
 
 ---
 
@@ -83,7 +96,7 @@ docker compose --env-file ops/.env -f ops/compose.ghost.yml up -d --build
 - **runtime** runs `node dist/daemon.js` (image `CMD`; `pnpm deploy` does not emit an `npc-runtime` bin shim). It opens the soulchain, connects to door-discord on the compose network (`DOOR_HTTP_HOST` / `DOOR_HTTP_PORT`), arrives at the Door, and binds the session WebSocket. Logs `residency_live` after the first successful bind. Requires a valid soulchain (genesis or restored) and matching `SOUL_PUBLIC_KEY` / `ATLAS_DOOR_PUBKEYS` / `CURRENT_DOOR_ID`.
 - **door-discord** runs `node dist/server.js` (image `CMD`; `pnpm deploy` does not emit a `door-discord` bin shim). It requires a real `DISCORD_BOT_TOKEN` and valid guild/channel IDs to stay healthy. Without them the container will crash-loop.
 - **atlas-api** runs `node dist/server.js` (image `CMD`; same `pnpm deploy` own-bin trap). It serves on `http://127.0.0.1:8787` once the soulchain volume contains a valid chain (empty volume returns errors until genesis).
-- **backup** watches the soulchain volume and syncs to `BACKUP_RCLONE_REMOTE` when changes are detected.
+- **backup** watches the soulchain volume and backs up to `BACKUP_RCLONE_REMOTE` when changes are detected.
 
 **Image entrypoint smoke (no Discord / incomplete env):** after `docker compose … build`, one-shot runs with placeholder env confirm each image `CMD` is `node dist/…`, not a missing bin shim:
 
@@ -188,7 +201,7 @@ You should see `door_http_listening` and `door_ws_listening` both reporting port
 docker compose --env-file ops/.env -f ops/compose.ghost.yml logs backup 2>&1 | tail -20
 ```
 
-Look for `Syncing blobs/` followed by `Syncing chain.jsonl` and `Sync complete`.
+Look for `Copying blobs/` followed by `Copying chain.jsonl` and `Sync complete (marker`.
 
 ---
 
@@ -294,7 +307,7 @@ curl -sS http://127.0.0.1:8787/state
 
 ### 5.1 Offline restore drill (development / CI)
 
-The repository ships a self-contained drill that needs no network. It seeds a fixture chain, simulates backup upload and restore via a local rclone remote, and runs `osp verify`:
+The repository ships a self-contained drill that needs no network. It seeds a fixture chain, simulates backup upload and restore via a local rclone remote, runs `osp verify`, and exercises **anti-clobber** semantics (size-regression refuse, blob immutability, `history/` tip archival):
 
 ```bash
 bash ops/scripts/restore-drill.sh
@@ -325,7 +338,21 @@ rclone copyto "${BACKUP_RCLONE_REMOTE}/chain.jsonl" "${RESTORE_DIR}/chain.jsonl"
   --config /tmp/npc-ghost/rclone/rclone.conf
 ```
 
-Replace `/tmp/npc-ghost/rclone/rclone.conf` with your `RCLONE_CONFIG_HOST_PATH` if different. Substitute the remote name from `BACKUP_RCLONE_REMOTE` (for example `ghost-remote:npc/soulchain`).
+Replace `/tmp/npc-ghost/rclone/rclone.conf` with your `RCLONE_CONFIG_HOST_PATH` if different. Substitute the remote name from `BACKUP_RCLONE_REMOTE` (for example `ghost-remote:npc/soulchain`). Pull direction may use `rclone sync` for blobs and `rclone copyto` for the chain tip — that is safe because restore is remote→local only.
+
+**If the live tip is bad** but an older snapshot exists under `history/`, list archived tips and restore from one:
+
+```bash
+rclone ls "${BACKUP_RCLONE_REMOTE}/history" --config /tmp/npc-ghost/rclone/rclone.conf
+
+# Pick a UTC folder from the listing, then:
+HISTORY_TS="20250729T153045Z"
+rclone copyto "${BACKUP_RCLONE_REMOTE}/history/${HISTORY_TS}/chain.jsonl" \
+  "${RESTORE_DIR}/chain.jsonl" \
+  --config /tmp/npc-ghost/rclone/rclone.conf
+```
+
+Still pull `blobs/` from the live remote (content-addressed; unchanged across tip overwrites).
 
 **Verify before writing to the volume:**
 
@@ -407,4 +434,4 @@ docker compose --env-file ops/.env -f ops/compose.ghost.yml run --rm --no-deps \
 docker compose --env-file ops/.env -f ops/compose.ghost.yml up -d
 ```
 
-**Operational note:** truncating a torn tail discards the incomplete record. That is correct crash-only semantics — the partial append never committed. After recovery, check backup remote freshness and consider a manual `rclone sync` if the remote may still hold the torn line (backup runs blobs-first, so a torn local tail may not yet have been uploaded).
+**Operational note:** truncating a torn tail discards the incomplete record. That is correct crash-only semantics — the partial append never committed. After recovery, check backup remote freshness; if the remote tip still holds the torn line, restore from `history/<UTC>/chain.jsonl` or re-upload with `ALLOW_CHAIN_SHRINK=1` only after confirming the smaller local chain is correct (backup uploads blobs-first, so a torn local tail may not yet have been uploaded).
