@@ -123,8 +123,9 @@ sync_backup() {
   fi
 
   # Preserve the prior tip under history/<UTC>-<pid>/ before overwriting the live tip.
-  # Pid suffix avoids same-second collisions when two overwrites share a UTC second.
-  history_ts="$(date -u +"%Y%m%dT%H%M%SZ")-$$"
+  # Prefer BASHPID so debounce/periodic subshells get distinct suffixes within one second;
+  # fall back to $$ for non-bash shells (cross-process uniqueness still holds).
+  history_ts="$(date -u +"%Y%m%dT%H%M%SZ")-${BASHPID:-$$}"
   log "Copying chain.jsonl → ${remote_chain} (backup-dir history/${history_ts})"
   rclone copyto "$chain_src" "$remote_chain" \
     --backup-dir "${remote}/history/${history_ts}" \
