@@ -57,6 +57,17 @@ touch /tmp/npc-ghost/rclone/rclone.conf
 chmod 600 /tmp/npc-ghost/rclone/rclone.conf
 ```
 
+On Linux (CI, VPS), bind mounts preserve host ownership — containers run as
+`npc` (uid/gid **10001**) and must be able to read these paths:
+
+```bash
+sudo chown -R 10001:10001 /tmp/npc-ghost/keys /tmp/npc-ghost/rclone
+chmod 700 /tmp/npc-ghost/keys /tmp/npc-ghost/rclone
+```
+
+Docker Desktop on macOS remaps ownership and often works without this step;
+on Linux it is required.
+
 Set `SOUL_PUBLIC_KEY` in `ops/.env` to the base64url public key that matches `soul.key`. Set `ATLAS_DOOR_PUBKEYS` to the base64url public key that matches `door.key` (comma-separated if multiple doors).
 
 Configure `BACKUP_RCLONE_REMOTE` to point at the remote defined in `rclone.conf` (for example `ghost-remote:npc/soulchain`).
@@ -95,8 +106,12 @@ Exit code `0` means the volume is writable. If this fails with `Permission denie
 ```bash
 docker compose --env-file ops/.env -f ops/compose.ghost.yml run --rm --no-deps --user root \
   --entrypoint sh \
-  runtime -c "chown -R npc:npc /data/soulchain"
+  runtime -c "chown -R 10001:10001 /data/soulchain"
 ```
+
+Images that predate the uid **10001** pin may leave an existing named volume
+owned by the old system uid (~999) instead of `root:root`. The same one-shot
+`chown` fixes that; fresh Gate-2 installs never hit this.
 
 ---
 

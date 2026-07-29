@@ -94,7 +94,8 @@ log "First residency complete (door key ${DOOR_PUBLIC_KEY:0:13}…)"
 log "osp verify on live chain"
 (
   cd "$REPO_ROOT"
-  node "$OSP_BIN" verify "$CHAIN_DIR" --door-key "$DOOR_PUBLIC_KEY"
+  # Equals form required: base64url keys may start with '-' and confuse argv parsers.
+  node "$OSP_BIN" verify "$CHAIN_DIR" --door-key="$DOOR_PUBLIC_KEY"
 )
 
 # 4. Atlas API smoke against live chain
@@ -190,7 +191,7 @@ rclone sync "drilllocal:${REMOTE_DIR}" "$RESTORED_DIR" --config "$RCLONE_CONF" -
 log "osp verify on restored chain"
 (
   cd "$REPO_ROOT"
-  node "$OSP_BIN" verify "$RESTORED_DIR" --door-key "$DOOR_PUBLIC_KEY"
+  node "$OSP_BIN" verify "$RESTORED_DIR" --door-key="$DOOR_PUBLIC_KEY"
 )
 
 printf 'Genesis CID: %s\n' "$GENESIS_CID"

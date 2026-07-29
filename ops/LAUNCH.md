@@ -84,11 +84,19 @@ Complete these before any production ceremony step.
    ```bash
    # Production example — replace with your persistent host paths
    sudo mkdir -p /var/lib/npc-ghost/keys /var/lib/npc-ghost/rclone
-   sudo chown "$(whoami):$(whoami)" /var/lib/npc-ghost /var/lib/npc-ghost/keys /var/lib/npc-ghost/rclone
+   # Parent + trees start as the operator so you can create/copy files,
+   # then hand keys/ and rclone/ to the container user (npc = 10001:10001).
+   sudo chown -R "$(whoami):$(whoami)" /var/lib/npc-ghost
    touch /var/lib/npc-ghost/rclone/rclone.conf
-   chmod 700 /var/lib/npc-ghost/keys
-   chmod 600 /var/lib/npc-ghost/rclone/rclone.conf
+   # After keys are in place (and rclone.conf is filled), transfer ownership:
+   sudo chown -R 10001:10001 /var/lib/npc-ghost/keys /var/lib/npc-ghost/rclone
+   chmod 700 /var/lib/npc-ghost/keys /var/lib/npc-ghost/rclone
+   chmod 600 /var/lib/npc-ghost/keys/* /var/lib/npc-ghost/rclone/rclone.conf
    ```
+
+   Re-run the `chown` / `chmod` lines whenever you replace a key or rclone
+   config so new files stay readable by uid/gid `10001`. See
+   [`ops/SECRETS.md`](SECRETS.md) (`NPC_CONTAINER_UID` / `NPC_CONTAINER_GID`).
 
    Then in `ops/.env` (names only — see [`SECRETS.md`](SECRETS.md)):
 

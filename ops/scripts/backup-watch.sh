@@ -19,6 +19,10 @@ RCLONE_ARGS=()
 if [[ -n "$RCLONE_CONFIG" ]]; then
   RCLONE_ARGS+=(--config "$RCLONE_CONFIG")
   export RCLONE_CONFIG
+  if [[ ! -r "$RCLONE_CONFIG" ]]; then
+    echo "[backup-watch] ERROR: cannot read rclone config at ${RCLONE_CONFIG} (permissions). Host path mounted at /config/rclone must be owned by uid/gid 10001 (container user npc) with mode allowing read (dir 0700, file 0600). See ops/RUNBOOK.ghost.md §5." >&2
+    exit 1
+  fi
 fi
 
 log() {

@@ -6,6 +6,25 @@ import { KeyringError } from "./errors.js";
 
 const SOUL_PRIVATE_KEY_LENGTH = 32;
 
+/** Container `npc` uid/gid pinned in ops Dockerfiles (#84). */
+const NPC_CONTAINER_UID_GID = "10001";
+
+function isNodeErrno(error: unknown): error is NodeJS.ErrnoException {
+  return error instanceof Error && "code" in error;
+}
+
+function isPermissionDenied(error: unknown): boolean {
+  return isNodeErrno(error) && (error.code === "EACCES" || error.code === "EPERM");
+}
+
+function permissionDeniedMessage(keyPath: string): string {
+  return (
+    `cannot read soul key file at ${keyPath} (permissions): host file must be owned by ` +
+    `uid/gid ${NPC_CONTAINER_UID_GID} (container user npc) with mode allowing the container ` +
+    `to read it (typically 0600). See ops/RUNBOOK.ghost.md §5.`
+  );
+}
+
 /**
  * Parse a soul private key file as either raw 32 bytes or base64url-encoded 32 bytes.
  */
@@ -47,6 +66,9 @@ export function loadSoulPrivateKeyFromPath(path: string): Uint8Array {
   try {
     fileBytes = readFileSync(path);
   } catch (error: unknown) {
+    if (isPermissionDenied(error)) {
+      throw new KeyringError(permissionDeniedMessage(path));
+    }
     const detail = error instanceof Error ? error.message : "read failed";
     throw new KeyringError(`failed to read soul key file at ${path}: ${detail}`);
   }
