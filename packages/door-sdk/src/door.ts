@@ -443,24 +443,94 @@ export class Door {
     return null;
   }
 
+  /**
+   * Validate cosign session binding, request signature, and review shard count
+   * without mutating state. Call before any side effects (e.g. Discord review
+   * posts) so unauthenticated or oversized requests cannot reach host channels.
+   * Per-shard field validation remains in {@link cosignReview}.
+   */
+  protected verifyCosignRequest(request: CosignRequest): void {
+    if (request.door_id !== this.doorId) {
+      throw DoorError.fromCode(
+        "session_invalid",
+        `door_id mismatch: expected ${this.doorId}, got ${request.door_id}`
+      );
+    }
+
+    if (request.phase === "review") {
+      if (this.cosignState !== null && this.cosignState.reviewCompleted) {
+        throw DoorError.fromCode(
+          "epoch_closed",
+          "epoch_closed: cosign review already completed for this epoch"
+        );
+      }
+
+      this.requireActiveSession(request.door_id, request.epoch, request.session_pubkey);
+
+      // Bound review volume before any host-channel side effects (ReviewGatedDoor).
+      if (request.shards.length < 5 || request.shards.length > 20) {
+        throw DoorError.fromCode(
+          "shard_count",
+          `shard_count: expected 5–20 shards, got ${String(request.shards.length)}`
+        );
+      }
+
+      const payload = cosignReviewSigningPayload(request);
+      const requestSig = decodeSignature(request.sig);
+      const sessionPublicKey = decodePublicKey(request.session_pubkey);
+      if (!verify(payload, requestSig, sessionPublicKey)) {
+        throw DoorError.fromCode(
+          "signature_invalid",
+          "signature_invalid: cosign review request signature failed"
+        );
+      }
+      return;
+    }
+
+    if (request.phase === "commit") {
+      // Commit may run after departure (quarantine window). Bind to the review
+      // session instead of requireActiveSession, which fails once retired.
+      if (this.cosignState === null || !this.cosignState.reviewCompleted) {
+        throw DoorError.fromCode(
+          "review_pending",
+          "review_pending: cosign review not completed for this epoch"
+        );
+      }
+      if (request.epoch !== this.cosignState.epoch) {
+        throw DoorError.fromCode(
+          "session_invalid",
+          `epoch mismatch: expected ${String(this.cosignState.epoch)}, got ${String(request.epoch)}`
+        );
+      }
+      if (request.session_pubkey !== this.cosignState.sessionPubkey) {
+        throw DoorError.fromCode(
+          "session_invalid",
+          "session_pubkey does not match the review-phase session"
+        );
+      }
+
+      const payload = cosignCommitSigningPayload(request);
+      const requestSig = decodeSignature(request.sig);
+      const sessionPublicKey = decodePublicKey(request.session_pubkey);
+      if (!verify(payload, requestSig, sessionPublicKey)) {
+        throw DoorError.fromCode(
+          "signature_invalid",
+          "signature_invalid: cosign commit request signature failed"
+        );
+      }
+      return;
+    }
+
+    throw DoorError.fromCode(
+      "unsupported_phase",
+      "unsupported_phase: cosign phase must be review or commit"
+    );
+  }
+
   private async cosignReview(
     request: Extract<CosignRequest, { phase: "review" }>
   ): Promise<Extract<CosignResponse, { phase: "review" }>> {
-    if (this.cosignState !== null && this.cosignState.reviewCompleted) {
-      throw DoorError.fromCode(
-        "epoch_closed",
-        "epoch_closed: cosign review already completed for this epoch"
-      );
-    }
-
-    this.requireActiveSession(request.door_id, request.epoch, request.session_pubkey);
-
-    if (request.shards.length < 5 || request.shards.length > 20) {
-      throw DoorError.fromCode(
-        "shard_count",
-        `shard_count: expected 5–20 shards, got ${String(request.shards.length)}`
-      );
-    }
+    this.verifyCosignRequest(request);
 
     const seenShardIds = new Set<string>();
     for (const shard of request.shards) {
@@ -480,16 +550,6 @@ export class Door {
         );
       }
       seenShardIds.add(shard.shard_id);
-    }
-
-    const payload = cosignReviewSigningPayload(request);
-    const requestSig = decodeSignature(request.sig);
-    const sessionPublicKey = decodePublicKey(request.session_pubkey);
-    if (!verify(payload, requestSig, sessionPublicKey)) {
-      throw DoorError.fromCode(
-        "signature_invalid",
-        "signature_invalid: cosign review request signature failed"
-      );
     }
 
     const approvedShardIds = new Set<string>();
@@ -533,52 +593,25 @@ export class Door {
   private async cosignCommit(
     request: Extract<CosignRequest, { phase: "commit" }>
   ): Promise<Extract<CosignResponse, { phase: "commit" }>> {
-    if (this.cosignState === null || !this.cosignState.reviewCompleted) {
+    this.verifyCosignRequest(request);
+
+    if (request.core.length === 0) {
+      throw DoorError.fromCode("shard_invalid", "shard_invalid: commit core must not be empty");
+    }
+
+    // cosignState is non-null after verifyCosignRequest for commit.
+    const cosignState = this.cosignState;
+    if (cosignState === null || !cosignState.reviewCompleted) {
       throw DoorError.fromCode(
         "review_pending",
         "review_pending: cosign review not completed for this epoch"
       );
     }
 
-    // Commit may run after departure (quarantine window). Bind to the review
-    // session instead of requireActiveSession, which fails once retired.
-    if (request.door_id !== this.doorId) {
-      throw DoorError.fromCode(
-        "session_invalid",
-        `door_id mismatch: expected ${this.doorId}, got ${request.door_id}`
-      );
-    }
-    if (request.epoch !== this.cosignState.epoch) {
-      throw DoorError.fromCode(
-        "session_invalid",
-        `epoch mismatch: expected ${String(this.cosignState.epoch)}, got ${String(request.epoch)}`
-      );
-    }
-    if (request.session_pubkey !== this.cosignState.sessionPubkey) {
-      throw DoorError.fromCode(
-        "session_invalid",
-        "session_pubkey does not match the review-phase session"
-      );
-    }
-
-    if (request.core.length === 0) {
-      throw DoorError.fromCode("shard_invalid", "shard_invalid: commit core must not be empty");
-    }
-
-    if (!this.cosignState.approvedShardIds.has(request.shard_id)) {
+    if (!cosignState.approvedShardIds.has(request.shard_id)) {
       throw DoorError.fromCode(
         "shard_not_approved",
         `shard_not_approved: shard ${request.shard_id} was not approved in review`
-      );
-    }
-
-    const payload = cosignCommitSigningPayload(request);
-    const requestSig = decodeSignature(request.sig);
-    const sessionPublicKey = decodePublicKey(request.session_pubkey);
-    if (!verify(payload, requestSig, sessionPublicKey)) {
-      throw DoorError.fromCode(
-        "signature_invalid",
-        "signature_invalid: cosign commit request signature failed"
       );
     }
 

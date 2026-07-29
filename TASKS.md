@@ -172,6 +172,12 @@ Each task lists **Deps**, **Deliverables**, and **Acceptance** (how a reviewer v
 - Acceptance: `docker compose -f ops/compose.ghost.yml config` shows `127.0.0.1` binding with no override file; docs consistent; `pnpm check` green. Ops-only (`no-changeset`).
 - Notes: Agent: Cursor Grok 4.5 Maestro, 2026-07-29. Base compose binds `127.0.0.1:8787:8787`; override heredoc deleted as redundant. CI `compose-config` asserts every rendered `ports[].host_ip` is `127.0.0.1` and atlas-api publishes `8787` (review follow-up).
 
+### Bug #65 ✅ door-discord: verify cosign before review-gate Discord posts (Cursor Grok 4.5 Maestro, 2026-07-29)
+- Deps: T4.2
+- Deliverables: Extract `Door.verifyCosignRequest` in door-sdk; call it in `ReviewGatedDoor.cosign` before `ReviewGate.collect`; tests for no-session / bad-sig → zero gateway messages; valid review unchanged. Defer `@npc/immune` screenText on review posts (no new door-discord prod dep).
+- Acceptance: Failing-auth cosign requests produce zero gateway messages; existing approval-flow tests green; `pnpm check` green.
+- Notes: Agent: Cursor Grok 4.5 Maestro, 2026-07-29. `protected verifyCosignRequest` covers review (active session + sig + 5–20 shard count) and commit (cosignState bind + sig). Immune host-channel screen deferred — auth-first fixes the P0; adding `@npc/immune` would expand door-discord prod/Docker graph (see Bug #62).
+
 ## Phase 7 — Post-Ghost (v0.2/0.3 — spec first, then build)
 
 These are sequenced but intentionally coarser; split them into T-numbered subtasks (same format) when their phase begins.
