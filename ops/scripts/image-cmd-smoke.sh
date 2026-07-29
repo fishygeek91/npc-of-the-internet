@@ -45,8 +45,8 @@ assert_dist_exists() {
 }
 
 # Run the image default CMD for ~5s without --rm so we can inspect exit state.
-# PASS: still running after 5s (CMD resolved; process booted), or exited with any code except 127.
-# FAIL: exit 127 or output indicating "executable file not found" / ": not found" for old bin shims.
+# PASS: still running after 5s (CMD resolved; process booted), or exited with any code except 126/127.
+# FAIL: exit 126 (found but not executable) / 127 (not found), or bin-miss strings in logs.
 # CI uses GNU timeout elsewhere; here we use docker run -d + sleep for portability (macOS lacks timeout).
 smoke_cmd() {
   local image="$1"
@@ -72,8 +72,8 @@ smoke_cmd() {
   output="$(docker logs "$name" 2>&1 || true)"
   docker rm -f "$name" >/dev/null 2>&1 || true
 
-  if [[ "$code" == "127" ]]; then
-    die "${label}: CMD exited 127 (executable not found — likely broken pnpm .bin shim): ${output}"
+  if [[ "$code" == "127" || "$code" == "126" ]]; then
+    die "${label}: CMD exited ${code} (not executable / not found — likely broken pnpm .bin shim): ${output}"
   fi
 
   # Match Docker/shell bin-miss messages only — avoid false positives on app boot_failed text.
@@ -81,7 +81,7 @@ smoke_cmd() {
     die "${label}: output suggests broken CMD (bin shim not found): ${output}"
   fi
 
-  log "OK ${label}: CMD exited with code ${code} (not 127)"
+  log "OK ${label}: CMD exited with code ${code} (not 126/127)"
 }
 
 log "Building runtime image (${RUNTIME_IMAGE})..."
