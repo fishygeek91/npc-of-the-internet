@@ -390,22 +390,17 @@ docker compose --env-file ops/.env -f ops/compose.ghost.yml config >/dev/null &&
 
 ## 6. Keep Atlas off the public internet
 
-The compose file publishes `8787:8787`. Docker publishes ports by talking
-directly to the kernel, **bypassing ufw** — a known Docker gotcha. The
-Hetzner Cloud Firewall (outer wall, §2a) still blocks it, but belt-and-
-suspenders: bind it to localhost only. Create a small override file:
+Docker publishes ports by talking directly to the kernel, **bypassing ufw** —
+a known Docker gotcha. The Hetzner Cloud Firewall (outer wall, §2a) still
+blocks inbound traffic, but belt-and-suspenders: `ops/compose.ghost.yml`
+publishes atlas-api as `127.0.0.1:8787:8787` so 8787 answers only on the
+server itself — reachable by you via SSH tunnel, by nobody else. Public
+exposure later is only ever via Cloudflare Tunnel (Gate 2, §8), never an
+open port.
 
-```bash
-cat > ~/npc/ops/compose.override.yml <<'EOF'
-services:
-  atlas-api:
-    ports: !override
-      - "127.0.0.1:8787:8787"
-EOF
-```
-
-We'll include this file in every compose command. Now 8787 answers only on
-the server itself — reachable by you via SSH tunnel, by nobody else.
+If an older VPS still has a hand-written `ops/compose.override.yml` that
+only rebinds 8787 to localhost, you can delete it — the base file already
+does that.
 
 ---
 
@@ -413,18 +408,14 @@ the server itself — reachable by you via SSH tunnel, by nobody else.
 
 ```bash
 cd ~/npc
-docker compose --env-file ops/.env \
-  -f ops/compose.ghost.yml -f ops/compose.override.yml \
-  pull
-docker compose --env-file ops/.env \
-  -f ops/compose.ghost.yml -f ops/compose.override.yml \
-  up -d
+docker compose --env-file ops/.env -f ops/compose.ghost.yml pull
+docker compose --env-file ops/.env -f ops/compose.ghost.yml up -d
 ```
 
 That's a lot to type; make an alias. Add to `~/.bashrc` on the server:
 
 ```bash
-echo "alias ghostc='docker compose --env-file ~/npc/ops/.env -f ~/npc/ops/compose.ghost.yml -f ~/npc/ops/compose.override.yml'" >> ~/.bashrc
+echo "alias ghostc='docker compose --env-file ~/npc/ops/.env -f ~/npc/ops/compose.ghost.yml'" >> ~/.bashrc
 source ~/.bashrc
 ```
 

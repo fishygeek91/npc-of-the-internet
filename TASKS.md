@@ -152,19 +152,25 @@ Each task lists **Deps**, **Deliverables**, and **Acceptance** (how a reviewer v
 - Deps: T6.2
 - Deliverables: Pin `npc` to uid/gid `10001` in all Ghost Dockerfiles; align RUNBOOK.ghost / LAUNCH / RUNBOOK / SECRETS host `chown`; loud EACCES on soul/door key load; backup fail-fast + healthcheck when rclone.conf unreadable; Linux CI `uid-mount-check.sh`.
 - Acceptance: Fresh VPS following RUNBOOK.ghost.md boots runtime+door and can read keys; wrong-ownership mounts fail loudly; backup unhealthy when rclone unreadable; `pnpm check` green; Linux CI mount check green.
-- Notes: Agent: Cursor Grok 4.5 Maestro, 2026-07-28. Pinned `npc` to 10001:10001 across runtime/door/atlas/backup images; runbooks chown keys+rclone to 10001; backup exits + healthcheck on unreadable rclone.conf; key loaders emit permissions+10001 hint; CI `uid-mount-check` job (Linux-only). Gate-2 still needs #63/#64 (#62 done).
+- Notes: Agent: Cursor Grok 4.5 Maestro, 2026-07-28. Pinned `npc` to 10001:10001 across runtime/door/atlas/backup images; runbooks chown keys+rclone to 10001; backup exits + healthcheck on unreadable rclone.conf; key loaders emit permissions+10001 hint; CI `uid-mount-check` job (Linux-only).
 
 ### Bug #62 ✅ Ops: atlas-api + door-discord pnpm-deploy CMD (Cursor Grok 4.5 Maestro, 2026-07-29)
 - Deps: T6.1-followup (runtime CMD precedent), Bug #84
 - Deliverables: Fix `ops/Dockerfile.atlas-api` and `ops/Dockerfile.door-discord` to `CMD ["node", "dist/server.js"]` (remove useless `ENV PATH` for `.bin`); document in RUNBOOK §1.3 + door-discord MANUAL_TEST; CI `ops/scripts/image-cmd-smoke.sh` + `image-cmd-smoke` job asserting no exit-127 bin trap.
 - Acceptance: All three Ghost app images start without exit-127; smoke script green in CI; `pnpm check` green; RUNBOOK/MANUAL_TEST describe the node CMDs.
-- Notes: Agent: Cursor Grok 4.5 Maestro, 2026-07-29. Mirrored runtime own-bin workaround; smoke fails only on exit 127 / known bin-miss strings. Also narrowed `Dockerfile.door-discord` build to prod filters (`osp-core`/`door-sdk`/`door-discord`) so `...` does not pull `@npc/runtime`→`@npc/immune` devDeps without COPY. Ops-only (no changeset). Gate-2 still needs #63/#64.
+- Notes: Agent: Cursor Grok 4.5 Maestro, 2026-07-29. Mirrored runtime own-bin workaround; smoke fails only on exit 127 / known bin-miss strings. Also narrowed `Dockerfile.door-discord` build to prod filters (`osp-core`/`door-sdk`/`door-discord`) so `...` does not pull `@npc/runtime`→`@npc/immune` devDeps without COPY. Ops-only (no changeset).
 
 ### Bug #63 ✅ Ops: backup sidecar anti-clobber (Cursor Grok 4.5 Maestro, 2026-07-29)
 - Deps: T6.1, Bug #84
 - Deliverables: Harden `ops/scripts/backup-watch.sh` — `rclone copy` for blobs (never sync/delete), chain size-regression guard + `ALLOW_CHAIN_SHRINK=1` override, `--backup-dir` history for `chain.jsonl`, `/tmp/backup.ok` on success, `BACKUP_ONCE=1` for drills; extend `restore-drill.sh` anti-clobber assertions; align `launch-dry-run.sh`; update RUNBOOK.md / RUNBOOK.ghost.md / LAUNCH.md / SECRETS.md / `.env.example`.
 - Acceptance: Drill proves truncated local chain cannot clobber remote; local blob deletion never deletes remotely; docs updated; `pnpm check` green. Ops-only (`no-changeset`).
-- Notes: Agent: Cursor Grok 4.5 Maestro, 2026-07-29. Chose `--backup-dir history/<UTC>/` over B2 versioning (CI-testable, provider-agnostic). Compose healthcheck age-of-`backup.ok` still deferred to #72. Gate-2 still needs #64.
+- Notes: Agent: Cursor Grok 4.5 Maestro, 2026-07-29. Chose `--backup-dir history/<UTC>/` over B2 versioning (CI-testable, provider-agnostic). Compose healthcheck age-of-`backup.ok` still deferred to #72.
+
+### Bug #64 ✅ Ops: atlas-api localhost-only bind in base compose (Cursor Grok 4.5 Maestro, 2026-07-29)
+- Deps: T6.1, Bug #63
+- Deliverables: Bind atlas-api `ports:` to `127.0.0.1:8787:8787` in `ops/compose.ghost.yml` with ufw-bypass comment; remove RUNBOOK.ghost §6 override heredoc + drop override from §7/`ghostc`; align LAUNCH.md + RUNBOOK.md; CI assert rendered config contains `127.0.0.1:8787`.
+- Acceptance: `docker compose -f ops/compose.ghost.yml config` shows `127.0.0.1` binding with no override file; docs consistent; `pnpm check` green. Ops-only (`no-changeset`).
+- Notes: Agent: Cursor Grok 4.5 Maestro, 2026-07-29. Base compose binds `127.0.0.1:8787:8787`; override heredoc deleted as redundant. CI `compose-config` asserts long-form `host_ip: 127.0.0.1` + `published: "8787"`.
 
 ## Phase 7 — Post-Ghost (v0.2/0.3 — spec first, then build)
 

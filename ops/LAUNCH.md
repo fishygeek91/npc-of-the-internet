@@ -50,7 +50,7 @@ Internally the script runs: `osp init` → `launch-first-residency.mjs` → `osp
 | Heartbeats | FakeTimer ticks (CI-fast) | Real daemon timer (default 10 minutes) |
 | Discord | None | Real bot + guild/channel ([`MANUAL_TEST.md`](../packages/door-discord/MANUAL_TEST.md)) |
 | Docker Compose | Not started (compose config still validated in CI by T6.1) | `docker compose … up` per [RUNBOOK §1](RUNBOOK.md#1-start) |
-| Atlas | Loopback `atlas-api` + `/state` | Host `:8787` + optional GitHub Pages site (Gate 2) |
+| Atlas | Loopback `atlas-api` + `/state` | Host `127.0.0.1:8787` only (compose binds loopback; Gate 2 public via Cloudflare Tunnel / GitHub Pages) |
 | Backup | Local rclone remote; `rclone copy` blobs + `copyto` chain (excludes `soul.key` / door keys, matching the sidecar) | Production sidecar: blobs-first `copy`, then `chain.jsonl` with `history/` tip archival to `BACKUP_RCLONE_REMOTE` — never keys |
 | Soul key | Scratch from `osp init` (destroyed after); never included in dry-run backup remote | Custodied at `SOUL_KEY_HOST_PATH`; key backup separate from chain backup |
 

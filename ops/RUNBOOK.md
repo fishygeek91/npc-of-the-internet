@@ -10,7 +10,7 @@ Four services share one named Docker volume (`soulchain`):
 |---------|-------|------|------------------|
 | **runtime** | `ghcr.io/fishygeek91/npc-runtime` | Residency daemon (`npc-runtime`): soulchain writer, Door HTTP/WS client, live Session loop | read-write |
 | **door-discord** | `ghcr.io/fishygeek91/npc-door-discord` | Discord Door relay; HTTP REST and WebSocket coalesced on port **9090** | none |
-| **atlas-api** | `ghcr.io/fishygeek91/npc-atlas-api` | Read-only Atlas API on host port **8787** | read-only |
+| **atlas-api** | `ghcr.io/fishygeek91/npc-atlas-api` | Read-only Atlas API on **127.0.0.1:8787** only (Docker published ports bypass ufw — see [RUNBOOK.ghost §6](RUNBOOK.ghost.md#6-keep-atlas-off-the-public-internet)) | read-only |
 | **backup** | `ghcr.io/fishygeek91/npc-backup` | Append-triggered `rclone` backup to remote storage | read-only |
 
 Host-mounted secrets (paths configured in `ops/.env`): soul private key, door private key, and `rclone.conf`. Only **runtime** writes to the soulchain volume. **atlas-api** and **backup** mount it read-only.
@@ -95,7 +95,7 @@ docker compose --env-file ops/.env -f ops/compose.ghost.yml up -d --build
 
 - **runtime** runs `node dist/daemon.js` (image `CMD`; `pnpm deploy` does not emit an `npc-runtime` bin shim). It opens the soulchain, connects to door-discord on the compose network (`DOOR_HTTP_HOST` / `DOOR_HTTP_PORT`), arrives at the Door, and binds the session WebSocket. Logs `residency_live` after the first successful bind. Requires a valid soulchain (genesis or restored) and matching `SOUL_PUBLIC_KEY` / `ATLAS_DOOR_PUBKEYS` / `CURRENT_DOOR_ID`.
 - **door-discord** runs `node dist/server.js` (image `CMD`; `pnpm deploy` does not emit a `door-discord` bin shim). It requires a real `DISCORD_BOT_TOKEN` and valid guild/channel IDs to stay healthy. Without them the container will crash-loop.
-- **atlas-api** runs `node dist/server.js` (image `CMD`; same `pnpm deploy` own-bin trap). It serves on `http://127.0.0.1:8787` once the soulchain volume contains a valid chain (empty volume returns errors until genesis).
+- **atlas-api** runs `node dist/server.js` (image `CMD`; same `pnpm deploy` own-bin trap). Compose publishes it on `127.0.0.1:8787` only (not all interfaces). It serves on `http://127.0.0.1:8787` once the soulchain volume contains a valid chain (empty volume returns errors until genesis).
 - **backup** watches the soulchain volume and backs up to `BACKUP_RCLONE_REMOTE` when changes are detected.
 
 **Image entrypoint smoke (no Discord / incomplete env):** after `docker compose … build`, one-shot runs with placeholder env confirm each image `CMD` is `node dist/…`, not a missing bin shim:

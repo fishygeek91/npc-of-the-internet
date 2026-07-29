@@ -25,7 +25,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Validate Ghost compose file
-        run: docker compose --env-file ops/.env.example -f ops/compose.ghost.yml config
+        run: |
+          docker compose --env-file ops/.env.example -f ops/compose.ghost.yml config > /tmp/ghost-compose.yml
+          # #64: atlas-api must be localhost-bound in the base file (no override).
+          # Compose renders long-form: host_ip: 127.0.0.1 + published: "8787"
+          grep -q "host_ip: 127.0.0.1" /tmp/ghost-compose.yml
+          grep -q 'published: "8787"' /tmp/ghost-compose.yml
 
   image-cmd-smoke:
     runs-on: ubuntu-latest
