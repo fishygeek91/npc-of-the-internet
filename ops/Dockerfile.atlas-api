@@ -32,7 +32,9 @@ RUN groupadd --gid 10001 npc && useradd --uid 10001 --gid npc --create-home --ho
 COPY --from=build /out /app
 
 WORKDIR /app
-ENV PATH="/app/node_modules/.bin:${PATH}"
 USER npc
 
-CMD ["atlas-api"]
+# pnpm deploy does not emit a .bin shim for this package's own `bin` entry —
+# invoke the built entrypoint directly (package.json `bin.atlas-api` remains
+# for local/dev installs).
+CMD ["node", "dist/server.js"]

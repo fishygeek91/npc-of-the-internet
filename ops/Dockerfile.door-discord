@@ -22,7 +22,10 @@ COPY packages/osp-core packages/osp-core
 COPY packages/door-sdk packages/door-sdk
 COPY packages/door-discord packages/door-discord
 
-RUN pnpm --filter @npc/door-discord... build
+# Build prod workspace deps only. `@npc/door-discord...` would also pull the
+# `@npc/runtime` → `@npc/immune` *devDependency* tree (tests/manual-residency),
+# whose sources are not COPYed into this image.
+RUN pnpm --filter @npc/osp-core --filter @npc/door-sdk --filter @npc/door-discord build
 RUN pnpm --filter @npc/door-discord deploy --prod /out
 
 FROM node:22-slim AS runtime
@@ -33,7 +36,9 @@ RUN groupadd --gid 10001 npc && useradd --uid 10001 --gid npc --create-home --ho
 COPY --from=build /out /app
 
 WORKDIR /app
-ENV PATH="/app/node_modules/.bin:${PATH}"
 USER npc
 
-CMD ["door-discord"]
+# pnpm deploy does not emit a .bin shim for this package's own `bin` entry —
+# invoke the built entrypoint directly (package.json `bin.door-discord` remains
+# for local/dev installs).
+CMD ["node", "dist/server.js"]
