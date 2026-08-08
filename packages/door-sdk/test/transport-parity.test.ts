@@ -25,7 +25,7 @@ import { WS_SESSION_BIND_FAILED, WsDoorSessionServer } from "../src/transports/w
 
 const DOOR_ID = "discord:parity";
 const EPOCH = 42;
-const ISSUED_AT = "2026-07-20T15:04:05.123Z";
+const ISSUED_AT = "2026-07-20T15:09:00.000Z";
 const RECEIVED_AT = "2026-07-20T15:10:00.000Z";
 const CORE = '{"type":"attestation","kind":"arrival"}';
 

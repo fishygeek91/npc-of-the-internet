@@ -3,9 +3,11 @@ export function defaultHttpStatusForDoorError(code: string): number {
   switch (code) {
     case "signature_invalid":
     case "session_invalid":
+    case "timestamp_stale":
       return 401;
     case "epoch_closed":
     case "epoch_mismatch":
+    case "epoch_replay":
     case "seq_replay":
       return 409;
     case "shard_not_approved":
@@ -17,6 +19,8 @@ export function defaultHttpStatusForDoorError(code: string): number {
     case "invalid_request":
     case "core_invalid":
       return 400;
+    case "payload_too_large":
+      return 413;
     case "review_pending":
     case "door_unavailable":
       return 503;

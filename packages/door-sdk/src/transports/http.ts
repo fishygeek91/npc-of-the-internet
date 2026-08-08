@@ -22,8 +22,18 @@ export type HttpDoorServerOptions = {
 };
 
 const JSON_CONTENT_TYPE = "application/json";
+/** Max accumulated HTTP JSON body size before rejecting with 413. */
+export const MAX_HTTP_BODY_BYTES = 128 * 1024;
 
 type RouteHandler = (body: unknown) => Promise<unknown>;
+
+/** Error thrown when the request body exceeds {@link MAX_HTTP_BODY_BYTES}. */
+class PayloadTooLargeError extends Error {
+  constructor() {
+    super("payload too large");
+    this.name = "PayloadTooLargeError";
+  }
+}
 
 /**
  * Minimal `node:http` server exposing the Door REST endpoints:
@@ -150,10 +160,28 @@ export class HttpDoorServer {
     let body: unknown;
     try {
       body = await this.readJsonBody(req);
-    } catch {
-      this.sendJson(res, 400, {
-        error: { code: "invalid_request", message: "invalid JSON body" }
-      });
+    } catch (error) {
+      if (error instanceof PayloadTooLargeError) {
+        if (!res.headersSent) {
+          this.sendJson(
+            res,
+            413,
+            doorErrorToBody(
+              DoorError.fromCode(
+                "payload_too_large",
+                `payload_too_large: body exceeds ${String(MAX_HTTP_BODY_BYTES)} bytes`
+              )
+            )
+          );
+        }
+        req.destroy();
+        return;
+      }
+      if (!res.headersSent) {
+        this.sendJson(res, 400, {
+          error: { code: "invalid_request", message: "invalid JSON body" }
+        });
+      }
       return;
     }
 
@@ -172,11 +200,37 @@ export class HttpDoorServer {
 
   private readJsonBody(req: IncomingMessage): Promise<unknown> {
     return new Promise((resolve, reject) => {
+      const contentLengthHeader = req.headers["content-length"];
+      if (typeof contentLengthHeader === "string") {
+        const contentLength = Number.parseInt(contentLengthHeader, 10);
+        if (!Number.isNaN(contentLength) && contentLength > MAX_HTTP_BODY_BYTES) {
+          req.resume();
+          reject(new PayloadTooLargeError());
+          return;
+        }
+      }
+
       const chunks: Buffer[] = [];
+      let totalBytes = 0;
+      let rejected = false;
+
       req.on("data", (chunk: Buffer) => {
+        if (rejected) {
+          return;
+        }
+        totalBytes += chunk.length;
+        if (totalBytes > MAX_HTTP_BODY_BYTES) {
+          rejected = true;
+          chunks.length = 0;
+          reject(new PayloadTooLargeError());
+          return;
+        }
         chunks.push(chunk);
       });
       req.on("end", () => {
+        if (rejected) {
+          return;
+        }
         const raw = Buffer.concat(chunks).toString("utf8");
         if (raw.length === 0) {
           reject(new Error("empty body"));
@@ -188,7 +242,11 @@ export class HttpDoorServer {
           reject(new Error("invalid JSON"));
         }
       });
-      req.on("error", reject);
+      req.on("error", (error) => {
+        if (!rejected) {
+          reject(error);
+        }
+      });
     });
   }
 

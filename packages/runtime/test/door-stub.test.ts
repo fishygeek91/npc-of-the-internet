@@ -26,7 +26,7 @@ import { DOOR, SOUL } from "./helpers/fixed-keys.js";
 
 const DOOR_ID = "discord:g";
 const EPOCH = 77;
-const ISSUED_AT = "2026-07-20T15:04:05.123Z";
+const ISSUED_AT = "2026-07-20T15:09:00.000Z";
 const CORE = '{"type":"attestation","kind":"arrival"}';
 const MEMORY_CORE = '{"type":"memory","body":{"kind":"shard","text":"I remember the hall."}}';
 

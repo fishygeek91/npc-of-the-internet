@@ -37,7 +37,7 @@ import {
 
 const DOOR_ID = "discord:g";
 const EPOCH = 77;
-const ISSUED_AT = "2026-07-20T15:04:05.123Z";
+const ISSUED_AT = "2026-07-20T15:09:00.000Z";
 const RECEIVED_AT = "2026-07-20T15:10:00.000Z";
 const PREV_CID = "bagu" + "a".repeat(57);
 const RESIDENCY = `door:${DOOR_ID}/epoch:${String(EPOCH)}`;
@@ -68,6 +68,8 @@ function createDoor(options?: {
   policy?: HostPolicy;
   doorKeypair?: Ed25519Keypair;
   soulPublicKey?: Uint8Array;
+  clock?: FakeClock;
+  maxIssuedAtSkewMs?: number;
 }): { door: Door; doorKeypair: Ed25519Keypair; soul: Ed25519Keypair } {
   const soul = generateKeypair();
   const doorKeypair = options?.doorKeypair ?? generateDoorKeypair();
@@ -75,8 +77,9 @@ function createDoor(options?: {
     doorId: DOOR_ID,
     doorKeypair,
     soulPublicKey: options?.soulPublicKey ?? soul.publicKey,
-    clock: new FakeClock(RECEIVED_AT),
-    policy: options?.policy ?? defaultPolicy
+    clock: options?.clock ?? new FakeClock(RECEIVED_AT),
+    policy: options?.policy ?? defaultPolicy,
+    maxIssuedAtSkewMs: options?.maxIssuedAtSkewMs
   });
   return { door, doorKeypair, soul };
 }
@@ -766,5 +769,220 @@ describe("Door", () => {
     });
     expect(verifyResult.record.type).toBe("attestation");
     expect(verifyDoorCosig(core, attestResponse.door_cosig, doorKeypair.publicKey)).toBe(true);
+  });
+});
+
+describe("Door protocol hardening (#66)", () => {
+  const soul = generateKeypair();
+  const session = generateKeypair();
+
+  function createTestDoor(options?: { clock?: FakeClock; maxIssuedAtSkewMs?: number }): Door {
+    return createDoor({
+      soulPublicKey: soul.publicKey,
+      clock: options?.clock,
+      maxIssuedAtSkewMs: options?.maxIssuedAtSkewMs
+    }).door;
+  }
+
+  it("re-POST same arrival → epoch_replay; heartbeat seq state preserved", async () => {
+    const door = createTestDoor();
+    const arrival = signAttestRequest(
+      soul,
+      session,
+      {
+        protocol_version: DOOR_PROTOCOL_VERSION,
+        door_id: DOOR_ID,
+        epoch: EPOCH,
+        kind: "arrival",
+        core: CORE,
+        session_pubkey: encodePublicKey(session.publicKey),
+        issued_at: ISSUED_AT
+      },
+      true
+    );
+
+    await door.attest(arrival);
+    expect(door.getActiveEpoch()).toBe(EPOCH);
+    expect(door.getActiveSessionPubkey()).toBe(encodePublicKey(session.publicKey));
+
+    const unsignedHeartbeat = {
+      protocol_version: DOOR_PROTOCOL_VERSION,
+      door_id: DOOR_ID,
+      epoch: EPOCH,
+      session_pubkey: encodePublicKey(session.publicKey),
+      seq: 1,
+      issued_at: ISSUED_AT
+    };
+    const heartbeatSig = encodeSignature(sign(canonicalize(unsignedHeartbeat), session.privateKey));
+    await door.heartbeat({ ...unsignedHeartbeat, sig: heartbeatSig });
+
+    await expect(door.attest(arrival)).rejects.toMatchObject({ code: "epoch_replay" });
+    expect(door.getActiveEpoch()).toBe(EPOCH);
+    expect(door.getActiveSessionPubkey()).toBe(encodePublicKey(session.publicKey));
+
+    await expect(door.heartbeat({ ...unsignedHeartbeat, sig: heartbeatSig })).rejects.toMatchObject(
+      {
+        code: "seq_replay"
+      }
+    );
+  });
+
+  it("after departure, same-epoch arrival → epoch_replay; higher epoch succeeds", async () => {
+    const door = createTestDoor();
+    await establishArrival(door, soul, session, EPOCH);
+
+    const departure = signAttestRequest(
+      soul,
+      session,
+      {
+        protocol_version: DOOR_PROTOCOL_VERSION,
+        door_id: DOOR_ID,
+        epoch: EPOCH,
+        kind: "departure",
+        core: '{"type":"attestation","kind":"departure"}',
+        session_pubkey: encodePublicKey(session.publicKey),
+        issued_at: ISSUED_AT
+      },
+      false
+    );
+    await door.attest(departure);
+    expect(door.getActiveEpoch()).toBeNull();
+    expect(door.getLastKnownEpoch()).toBe(EPOCH);
+
+    const replayArrival = signAttestRequest(
+      soul,
+      session,
+      {
+        protocol_version: DOOR_PROTOCOL_VERSION,
+        door_id: DOOR_ID,
+        epoch: EPOCH,
+        kind: "arrival",
+        core: CORE,
+        session_pubkey: encodePublicKey(session.publicKey),
+        issued_at: ISSUED_AT
+      },
+      true
+    );
+    await expect(door.attest(replayArrival)).rejects.toMatchObject({ code: "epoch_replay" });
+    expect(door.getActiveEpoch()).toBeNull();
+
+    const nextSession = generateKeypair();
+    const higherArrival = signAttestRequest(
+      soul,
+      nextSession,
+      {
+        protocol_version: DOOR_PROTOCOL_VERSION,
+        door_id: DOOR_ID,
+        epoch: EPOCH + 1,
+        kind: "arrival",
+        core: CORE,
+        session_pubkey: encodePublicKey(nextSession.publicKey),
+        issued_at: ISSUED_AT
+      },
+      true
+    );
+    await door.attest(higherArrival);
+    expect(door.getActiveEpoch()).toBe(EPOCH + 1);
+    expect(door.getActiveSessionPubkey()).toBe(encodePublicKey(nextSession.publicKey));
+  });
+
+  it("supersession retires active epoch N and emits lifecycle event", async () => {
+    const door = createTestDoor();
+    await establishArrival(door, soul, session, EPOCH);
+
+    const lifecycleEvents: Array<{ type: string; epoch: number }> = [];
+    door.setSessionLifecycleListener((event) => {
+      lifecycleEvents.push({ type: event.type, epoch: event.epoch });
+    });
+
+    const nextSession = generateKeypair();
+    const supersedingArrival = signAttestRequest(
+      soul,
+      nextSession,
+      {
+        protocol_version: DOOR_PROTOCOL_VERSION,
+        door_id: DOOR_ID,
+        epoch: EPOCH + 1,
+        kind: "arrival",
+        core: CORE,
+        session_pubkey: encodePublicKey(nextSession.publicKey),
+        issued_at: ISSUED_AT
+      },
+      true
+    );
+    await door.attest(supersedingArrival);
+
+    expect(door.getActiveEpoch()).toBe(EPOCH + 1);
+    expect(door.getActiveSessionPubkey()).toBe(encodePublicKey(nextSession.publicKey));
+    expect(lifecycleEvents).toEqual([{ type: "superseded", epoch: EPOCH }]);
+  });
+
+  it("rejects stale and future issued_at beyond maxIssuedAtSkewMs on arrival and cosign review", async () => {
+    const door = createTestDoor({ maxIssuedAtSkewMs: 1000 });
+    const staleIssuedAt = "2026-07-20T15:00:00.000Z";
+    const futureIssuedAt = "2026-07-20T15:15:00.000Z";
+
+    const staleArrival = signAttestRequest(
+      soul,
+      session,
+      {
+        protocol_version: DOOR_PROTOCOL_VERSION,
+        door_id: DOOR_ID,
+        epoch: EPOCH,
+        kind: "arrival",
+        core: CORE,
+        session_pubkey: encodePublicKey(session.publicKey),
+        issued_at: staleIssuedAt
+      },
+      true
+    );
+    await expect(door.attest(staleArrival)).rejects.toMatchObject({
+      code: "timestamp_stale",
+      details: expect.not.objectContaining({ door_now: expect.anything() })
+    });
+
+    const futureArrival = signAttestRequest(
+      soul,
+      session,
+      {
+        protocol_version: DOOR_PROTOCOL_VERSION,
+        door_id: DOOR_ID,
+        epoch: EPOCH,
+        kind: "arrival",
+        core: CORE,
+        session_pubkey: encodePublicKey(session.publicKey),
+        issued_at: futureIssuedAt
+      },
+      true
+    );
+    await expect(door.attest(futureArrival)).rejects.toMatchObject({ code: "timestamp_stale" });
+
+    const freshIssuedAt = "2026-07-20T15:09:59.500Z";
+    const validArrival = signAttestRequest(
+      soul,
+      session,
+      {
+        protocol_version: DOOR_PROTOCOL_VERSION,
+        door_id: DOOR_ID,
+        epoch: EPOCH,
+        kind: "arrival",
+        core: CORE,
+        session_pubkey: encodePublicKey(session.publicKey),
+        issued_at: freshIssuedAt
+      },
+      true
+    );
+    await door.attest(validArrival);
+
+    const staleReview = signCosignReviewRequest(session, {
+      protocol_version: DOOR_PROTOCOL_VERSION,
+      phase: "review",
+      door_id: DOOR_ID,
+      epoch: EPOCH,
+      session_pubkey: encodePublicKey(session.publicKey),
+      shards: sampleShards(5),
+      issued_at: staleIssuedAt
+    });
+    await expect(door.cosign(staleReview)).rejects.toMatchObject({ code: "timestamp_stale" });
   });
 });
