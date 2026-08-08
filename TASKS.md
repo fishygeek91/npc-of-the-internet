@@ -190,6 +190,12 @@ Each task lists **Deps**, **Deliverables**, and **Acceptance** (how a reviewer v
 - Acceptance: New tests per issue checklist; store/vector suites green; `pnpm check` green; changeset.
 - Notes: Agent: Cursor Grok 4.5 Maestro, 2026-08-08. Append verifies before durable write; `refreshHeadFromDisk` also hydrates `soulPublicKey` for multi-instance stores; lock meta JSON `{pid,acquiredAt}`; G1 gate for T7.1/#55 now satisfied in FileSoulStore.
 
+### Bug #66 ✅ door-sdk: protocol hardening (arrival replay, body cap, client sigs, WS session close) (Cursor Grok 4.5 Maestro, 2026-08-08)
+- Deps: T4.1
+- Deliverables: Door-side `lastKnownEpoch` + issued_at skew + supersession; HTTP 128 KiB body cap (413); `HttpDoorConnection` verifies Door response sigs/cosigs; WS epoch-scoped broadcast + close on depart/supersede; `spec/door/api.md` normative updates.
+- Acceptance: New unit tests per issue checklist; transport-parity green; `pnpm check` green; changeset.
+- Notes: Agent: Cursor Grok 4.5 Maestro, 2026-08-08. `lastKnownEpoch` is in-memory only (restart caveat documented in spec); supersession = epoch > lastKnown + valid soul sig + fresh issued_at (coordinates with #70 crash-recovery wording). Default issued_at skew ±5 min via `DoorOptions.maxIssuedAtSkewMs`.
+
 ## Phase 7 — Post-Ghost (v0.2/0.3 — spec first, then build)
 
 These are sequenced but intentionally coarser; split them into T-numbered subtasks (same format) when their phase begins.

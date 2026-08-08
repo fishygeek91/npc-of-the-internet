@@ -1,7 +1,7 @@
 export const packageName = "@npc/door-sdk";
 
-export { Door } from "./door.js";
-export type { DoorOptions } from "./door.js";
+export { Door, DEFAULT_MAX_ISSUED_AT_SKEW_MS } from "./door.js";
+export type { DoorOptions, SessionLifecycleEvent } from "./door.js";
 export type { HostPolicy } from "./policy.js";
 
 export {
@@ -59,6 +59,10 @@ export {
   outboundSigningPayload,
   sessionBindSigningPayload,
   helloResponseSigningPayload,
+  attestResponseSigningPayload,
+  heartbeatResponseSigningPayload,
+  cosignReviewResponseSigningPayload,
+  cosignCommitResponseSigningPayload,
   signDoorCosig,
   verifyDoorCosig,
   signCanonical,
@@ -75,7 +79,7 @@ export type {
 export { DoorError, defaultHttpStatusForDoorError, doorErrorToBody } from "./errors.js";
 
 export { InProcessDoorConnection } from "./transports/in-process.js";
-export { HttpDoorServer } from "./transports/http.js";
+export { HttpDoorServer, MAX_HTTP_BODY_BYTES } from "./transports/http.js";
 export type { HttpDoorServerOptions } from "./transports/http.js";
 export { HttpDoorConnection } from "./transports/http-client.js";
 export type { HttpDoorConnectionOptions } from "./transports/http-client.js";

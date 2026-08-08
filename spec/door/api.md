@@ -64,6 +64,8 @@ All public keys and signatures on the Door wire are **opaque strings** encoding 
 
 ISO 8601 UTC strings with millisecond precision, e.g. `2026-07-20T15:04:05.123Z`. Field name `issued_at` on Wanderer-originated payloads; `received_at` on Door-originated acknowledgements.
 
+**Freshness:** Doors MUST reject `/door/attest` and `/door/cosign` requests whose `issued_at` differs from the Door clock by more than a configured absolute skew (default **±5 minutes** / `300_000` ms) with `timestamp_stale` (`401`). Invalid / non-ISO `issued_at` values are treated as stale.
+
 ### `CommunityDescriptor`
 
 Describes the hosted community for Navigator / operator display.
@@ -109,7 +111,8 @@ Typical HTTP status mapping:
 | `401` | Missing or invalid authentication / session binding. |
 | `403` | Valid session but action not permitted (e.g. cosign while not departing). |
 | `404` | Unknown `door_id` or no active residency for `(door_id, epoch)`. |
-| `409` | Epoch/session conflict (e.g. epoch already closed). |
+| `409` | Epoch/session conflict (e.g. epoch already closed, arrival epoch replay). |
+| `413` | Request body exceeds Door transport size limit. |
 | `422` | Semantically invalid (e.g. shard over length limit). |
 | `500` | Door internal error. |
 
@@ -221,7 +224,7 @@ Every text frame is a JSON object:
 | `action` | string | yes | `ping`, `pong`, `session_end`, or `backpressure`. |
 | `reason` | string | no | Human-readable detail for `session_end` / `backpressure`. |
 
-Either party MAY send `ping`; the other MUST respond with `pong`. Door sends `session_end` when the host closes the residency (operator action, platform disconnect).
+Either party MAY send `ping`; the other MUST respond with `pong`. Door sends `session_end` when the host closes the residency (operator action, platform disconnect) **and** when an arrival supersedes a prior epoch or a departure attest completes — transports MUST close WebSocket clients bound to the retired epoch and MUST NOT deliver further inbound frames to those sockets.
 
 ### `body` for `type: "error"`
 
@@ -340,6 +343,17 @@ The Wanderer places `door_cosig` into the record's `cosigners` array, then soul-
 - **Arrival:** Soul-key `sig` on the request; Door verifies soul pubkey from genesis / prior hello context the operator configured.
 - **Departure / heartbeat:** Active session-key `sig`; Door verifies against the session published at arrival for this global `epoch`.
 - **`door_cosig`:** MUST verify as Ed25519 over the exact `core` bytes under `door_pubkey`.
+- **Response authenticity:** Wanderer MUST reject attest responses whose `door_sig` or `door_cosig` fail verification under `door_pubkey` from a verified hello.
+
+### Arrival epoch monotonicity and supersession
+
+Doors keep an in-memory `lastKnownEpoch` (highest arrival epoch accepted by this Door process; **not durable across restarts** — after restart the Door accepts the first valid arrival again; Wanderers that crash mid-arrival must choose `epoch > hello.active_epoch` when that field is set — see runtime crash-recovery / issue #70).
+
+On `kind: "arrival"` after soul-key and freshness checks:
+
+1. If `lastKnownEpoch` is set and `request.epoch <= lastKnownEpoch`, reject with `epoch_replay` (`409`). This blocks captured arrival replays (including same-epoch re-POST that would reset heartbeat seq).
+2. Otherwise, if a **different** epoch's session is currently active, the arrival **supersedes**: retire the old epoch (emit session lifecycle so transports close that epoch's WebSocket clients with `session_end`), reset heartbeat state for the new epoch, and install the new session. An arrival with `epoch` strictly greater than `lastKnownEpoch`, a valid soul-key signature, and a fresh `issued_at` is the sole accepted supersession path (needed for crash recovery when the Door still holds epoch N and the Wanderer re-arrives at N+1).
+3. Update `lastKnownEpoch` to the accepted arrival epoch. `lastKnownEpoch` is retained after departure so the same epoch cannot be replayed into a fresh session without a process restart.
 
 ### Errors
 
@@ -348,8 +362,10 @@ The Wanderer places `door_cosig` into the record's `cosigners` array, then soul-
 | `unsupported_kind` | `400` | `kind` not in the allowed set. |
 | `core_invalid` | `400` | `core` empty, too large, or not valid UTF-8. |
 | `signature_invalid` | `401` | Request `sig` failed. |
+| `timestamp_stale` | `401` | `issued_at` outside Door acceptance window (or unparseable). |
 | `session_invalid` | `401` | Session required but missing/invalid (`departure` / `heartbeat`). |
-| `epoch_mismatch` | `409` | Door's active residency epoch ≠ request `epoch` (when Door has an active session). |
+| `epoch_mismatch` | `409` | Door's active residency epoch ≠ request `epoch` (when Door has an active session; non-arrival). |
+| `epoch_replay` | `409` | Arrival `epoch` ≤ Door `lastKnownEpoch` (replay / non-monotonic). |
 | `not_hosting` | `403` | Door refuses to attest (e.g. operator denied arrival). |
 
 ---

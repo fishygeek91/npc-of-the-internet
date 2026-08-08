@@ -27,7 +27,7 @@ import {
 } from "../src/signing.js";
 import { DOOR_PROTOCOL_VERSION } from "../src/schemas.js";
 
-const ISSUED_AT = "2026-07-20T15:04:05.123Z";
+const ISSUED_AT = "2026-07-20T15:09:00.000Z";
 const DOOR_ID = "discord:test-guild";
 const PREV_CID = "bagu" + "a".repeat(57);
 

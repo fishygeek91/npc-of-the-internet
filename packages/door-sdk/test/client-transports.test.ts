@@ -36,7 +36,7 @@ import { WsDoorSessionClient, type WebSocketLike } from "../src/transports/ws-cl
 
 const DOOR_ID = "discord:client";
 const EPOCH = 50;
-const ISSUED_AT = "2026-07-20T15:04:05.123Z";
+const ISSUED_AT = "2026-07-20T15:09:00.000Z";
 const RECEIVED_AT = "2026-07-20T15:10:00.000Z";
 const CORE = '{"type":"attestation","kind":"arrival"}';
 
@@ -190,6 +190,12 @@ describe("HttpDoorConnection", () => {
   });
 
   it("attest matches InProcessDoorConnection", async () => {
+    const helloRequest = {
+      protocol_version: DOOR_PROTOCOL_VERSION,
+      soul_pubkey: encodePublicKey(env.soul.publicKey)
+    };
+    await env.httpClient.hello(helloRequest);
+
     const request = signAttestRequest(
       env.soul,
       env.session,
@@ -212,6 +218,12 @@ describe("HttpDoorConnection", () => {
   });
 
   it("heartbeat matches InProcessDoorConnection", async () => {
+    const helloRequest = {
+      protocol_version: DOOR_PROTOCOL_VERSION,
+      soul_pubkey: encodePublicKey(env.soul.publicKey)
+    };
+    await env.httpClient.hello(helloRequest);
+
     const epoch = EPOCH + 1;
     const arrival = signAttestRequest(
       env.soul,
@@ -245,6 +257,12 @@ describe("HttpDoorConnection", () => {
   });
 
   it("cosign review matches InProcessDoorConnection", async () => {
+    const helloRequest = {
+      protocol_version: DOOR_PROTOCOL_VERSION,
+      soul_pubkey: encodePublicKey(env.soul.publicKey)
+    };
+    await env.httpClient.hello(helloRequest);
+
     const epoch = EPOCH + 2;
     const arrival = signAttestRequest(
       env.soul,
@@ -279,6 +297,12 @@ describe("HttpDoorConnection", () => {
   });
 
   it("throws DoorError on server DoorError responses", async () => {
+    const helloRequest = {
+      protocol_version: DOOR_PROTOCOL_VERSION,
+      soul_pubkey: encodePublicKey(env.soul.publicKey)
+    };
+    await env.httpClient.hello(helloRequest);
+
     const arrival = signAttestRequest(
       env.soul,
       env.session,
@@ -356,6 +380,152 @@ describe("HttpDoorConnection", () => {
         });
       });
     }
+  });
+
+  it("requires hello before attest, heartbeat, and cosign", async () => {
+    const arrival = signAttestRequest(
+      env.soul,
+      env.session,
+      {
+        protocol_version: DOOR_PROTOCOL_VERSION,
+        door_id: DOOR_ID,
+        epoch: EPOCH + 5,
+        kind: "arrival",
+        core: CORE,
+        session_pubkey: encodePublicKey(env.session.publicKey),
+        issued_at: ISSUED_AT
+      },
+      true
+    );
+    await expect(env.httpClient.attest(arrival)).rejects.toMatchObject({
+      code: "session_invalid"
+    });
+
+    const heartbeat = signHeartbeatRequest(env.session, {
+      protocol_version: DOOR_PROTOCOL_VERSION,
+      door_id: DOOR_ID,
+      epoch: EPOCH + 5,
+      session_pubkey: encodePublicKey(env.session.publicKey),
+      seq: 1,
+      issued_at: ISSUED_AT
+    });
+    await expect(env.httpClient.heartbeat(heartbeat)).rejects.toMatchObject({
+      code: "session_invalid"
+    });
+
+    const reviewRequest = signCosignReviewRequest(env.session, {
+      protocol_version: DOOR_PROTOCOL_VERSION,
+      phase: "review",
+      door_id: DOOR_ID,
+      epoch: EPOCH + 5,
+      session_pubkey: encodePublicKey(env.session.publicKey),
+      shards: sampleShards(5),
+      issued_at: ISSUED_AT
+    });
+    await expect(env.httpClient.cosign(reviewRequest)).rejects.toMatchObject({
+      code: "session_invalid"
+    });
+  });
+
+  it("rejects tampered attest response door_sig after verified hello", async () => {
+    const helloRequest = {
+      protocol_version: DOOR_PROTOCOL_VERSION,
+      soul_pubkey: encodePublicKey(env.soul.publicKey)
+    };
+    await env.httpClient.hello(helloRequest);
+
+    const originalFetch = globalThis.fetch;
+    const tamperedFetch: typeof fetch = async (input, init) => {
+      const response = await originalFetch(input, init);
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url.includes("/door/attest")) {
+        const json = (await response.json()) as Record<string, unknown>;
+        const doorSig = json.door_sig;
+        if (typeof doorSig === "string" && doorSig.length > 1) {
+          const flipped = doorSig.endsWith("A") ? "B" : "A";
+          json.door_sig = `${doorSig.slice(0, -1)}${flipped}`;
+        }
+        return new Response(JSON.stringify(json), {
+          status: response.status,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      return response;
+    };
+
+    vi.stubGlobal("fetch", tamperedFetch);
+    try {
+      const arrival = signAttestRequest(
+        env.soul,
+        env.session,
+        {
+          protocol_version: DOOR_PROTOCOL_VERSION,
+          door_id: DOOR_ID,
+          epoch: EPOCH + 6,
+          kind: "arrival",
+          core: CORE,
+          session_pubkey: encodePublicKey(env.session.publicKey),
+          issued_at: ISSUED_AT
+        },
+        true
+      );
+      await expect(env.httpClient.attest(arrival)).rejects.toMatchObject({
+        code: "signature_invalid"
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("happy path: hello then attest, heartbeat, and cosign review", async () => {
+    const helloRequest = {
+      protocol_version: DOOR_PROTOCOL_VERSION,
+      soul_pubkey: encodePublicKey(env.soul.publicKey)
+    };
+    const helloResponse = await env.httpClient.hello(helloRequest);
+    expect(helloResponse.door_id).toBe(DOOR_ID);
+
+    const epoch = EPOCH + 7;
+    const arrival = signAttestRequest(
+      env.soul,
+      env.session,
+      {
+        protocol_version: DOOR_PROTOCOL_VERSION,
+        door_id: DOOR_ID,
+        epoch,
+        kind: "arrival",
+        core: CORE,
+        session_pubkey: encodePublicKey(env.session.publicKey),
+        issued_at: ISSUED_AT
+      },
+      true
+    );
+    const attestResponse = await env.httpClient.attest(arrival);
+    expect(attestResponse.door_cosig).toBeTypeOf("string");
+    expect(attestResponse.door_sig).toBeTypeOf("string");
+
+    const heartbeat = signHeartbeatRequest(env.session, {
+      protocol_version: DOOR_PROTOCOL_VERSION,
+      door_id: DOOR_ID,
+      epoch,
+      session_pubkey: encodePublicKey(env.session.publicKey),
+      seq: 1,
+      issued_at: ISSUED_AT
+    });
+    const heartbeatResponse = await env.httpClient.heartbeat(heartbeat);
+    expect(heartbeatResponse.accepted).toBe(true);
+
+    const reviewRequest = signCosignReviewRequest(env.session, {
+      protocol_version: DOOR_PROTOCOL_VERSION,
+      phase: "review",
+      door_id: DOOR_ID,
+      epoch,
+      session_pubkey: encodePublicKey(env.session.publicKey),
+      shards: sampleShards(5),
+      issued_at: ISSUED_AT
+    });
+    const reviewResponse = await env.httpClient.cosign(reviewRequest);
+    expect(reviewResponse.phase).toBe("review");
   });
 });
 

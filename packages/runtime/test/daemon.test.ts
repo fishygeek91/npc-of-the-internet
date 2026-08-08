@@ -67,7 +67,8 @@ async function createDaemonTestEnv(): Promise<DaemonTestEnv> {
     doorId: DOOR_ID,
     doorKeypair: DOOR,
     soulPublicKey: SOUL.publicKey,
-    clock: { now: () => "2026-07-20T15:04:05.123Z" },
+    // Real clock so Session-issued timestamps stay within Door issued_at skew.
+    clock: { now: () => new Date().toISOString() },
     policy: defaultPolicy
   });
 

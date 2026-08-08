@@ -37,6 +37,16 @@ import {
   signDoorCosig
 } from "./signing.js";
 
+/** Default ±skew for Wanderer `issued_at` vs Door clock (5 minutes). */
+export const DEFAULT_MAX_ISSUED_AT_SKEW_MS = 300_000;
+
+/** Session lifecycle event emitted when a residency epoch is closed or superseded. */
+export type SessionLifecycleEvent = {
+  type: "retired" | "superseded";
+  doorId: string;
+  epoch: number;
+};
+
 /** Configuration for a transport-agnostic Door host core. */
 export type DoorOptions = {
   doorId: string;
@@ -44,6 +54,11 @@ export type DoorOptions = {
   soulPublicKey: Uint8Array;
   clock: Clock;
   policy: HostPolicy;
+  /**
+   * Max absolute skew between request `issued_at` and Door clock (ms).
+   * Defaults to {@link DEFAULT_MAX_ISSUED_AT_SKEW_MS}.
+   */
+  maxIssuedAtSkewMs?: number;
 };
 
 type ActiveSession = {
@@ -75,10 +90,15 @@ export class Door {
   private readonly soulPublicKey: Uint8Array;
   private readonly clock: Clock;
   private readonly policy: HostPolicy;
+  private readonly maxIssuedAtSkewMs: number;
   private activeSession: ActiveSession | null = null;
   private sessionRetired = false;
+  /** Highest arrival epoch ever accepted (in-memory; lost on process restart). */
+  private lastKnownEpoch: number | null = null;
   private lastHeartbeatSeq = 0;
   private cosignState: CosignEpochState | null = null;
+  private sessionLifecycleListener: ((event: SessionLifecycleEvent) => void) | null = null;
+  private sessionEndMsgCounter = 0;
 
   constructor(options: DoorOptions) {
     this.doorId = options.doorId;
@@ -86,6 +106,7 @@ export class Door {
     this.soulPublicKey = options.soulPublicKey;
     this.clock = options.clock;
     this.policy = options.policy;
+    this.maxIssuedAtSkewMs = options.maxIssuedAtSkewMs ?? DEFAULT_MAX_ISSUED_AT_SKEW_MS;
   }
 
   /** Active session public key after a successful arrival attest, if any. */
@@ -98,9 +119,50 @@ export class Door {
     return this.activeSession?.epoch ?? null;
   }
 
+  /** Highest arrival epoch accepted by this Door process, if any. */
+  getLastKnownEpoch(): number | null {
+    return this.lastKnownEpoch;
+  }
+
   /** Current timestamp from the injected clock (for transport-issued frames). */
   now(): string {
     return this.clock.now();
+  }
+
+  /**
+   * Register a listener for session retirement / supersession.
+   * Transports (e.g. WS) use this to close stale sockets.
+   */
+  setSessionLifecycleListener(listener: ((event: SessionLifecycleEvent) => void) | null): void {
+    this.sessionLifecycleListener = listener;
+  }
+
+  /**
+   * Build a Door-signed `session_end` control frame for the given epoch.
+   * Used by the WS transport when closing sockets after depart / supersede.
+   */
+  createSessionEndFrame(epoch: number, reason: string): ControlFrame {
+    this.sessionEndMsgCounter += 1;
+    const unsigned: UnsignedControlFrame = {
+      type: "control",
+      door_id: this.doorId,
+      epoch,
+      msg_id: `session_end_${String(this.sessionEndMsgCounter)}`,
+      issued_at: this.clock.now(),
+      body: { action: "session_end", reason }
+    };
+    const sig = signCanonical(
+      {
+        type: unsigned.type,
+        door_id: unsigned.door_id,
+        epoch: unsigned.epoch,
+        msg_id: unsigned.msg_id,
+        issued_at: unsigned.issued_at,
+        body: unsigned.body
+      },
+      this.doorKeypair.privateKey
+    );
+    return { ...unsigned, sig };
   }
 
   /** `POST /door/hello` — capability negotiation and signed community descriptor. */
@@ -158,6 +220,8 @@ export class Door {
       );
     }
 
+    this.assertIssuedAtFresh(request.issued_at);
+
     const payload = attestSigningPayload(request);
     const requestSig = decodeSignature(request.sig);
 
@@ -165,6 +229,16 @@ export class Door {
       if (!verify(payload, requestSig, this.soulPublicKey)) {
         throw DoorError.fromCode("signature_invalid", "arrival attest: invalid soul signature");
       }
+
+      // Replay defense: epoch must strictly exceed the highest ever accepted (in-memory).
+      if (this.lastKnownEpoch !== null && request.epoch <= this.lastKnownEpoch) {
+        throw DoorError.fromCode(
+          "epoch_replay",
+          `epoch_replay: arrival epoch ${String(request.epoch)} <= last known ${String(this.lastKnownEpoch)}`,
+          { field: "epoch", last_known: this.lastKnownEpoch, got: request.epoch }
+        );
+      }
+
       // Host policy must approve before any session state mutation (not_hosting).
       if (this.policy.acceptArrival !== undefined) {
         try {
@@ -181,6 +255,18 @@ export class Door {
           throw DoorError.fromCode("not_hosting", message, undefined, error);
         }
       }
+
+      // Supersession: strictly greater epoch retires any active different-epoch session.
+      if (this.activeSession !== null && this.activeSession.epoch !== request.epoch) {
+        const oldEpoch = this.activeSession.epoch;
+        this.activeSession = null;
+        this.emitSessionLifecycle({
+          type: "superseded",
+          doorId: this.doorId,
+          epoch: oldEpoch
+        });
+      }
+
       this.activeSession = {
         epoch: request.epoch,
         sessionPubkey: request.session_pubkey
@@ -188,6 +274,7 @@ export class Door {
       this.sessionRetired = false;
       this.cosignState = null;
       this.lastHeartbeatSeq = 0;
+      this.lastKnownEpoch = request.epoch;
     } else {
       // Spec: epoch_mismatch (409) when Door has an active session with a different epoch.
       if (this.activeSession !== null && this.activeSession.epoch !== request.epoch) {
@@ -205,8 +292,14 @@ export class Door {
         );
       }
       if (request.kind === "departure") {
+        const departedEpoch = request.epoch;
         this.activeSession = null;
         this.sessionRetired = true;
+        this.emitSessionLifecycle({
+          type: "retired",
+          doorId: this.doorId,
+          epoch: departedEpoch
+        });
       }
     }
 
@@ -299,6 +392,8 @@ export class Door {
         `door_id mismatch: expected ${this.doorId}, got ${request.door_id}`
       );
     }
+
+    this.assertIssuedAtFresh(request.issued_at);
 
     if (request.phase === "review") {
       return this.cosignReview(request);
@@ -705,6 +800,48 @@ export class Door {
       );
     }
   }
+
+  /**
+   * Reject Wanderer `issued_at` outside the configured absolute skew of Door clock.
+   * Invalid / non-ISO timestamps are treated as stale.
+   */
+  private assertIssuedAtFresh(issuedAt: string): void {
+    const issuedMs = parseIsoToMs(issuedAt);
+    const nowMs = parseIsoToMs(this.clock.now());
+    if (issuedMs === null || nowMs === null) {
+      throw DoorError.fromCode(
+        "timestamp_stale",
+        "timestamp_stale: issued_at is not a valid ISO 8601 timestamp",
+        { field: "issued_at", got: issuedAt }
+      );
+    }
+    const skew = Math.abs(nowMs - issuedMs);
+    if (skew > this.maxIssuedAtSkewMs) {
+      throw DoorError.fromCode(
+        "timestamp_stale",
+        `timestamp_stale: issued_at skew ${String(skew)}ms exceeds max ${String(this.maxIssuedAtSkewMs)}ms`,
+        {
+          field: "issued_at",
+          got: issuedAt,
+          door_now: this.clock.now(),
+          max_skew_ms: this.maxIssuedAtSkewMs
+        }
+      );
+    }
+  }
+
+  private emitSessionLifecycle(event: SessionLifecycleEvent): void {
+    this.sessionLifecycleListener?.(event);
+  }
+}
+
+/** Parse an ISO 8601 timestamp to epoch milliseconds; null when invalid. */
+function parseIsoToMs(value: string): number | null {
+  const ms = Date.parse(value);
+  if (Number.isNaN(ms)) {
+    return null;
+  }
+  return ms;
 }
 
 /** Read `protocol_version` from an untyped hello request body, if present. */

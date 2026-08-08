@@ -54,6 +54,10 @@ export class WsDoorSessionServer {
     this.host = options.host ?? "127.0.0.1";
     this.port = options.port ?? 0;
     this.externalServer = options.server;
+    // Close WS clients when Door retires or supersedes an epoch.
+    this.door.setSessionLifecycleListener((event) => {
+      this.closeSessionClients(event.doorId, event.epoch, event.type);
+    });
   }
 
   /** Start the WebSocket session endpoint and return its URL. */
@@ -186,15 +190,47 @@ export class WsDoorSessionServer {
   }
 
   /**
-   * Broadcast a Door-originated inbound frame to all bound session clients.
-   * Used by tests to simulate community-originated traffic.
+   * Broadcast a Door-originated inbound frame to bound clients for the active epoch only.
+   * Used by tests / host relays to simulate community-originated traffic.
    */
   broadcastInbound(body: InboundFrame["body"], msg_id: string): void {
+    const activeEpoch = this.door.getActiveEpoch();
+    if (activeEpoch === null) {
+      throw DoorError.fromCode("session_invalid", "session_invalid: no active session");
+    }
     const frame = this.door.createInboundFrame({ body, msg_id });
     const payload = JSON.stringify(frame);
     for (const client of this.clients) {
-      if (client.socket.readyState === WebSocket.OPEN) {
+      if (
+        client.doorId === frame.door_id &&
+        client.epoch === activeEpoch &&
+        client.socket.readyState === WebSocket.OPEN
+      ) {
         client.socket.send(payload);
+      }
+    }
+  }
+
+  /**
+   * Send `session_end` (when possible) and close all sockets bound to `(doorId, epoch)`.
+   */
+  closeSessionClients(doorId: string, epoch: number, reason: string): void {
+    const toClose: BoundClient[] = [];
+    for (const client of this.clients) {
+      if (client.doorId === doorId && client.epoch === epoch) {
+        toClose.push(client);
+      }
+    }
+    for (const client of toClose) {
+      this.clients.delete(client);
+      if (client.socket.readyState === WebSocket.OPEN) {
+        try {
+          const frame = this.door.createSessionEndFrame(epoch, reason);
+          client.socket.send(JSON.stringify(frame));
+        } catch {
+          // Best-effort: still close even if session_end cannot be signed/sent.
+        }
+        client.socket.close();
       }
     }
   }

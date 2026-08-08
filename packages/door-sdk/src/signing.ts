@@ -10,11 +10,15 @@ import {
 
 import type {
   AttestRequest,
+  AttestResponse,
   CandidateShard,
   CosignRequest,
+  CosignResponse,
   HeartbeatRequest,
+  HeartbeatResponse,
   HelloResponse,
-  OutboundFrame
+  OutboundFrame,
+  ReviewDecision
 } from "./schemas.js";
 
 /** Fields covered by `/door/attest` request `sig` (excludes `protocol_version`). */
@@ -123,6 +127,57 @@ export function sessionBindSigningPayload(fields: {
 /** Canonical bytes for `/door/hello` response `sig` (all fields except `sig`). */
 export function helloResponseSigningPayload(response: Omit<HelloResponse, "sig">): Uint8Array {
   return canonicalize(response);
+}
+
+/** Canonical bytes for `/door/attest` response `door_sig`. */
+export function attestResponseSigningPayload(
+  response: Omit<AttestResponse, "door_sig">
+): Uint8Array {
+  return canonicalize({
+    door_id: response.door_id,
+    epoch: response.epoch,
+    kind: response.kind,
+    door_cosig: response.door_cosig,
+    received_at: response.received_at
+  });
+}
+
+/** Canonical bytes for `/door/heartbeat` response `door_sig`. */
+export function heartbeatResponseSigningPayload(
+  response: Omit<HeartbeatResponse, "door_sig">
+): Uint8Array {
+  return canonicalize({
+    door_id: response.door_id,
+    epoch: response.epoch,
+    seq: response.seq,
+    accepted: response.accepted,
+    received_at: response.received_at
+  });
+}
+
+/** Canonical bytes for `/door/cosign` review response `door_sig`. */
+export function cosignReviewResponseSigningPayload(fields: {
+  door_id: string;
+  epoch: number;
+  phase: "review";
+  decisions: ReviewDecision[];
+  received_at: string;
+}): Uint8Array {
+  return canonicalize(fields);
+}
+
+/** Canonical bytes for `/door/cosign` commit response `door_sig`. */
+export function cosignCommitResponseSigningPayload(
+  response: Omit<Extract<CosignResponse, { phase: "commit" }>, "door_sig">
+): Uint8Array {
+  return canonicalize({
+    door_id: response.door_id,
+    epoch: response.epoch,
+    phase: response.phase,
+    shard_id: response.shard_id,
+    door_cosig: response.door_cosig,
+    received_at: response.received_at
+  });
 }
 
 /**
