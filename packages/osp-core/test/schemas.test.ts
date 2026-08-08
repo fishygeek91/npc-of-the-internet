@@ -252,4 +252,47 @@ describe("RecordSchema", () => {
       expect(paths.some((path) => path.startsWith("cosigners"))).toBe(true);
     }
   });
+
+  it("rejects non-ISO-UTC timestamps", () => {
+    const result = RecordSchema.safeParse({
+      ...VALID_GENESIS,
+      body: {
+        ...VALID_GENESIS.body,
+        created_at: "2026-01-01 00:00:00"
+      }
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      const paths = result.error.issues.map((issue) => issue.path.join("."));
+      expect(paths).toContain("body.created_at");
+    }
+  });
+
+  it("rejects non-CID fork_point", () => {
+    const result = RecordSchema.safeParse({
+      ...VALID_GENESIS,
+      body: {
+        ...VALID_GENESIS.body,
+        fork_point: "not-a-cid",
+        fork_reason: "test fork"
+      }
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      const paths = result.error.issues.map((issue) => issue.path.join("."));
+      expect(paths).toContain("body.fork_point");
+    }
+  });
+
+  it("accepts genesis with CidSchema fork_point", () => {
+    const result = RecordSchema.safeParse({
+      ...VALID_GENESIS,
+      body: {
+        ...VALID_GENESIS.body,
+        fork_point: PREV_CID,
+        fork_reason: "continuing lineage"
+      }
+    });
+    expect(result.success).toBe(true);
+  });
 });

@@ -1,6 +1,7 @@
 export {
   OSP_SPEC,
   POP_VERSION,
+  IsoUtcTimestampSchema,
   GenesisBodySchema,
   ShardBodySchema,
   CandidateBodySchema,

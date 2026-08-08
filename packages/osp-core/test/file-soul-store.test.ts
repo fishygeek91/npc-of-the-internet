@@ -17,6 +17,7 @@ import {
   ChainMismatchError,
   ConcurrentAppendError,
   StorageError,
+  VerificationError,
   type OspRecord,
   type Ed25519Keypair
 } from "../src/index.js";
@@ -604,6 +605,170 @@ describe("FileSoulStore", () => {
       expect(iterated[1]?.seq).toBe(1);
     } finally {
       await verified.close();
+    }
+  });
+
+  it("rejects append with an invalid soul signature and leaves the store openable", async () => {
+    const store = await FileSoulStore.open(dir);
+    try {
+      const { record } = await createGenesisRecord(soul);
+      const badSigChar = record.sig[4] === "A" ? "B" : "A";
+      const badRecord: OspRecord = {
+        ...record,
+        sig: record.sig.slice(0, 4) + badSigChar + record.sig.slice(5)
+      };
+      await expect(store.append(badRecord)).rejects.toThrow(VerificationError);
+      expect(await store.head()).toBeNull();
+    } finally {
+      await store.close();
+    }
+
+    const reopened = await FileSoulStore.open(dir);
+    try {
+      expect(await reopened.head()).toBeNull();
+      await appendGenesis(reopened, soul);
+      expect((await reopened.head())?.seq).toBe(0);
+    } finally {
+      await reopened.close();
+    }
+  });
+
+  it("rejects non-genesis at seq 0 and leaves the store openable", async () => {
+    const store = await FileSoulStore.open(dir);
+    try {
+      const { record } = await createRecord({
+        seq: 0,
+        prev: null,
+        type: "memory",
+        body: {
+          kind: "candidate",
+          text: "Not a genesis.",
+          proposed_at: "2026-01-02T00:00:00.000Z"
+        },
+        residency: null,
+        cosigners: [],
+        soulPrivateKey: soul.privateKey
+      });
+      await expect(store.append(record)).rejects.toThrow(ChainMismatchError);
+      await expect(store.append(record)).rejects.toThrow(/type genesis/);
+      expect(await store.head()).toBeNull();
+    } finally {
+      await store.close();
+    }
+
+    const reopened = await FileSoulStore.open(dir);
+    try {
+      expect(await reopened.head()).toBeNull();
+    } finally {
+      await reopened.close();
+    }
+  });
+
+  it("openWithRecovery refuses while a live lock-holder exists", async () => {
+    const store = await FileSoulStore.open(dir);
+    try {
+      await appendGenesis(store, soul);
+    } finally {
+      await store.close();
+    }
+
+    const lockPath = path.join(dir, LOCK_FILE);
+    const meta = JSON.stringify({
+      pid: process.pid,
+      acquiredAt: new Date().toISOString()
+    });
+    await writeFile(lockPath, `${meta}\n`, { flag: "wx" });
+
+    await expect(FileSoulStore.openWithRecovery(dir)).rejects.toThrow(ConcurrentAppendError);
+    await expect(FileSoulStore.openWithRecovery(dir)).rejects.toThrow(/live \.append\.lock/);
+
+    await rm(lockPath, { force: true });
+    const { store: recovered } = await FileSoulStore.openWithRecovery(dir);
+    try {
+      expect((await recovered.head())?.seq).toBe(0);
+    } finally {
+      await recovered.close();
+    }
+  });
+
+  it("openWithRecovery clears a dead-PID or legacy empty lock", async () => {
+    const store = await FileSoulStore.open(dir);
+    try {
+      await appendGenesis(store, soul);
+    } finally {
+      await store.close();
+    }
+
+    const lockPath = path.join(dir, LOCK_FILE);
+    await writeFile(
+      lockPath,
+      `${JSON.stringify({ pid: 2_147_483_647, acquiredAt: new Date().toISOString() })}\n`,
+      { flag: "wx" }
+    );
+
+    const { store: recovered } = await FileSoulStore.openWithRecovery(dir);
+    try {
+      expect((await recovered.head())?.seq).toBe(0);
+    } finally {
+      await recovered.close();
+    }
+
+    await writeFile(lockPath, "", { flag: "wx" });
+    const { store: recoveredLegacy } = await FileSoulStore.openWithRecovery(dir);
+    try {
+      expect((await recoveredLegacy.head())?.seq).toBe(0);
+    } finally {
+      await recoveredLegacy.close();
+    }
+  });
+
+  it("rejects a non-canonical chain line on open", async () => {
+    const store = await FileSoulStore.open(dir);
+    let record: OspRecord;
+    try {
+      const created = await createGenesisRecord(soul);
+      record = created.record;
+      await store.append(record);
+    } finally {
+      await store.close();
+    }
+
+    // Valid JSON with whitespace after `{` — not OSP canonical form.
+    const compact = JSON.stringify(record);
+    const nonCanonicalJson = `{ ${compact.slice(1)}`;
+    const lineBytes = new TextEncoder().encode(nonCanonicalJson);
+    const cid = await computeCidFromCanonicalBytes(lineBytes);
+    await writeFile(
+      path.join(dir, CHAIN_FILE),
+      Buffer.concat([Buffer.from(lineBytes), Buffer.from("\n")])
+    );
+    await writeFile(path.join(dir, "blobs", cid), Buffer.from(lineBytes));
+
+    await expect(FileSoulStore.open(dir)).rejects.toThrow(CorruptionError);
+    await expect(FileSoulStore.open(dir)).rejects.toThrow(/non-canonical chain line/);
+  });
+
+  it("rejects trailing empty chain lines on open and strips them in recovery", async () => {
+    const store = await FileSoulStore.open(dir);
+    try {
+      await appendGenesis(store, soul);
+    } finally {
+      await store.close();
+    }
+
+    const chainPath = path.join(dir, CHAIN_FILE);
+    const existing = await readFile(chainPath);
+    await writeFile(chainPath, Buffer.concat([existing, Buffer.from("\n")]));
+
+    await expect(FileSoulStore.open(dir)).rejects.toThrow(CorruptionError);
+    await expect(FileSoulStore.open(dir)).rejects.toThrow(/empty line/);
+
+    const { store: recovered, truncatedBytes } = await FileSoulStore.openWithRecovery(dir);
+    try {
+      expect(truncatedBytes).toBeGreaterThan(0);
+      expect((await recovered.head())?.seq).toBe(0);
+    } finally {
+      await recovered.close();
     }
   });
 });

@@ -7,6 +7,14 @@ import { EncodingError } from "../errors.js";
 /** OSP spec version literal for all soulchain records. */
 export const OSP_SPEC = "osp/0.1" as const;
 
+/** ISO-8601 UTC timestamp ending in Z (fractional seconds optional). */
+const ISO_UTC_TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?Z$/;
+
+/** Zod schema for ISO-8601 UTC timestamps per spec/osp/records.md. */
+export const IsoUtcTimestampSchema = z
+  .string()
+  .regex(ISO_UTC_TIMESTAMP_RE, "must be an ISO-8601 UTC timestamp ending in Z");
+
 /** PoP spec version literal for attestation bodies. */
 export const POP_VERSION = "pop/0.1" as const;
 
@@ -55,8 +63,8 @@ export const GenesisBodySchema = z
   .object({
     charter: z.string(),
     soul_pubkey: PublicKeyStringSchema,
-    created_at: z.string(),
-    fork_point: z.string().optional(),
+    created_at: IsoUtcTimestampSchema,
+    fork_point: CidSchema.optional(),
     fork_reason: z.string().optional()
   })
   .strict()
@@ -77,7 +85,7 @@ export const ShardBodySchema = z
     text: MemoryTextSchema,
     candidate_cid: CidSchema.optional(),
     journal: z.string().optional(),
-    distilled_at: z.string()
+    distilled_at: IsoUtcTimestampSchema
   })
   .strict();
 
@@ -86,7 +94,7 @@ export const CandidateBodySchema = z
   .object({
     kind: z.literal("candidate"),
     text: MemoryTextSchema,
-    proposed_at: z.string()
+    proposed_at: IsoUtcTimestampSchema
   })
   .strict();
 
@@ -96,7 +104,7 @@ export const RejectedBodySchema = z
     kind: z.literal("rejected"),
     category: z.string(),
     candidate_cid: CidSchema.optional(),
-    rejected_at: z.string()
+    rejected_at: IsoUtcTimestampSchema
   })
   .strict();
 
@@ -112,7 +120,7 @@ export const DriftBodySchema = z
   .object({
     summary: z.string(),
     evidence: z.array(CidSchema).min(1),
-    effective_at: z.string()
+    effective_at: IsoUtcTimestampSchema
   })
   .strict();
 
@@ -122,7 +130,7 @@ export const DecisionBodySchema = z
     decision: z.string(),
     reasoning: z.string(),
     inputs: z.record(z.string(), z.unknown()).optional(),
-    decided_at: z.string()
+    decided_at: IsoUtcTimestampSchema
   })
   .strict();
 
@@ -135,7 +143,7 @@ export const TransactionBodySchema = z
     counterparty: z.string().optional(),
     memo: z.string().optional(),
     tx_ref: z.string().optional(),
-    executed_at: z.string()
+    executed_at: IsoUtcTimestampSchema
   })
   .strict();
 
@@ -145,7 +153,7 @@ export const SleepBodySchema = z
     reason: z.string(),
     balance: z.string(),
     threshold: z.string(),
-    as_of: z.string()
+    as_of: IsoUtcTimestampSchema
   })
   .strict();
 
@@ -157,7 +165,7 @@ export const ArrivalBodySchema = z
     door_id: z.string(),
     epoch: z.number().int().nonnegative(),
     session_pubkey: PublicKeyStringSchema,
-    at: z.string()
+    at: IsoUtcTimestampSchema
   })
   .strict();
 
@@ -169,7 +177,7 @@ export const HeartbeatBodySchema = z
     door_id: z.string(),
     epoch: z.number().int().nonnegative(),
     session_pubkey: PublicKeyStringSchema,
-    at: z.string()
+    at: IsoUtcTimestampSchema
   })
   .strict();
 
@@ -180,7 +188,7 @@ export const DepartureBodySchema = z
     pop_version: z.literal(POP_VERSION),
     door_id: z.string(),
     epoch: z.number().int().nonnegative(),
-    at: z.string()
+    at: IsoUtcTimestampSchema
   })
   .strict();
 
@@ -192,7 +200,7 @@ export const TravelBodySchema = z
     from_door_id: z.string(),
     from_epoch: z.number().int().nonnegative(),
     to_door_id: z.string().optional(),
-    at: z.string()
+    at: IsoUtcTimestampSchema
   })
   .strict();
 
@@ -208,7 +216,7 @@ export const HandoverBodySchema = z
     depart_attestation: z.string().optional(),
     rotate_attestation: z.string().optional(),
     arrive_attestation: z.string().optional(),
-    at: z.string()
+    at: IsoUtcTimestampSchema
   })
   .strict();
 

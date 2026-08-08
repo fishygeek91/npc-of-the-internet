@@ -114,7 +114,7 @@ async function accessMissingLock(dir: string): Promise<boolean> {
 describe("GET /state derivation branches", () => {
   it("returns sleeping for genesis-only chain", async () => {
     const dir = await makeTempDir("atlas-state-genesis-");
-    const store = await FileSoulStore.open(dir);
+    const store = await FileSoulStore.open(dir, { doorPublicKeys: doorPublicKeys() });
     try {
       const genesis = await createGenesisRecord(DEFAULT_SOUL);
       await store.append(genesis.record);
@@ -204,7 +204,7 @@ describe("GET /state derivation branches", () => {
 });
 
 async function buildArrivalChain(dir: string): Promise<void> {
-  const store = await FileSoulStore.open(dir);
+  const store = await FileSoulStore.open(dir, { doorPublicKeys: doorPublicKeys() });
   try {
     const genesis = await createGenesisRecord(DEFAULT_SOUL);
     await store.append(genesis.record);
@@ -226,7 +226,7 @@ async function buildArrivalChain(dir: string): Promise<void> {
 }
 
 async function buildHeartbeatChain(dir: string): Promise<void> {
-  const store = await FileSoulStore.open(dir);
+  const store = await FileSoulStore.open(dir, { doorPublicKeys: doorPublicKeys() });
   try {
     const genesis = await createGenesisRecord(DEFAULT_SOUL);
     await store.append(genesis.record);
@@ -260,7 +260,7 @@ async function buildHeartbeatChain(dir: string): Promise<void> {
 }
 
 async function buildDepartureChain(dir: string): Promise<void> {
-  const store = await FileSoulStore.open(dir);
+  const store = await FileSoulStore.open(dir, { doorPublicKeys: doorPublicKeys() });
   try {
     const genesis = await createGenesisRecord(DEFAULT_SOUL);
     await store.append(genesis.record);
@@ -293,7 +293,7 @@ async function buildDepartureChain(dir: string): Promise<void> {
 }
 
 async function buildTravelChain(dir: string): Promise<void> {
-  const store = await FileSoulStore.open(dir);
+  const store = await FileSoulStore.open(dir, { doorPublicKeys: doorPublicKeys() });
   try {
     const genesis = await createGenesisRecord(DEFAULT_SOUL);
     await store.append(genesis.record);
@@ -389,7 +389,7 @@ describe("schema-invalid mid-chain records", () => {
 describe("chain reload", () => {
   it("reflects newly appended records on subsequent requests", async () => {
     const dir = await makeTempDir("atlas-reload-");
-    const store = await FileSoulStore.open(dir);
+    const store = await FileSoulStore.open(dir, { doorPublicKeys: doorPublicKeys() });
     try {
       const genesis = await createGenesisRecord(DEFAULT_SOUL);
       await store.append(genesis.record);
@@ -402,7 +402,7 @@ describe("chain reload", () => {
       const before = await app.inject({ method: "GET", url: "/chain/head" });
       expect(before.json()).toMatchObject({ seq: 0, kind: "genesis" });
 
-      const writer = await FileSoulStore.open(dir);
+      const writer = await FileSoulStore.open(dir, { doorPublicKeys: doorPublicKeys() });
       try {
         const head = await writer.head();
         if (head === null) {

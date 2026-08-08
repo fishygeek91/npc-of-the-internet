@@ -12,7 +12,10 @@ import {
   verifyRecords,
   verifyChain,
   type Ed25519Keypair,
-  type OspRecord
+  type OspRecord,
+  type SoulStore,
+  type HeadInfo,
+  type AppendResult
 } from "../src/index.js";
 
 const RESIDENCY = "door:discord:g/epoch:1";
@@ -302,5 +305,31 @@ describe("verifyChain", () => {
     } finally {
       await store.close();
     }
+  });
+
+  it("rejects when store head is set but iterate yields no records", async () => {
+    const staleHead: HeadInfo = { cid: "bagu" + "b".repeat(57), seq: 0 };
+    const store: SoulStore = {
+      async append(_record: OspRecord): Promise<AppendResult> {
+        throw new Error("unused");
+      },
+      async head(): Promise<HeadInfo | null> {
+        return staleHead;
+      },
+      async get(_cid: string): Promise<OspRecord> {
+        throw new Error("unused");
+      },
+      async *iterate(): AsyncIterable<OspRecord> {
+        // Empty chain view.
+      }
+    };
+
+    const result = await verifyChain(store);
+    expect(result.valid).toBe(false);
+    if (result.valid) {
+      return;
+    }
+    expect(result.failures[0]?.rule).toBe("forked_head");
+    expect(result.failures[0]?.message).toMatch(/verified chain is empty/);
   });
 });
