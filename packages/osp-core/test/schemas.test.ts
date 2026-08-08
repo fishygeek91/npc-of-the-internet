@@ -10,6 +10,7 @@ const TEST_SESSION_PUBKEY = encodePublicKey(new Uint8Array(32).fill(2));
 /** Deterministic 64-byte test signatures (distinct fill bytes). */
 const TEST_SOUL_SIG = encodeSignature(new Uint8Array(64).fill(3));
 const TEST_DOOR_COSIG = encodeSignature(new Uint8Array(64).fill(4));
+const TEST_DOOR_COSIG_ALT = encodeSignature(new Uint8Array(64).fill(5));
 
 const PREV_CID = "bagu" + "a".repeat(57);
 const RESIDENCY = "door:discord:guild123/epoch:1";
@@ -196,6 +197,41 @@ describe("RecordSchema", () => {
     if (!result.success) {
       const paths = result.error.issues.map((issue) => issue.path.join("."));
       expect(paths).toContain("body.door_id");
+    }
+  });
+
+  it("rejects attestation body.epoch mismatch with residency epoch", () => {
+    const result = RecordSchema.safeParse({
+      ...VALID_ARRIVAL,
+      body: {
+        ...VALID_ARRIVAL.body,
+        epoch: 2
+      }
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      const paths = result.error.issues.map((issue) => issue.path.join("."));
+      expect(paths).toContain("body.epoch");
+      const messages = result.error.issues.map((issue) => issue.message);
+      expect(messages.some((message) => message.includes("epoch portion of residency"))).toBe(true);
+    }
+  });
+
+  it("rejects unsorted cosigners", () => {
+    const sortedFirst =
+      TEST_DOOR_COSIG < TEST_DOOR_COSIG_ALT ? TEST_DOOR_COSIG : TEST_DOOR_COSIG_ALT;
+    const sortedSecond =
+      TEST_DOOR_COSIG < TEST_DOOR_COSIG_ALT ? TEST_DOOR_COSIG_ALT : TEST_DOOR_COSIG;
+    const result = RecordSchema.safeParse({
+      ...VALID_SHARD,
+      cosigners: [sortedSecond, sortedFirst]
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      const messages = result.error.issues.map((issue) => issue.message);
+      expect(
+        messages.some((message) => message.includes("strictly ascending lexicographic order"))
+      ).toBe(true);
     }
   });
 

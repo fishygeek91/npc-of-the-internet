@@ -8,7 +8,7 @@ import { SessionError } from "../src/session/errors.js";
 import type { InboundFrame, OutboundFrame } from "../src/session/types.js";
 import { DoorStub } from "./helpers/door-stub.js";
 import { FakeClock, FakeTimer } from "./helpers/fake-timer.js";
-import { createGenesisRecord, DOOR_ID } from "./helpers/fixtures.js";
+import { createGenesisRecord, DOOR_ID, doorPublicKeyFor } from "./helpers/fixtures.js";
 import { DOOR, SOUL } from "./helpers/fixed-keys.js";
 import { MemorySoulStore } from "./helpers/memory-soul-store.js";
 
@@ -73,7 +73,7 @@ describe("Session integration (20-message residency)", () => {
       timer,
       clock,
       heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS,
-      doorPublicKeys: [DOOR.publicKey]
+      doorPublicKeys: doorPublicKeyFor(DOOR_ID, DOOR.publicKey)
     });
 
     const expectedSessionPubkey = encodePublicKey(session.sessionPublicKey);
@@ -151,7 +151,9 @@ describe("Session integration (20-message residency)", () => {
       }
     }
 
-    const chainResult = await verifyChain(store, { doorPublicKeys: [DOOR.publicKey] });
+    const chainResult = await verifyChain(store, {
+      doorPublicKeys: doorPublicKeyFor(DOOR_ID, DOOR.publicKey)
+    });
     expect(chainResult.valid).toBe(true);
 
     expect(outbounds).toHaveLength(MESSAGE_COUNT);

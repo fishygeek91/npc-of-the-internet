@@ -1,4 +1,4 @@
-/** Chain verification failure rule identifiers (T1.3). */
+/** Chain verification failure rule identifiers (T1.3 + Bug #68). */
 export type ChainRule =
   | "bad_soul_sig"
   | "broken_prev_link"
@@ -7,7 +7,9 @@ export type ChainRule =
   | "missing_cosigner"
   | "forked_head"
   | "bad_genesis"
-  | "bad_drift_evidence";
+  | "bad_drift_evidence"
+  | "bad_session_continuity"
+  | "presence_conflict";
 
 /** A single chain verification failure at a sequence position. */
 export type ChainFailure = {

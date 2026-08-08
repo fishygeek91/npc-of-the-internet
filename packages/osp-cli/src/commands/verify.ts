@@ -3,8 +3,9 @@ import * as path from "node:path";
 
 import {
   CorruptionError,
-  decodePublicKey,
+  EncodingError,
   FileSoulStore,
+  parseDoorPublicKeyMap,
   StorageError,
   type ChainFailure
 } from "@npc/osp-core";
@@ -56,15 +57,22 @@ export async function runVerify(options: VerifyOptions): Promise<number> {
     return EXIT_USAGE;
   }
 
-  const doorPublicKeys =
-    options.doorKeys === undefined
-      ? undefined
-      : options.doorKeys.map((encoded) => decodePublicKey(encoded));
+  let doorPublicKeys: Readonly<Record<string, Uint8Array>> | undefined;
+  if (options.doorKeys !== undefined && options.doorKeys.length > 0) {
+    try {
+      doorPublicKeys = parseDoorPublicKeyMap(options.doorKeys);
+    } catch (error) {
+      if (error instanceof EncodingError) {
+        writeStderr(error.message);
+        return EXIT_USAGE;
+      }
+      throw error;
+    }
+  }
 
   let store: FileSoulStore;
   try {
-    const openOptions =
-      doorPublicKeys === undefined ? undefined : { doorPublicKeys: doorPublicKeys };
+    const openOptions = doorPublicKeys === undefined ? undefined : { doorPublicKeys };
     store = await FileSoulStore.openReadOnly(options.dir, openOptions);
   } catch (error) {
     if (error instanceof StorageError) {

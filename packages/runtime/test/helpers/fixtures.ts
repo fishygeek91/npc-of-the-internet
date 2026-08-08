@@ -12,6 +12,7 @@ import { MemorySoulStore } from "./memory-soul-store.js";
 
 export const RESIDENCY = "door:discord:g/epoch:1";
 export const DOOR_ID = "discord:g";
+export const OTHER_DOOR_ID = "irc:libera-wanderer";
 
 export const CHARTER = "# Wanderer\n\nI travel the doors.";
 export const SHARD_A_TEXT = "I remember the quiet guild hall.";
@@ -23,12 +24,28 @@ export const JOURNAL_TEXT = "host-facing journal must not appear";
 
 export type FixtureResult = {
   store: MemorySoulStore;
-  doorPublicKeys: readonly Uint8Array[];
+  doorPublicKeys: Readonly<Record<string, Uint8Array>>;
 };
 
 export type FixtureBResult = FixtureResult & {
   shardRecords: readonly [OspRecord, OspRecord];
 };
+
+/** Door public keys for fixture chains (both residency doors). */
+export function fixtureDoorPublicKeys(): Readonly<Record<string, Uint8Array>> {
+  return {
+    [DOOR_ID]: DOOR.publicKey,
+    [OTHER_DOOR_ID]: OTHER_DOOR.publicKey
+  };
+}
+
+/** Single-door public key map for tests that cosign under one residency. */
+export function doorPublicKeyFor(
+  doorId: string,
+  publicKey: Uint8Array
+): Readonly<Record<string, Uint8Array>> {
+  return { [doorId]: publicKey };
+}
 
 /** Build a signed genesis record. */
 export async function createGenesisRecord(soul: Ed25519Keypair): Promise<CreateRecordResult> {
@@ -205,7 +222,7 @@ export async function buildFixtureA(): Promise<FixtureResult> {
 
   return {
     store,
-    doorPublicKeys: [DOOR.publicKey, OTHER_DOOR.publicKey]
+    doorPublicKeys: fixtureDoorPublicKeys()
   };
 }
 
@@ -244,7 +261,7 @@ export async function buildFixtureB(): Promise<FixtureBResult> {
 
   return {
     store,
-    doorPublicKeys: [DOOR.publicKey, OTHER_DOOR.publicKey],
+    doorPublicKeys: fixtureDoorPublicKeys(),
     shardRecords: [shardA.record, shardB.record]
   };
 }

@@ -1,11 +1,26 @@
 {
-  "description": "Chain begins with an arrival attestation instead of genesis",
-  "expected": "bad_genesis",
+  "description": "Two cosigner signatures are not in strictly ascending lexicographic order",
+  "expected": "schema_violation",
   "soulPublicKey": "6kpsY-KcUgq-9VB7Ey7F-ZVHdq6-vnuSQh7qaRRG0iw",
   "doorPublicKeys": {
-    "discord:g": "E5j2LG0aRXxRumpLXz29L2n8qTIWIY3ImX5Ba9F9k8o"
+    "discord:g": "E5j2LG0aRXxRumpLXz29L2n8qTIWIY3ImX5Ba9F9k8o",
+    "irc:other": "Q6cucUQBdi32a2jCbfvfJoKq7J8kdOykYT5CSg-6_Tw"
   },
   "records": [
+    {
+      "spec": "osp/0.1",
+      "seq": 0,
+      "prev": null,
+      "residency": null,
+      "cosigners": [],
+      "sig": "N7-28uz8HA7Hi_4SFEx8_-FdJ53rk5jEGPuKuWnggMY0W4hFKELQU_E0IYAG7Sdfg7y4XXIfZUiHNGekFvQPBw",
+      "type": "genesis",
+      "body": {
+        "charter": "# Wanderer",
+        "soul_pubkey": "6kpsY-KcUgq-9VB7Ey7F-ZVHdq6-vnuSQh7qaRRG0iw",
+        "created_at": "2026-01-01T00:00:00.000Z"
+      }
+    },
     {
       "spec": "osp/0.1",
       "seq": 1,
@@ -31,28 +46,15 @@
       "prev": "baguqeera7etvhlmlq3lfysn2mfvtb45uzrfhngc3xb5b7q7z43tzt23tha3a",
       "residency": "door:discord:g/epoch:1",
       "cosigners": [
-        "QSNecRdM0DW3enznojvFGK4hg4519mF-2SvUzBM2yqrAJymlj9xpIc5ksdbfazk8aEe_8Stsxbp4xjwUpDThCg"
+        "ZVumTPPILpN_5-s-nHlaUZq329evwiARwo9MszKU1p4hF47DdvLb3lR_oZsJEOSNyHYp5_0_pDmhRAnNMLc6Ag",
+        "CvMCyeIJ5pzf_mX2sMmnWX6NS76ZOaA5-TnMgFEgSVriD4N5cmnFVUx4cYJxT9JOanxU-5-V0IyLwdEBXutbAQ"
       ],
-      "sig": "pi_93KDvjY9WaGdmU6e7Fim8vn_MGa4Aw736p1ulrcpEI508PXJS1DA06mEi2Xh5hkmJIvFFxLbwgodnUcL6Bw",
+      "sig": "T3Hm_0Q9qBkoLSs1tUuzIXwdWP6YzUN8OSaE49zZMeiwLId1aSgRe3bIuW3zos5Pd8d1EaGiJ-TvydebuQaWBA",
       "type": "memory",
       "body": {
         "kind": "shard",
-        "text": "A committed shard memory.",
+        "text": "Shard with two Door cosignatures.",
         "distilled_at": "2026-01-02T01:00:00.000Z"
-      }
-    },
-    {
-      "spec": "osp/0.1",
-      "seq": 3,
-      "prev": "baguqeeraguo6fhkqxgwm3w3jcourp5ns2mojqpk6npinww3jg72yf6bxspwq",
-      "residency": "door:discord:g/epoch:1",
-      "cosigners": [],
-      "sig": "mLSBB4ATKo-d3m7VdBsxkOXHlhXPvJZfZ7lpYneerjmsU2-maoun61oUD2-p9cU0sBm4JD8v0HXIoa5IwsyaCQ",
-      "type": "drift",
-      "body": {
-        "summary": "I feel more patient after the long stay.",
-        "evidence": ["baguqeeraguo6fhkqxgwm3w3jcourp5ns2mojqpk6npinww3jg72yf6bxspwq"],
-        "effective_at": "2026-01-03T00:00:00.000Z"
       }
     }
   ]

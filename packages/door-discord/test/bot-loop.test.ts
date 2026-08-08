@@ -56,7 +56,7 @@ describe("bot-loop safety", () => {
       clock,
       timer,
       heartbeatIntervalMs: 60_000,
-      doorPublicKeys: [DOOR.publicKey]
+      doorPublicKeys: { [doorIdForGuild(GUILD_ID)]: DOOR.publicKey }
     });
 
     await gateway.emitMessage({

@@ -27,7 +27,7 @@ type ChainFingerprint = {
 
 export type ChainViewOptions = {
   chainDir: string;
-  doorPublicKeys?: readonly Uint8Array[];
+  doorPublicKeys?: Readonly<Record<string, Uint8Array>>;
 };
 
 /**
@@ -36,7 +36,7 @@ export type ChainViewOptions = {
  */
 export class ChainView {
   private readonly chainPath: string;
-  private readonly doorPublicKeys: readonly Uint8Array[] | undefined;
+  private readonly doorPublicKeys: Readonly<Record<string, Uint8Array>> | undefined;
   private fingerprint: ChainFingerprint | null;
   private cachedSnapshot: ChainSnapshot | null;
 

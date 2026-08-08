@@ -35,8 +35,9 @@ async function main(): Promise<void> {
   const soulPrivateKey = loadSoulPrivateKeyFromPath(soulKeyPath);
   const keyring = new SingleKeyKeyring(soulPrivateKey);
   const doorKeypair = loadDoorKeypairFromPath(config.doorKeyPath);
+  const doorId = doorIdForGuild(config.guildId);
   const store = await FileSoulStore.open(chainDir, {
-    doorPublicKeys: [doorKeypair.publicKey]
+    doorPublicKeys: { [doorId]: doorKeypair.publicKey }
   });
 
   const head = await store.head();
@@ -58,7 +59,6 @@ async function main(): Promise<void> {
     logger.info("wrote genesis");
   }
 
-  const doorId = doorIdForGuild(config.guildId);
   let session: Session | null = null;
 
   const handle = await startDiscordDoor({
@@ -110,7 +110,7 @@ async function main(): Promise<void> {
         }
       }
     },
-    doorPublicKeys: [doorKeypair.publicKey]
+    doorPublicKeys: { [doorId]: doorKeypair.publicKey }
   });
 
   logger.info({ doorId, status: handle.status() }, "arrived — chat in the bound channel");

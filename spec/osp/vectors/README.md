@@ -21,7 +21,7 @@ Each `*.json` file contains:
 | `description` | Human-readable case summary |
 | `expected` | `"valid"` or a `ChainRule` identifier (e.g. `bad_soul_sig`) |
 | `soulPublicKey` | Base64url-encoded soul public key (from genesis) |
-| `doorPublicKeys` | Door public keys passed to verification |
+| `doorPublicKeys` | Door public keys keyed by residency Door id (e.g. `"discord:g": "<base64url>"`) passed to verification |
 | `records` | Ordered signed OSP records |
 
 ## TEST-ONLY keys

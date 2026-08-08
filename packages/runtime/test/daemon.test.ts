@@ -45,7 +45,7 @@ async function createDaemonTestEnv(): Promise<DaemonTestEnv> {
   await writeFile(soulKeyPath, encodeBase64Url(SOUL.privateKey), "utf8");
 
   const store = await FileSoulStore.open(chainDir, {
-    doorPublicKeys: [DOOR.publicKey]
+    doorPublicKeys: { [DOOR_ID]: DOOR.publicKey }
   });
   const genesis = await createRecord({
     seq: 0,
@@ -87,7 +87,7 @@ async function createDaemonTestEnv(): Promise<DaemonTestEnv> {
     doorHttpHost: httpHost,
     doorHttpPort: httpPort,
     doorId: DOOR_ID,
-    doorPublicKeys: [DOOR.publicKey],
+    doorPublicKeys: { [DOOR_ID]: DOOR.publicKey },
     brain: {
       apiKey: "test-api-key",
       model: "claude-sonnet-4-20250514",
@@ -179,7 +179,7 @@ describe("startResidencyDaemon", () => {
     await expect(readFile(env.readyFilePath, "utf8")).rejects.toThrow();
 
     const reopened = await FileSoulStore.open(env.chainDir, {
-      doorPublicKeys: [DOOR.publicKey]
+      doorPublicKeys: { [DOOR_ID]: DOOR.publicKey }
     });
     await reopened.close();
   });

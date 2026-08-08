@@ -12,7 +12,7 @@ The Atlas API serves public chain state for the NPC of the Internet site and ope
 |----------|----------|---------|---------|
 | `ATLAS_CHAIN_DIR` | yes | — | Path to the soulchain directory (`chain.jsonl` + `blobs/`). |
 | `ATLAS_PORT` | no | `8787` | TCP port for the HTTP server. |
-| `ATLAS_DOOR_PUBKEYS` | no | — | Comma-separated base64url Ed25519 door public keys for cosignature verification. |
+| `ATLAS_DOOR_PUBKEYS` | no | — | Comma-separated `doorId=base64url` Ed25519 door public key bindings for cosignature verification. |
 
 Load configuration with `loadAtlasConfig()` or start the binary:
 

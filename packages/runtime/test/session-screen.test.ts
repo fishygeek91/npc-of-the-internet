@@ -8,7 +8,7 @@ import { Session } from "../src/session/session.js";
 import type { InboundFrame } from "../src/session/types.js";
 import { DoorStub } from "./helpers/door-stub.js";
 import { FakeClock, FakeTimer } from "./helpers/fake-timer.js";
-import { createGenesisRecord, DOOR_ID } from "./helpers/fixtures.js";
+import { createGenesisRecord, DOOR_ID, doorPublicKeyFor } from "./helpers/fixtures.js";
 import { DOOR, SOUL } from "./helpers/fixed-keys.js";
 import { MemorySoulStore } from "./helpers/memory-soul-store.js";
 
@@ -79,7 +79,7 @@ describe("Session inbound immune screen", () => {
       timer,
       clock,
       heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS,
-      doorPublicKeys: [DOOR.publicKey],
+      doorPublicKeys: doorPublicKeyFor(DOOR_ID, DOOR.publicKey),
       onScreenReject
     });
 
@@ -122,7 +122,9 @@ describe("Session inbound immune screen", () => {
       expect(records[1].body.kind).toBe("arrival");
     }
 
-    const chain = await verifyChain(store, { doorPublicKeys: [DOOR.publicKey] });
+    const chain = await verifyChain(store, {
+      doorPublicKeys: doorPublicKeyFor(DOOR_ID, DOOR.publicKey)
+    });
     expect(chain.valid).toBe(true);
 
     session.stop();
@@ -151,7 +153,7 @@ describe("Session inbound immune screen", () => {
       timer,
       clock,
       heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS,
-      doorPublicKeys: [DOOR.publicKey],
+      doorPublicKeys: doorPublicKeyFor(DOOR_ID, DOOR.publicKey),
       onScreenReject
     });
 

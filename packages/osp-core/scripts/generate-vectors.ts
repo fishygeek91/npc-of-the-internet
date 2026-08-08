@@ -21,7 +21,10 @@ import {
 
 ed.etc.sha512Sync = (...messages: Uint8Array[]) => sha512(ed.etc.concatBytes(...messages));
 
-const RESIDENCY = "door:discord:g/epoch:1";
+const DOOR_ID = "discord:g";
+const OTHER_DOOR_ID = "irc:other";
+const RESIDENCY = `door:${DOOR_ID}/epoch:1`;
+const OTHER_RESIDENCY = `door:${OTHER_DOOR_ID}/epoch:1`;
 const WRONG_PREV_CID = "bagu" + "a".repeat(57);
 
 /** TEST-ONLY: deterministic Ed25519 keypair from a fixed 32-byte private key fill pattern. */
@@ -39,15 +42,22 @@ const DOOR = testKeypair(8);
 const SESSION = testKeypair(9);
 /** TEST-ONLY alternate door key for missing_cosigner vectors (fill 10). */
 const OTHER_DOOR = testKeypair(10);
+/** TEST-ONLY alternate session key for bad_session_continuity vectors (fill 11). */
+const OTHER_SESSION = testKeypair(11);
 
 type VectorCase = {
   filename: string;
   description: string;
   expected: string;
   soulPublicKey: string;
-  doorPublicKeys: string[];
+  doorPublicKeys: Record<string, string>;
   records: OspRecord[];
 };
+
+/** Build door id → base64url public key map for vector JSON. */
+function doorPublicKeyMap(entries: Readonly<Record<string, string>>): Record<string, string> {
+  return { ...entries };
+}
 
 /** Build a signed genesis record. */
 async function createGenesisRecord(soul: Ed25519Keypair) {
@@ -72,8 +82,17 @@ async function createArrivalRecord(
   door: Ed25519Keypair,
   session: Ed25519Keypair,
   seq: number,
-  prev: string
+  prev: string,
+  options?: {
+    doorId?: string;
+    residency?: string;
+    epoch?: number;
+    at?: string;
+  }
 ) {
+  const doorId = options?.doorId ?? DOOR_ID;
+  const residency = options?.residency ?? RESIDENCY;
+  const epoch = options?.epoch ?? 1;
   const fields = {
     seq,
     prev,
@@ -81,12 +100,51 @@ async function createArrivalRecord(
     body: {
       kind: "arrival" as const,
       pop_version: "pop/0.1" as const,
-      door_id: "discord:g",
-      epoch: 1,
+      door_id: doorId,
+      epoch,
       session_pubkey: encodePublicKey(session.publicKey),
-      at: "2026-01-02T00:00:00.000Z"
+      at: options?.at ?? "2026-01-02T00:00:00.000Z"
     },
-    residency: RESIDENCY
+    residency
+  };
+  const cosig = signCore(fields, door.privateKey);
+  return createRecord({
+    ...fields,
+    cosigners: [cosig],
+    soulPrivateKey: soul.privateKey
+  });
+}
+
+/** Build a signed heartbeat attestation with door cosignature. */
+async function createHeartbeatRecord(
+  soul: Ed25519Keypair,
+  door: Ed25519Keypair,
+  session: Ed25519Keypair,
+  seq: number,
+  prev: string,
+  options?: {
+    doorId?: string;
+    residency?: string;
+    epoch?: number;
+    at?: string;
+  }
+) {
+  const doorId = options?.doorId ?? DOOR_ID;
+  const residency = options?.residency ?? RESIDENCY;
+  const epoch = options?.epoch ?? 1;
+  const fields = {
+    seq,
+    prev,
+    type: "attestation" as const,
+    body: {
+      kind: "heartbeat" as const,
+      pop_version: "pop/0.1" as const,
+      door_id: doorId,
+      epoch,
+      session_pubkey: encodePublicKey(session.publicKey),
+      at: options?.at ?? "2026-01-02T00:30:00.000Z"
+    },
+    residency
   };
   const cosig = signCore(fields, door.privateKey);
   return createRecord({
@@ -240,6 +298,11 @@ async function buildVectors(): Promise<VectorCase[]> {
   const soulPub = encodePublicKey(SOUL.publicKey);
   const doorPub = encodePublicKey(DOOR.publicKey);
   const otherDoorPub = encodePublicKey(OTHER_DOOR.publicKey);
+  const discordDoorKeys = doorPublicKeyMap({ [DOOR_ID]: doorPub });
+  const bothDoorKeys = doorPublicKeyMap({
+    [DOOR_ID]: doorPub,
+    [OTHER_DOOR_ID]: otherDoorPub
+  });
 
   const chain = await createValidMiniChain(SOUL, DOOR, SESSION);
 
@@ -248,7 +311,7 @@ async function buildVectors(): Promise<VectorCase[]> {
     description: "Valid genesis → arrival → shard → drift chain with matching evidence CID",
     expected: "valid",
     soulPublicKey: soulPub,
-    doorPublicKeys: [doorPub],
+    doorPublicKeys: discordDoorKeys,
     records: [chain.genesis.record, chain.arrival.record, chain.shard.record, chain.drift.record]
   };
 
@@ -257,7 +320,7 @@ async function buildVectors(): Promise<VectorCase[]> {
     description: "Tampered soul signature on the shard record",
     expected: "bad_soul_sig",
     soulPublicKey: soulPub,
-    doorPublicKeys: [doorPub],
+    doorPublicKeys: discordDoorKeys,
     records: [
       chain.genesis.record,
       chain.arrival.record,
@@ -274,7 +337,7 @@ async function buildVectors(): Promise<VectorCase[]> {
     description: "Shard record prev does not match the CID of the prior record",
     expected: "broken_prev_link",
     soulPublicKey: soulPub,
-    doorPublicKeys: [doorPub],
+    doorPublicKeys: discordDoorKeys,
     records: [chain.genesis.record, chain.arrival.record, brokenShard.record, chain.drift.record]
   };
 
@@ -284,7 +347,7 @@ async function buildVectors(): Promise<VectorCase[]> {
     description: "Sequence jumps from 1 to 4 (expected 2)",
     expected: "seq_gap",
     soulPublicKey: soulPub,
-    doorPublicKeys: [doorPub],
+    doorPublicKeys: discordDoorKeys,
     records: [chain.genesis.record, chain.arrival.record, gapShard.record]
   };
 
@@ -293,7 +356,7 @@ async function buildVectors(): Promise<VectorCase[]> {
     description: "Unsupported spec version on an arrival record",
     expected: "schema_violation",
     soulPublicKey: soulPub,
-    doorPublicKeys: [doorPub],
+    doorPublicKeys: discordDoorKeys,
     records: [
       chain.genesis.record,
       mutateRecord(chain.arrival.record, (draft) => {
@@ -309,7 +372,7 @@ async function buildVectors(): Promise<VectorCase[]> {
     description: "Cosignatures verify under door A but doorPublicKeys lists only door B",
     expected: "missing_cosigner",
     soulPublicKey: soulPub,
-    doorPublicKeys: [otherDoorPub],
+    doorPublicKeys: doorPublicKeyMap({ [OTHER_DOOR_ID]: otherDoorPub }),
     records: [chain.genesis.record, chain.arrival.record, chain.shard.record, chain.drift.record]
   };
 
@@ -319,7 +382,7 @@ async function buildVectors(): Promise<VectorCase[]> {
     description: "Two distinct arrival records share seq 1",
     expected: "forked_head",
     soulPublicKey: soulPub,
-    doorPublicKeys: [doorPub],
+    doorPublicKeys: discordDoorKeys,
     records: [
       chain.genesis.record,
       chain.arrival.record,
@@ -335,7 +398,7 @@ async function buildVectors(): Promise<VectorCase[]> {
     description: "Drift evidence cites a CID that is not an earlier shard on this chain",
     expected: "bad_drift_evidence",
     soulPublicKey: soulPub,
-    doorPublicKeys: [doorPub],
+    doorPublicKeys: discordDoorKeys,
     records: [chain.genesis.record, chain.arrival.record, chain.shard.record, badDrift.record]
   };
 
@@ -344,7 +407,7 @@ async function buildVectors(): Promise<VectorCase[]> {
     description: "Chain begins with an arrival attestation instead of genesis",
     expected: "bad_genesis",
     soulPublicKey: soulPub,
-    doorPublicKeys: [doorPub],
+    doorPublicKeys: discordDoorKeys,
     records: [chain.arrival.record, chain.shard.record, chain.drift.record]
   };
 
@@ -353,7 +416,7 @@ async function buildVectors(): Promise<VectorCase[]> {
     description: "Residency string missing required door: prefix and epoch suffix",
     expected: "schema_violation",
     soulPublicKey: soulPub,
-    doorPublicKeys: [doorPub],
+    doorPublicKeys: discordDoorKeys,
     records: [
       chain.genesis.record,
       mutateRecord(chain.arrival.record, (draft) => {
@@ -367,7 +430,7 @@ async function buildVectors(): Promise<VectorCase[]> {
     description: "Shard candidate_cid is not a valid bagu CID string",
     expected: "schema_violation",
     soulPublicKey: soulPub,
-    doorPublicKeys: [doorPub],
+    doorPublicKeys: discordDoorKeys,
     records: [
       chain.genesis.record,
       chain.arrival.record,
@@ -384,7 +447,7 @@ async function buildVectors(): Promise<VectorCase[]> {
     description: "Arrival door_id does not match the Door portion of residency",
     expected: "schema_violation",
     soulPublicKey: soulPub,
-    doorPublicKeys: [doorPub],
+    doorPublicKeys: discordDoorKeys,
     records: [
       chain.genesis.record,
       mutateRecord(chain.arrival.record, (draft) => {
@@ -410,7 +473,7 @@ async function buildVectors(): Promise<VectorCase[]> {
     description: "Genesis record must have an empty cosigners array",
     expected: "schema_violation",
     soulPublicKey: soulPub,
-    doorPublicKeys: [doorPub],
+    doorPublicKeys: discordDoorKeys,
     records: [
       mutateRecord(chain.genesis.record, (draft) => {
         draft.cosigners = [genesisCosig];
@@ -423,7 +486,7 @@ async function buildVectors(): Promise<VectorCase[]> {
     description: "Genesis soul_pubkey is not a valid 32-byte Ed25519 public key encoding",
     expected: "schema_violation",
     soulPublicKey: soulPub,
-    doorPublicKeys: [doorPub],
+    doorPublicKeys: discordDoorKeys,
     records: [
       mutateRecord(chain.genesis.record, (draft) => {
         if (draft.body.soul_pubkey !== undefined) {
@@ -438,7 +501,7 @@ async function buildVectors(): Promise<VectorCase[]> {
     description: "Record prev is not a valid bagu CID string",
     expected: "schema_violation",
     soulPublicKey: soulPub,
-    doorPublicKeys: [doorPub],
+    doorPublicKeys: discordDoorKeys,
     records: [
       chain.genesis.record,
       mutateRecord(chain.arrival.record, (draft) => {
@@ -452,7 +515,7 @@ async function buildVectors(): Promise<VectorCase[]> {
     description: "Drift evidence entry is not a valid bagu CID string",
     expected: "schema_violation",
     soulPublicKey: soulPub,
-    doorPublicKeys: [doorPub],
+    doorPublicKeys: discordDoorKeys,
     records: [
       chain.genesis.record,
       chain.arrival.record,
@@ -493,7 +556,7 @@ async function buildVectors(): Promise<VectorCase[]> {
       "Valid genesis → arrival → candidate → shard with candidate_cid linkage and door cosignature",
     expected: "valid",
     soulPublicKey: soulPub,
-    doorPublicKeys: [doorPub],
+    doorPublicKeys: discordDoorKeys,
     records: [
       quarantineGenesis.record,
       quarantineArrival.record,
@@ -523,7 +586,7 @@ async function buildVectors(): Promise<VectorCase[]> {
       "Valid genesis → arrival → candidate → rejected with candidate_cid, category, and rejected_at",
     expected: "valid",
     soulPublicKey: soulPub,
-    doorPublicKeys: [doorPub],
+    doorPublicKeys: discordDoorKeys,
     records: [
       rejectGenesis.record,
       rejectArrival.record,
@@ -537,7 +600,7 @@ async function buildVectors(): Promise<VectorCase[]> {
     description: "Rejected memory body includes smuggled text field (fails .strict schema)",
     expected: "schema_violation",
     soulPublicKey: soulPub,
-    doorPublicKeys: [doorPub],
+    doorPublicKeys: discordDoorKeys,
     records: [
       rejectGenesis.record,
       rejectArrival.record,
@@ -550,6 +613,124 @@ async function buildVectors(): Promise<VectorCase[]> {
     ]
   };
 
+  const wrongDoorCosignFields = {
+    seq: 1,
+    prev: chain.genesis.cid,
+    type: "attestation" as const,
+    body: {
+      kind: "arrival" as const,
+      pop_version: "pop/0.1" as const,
+      door_id: DOOR_ID,
+      epoch: 1,
+      session_pubkey: encodePublicKey(SESSION.publicKey),
+      at: "2026-01-02T00:00:00.000Z"
+    },
+    residency: RESIDENCY
+  };
+  const wrongDoorCosig = signCore(wrongDoorCosignFields, OTHER_DOOR.privateKey);
+  const wrongDoorArrival = await createRecord({
+    ...wrongDoorCosignFields,
+    cosigners: [wrongDoorCosig],
+    soulPrivateKey: SOUL.privateKey
+  });
+  const wrongDoorCosign: VectorCase = {
+    filename: "wrong-door-cosign.json",
+    description:
+      "doorPublicKeys lists both Doors but cosignature verifies only under the non-residency Door",
+    expected: "missing_cosigner",
+    soulPublicKey: soulPub,
+    doorPublicKeys: bothDoorKeys,
+    records: [chain.genesis.record, wrongDoorArrival.record]
+  };
+
+  const sessionGenesis = await createGenesisRecord(SOUL);
+  const sessionArrival = await createArrivalRecord(SOUL, DOOR, SESSION, 1, sessionGenesis.cid);
+  const mismatchedHeartbeat = await createHeartbeatRecord(
+    SOUL,
+    DOOR,
+    OTHER_SESSION,
+    2,
+    sessionArrival.cid
+  );
+  const badSessionContinuity: VectorCase = {
+    filename: "bad-session-continuity.json",
+    description: "Heartbeat session_pubkey differs from the open arrival session for the epoch",
+    expected: "bad_session_continuity",
+    soulPublicKey: soulPub,
+    doorPublicKeys: discordDoorKeys,
+    records: [sessionGenesis.record, sessionArrival.record, mismatchedHeartbeat.record]
+  };
+
+  const schemaEpochMismatch: VectorCase = {
+    filename: "schema-epoch-mismatch.json",
+    description: "Arrival body.epoch does not match the epoch portion of residency",
+    expected: "schema_violation",
+    soulPublicKey: soulPub,
+    doorPublicKeys: discordDoorKeys,
+    records: [
+      chain.genesis.record,
+      mutateRecord(chain.arrival.record, (draft) => {
+        if (draft.body.kind === "arrival") {
+          draft.body.epoch = 2;
+        }
+      })
+    ]
+  };
+
+  const dualCosigShardFields = {
+    seq: 2,
+    prev: chain.arrival.cid,
+    type: "memory" as const,
+    body: {
+      kind: "shard" as const,
+      text: "Shard with two Door cosignatures.",
+      distilled_at: "2026-01-02T01:00:00.000Z"
+    },
+    residency: RESIDENCY
+  };
+  const dualCosigShard = await createRecord({
+    ...dualCosigShardFields,
+    cosigners: [
+      signCore(dualCosigShardFields, DOOR.privateKey),
+      signCore(dualCosigShardFields, OTHER_DOOR.privateKey)
+    ],
+    soulPrivateKey: SOUL.privateKey
+  });
+  const schemaUnsortedCosigners: VectorCase = {
+    filename: "schema-unsorted-cosigners.json",
+    description: "Two cosigner signatures are not in strictly ascending lexicographic order",
+    expected: "schema_violation",
+    soulPublicKey: soulPub,
+    doorPublicKeys: bothDoorKeys,
+    records: [
+      chain.genesis.record,
+      chain.arrival.record,
+      mutateRecord(dualCosigShard.record, (draft) => {
+        draft.cosigners = [...draft.cosigners].reverse();
+      })
+    ]
+  };
+
+  const conflictGenesis = await createGenesisRecord(SOUL);
+  const conflictArrivalA = await createArrivalRecord(SOUL, DOOR, SESSION, 1, conflictGenesis.cid);
+  const conflictArrivalB = await createArrivalRecord(
+    SOUL,
+    OTHER_DOOR,
+    OTHER_SESSION,
+    2,
+    conflictArrivalA.cid,
+    { doorId: OTHER_DOOR_ID, residency: OTHER_RESIDENCY }
+  );
+  const conflictingAttestations: VectorCase = {
+    filename: "conflicting-attestations.json",
+    description:
+      "Two arrival attestations for epoch 1 at different Doors without an intervening departure",
+    expected: "presence_conflict",
+    soulPublicKey: soulPub,
+    doorPublicKeys: bothDoorKeys,
+    records: [conflictGenesis.record, conflictArrivalA.record, conflictArrivalB.record]
+  };
+
   return [
     validMiniChain,
     badSoulSig,
@@ -557,16 +738,21 @@ async function buildVectors(): Promise<VectorCase[]> {
     seqGap,
     schemaViolation,
     missingCosigner,
+    wrongDoorCosign,
     forkedHead,
     badDriftEvidence,
     badGenesis,
     schemaBadResidency,
     schemaBadCandidateCid,
     schemaDoorIdMismatch,
+    schemaEpochMismatch,
+    schemaUnsortedCosigners,
     schemaGenesisCosigners,
     schemaBadKeyLength,
     schemaBadPrev,
     schemaBadEvidence,
+    badSessionContinuity,
+    conflictingAttestations,
     quarantineCandidateToShard,
     quarantineCandidateToRejected,
     schemaRejectedWithPayload

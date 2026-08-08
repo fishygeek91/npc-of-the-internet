@@ -1,4 +1,4 @@
-import { decodePublicKey } from "@npc/osp-core";
+import { EncodingError, parseDoorPublicKeyMap } from "@npc/osp-core";
 import { z } from "zod";
 
 import { loadBrainConfig, type BrainConfig } from "./brain/config.js";
@@ -13,7 +13,11 @@ const daemonConfigSchema = z.object({
   doorHttpHost: z.string().min(1),
   doorHttpPort: z.number().int().positive(),
   doorId: z.string().min(1),
-  doorPublicKeys: z.array(z.instanceof(Uint8Array)).min(1),
+  doorPublicKeys: z
+    .record(z.string(), z.instanceof(Uint8Array))
+    .refine((map) => Object.keys(map).length >= 1, {
+      message: "doorPublicKeys must contain at least one entry"
+    }),
   brain: z.custom<BrainConfig>(),
   readyFilePath: z.string().min(1)
 });
@@ -41,34 +45,27 @@ function parsePositiveInt(value: string, name: string): number {
   return parsed;
 }
 
-function parseDoorPublicKeys(value: string): Uint8Array[] {
-  const keys: Uint8Array[] = [];
-  for (const segment of value.split(",")) {
-    const trimmed = segment.trim();
-    if (trimmed === "") {
-      continue;
-    }
-    try {
-      keys.push(decodePublicKey(trimmed));
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+function parseDoorPublicKeys(value: string): Readonly<Record<string, Uint8Array>> {
+  try {
+    const map = parseDoorPublicKeyMap(value);
+    if (Object.keys(map).length === 0) {
       throw new DaemonError(
-        `ATLAS_DOOR_PUBKEYS contains invalid base64url public key: ${message}`,
+        "ATLAS_DOOR_PUBKEYS must contain at least one doorId=base64url binding",
         "invalid_config",
         "ATLAS_DOOR_PUBKEYS"
       );
     }
+    return map;
+  } catch (error) {
+    if (error instanceof EncodingError) {
+      throw new DaemonError(
+        `ATLAS_DOOR_PUBKEYS: ${error.message}`,
+        "invalid_config",
+        "ATLAS_DOOR_PUBKEYS"
+      );
+    }
+    throw error;
   }
-
-  if (keys.length === 0) {
-    throw new DaemonError(
-      "ATLAS_DOOR_PUBKEYS must contain at least one valid base64url Ed25519 public key",
-      "invalid_config",
-      "ATLAS_DOOR_PUBKEYS"
-    );
-  }
-
-  return keys;
 }
 
 /**

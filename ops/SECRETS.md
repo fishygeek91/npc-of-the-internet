@@ -19,7 +19,7 @@ Environment variable names and purposes only. **Never commit values.**
 | `SOULCHAIN_DIR` | In-container soulchain directory for runtime (compose sets `/data/soulchain`). |
 | `ATLAS_CHAIN_DIR` | Filesystem path to the soulchain directory read by the Atlas API (`chain.jsonl` + `blobs/`). |
 | `ATLAS_PORT` | TCP port for the Atlas read API HTTP server (default: `8787`). |
-| `ATLAS_DOOR_PUBKEYS` | Comma-separated base64url Ed25519 **public** door keys for cosignature verification (public config, not secret). Passed to runtime for chain verify and to atlas-api. |
+| `ATLAS_DOOR_PUBKEYS` | Comma-separated `doorId=base64url` Ed25519 **public** door key bindings for cosignature verification (public config, not secret). Example: `discord:123456789012345678=keyB64`. Passed to runtime for chain verify and to atlas-api. |
 | `CURRENT_DOOR_ID` | Door id of the active residency (public config, not secret). Ghost compose derives `discord:${DISCORD_GUILD_ID}`; must match the Door hello response. |
 | `DISCORD_BOT_TOKEN` | Discord bot token for `@npc/door-discord`. |
 | `DOOR_KEY_PATH` | In-container path to the Door Ed25519 private key file (compose sets `/run/keys/door.key`). |

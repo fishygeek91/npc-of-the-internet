@@ -1,53 +1,51 @@
 import { access } from "node:fs/promises";
 import * as path from "node:path";
 
-import { decodePublicKey } from "@npc/osp-core";
+import { decodePublicKey, EncodingError, parseDoorPublicKeyMap } from "@npc/osp-core";
 import { z } from "zod";
 
 const fixtureMetaSchema = z.object({
-  doorPublicKeys: z.array(z.string().min(1)).optional(),
+  doorPublicKeys: z.record(z.string().min(1)).optional(),
   doorPublicKey: z.string().min(1).optional()
 });
 
 const atlasSiteConfigSchema = z.object({
   chainDir: z.string().min(1),
   basePath: z.string().min(1),
-  doorPublicKeys: z.array(z.instanceof(Uint8Array)).optional()
+  doorPublicKeys: z.record(z.string(), z.instanceof(Uint8Array)).optional()
 });
 
 /** Validated Atlas static site configuration. */
 export type AtlasSiteConfig = z.infer<typeof atlasSiteConfigSchema>;
 
 /**
- * Parse comma-separated base64url door public keys from an env value.
- * @throws {Error} when any segment is not valid base64url Ed25519 key material.
+ * Parse comma-separated `doorId=base64url` bindings from an env value.
+ * @throws {Error} when any segment is invalid.
  */
-function parseDoorPublicKeys(value: string | undefined): Uint8Array[] | undefined {
+function parseDoorPublicKeys(
+  value: string | undefined
+): Readonly<Record<string, Uint8Array>> | undefined {
   if (value === undefined || value === "") {
     return undefined;
   }
 
-  const keys: Uint8Array[] = [];
-  for (const segment of value.split(",")) {
-    const trimmed = segment.trim();
-    if (trimmed === "") {
-      continue;
+  try {
+    const map = parseDoorPublicKeyMap(value);
+    return Object.keys(map).length > 0 ? map : undefined;
+  } catch (error) {
+    if (error instanceof EncodingError) {
+      throw new Error(`ATLAS_SITE_DOOR_PUBKEYS: ${error.message}`);
     }
-    try {
-      keys.push(decodePublicKey(trimmed));
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      throw new Error(`ATLAS_SITE_DOOR_PUBKEYS contains invalid base64url public key: ${message}`);
-    }
+    throw error;
   }
-
-  return keys.length > 0 ? keys : undefined;
 }
 
 /**
  * Load door public keys from `fixture-meta.json` when present in the chain directory.
  */
-async function loadDoorKeysFromFixtureMeta(chainDir: string): Promise<Uint8Array[] | undefined> {
+async function loadDoorKeysFromFixtureMeta(
+  chainDir: string
+): Promise<Readonly<Record<string, Uint8Array>> | undefined> {
   const metaPath = path.join(chainDir, "fixture-meta.json");
   try {
     await access(metaPath);
@@ -62,18 +60,20 @@ async function loadDoorKeysFromFixtureMeta(chainDir: string): Promise<Uint8Array
     return undefined;
   }
 
-  const b64Keys =
-    parsed.data.doorPublicKeys ??
-    (parsed.data.doorPublicKey === undefined ? undefined : [parsed.data.doorPublicKey]);
-  if (b64Keys === undefined) {
+  const recordKeys = parsed.data.doorPublicKeys;
+  if (recordKeys !== undefined && Object.keys(recordKeys).length > 0) {
+    const map: Record<string, Uint8Array> = {};
+    for (const [doorId, keyB64] of Object.entries(recordKeys)) {
+      map[doorId] = decodePublicKey(keyB64);
+    }
+    return map;
+  }
+
+  if (parsed.data.doorPublicKey !== undefined) {
     return undefined;
   }
 
-  const keys: Uint8Array[] = [];
-  for (const keyB64 of b64Keys) {
-    keys.push(decodePublicKey(keyB64));
-  }
-  return keys.length > 0 ? keys : undefined;
+  return undefined;
 }
 
 /**

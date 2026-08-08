@@ -2,7 +2,9 @@
   "description": "Cosignatures verify under door A but doorPublicKeys lists only door B",
   "expected": "missing_cosigner",
   "soulPublicKey": "6kpsY-KcUgq-9VB7Ey7F-ZVHdq6-vnuSQh7qaRRG0iw",
-  "doorPublicKeys": ["Q6cucUQBdi32a2jCbfvfJoKq7J8kdOykYT5CSg-6_Tw"],
+  "doorPublicKeys": {
+    "irc:other": "Q6cucUQBdi32a2jCbfvfJoKq7J8kdOykYT5CSg-6_Tw"
+  },
   "records": [
     {
       "spec": "osp/0.1",

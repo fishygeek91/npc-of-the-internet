@@ -48,7 +48,7 @@ Deterministic projection of a verified soulchain into a `systemPrompt` and `memo
 import { composeSelf, type ComposedSelf, type ComposeSelfOptions } from "@npc/runtime";
 
 const composed: ComposedSelf = await composeSelf(store, {
-  doorPublicKeys: [doorPublicKey], // required when chain has cosigned records
+  doorPublicKeys: { "discord:guild123": doorPublicKey }, // required when chain has cosigned records
 });
 ```
 
@@ -289,7 +289,7 @@ Or after install: `npc-runtime` (bin in `@npc/runtime`). Ghost image `CMD` is `n
 | `DOOR_HTTP_HOST` | yes | — | Door HTTP/WS connect host |
 | `DOOR_HTTP_PORT` | yes | — | Door HTTP/WS connect port |
 | `CURRENT_DOOR_ID` | yes | — | Expected Door id (e.g. `discord:123…`); must match Door hello |
-| `ATLAS_DOOR_PUBKEYS` | yes | — | Comma-separated base64url Door public keys for chain verify |
+| `ATLAS_DOOR_PUBKEYS` | yes | — | Comma-separated `doorId=base64url` Door public key bindings for chain verify |
 | `ANTHROPIC_API_KEY` | yes | — | Brain API key (see Brain section) |
 | `NPC_BRAIN_MODEL` | no | `claude-sonnet-4-20250514` | Model id |
 | `NPC_BRAIN_MAX_TOKENS` | no | `1024` | Default max output tokens |

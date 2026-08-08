@@ -765,7 +765,7 @@ describe("Door", () => {
 
     const verifyResult = await verifyRecord(record, {
       soulPublicKey: doorSoul.publicKey,
-      doorPublicKeys: [doorKeypair.publicKey]
+      doorPublicKeys: { [DOOR_ID]: doorKeypair.publicKey }
     });
     expect(verifyResult.record.type).toBe("attestation");
     expect(verifyDoorCosig(core, attestResponse.door_cosig, doorKeypair.publicKey)).toBe(true);

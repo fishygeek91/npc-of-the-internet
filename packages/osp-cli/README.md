@@ -27,7 +27,7 @@ The `osp` command-line tool for initializing and inspecting a local soulchain.
 
 ### Door keys for verify
 
-Pass repeatable `--door-key <base64url>` flags to supply Door public keys for cosignature verification.
+Pass repeatable `--door-key <doorId=base64url>` flags to supply Door public keys for cosignature verification.
 
 ## Walkthrough
 

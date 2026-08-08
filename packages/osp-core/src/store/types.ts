@@ -13,8 +13,11 @@ export type AppendResult = {
 
 /** Options for opening a file-backed SoulStore (v0.1). */
 export type FileSoulStoreOpenOptions = {
-  /** Door public keys used to verify cosigner signatures on open/get. */
-  doorPublicKeys?: readonly Uint8Array[];
+  /**
+   * Door public keys keyed by residency Door id (e.g. `discord:guild123`)
+   * for cosigner verification on open/get/append.
+   */
+  doorPublicKeys?: Readonly<Record<string, Uint8Array>>;
 };
 
 /**

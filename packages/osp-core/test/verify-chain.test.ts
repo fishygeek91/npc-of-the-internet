@@ -19,7 +19,13 @@ import {
 } from "../src/index.js";
 
 const RESIDENCY = "door:discord:g/epoch:1";
+const DOOR_ID = "discord:g";
+const OTHER_DOOR_ID = "discord:h";
 const WRONG_PREV_CID = "bagu" + "a".repeat(57);
+
+function doorPublicKeysMap(door: Ed25519Keypair): Readonly<Record<string, Uint8Array>> {
+  return { [DOOR_ID]: door.publicKey };
+}
 
 /** Create a unique temporary directory for an isolated store. */
 async function makeTempDir(): Promise<string> {
@@ -58,12 +64,74 @@ async function createArrivalRecord(
     body: {
       kind: "arrival" as const,
       pop_version: "pop/0.1" as const,
-      door_id: "discord:g",
+      door_id: DOOR_ID,
       epoch: 1,
       session_pubkey: encodePublicKey(session.publicKey),
       at: "2026-01-02T00:00:00.000Z"
     },
     residency: RESIDENCY
+  };
+  const cosig = signCore(fields, door.privateKey);
+  return createRecord({
+    ...fields,
+    cosigners: [cosig],
+    soulPrivateKey: soul.privateKey
+  });
+}
+
+/** Build a signed heartbeat attestation with door cosignature. */
+async function createHeartbeatRecord(
+  soul: Ed25519Keypair,
+  door: Ed25519Keypair,
+  session: Ed25519Keypair,
+  seq: number,
+  prev: string,
+  at = "2026-01-02T00:10:00.000Z"
+) {
+  const fields = {
+    seq,
+    prev,
+    type: "attestation" as const,
+    body: {
+      kind: "heartbeat" as const,
+      pop_version: "pop/0.1" as const,
+      door_id: DOOR_ID,
+      epoch: 1,
+      session_pubkey: encodePublicKey(session.publicKey),
+      at
+    },
+    residency: RESIDENCY
+  };
+  const cosig = signCore(fields, door.privateKey);
+  return createRecord({
+    ...fields,
+    cosigners: [cosig],
+    soulPrivateKey: soul.privateKey
+  });
+}
+
+/** Build a signed arrival attestation for an arbitrary Door id. */
+async function createArrivalForDoor(
+  soul: Ed25519Keypair,
+  door: Ed25519Keypair,
+  session: Ed25519Keypair,
+  doorId: string,
+  seq: number,
+  prev: string
+) {
+  const fields = {
+    seq,
+    prev,
+    type: "attestation" as const,
+    body: {
+      kind: "arrival" as const,
+      pop_version: "pop/0.1" as const,
+      door_id: doorId,
+      epoch: 1,
+      session_pubkey: encodePublicKey(session.publicKey),
+      at: "2026-01-02T00:00:00.000Z"
+    },
+    residency: `door:${doorId}/epoch:1`
   };
   const cosig = signCore(fields, door.privateKey);
   return createRecord({
@@ -168,7 +236,7 @@ describe("verifyRecords", () => {
       chain.drift.record
     ];
 
-    const result = await verifyRecords(records, { doorPublicKeys: [door.publicKey] });
+    const result = await verifyRecords(records, { doorPublicKeys: doorPublicKeysMap(door) });
     expect(result.valid).toBe(true);
     if (!result.valid) {
       return;
@@ -187,7 +255,7 @@ describe("verifyRecords", () => {
     };
     const records = [chain.genesis.record, chain.arrival.record, tampered, chain.drift.record];
 
-    const result = await verifyRecords(records, { doorPublicKeys: [door.publicKey] });
+    const result = await verifyRecords(records, { doorPublicKeys: doorPublicKeysMap(door) });
     expectInvalid(result, "bad_soul_sig");
   });
 
@@ -196,7 +264,7 @@ describe("verifyRecords", () => {
     const broken = await createShardRecord(soul, door, 2, WRONG_PREV_CID, "Broken prev.");
     const records = [chain.genesis.record, chain.arrival.record, broken.record, chain.drift.record];
 
-    const result = await verifyRecords(records, { doorPublicKeys: [door.publicKey] });
+    const result = await verifyRecords(records, { doorPublicKeys: doorPublicKeysMap(door) });
     expectInvalid(result, "broken_prev_link");
   });
 
@@ -205,7 +273,7 @@ describe("verifyRecords", () => {
     const gapShard = await createShardRecord(soul, door, 4, chain.arrival.cid, "Sequence gap.");
     const records = [chain.genesis.record, chain.arrival.record, gapShard.record];
 
-    const result = await verifyRecords(records, { doorPublicKeys: [door.publicKey] });
+    const result = await verifyRecords(records, { doorPublicKeys: doorPublicKeysMap(door) });
     expectInvalid(result, "seq_gap");
   });
 
@@ -217,7 +285,7 @@ describe("verifyRecords", () => {
     };
     const records = [chain.genesis.record, invalid, chain.shard.record, chain.drift.record];
 
-    const result = await verifyRecords(records, { doorPublicKeys: [door.publicKey] });
+    const result = await verifyRecords(records, { doorPublicKeys: doorPublicKeysMap(door) });
     expectInvalid(result, "schema_violation");
   });
 
@@ -233,7 +301,9 @@ describe("verifyRecords", () => {
       chain.drift.record
     ];
 
-    const result = await verifyRecords(records, { doorPublicKeys: [otherDoor.publicKey] });
+    const result = await verifyRecords(records, {
+      doorPublicKeys: { [OTHER_DOOR_ID]: otherDoor.publicKey }
+    });
     expectInvalid(result, "missing_cosigner");
   });
 
@@ -248,7 +318,7 @@ describe("verifyRecords", () => {
       chain.drift.record
     ];
 
-    const result = await verifyRecords(records, { doorPublicKeys: [door.publicKey] });
+    const result = await verifyRecords(records, { doorPublicKeys: doorPublicKeysMap(door) });
     expectInvalid(result, "forked_head");
   });
 
@@ -257,15 +327,54 @@ describe("verifyRecords", () => {
     const drift = await createDriftRecord(soul, 3, chain.shard.cid, [WRONG_PREV_CID]);
     const records = [chain.genesis.record, chain.arrival.record, chain.shard.record, drift.record];
 
-    const result = await verifyRecords(records, { doorPublicKeys: [door.publicKey] });
+    const result = await verifyRecords(records, { doorPublicKeys: doorPublicKeysMap(door) });
     expectInvalid(result, "bad_drift_evidence");
+  });
+
+  it("rejects bad_session_continuity when heartbeat session_pubkey differs from arrival", async () => {
+    const chain = await createValidMiniChain(soul, door, session);
+    const otherSession = generateKeypair();
+    const heartbeat = await createHeartbeatRecord(soul, door, otherSession, 4, chain.drift.cid);
+    const records = [
+      chain.genesis.record,
+      chain.arrival.record,
+      chain.shard.record,
+      chain.drift.record,
+      heartbeat.record
+    ];
+
+    const result = await verifyRecords(records, { doorPublicKeys: doorPublicKeysMap(door) });
+    expectInvalid(result, "bad_session_continuity");
+  });
+
+  it("rejects presence_conflict when two arrivals share an epoch at different Doors", async () => {
+    const genesis = await createGenesisRecord(soul);
+    const otherDoor = generateKeypair();
+    const arrivalG = await createArrivalRecord(soul, door, session, 1, genesis.cid);
+    const arrivalH = await createArrivalForDoor(
+      soul,
+      otherDoor,
+      session,
+      OTHER_DOOR_ID,
+      2,
+      arrivalG.cid
+    );
+    const records = [genesis.record, arrivalG.record, arrivalH.record];
+
+    const result = await verifyRecords(records, {
+      doorPublicKeys: {
+        [DOOR_ID]: door.publicKey,
+        [OTHER_DOOR_ID]: otherDoor.publicKey
+      }
+    });
+    expectInvalid(result, "presence_conflict");
   });
 
   it("rejects bad_genesis when the first record is not genesis", async () => {
     const chain = await createValidMiniChain(soul, door, session);
     const records = [chain.arrival.record, chain.shard.record, chain.drift.record];
 
-    const result = await verifyRecords(records, { doorPublicKeys: [door.publicKey] });
+    const result = await verifyRecords(records, { doorPublicKeys: doorPublicKeysMap(door) });
     expectInvalid(result, "bad_genesis");
   });
 });
@@ -288,7 +397,7 @@ describe("verifyChain", () => {
   });
 
   it("verifies a valid mini-chain stored in FileSoulStore", async () => {
-    const store = await FileSoulStore.open(dir, { doorPublicKeys: [door.publicKey] });
+    const store = await FileSoulStore.open(dir, { doorPublicKeys: doorPublicKeysMap(door) });
     try {
       const chain = await createValidMiniChain(soul, door, session);
       await store.append(chain.genesis.record);
@@ -296,7 +405,7 @@ describe("verifyChain", () => {
       await store.append(chain.shard.record);
       await store.append(chain.drift.record);
 
-      const result = await verifyChain(store, { doorPublicKeys: [door.publicKey] });
+      const result = await verifyChain(store, { doorPublicKeys: doorPublicKeysMap(door) });
       expect(result.valid).toBe(true);
       if (!result.valid) {
         return;

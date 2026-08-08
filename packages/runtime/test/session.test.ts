@@ -15,7 +15,7 @@ import { SessionError } from "../src/session/errors.js";
 import type { InboundFrame } from "../src/session/types.js";
 import { DoorStub } from "./helpers/door-stub.js";
 import { FakeClock, FakeTimer } from "./helpers/fake-timer.js";
-import { createGenesisRecord, DOOR_ID } from "./helpers/fixtures.js";
+import { createGenesisRecord, DOOR_ID, doorPublicKeyFor } from "./helpers/fixtures.js";
 import { DOOR, SOUL } from "./helpers/fixed-keys.js";
 import { MemorySoulStore } from "./helpers/memory-soul-store.js";
 
@@ -116,7 +116,7 @@ function createSessionHarness(store: SoulStore) {
         timer,
         clock,
         heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS,
-        doorPublicKeys: [DOOR.publicKey]
+        doorPublicKeys: doorPublicKeyFor(DOOR_ID, DOOR.publicKey)
       });
     }
   };
@@ -142,7 +142,9 @@ describe("Session", () => {
       expect(records[1].body.epoch).toBe(1);
     }
 
-    const result = await verifyChain(store, { doorPublicKeys: [DOOR.publicKey] });
+    const result = await verifyChain(store, {
+      doorPublicKeys: doorPublicKeyFor(DOOR_ID, DOOR.publicKey)
+    });
     expect(result.valid).toBe(true);
 
     session.stop();
@@ -195,7 +197,7 @@ describe("Session", () => {
       timer,
       clock,
       heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS,
-      doorPublicKeys: [DOOR.publicKey]
+      doorPublicKeys: doorPublicKeyFor(DOOR_ID, DOOR.publicKey)
     });
 
     const failed = await session.handleInbound({
@@ -242,7 +244,7 @@ describe("Session", () => {
       timer,
       clock,
       heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS,
-      doorPublicKeys: [DOOR.publicKey]
+      doorPublicKeys: doorPublicKeyFor(DOOR_ID, DOOR.publicKey)
     });
 
     store.pauseNext();
@@ -263,7 +265,9 @@ describe("Session", () => {
     );
     expect(heartbeats.length).toBeGreaterThanOrEqual(1);
 
-    const result = await verifyChain(store, { doorPublicKeys: [DOOR.publicKey] });
+    const result = await verifyChain(store, {
+      doorPublicKeys: doorPublicKeyFor(DOOR_ID, DOOR.publicKey)
+    });
     expect(result.valid).toBe(true);
 
     session.stop();

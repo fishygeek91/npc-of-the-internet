@@ -14,8 +14,16 @@ export type VerifyChainResult =
 
 /** Options for chain verification. */
 export type VerifyChainOptions = {
-  /** Door public keys used to verify cosigner signatures. */
-  doorPublicKeys?: readonly Uint8Array[];
+  /**
+   * Door public keys keyed by residency Door id for cosigner verification.
+   */
+  doorPublicKeys?: Readonly<Record<string, Uint8Array>>;
+};
+
+/** Open residency session tracked from an arrival attestation. */
+type ActiveSession = {
+  doorId: string;
+  sessionPubkey: string;
 };
 
 /** Returns true when the record type requires a non-empty Door cosignature. */
@@ -87,6 +95,9 @@ function mapVerifyRecordError(record: OspRecord, error: unknown): ChainFailure {
 
     if (
       error.message === "doorPublicKeys required when cosigners are present" ||
+      error.message === "cosigners require a non-null residency to resolve Door public key" ||
+      error.message === "residency must match door:<platform>:<door-id>/epoch:<n>" ||
+      error.message.startsWith("no doorPublicKeys entry for residency Door") ||
       error.message.startsWith("cosigner signature at index")
     ) {
       return {
@@ -137,6 +148,86 @@ async function materializeRecords(
 }
 
 /**
+ * Collect PoP continuity and presence-conflict failures for an attestation.
+ * Mutates `activeSessions` when the record advances session state.
+ */
+function collectPresenceFailures(
+  record: OspRecord,
+  cid: string,
+  activeSessions: Map<number, ActiveSession>
+): ChainFailure[] {
+  if (record.type !== "attestation") {
+    return [];
+  }
+
+  const kind = record.body.kind;
+  if (kind !== "arrival" && kind !== "heartbeat" && kind !== "departure") {
+    if (kind === "travel") {
+      // Travel means no live session; clear any open epochs (Ghost: typically one).
+      activeSessions.clear();
+    }
+    return [];
+  }
+
+  const failures: ChainFailure[] = [];
+  const epoch = record.body.epoch;
+  const doorId = record.body.door_id;
+  const existing = activeSessions.get(epoch);
+
+  if (existing !== undefined && existing.doorId !== doorId) {
+    failures.push({
+      seq: record.seq,
+      cid,
+      rule: "presence_conflict",
+      message: `presence conflict for epoch ${epoch}: Door "${doorId}" conflicts with open Door "${existing.doorId}"`
+    });
+  }
+
+  if (kind === "arrival") {
+    if (existing !== undefined) {
+      failures.push({
+        seq: record.seq,
+        cid,
+        rule: "presence_conflict",
+        message: `second arrival for epoch ${epoch} without a prior departure`
+      });
+    } else {
+      activeSessions.set(epoch, {
+        doorId,
+        sessionPubkey: record.body.session_pubkey
+      });
+    }
+    return failures;
+  }
+
+  if (existing === undefined) {
+    failures.push({
+      seq: record.seq,
+      cid,
+      rule: "bad_session_continuity",
+      message: `${kind} for epoch ${epoch} has no matching arrival attestation`
+    });
+    return failures;
+  }
+
+  if (kind === "heartbeat") {
+    if (record.body.session_pubkey !== existing.sessionPubkey) {
+      failures.push({
+        seq: record.seq,
+        cid,
+        rule: "bad_session_continuity",
+        message: `heartbeat session_pubkey must match the arrival attestation for epoch ${epoch}`
+      });
+    }
+    return failures;
+  }
+
+  // departure — close the epoch after continuity checks
+  activeSessions.delete(epoch);
+  return failures;
+}
+
+/**
  * Verify an ordered soulchain from an array or async iterable.
  *
  * Structural, cryptographic, and schema rules follow `spec/osp/records.md` Verification.
@@ -164,6 +255,7 @@ export async function verifyRecords(
   let previousCid: string | null = null;
   let soulPublicKey: Uint8Array | null = null;
   const shardCids = new Set<string>();
+  const activeSessions = new Map<number, ActiveSession>();
   let lastHead: HeadInfo | null = null;
 
   for (let index = 0; index < ordered.length; index += 1) {
@@ -243,6 +335,8 @@ export async function verifyRecords(
       }
     }
 
+    failures.push(...collectPresenceFailures(record, cid, activeSessions));
+
     // Belt-and-suspenders: RecordSchema already rejects empty cosigners for these kinds
     // (schema_violation + continue), so this branch is unreachable for schema-valid records.
     if (requiresCosigner(record) && record.cosigners.length === 0) {
@@ -255,7 +349,7 @@ export async function verifyRecords(
     } else if (soulPublicKey !== null) {
       const verifyOptions: {
         soulPublicKey: Uint8Array;
-        doorPublicKeys?: readonly Uint8Array[];
+        doorPublicKeys?: Readonly<Record<string, Uint8Array>>;
         expectedCid: string;
       } = {
         soulPublicKey,

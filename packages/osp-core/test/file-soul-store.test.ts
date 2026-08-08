@@ -23,6 +23,7 @@ import {
 } from "../src/index.js";
 
 const RESIDENCY = "door:discord:g/epoch:1";
+const DOOR_ID = "discord:g";
 const WRONG_PREV_CID = "bagu" + "a".repeat(57);
 const CHAIN_FILE = "chain.jsonl";
 const LOCK_FILE = ".append.lock";
@@ -367,7 +368,9 @@ describe("FileSoulStore", () => {
     let shardCid = "";
     let shardBody: OspRecord["body"] | undefined;
 
-    const writer = await FileSoulStore.open(dir, { doorPublicKeys: [door.publicKey] });
+    const writer = await FileSoulStore.open(dir, {
+      doorPublicKeys: { [DOOR_ID]: door.publicKey }
+    });
     try {
       const genesis = await appendGenesis(writer, soul);
       genesisCid = genesis.cid;
@@ -404,7 +407,9 @@ describe("FileSoulStore", () => {
       await writer.close();
     }
 
-    const reader = await FileSoulStore.open(dir, { doorPublicKeys: [door.publicKey] });
+    const reader = await FileSoulStore.open(dir, {
+      doorPublicKeys: { [DOOR_ID]: door.publicKey }
+    });
     try {
       const head = await reader.head();
       expect(head?.seq).toBe(2);
@@ -967,7 +972,9 @@ describe("FileSoulStore.openReadOnly", () => {
 
   it("reports verification failure for cosigned records opened without door keys", async () => {
     const door = generateKeypair();
-    const writer = await FileSoulStore.open(dir, { doorPublicKeys: [door.publicKey] });
+    const writer = await FileSoulStore.open(dir, {
+      doorPublicKeys: { [DOOR_ID]: door.publicKey }
+    });
     try {
       const genesis = await appendGenesis(writer, soul);
       const shard = await createCosignedShardRecord(soul, door, 1, genesis.cid, "Cosigned shard.");

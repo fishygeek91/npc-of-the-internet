@@ -210,7 +210,7 @@ describe("door-sdk signing", () => {
 
     const result = await verifyRecord(record, {
       soulPublicKey: soul.publicKey,
-      doorPublicKeys: [door.publicKey]
+      doorPublicKeys: { "discord:test-guild": door.publicKey }
     });
 
     expect(result.record.type).toBe("memory");

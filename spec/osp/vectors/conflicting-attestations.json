@@ -1,9 +1,10 @@
 {
-  "description": "Sequence jumps from 1 to 4 (expected 2)",
-  "expected": "seq_gap",
+  "description": "Two arrival attestations for epoch 1 at different Doors without an intervening departure",
+  "expected": "presence_conflict",
   "soulPublicKey": "6kpsY-KcUgq-9VB7Ey7F-ZVHdq6-vnuSQh7qaRRG0iw",
   "doorPublicKeys": {
-    "discord:g": "E5j2LG0aRXxRumpLXz29L2n8qTIWIY3ImX5Ba9F9k8o"
+    "discord:g": "E5j2LG0aRXxRumpLXz29L2n8qTIWIY3ImX5Ba9F9k8o",
+    "irc:other": "Q6cucUQBdi32a2jCbfvfJoKq7J8kdOykYT5CSg-6_Tw"
   },
   "records": [
     {
@@ -41,18 +42,21 @@
     },
     {
       "spec": "osp/0.1",
-      "seq": 4,
+      "seq": 2,
       "prev": "baguqeera7etvhlmlq3lfysn2mfvtb45uzrfhngc3xb5b7q7z43tzt23tha3a",
-      "residency": "door:discord:g/epoch:1",
+      "residency": "door:irc:other/epoch:1",
       "cosigners": [
-        "I5Mc-8x5gkMJvK8bdao5vaojGiBfMIxRV52VzQHu1ZYc7Zh-kPp_2nF-dFuIaJVFepBTLOoYj5jyKNuJRYEzCg"
+        "hWGT2UHOVVFnyrpI3wbDAj-5MEmMdiQTICq_EHX22Kms-_twBHHEY0-WapCt9qvfq28WSf8FgstWkmApcAapCQ"
       ],
-      "sig": "MRvpRUlLxtNjdxgHMdZxlXh7MTYp5aPofgwblE8rg8_bQmF7S-ibSwdAnekOkviWMgK5KBT8oMR-_bzmbnMmBw",
-      "type": "memory",
+      "sig": "qNvu2Gr8CYbIcy8soFchWGDdsfodZfeYoDWtm2XjDNeVRwNh29MAHI5UhYkr95-SH9ubfGBhHpapvsyFLEt3AQ",
+      "type": "attestation",
       "body": {
-        "kind": "shard",
-        "text": "Sequence gap.",
-        "distilled_at": "2026-01-02T01:00:00.000Z"
+        "kind": "arrival",
+        "pop_version": "pop/0.1",
+        "door_id": "irc:other",
+        "epoch": 1,
+        "session_pubkey": "Zr5-Myx6RTMyvZ0Kf32wVfXF7xoGraZtmLOftoEMRzo",
+        "at": "2026-01-02T00:00:00.000Z"
       }
     }
   ]

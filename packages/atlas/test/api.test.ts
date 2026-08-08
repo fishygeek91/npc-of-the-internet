@@ -2,12 +2,7 @@ import { cp, mkdtemp, open, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import {
-  canonicalize,
-  computeCidFromCanonicalBytes,
-  decodePublicKey,
-  FileSoulStore
-} from "@npc/osp-core";
+import { canonicalize, computeCidFromCanonicalBytes, FileSoulStore } from "@npc/osp-core";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { createAtlasServer } from "../src/server.js";
@@ -25,7 +20,7 @@ import {
   DEFAULT_SOUL
 } from "./helpers/chain-builder.js";
 import {
-  FIXTURE_DOOR_PUBLIC_KEYS_B64,
+  fixtureDoorPublicKeys,
   JOURNAL_EPOCH_1,
   JOURNAL_EPOCH_2,
   LEAK_SHARD_TEXT,
@@ -50,8 +45,8 @@ async function makeTempDir(prefix: string): Promise<string> {
   return dir;
 }
 
-function doorPublicKeys(): Uint8Array[] {
-  return FIXTURE_DOOR_PUBLIC_KEYS_B64.map((value) => decodePublicKey(value));
+function doorPublicKeys(): Readonly<Record<string, Uint8Array>> {
+  return fixtureDoorPublicKeys();
 }
 
 async function openServer(chainDir: string) {

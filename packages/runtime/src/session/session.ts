@@ -60,7 +60,7 @@ export type SessionOptions = {
   clock: Clock;
   heartbeatIntervalMs?: number;
   maxHistoryMessages?: number;
-  doorPublicKeys?: readonly Uint8Array[];
+  doorPublicKeys?: Readonly<Record<string, Uint8Array>>;
   onScreenReject?: ScreenLogger;
 };
 

@@ -144,7 +144,7 @@ export class FileSoulStore implements SoulStore {
   private readonly chainPath: string;
   private readonly blobsDir: string;
   private readonly lockPath: string;
-  private readonly doorPublicKeys: readonly Uint8Array[] | undefined;
+  private readonly doorPublicKeys: Readonly<Record<string, Uint8Array>> | undefined;
   private readonly readOnly: boolean;
   private headInfo: HeadInfo | null;
   private soulPublicKey: Uint8Array | null;
@@ -154,7 +154,7 @@ export class FileSoulStore implements SoulStore {
 
   private constructor(
     dir: string,
-    doorPublicKeys: readonly Uint8Array[] | undefined,
+    doorPublicKeys: Readonly<Record<string, Uint8Array>> | undefined,
     head: HeadInfo | null,
     soulPublicKey: Uint8Array | null,
     readOnly = false
@@ -422,7 +422,7 @@ export class FileSoulStore implements SoulStore {
     if (this.soulPublicKey !== null) {
       const verifyOptions: {
         soulPublicKey: Uint8Array;
-        doorPublicKeys?: readonly Uint8Array[];
+        doorPublicKeys?: Readonly<Record<string, Uint8Array>>;
         expectedCid: string;
       } = {
         soulPublicKey: this.soulPublicKey,
@@ -728,7 +728,7 @@ export class FileSoulStore implements SoulStore {
 
     const records = await this.parseChainLineBytes(lineBytesList);
 
-    const verifyOptions: { doorPublicKeys?: readonly Uint8Array[] } = {};
+    const verifyOptions: { doorPublicKeys?: Readonly<Record<string, Uint8Array>> } = {};
     if (this.doorPublicKeys !== undefined) {
       verifyOptions.doorPublicKeys = this.doorPublicKeys;
     }
@@ -791,7 +791,7 @@ export class FileSoulStore implements SoulStore {
 
     const records = await this.parseChainLineBytes(lineBytesList);
 
-    const verifyOptions: { doorPublicKeys?: readonly Uint8Array[] } = {};
+    const verifyOptions: { doorPublicKeys?: Readonly<Record<string, Uint8Array>> } = {};
     if (this.doorPublicKeys !== undefined) {
       verifyOptions.doorPublicKeys = this.doorPublicKeys;
     }

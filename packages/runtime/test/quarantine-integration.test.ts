@@ -14,7 +14,7 @@ import { commitQuarantinedShards } from "../src/quarantine/commit.js";
 import { flagCandidate } from "../src/quarantine/flag.js";
 import { shardIdFromText } from "../src/quarantine/shard-id.js";
 import { Session } from "../src/session/session.js";
-import { createGenesisRecord, DOOR_ID } from "./helpers/fixtures.js";
+import { createGenesisRecord, DOOR_ID, doorPublicKeyFor } from "./helpers/fixtures.js";
 import { DOOR, SOUL } from "./helpers/fixed-keys.js";
 import { DoorStub } from "./helpers/door-stub.js";
 import { FakeClock, FakeTimer } from "./helpers/fake-timer.js";
@@ -137,7 +137,7 @@ describe("quarantine integration", () => {
       timer,
       clock,
       heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS,
-      doorPublicKeys: [DOOR.publicKey]
+      doorPublicKeys: doorPublicKeyFor(DOOR_ID, DOOR.publicKey)
     });
 
     const departResult = await session.depart({
@@ -332,10 +332,14 @@ describe("quarantine integration", () => {
       }
     }
 
-    const chainResult = await verifyChain(store, { doorPublicKeys: [DOOR.publicKey] });
+    const chainResult = await verifyChain(store, {
+      doorPublicKeys: doorPublicKeyFor(DOOR_ID, DOOR.publicKey)
+    });
     expect(chainResult.valid).toBe(true);
 
-    const composed = await composeSelf(store, { doorPublicKeys: [DOOR.publicKey] });
+    const composed = await composeSelf(store, {
+      doorPublicKeys: doorPublicKeyFor(DOOR_ID, DOOR.publicKey)
+    });
     const committedTexts = approvedCandidateTexts.filter((text) => text !== goodShards[1]);
     for (const text of committedTexts) {
       expect(composed.systemPrompt).toContain(text);

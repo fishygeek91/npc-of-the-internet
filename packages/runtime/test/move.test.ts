@@ -16,7 +16,7 @@ import { SessionError } from "../src/session/errors.js";
 import type { InboundFrame } from "../src/session/types.js";
 import { DoorStub } from "./helpers/door-stub.js";
 import { FakeClock, FakeTimer } from "./helpers/fake-timer.js";
-import { createGenesisRecord, DOOR_ID } from "./helpers/fixtures.js";
+import { createGenesisRecord, DOOR_ID, fixtureDoorPublicKeys } from "./helpers/fixtures.js";
 import { DOOR, OTHER_DOOR, SOUL } from "./helpers/fixed-keys.js";
 import { MemorySoulStore } from "./helpers/memory-soul-store.js";
 
@@ -148,7 +148,7 @@ describe("move", () => {
       timer,
       clock,
       heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS,
-      doorPublicKeys: [DOOR.publicKey, OTHER_DOOR.publicKey]
+      doorPublicKeys: fixtureDoorPublicKeys()
     });
 
     const result = await move({
@@ -164,7 +164,7 @@ describe("move", () => {
         timer,
         clock,
         heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS,
-        doorPublicKeys: [DOOR.publicKey, OTHER_DOOR.publicKey]
+        doorPublicKeys: fixtureDoorPublicKeys()
       }
     });
 
@@ -225,7 +225,7 @@ describe("move", () => {
     }
 
     const chainResult = await verifyChain(store, {
-      doorPublicKeys: [DOOR.publicKey, OTHER_DOOR.publicKey]
+      doorPublicKeys: fixtureDoorPublicKeys()
     });
     expect(chainResult.valid).toBe(true);
   });

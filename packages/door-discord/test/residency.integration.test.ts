@@ -122,7 +122,7 @@ describe("door-discord residency integration", () => {
       clock,
       timer,
       heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS,
-      doorPublicKeys: [DOOR.publicKey]
+      doorPublicKeys: { [doorId]: DOOR.publicKey }
     });
 
     expect(handle.status().present).toBe(true);
@@ -181,7 +181,7 @@ describe("door-discord residency integration", () => {
     expect(shards.length).toBe(0);
 
     const verified = await verifyChain(store, {
-      doorPublicKeys: [DOOR.publicKey]
+      doorPublicKeys: { [doorId]: DOOR.publicKey }
     });
     expect(verified.valid).toBe(true);
 
