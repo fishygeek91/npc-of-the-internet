@@ -440,11 +440,12 @@ describe("HttpDoorConnection", () => {
       const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
       if (url.includes("/door/attest")) {
         const json = (await response.json()) as Record<string, unknown>;
-        const doorSig = json.door_sig;
-        if (typeof doorSig === "string" && doorSig.length > 1) {
-          const flipped = doorSig.endsWith("A") ? "B" : "A";
-          json.door_sig = `${doorSig.slice(0, -1)}${flipped}`;
-        }
+        // Replace with a well-formed but wrong signature (still decodable) so Zod passes
+        // and verifyPayload rejects.
+        const junkKey = generateKeypair();
+        json.door_sig = encodeSignature(
+          sign(new TextEncoder().encode("tampered"), junkKey.privateKey)
+        );
         return new Response(JSON.stringify(json), {
           status: response.status,
           headers: { "Content-Type": "application/json" }
@@ -471,6 +472,78 @@ describe("HttpDoorConnection", () => {
       );
       await expect(env.httpClient.attest(arrival)).rejects.toMatchObject({
         code: "signature_invalid"
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("rejects cosign response whose phase does not match the request", async () => {
+    const helloRequest = {
+      protocol_version: DOOR_PROTOCOL_VERSION,
+      soul_pubkey: encodePublicKey(env.soul.publicKey)
+    };
+    await env.httpClient.hello(helloRequest);
+
+    const epoch = EPOCH + 8;
+    await env.httpClient.attest(
+      signAttestRequest(
+        env.soul,
+        env.session,
+        {
+          protocol_version: DOOR_PROTOCOL_VERSION,
+          door_id: DOOR_ID,
+          epoch,
+          kind: "arrival",
+          core: CORE,
+          session_pubkey: encodePublicKey(env.session.publicKey),
+          issued_at: ISSUED_AT
+        },
+        true
+      )
+    );
+
+    const reviewRequest = signCosignReviewRequest(env.session, {
+      protocol_version: DOOR_PROTOCOL_VERSION,
+      phase: "review",
+      door_id: DOOR_ID,
+      epoch,
+      session_pubkey: encodePublicKey(env.session.publicKey),
+      shards: sampleShards(5),
+      issued_at: ISSUED_AT
+    });
+
+    const originalFetch = globalThis.fetch;
+    const mismatchedFetch: typeof fetch = async (input, init) => {
+      const response = await originalFetch(input, init);
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (!url.includes("/door/cosign")) {
+        return response;
+      }
+      const json = (await response.json()) as Record<string, unknown>;
+      // Flip a valid review response into a commit-shaped body so phase ≠ request.
+      return new Response(
+        JSON.stringify({
+          phase: "commit",
+          door_id: json.door_id,
+          epoch: json.epoch,
+          shard_id: "shard_01",
+          door_cosig:
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+          received_at: json.received_at,
+          door_sig: json.door_sig
+        }),
+        {
+          status: response.status,
+          headers: { "Content-Type": "application/json" }
+        }
+      );
+    };
+
+    vi.stubGlobal("fetch", mismatchedFetch);
+    try {
+      await expect(env.httpClient.cosign(reviewRequest)).rejects.toMatchObject({
+        code: "invalid_request"
       });
     } finally {
       vi.unstubAllGlobals();

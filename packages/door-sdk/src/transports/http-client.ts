@@ -104,6 +104,12 @@ export class HttpDoorConnection implements DoorConnection {
   async cosign(request: CosignRequest): Promise<CosignResponse> {
     const doorPublicKey = this.requireDoorPublicKey();
     const response = await this.post("/door/cosign", request, CosignResponseSchema);
+    if (response.phase !== request.phase) {
+      throw DoorError.fromCode(
+        "invalid_request",
+        `invalid_request: cosign response phase ${response.phase} does not match request phase ${request.phase}`
+      );
+    }
     if (response.phase === "review") {
       const { door_sig: doorSig, ...unsigned } = response;
       if (
@@ -134,10 +140,11 @@ export class HttpDoorConnection implements DoorConnection {
         "signature_invalid: cosign commit response door_sig failed"
       );
     }
+    // Narrowed: response.phase === "commit" and phases match ⇒ request is commit.
     if (request.phase !== "commit") {
       throw DoorError.fromCode(
-        "door_unavailable",
-        "door unavailable: cosign commit response without commit request"
+        "invalid_request",
+        "invalid_request: cosign commit response without commit request"
       );
     }
     if (!verifyDoorCosig(request.core, response.door_cosig, doorPublicKey)) {

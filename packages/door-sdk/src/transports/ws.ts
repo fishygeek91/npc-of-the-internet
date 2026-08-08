@@ -231,6 +231,9 @@ export class WsDoorSessionServer {
           // Best-effort: still close even if session_end cannot be signed/sent.
         }
         client.socket.close();
+      } else if (client.socket.readyState !== WebSocket.CLOSED) {
+        // CONNECTING (and rare non-OPEN) sockets must not linger after remove-from-set.
+        client.socket.terminate();
       }
     }
   }

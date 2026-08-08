@@ -817,13 +817,14 @@ export class Door {
     }
     const skew = Math.abs(nowMs - issuedMs);
     if (skew > this.maxIssuedAtSkewMs) {
+      // Omit door_now from details: this check runs before request-sig verification,
+      // so echoing the Door clock would let unauthenticated callers probe it.
       throw DoorError.fromCode(
         "timestamp_stale",
         `timestamp_stale: issued_at skew ${String(skew)}ms exceeds max ${String(this.maxIssuedAtSkewMs)}ms`,
         {
           field: "issued_at",
           got: issuedAt,
-          door_now: this.clock.now(),
           max_skew_ms: this.maxIssuedAtSkewMs
         }
       );

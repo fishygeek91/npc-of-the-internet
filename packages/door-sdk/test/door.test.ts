@@ -936,7 +936,10 @@ describe("Door protocol hardening (#66)", () => {
       },
       true
     );
-    await expect(door.attest(staleArrival)).rejects.toMatchObject({ code: "timestamp_stale" });
+    await expect(door.attest(staleArrival)).rejects.toMatchObject({
+      code: "timestamp_stale",
+      details: expect.not.objectContaining({ door_now: expect.anything() })
+    });
 
     const futureArrival = signAttestRequest(
       soul,
