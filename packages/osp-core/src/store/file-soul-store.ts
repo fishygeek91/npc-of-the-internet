@@ -32,7 +32,10 @@ import type { AppendResult, FileSoulStoreOpenOptions, HeadInfo, SoulStore } from
 const CHAIN_FILE = "chain.jsonl";
 const BLOBS_DIR = "blobs";
 const LOCK_FILE = ".append.lock";
-/** Max age of an `.append.lock` before `openWithRecovery` may steal it even if the PID is alive. */
+/**
+ * Max age of an `.append.lock` before `openWithRecovery` may steal it even if the PID is alive.
+ * v0.1 policy constant (appends are sub-second); a future config pass may surface this.
+ */
 const LOCK_MAX_AGE_MS = 3_600_000;
 
 /** On-disk lock metadata written after exclusive create. */
@@ -222,7 +225,11 @@ export class FileSoulStore implements SoulStore {
    * Open a soulchain directory after recovering from a torn append.
    *
    * Removes a stale `.append.lock` if present (crash mid-append), truncates a partial trailing
-   * chain line when the file lacks a terminating newline, then validates like {@link open}.
+   * chain line when the file lacks a terminating newline (and strips blank tails), then validates
+   * like {@link open}.
+   *
+   * Must not run concurrently with live appenders on the same directory: lock clearing has a
+   * read-then-unlink race (v0.1 single-host / manual recovery per RUNBOOK).
    */
   static async openWithRecovery(
     dir: string,
@@ -242,6 +249,9 @@ export class FileSoulStore implements SoulStore {
   /**
    * Remove `.append.lock` only when safe: dead PID, over max age, or legacy/unparseable.
    * Refuses while a live holder owns a fresh lock.
+   *
+   * TOCTOU: between reading meta and `unlink`, a new appender could recreate the lock and lose
+   * it. Acceptable for v0.1 manual recovery; do not run recovery alongside live writers.
    */
   private async clearStaleAppendLock(): Promise<void> {
     if (!existsSync(this.lockPath)) {
@@ -664,6 +674,10 @@ export class FileSoulStore implements SoulStore {
     // Strip trailing empty lines (`record\n\n`) so the next append cannot brick the store.
     while (newSize >= 2 && buffer[newSize - 1] === 0x0a && buffer[newSize - 2] === 0x0a) {
       newSize -= 1;
+    }
+    // Lone `\n` (empty-line-only file) cannot be reduced by the loop above (needs length ≥ 2).
+    if (newSize === 1 && buffer[0] === 0x0a) {
+      newSize = 0;
     }
 
     if (newSize === oldSize) {

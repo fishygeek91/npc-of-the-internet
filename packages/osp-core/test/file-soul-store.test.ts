@@ -771,6 +771,31 @@ describe("FileSoulStore", () => {
       await recovered.close();
     }
   });
+
+  it("openWithRecovery clears a chain file that is only a single newline", async () => {
+    const store = await FileSoulStore.open(dir);
+    try {
+      // Ensure layout (chain + blobs) exists, then replace chain with a lone newline.
+      expect(await store.head()).toBeNull();
+    } finally {
+      await store.close();
+    }
+
+    await writeFile(path.join(dir, CHAIN_FILE), "\n");
+
+    await expect(FileSoulStore.open(dir)).rejects.toThrow(CorruptionError);
+    await expect(FileSoulStore.open(dir)).rejects.toThrow(/empty line/);
+
+    const { store: recovered, truncatedBytes } = await FileSoulStore.openWithRecovery(dir);
+    try {
+      expect(truncatedBytes).toBe(1);
+      expect(await recovered.head()).toBeNull();
+      await appendGenesis(recovered, soul);
+      expect((await recovered.head())?.seq).toBe(0);
+    } finally {
+      await recovered.close();
+    }
+  });
 });
 
 describe("FileSoulStore.openReadOnly", () => {

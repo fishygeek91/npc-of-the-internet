@@ -390,6 +390,8 @@ Two common failure modes after an unclean shutdown:
 
 There is no `osp recover` command. Recovery uses `FileSoulStore.openWithRecovery` from `@npc/osp-core`, which removes a **stale** lock (dead PID, lock older than 1 hour, or legacy empty/unparseable lock), truncates a torn/blank tail, and opens the store. If the lock names a **live** process and is still fresh, recovery refuses with `ConcurrentAppendError` so it cannot steal a lock mid-append.
 
+**Do not run `openWithRecovery` while another process may still be appending** to the same directory. Lock clearing is check-then-unlink (TOCTOU); concurrent recovery vs a live appender is out of scope for v0.1 single-host ops. Always `compose … down` first (below).
+
 ### 6.1 Recover on a host directory
 
 Stop the stack first:
