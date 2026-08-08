@@ -385,10 +385,12 @@ curl -sS http://127.0.0.1:8787/state
 
 Two common failure modes after an unclean shutdown:
 
-1. **Stale `.append.lock`** — left when runtime crashed mid-append. `FileSoulStore.open` refuses to proceed while the lock exists.
-2. **Torn trailing line in `chain.jsonl`** — a partial JSON line at the end of the file from a crash during write. The chain is incomplete and must be truncated to the last complete record.
+1. **Stale `.append.lock`** — left when runtime crashed mid-append. `FileSoulStore.open` refuses to proceed while the lock exists. The lock file contains JSON `{"pid":<number>,"acquiredAt":"<ISO-Z>"}`.
+2. **Torn trailing line in `chain.jsonl`** — a partial JSON line at the end of the file from a crash during write. The chain is incomplete and must be truncated to the last complete record. Trailing blank lines (`record\n\n`) are also stripped during recovery.
 
-There is no `osp recover` command. Recovery uses `FileSoulStore.openWithRecovery` from `@npc/osp-core`, which removes a stale lock, truncates a torn tail, and opens the store.
+There is no `osp recover` command. Recovery uses `FileSoulStore.openWithRecovery` from `@npc/osp-core`, which removes a **stale** lock (dead PID, lock older than 1 hour, or legacy empty/unparseable lock), truncates a torn/blank tail, and opens the store. If the lock names a **live** process and is still fresh, recovery refuses with `ConcurrentAppendError` so it cannot steal a lock mid-append.
+
+**Do not run `openWithRecovery` while another process may still be appending** to the same directory. Lock clearing is check-then-unlink (TOCTOU); concurrent recovery vs a live appender is out of scope for v0.1 single-host ops. Always `compose … down` first (below).
 
 ### 6.1 Recover on a host directory
 
@@ -412,7 +414,7 @@ console.log('Recovery complete. truncatedBytes=' + truncatedBytes);
 " ./_soulchain-snapshot
 ```
 
-If `truncatedBytes > 0`, a torn tail was removed. If a stale lock was present, it is removed regardless.
+If `truncatedBytes > 0`, a torn or blank tail was removed. A stale lock is removed only when safe (see above).
 
 ### 6.2 Verify after recovery
 

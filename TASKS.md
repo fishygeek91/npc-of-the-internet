@@ -184,6 +184,12 @@ Each task lists **Deps**, **Deliverables**, and **Acceptance** (how a reviewer v
 - Acceptance: Existing key/chain → refused + bytes unchanged; fresh dir → succeeds; verify on empty dir does not create files; torn tail → exit 1; `pnpm check` green; changeset.
 - Notes: Agent: Cursor Grok 4.5 Maestro, 2026-07-29. Pre-flight `existsSync` before `generateKeypair`; `writeFileSync` with `flag: "wx"`. Verify torn tail now exits 1 (was 2 + recovery hint via RW open). No `--force`.
 
+### Bug #67 ✅ osp-core: append verify, full writes, safe recovery lock (Cursor Grok 4.5 Maestro, 2026-08-08)
+- Deps: T1.2, T1.3
+- Deliverables: `FileSoulStore.append` calls `verifyRecord` + requires genesis at seq 0; `writeAllSync` for chain/blob; PID+timestamp lock with live-lock refusal in `openWithRecovery`; load-time canonical-bytes; trailing empty-line reject/recovery; `verifyChain` null-head XOR; ISO-UTC timestamps + `fork_point` as `CidSchema`; spec/RUNBOOK prose.
+- Acceptance: New tests per issue checklist; store/vector suites green; `pnpm check` green; changeset.
+- Notes: Agent: Cursor Grok 4.5 Maestro, 2026-08-08. Append verifies before durable write; `refreshHeadFromDisk` also hydrates `soulPublicKey` for multi-instance stores; lock meta JSON `{pid,acquiredAt}`; G1 gate for T7.1/#55 now satisfied in FileSoulStore.
+
 ## Phase 7 — Post-Ghost (v0.2/0.3 — spec first, then build)
 
 These are sequenced but intentionally coarser; split them into T-numbered subtasks (same format) when their phase begins.

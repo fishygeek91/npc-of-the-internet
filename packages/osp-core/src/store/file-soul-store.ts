@@ -32,6 +32,17 @@ import type { AppendResult, FileSoulStoreOpenOptions, HeadInfo, SoulStore } from
 const CHAIN_FILE = "chain.jsonl";
 const BLOBS_DIR = "blobs";
 const LOCK_FILE = ".append.lock";
+/**
+ * Max age of an `.append.lock` before `openWithRecovery` may steal it even if the PID is alive.
+ * v0.1 policy constant (appends are sub-second); a future config pass may surface this.
+ */
+const LOCK_MAX_AGE_MS = 3_600_000;
+
+/** On-disk lock metadata written after exclusive create. */
+type AppendLockMeta = {
+  pid: number;
+  acquiredAt: string;
+};
 
 /** Compare two byte arrays for equality. */
 function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
@@ -46,7 +57,67 @@ function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
   return true;
 }
 
-/** Split chain file bytes into per-record canonical line payloads (without trailing newlines). */
+/**
+ * Write every byte of `data` to `fd`, looping until complete.
+ * POSIX `write` may return a short count; ignoring it can fsync a torn line as durable.
+ */
+function writeAllSync(fd: number, data: Uint8Array): void {
+  let offset = 0;
+  while (offset < data.length) {
+    const written = writeSync(fd, data, offset, data.length - offset);
+    if (written === 0) {
+      throw new StorageError("writeSync wrote 0 bytes before completing the buffer");
+    }
+    offset += written;
+  }
+}
+
+/** True when `process.kill(pid, 0)` succeeds (process exists and is signalable). */
+function isProcessAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) {
+    return false;
+  }
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Parse lock file contents; empty/legacy/invalid → null (treat as stale). */
+function parseAppendLockMeta(raw: string): AppendLockMeta | null {
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) {
+    return null;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return null;
+  }
+  if (!("pid" in parsed) || !("acquiredAt" in parsed)) {
+    return null;
+  }
+  const pid = parsed.pid;
+  const acquiredAt = parsed.acquiredAt;
+  if (typeof pid !== "number" || !Number.isInteger(pid)) {
+    return null;
+  }
+  if (typeof acquiredAt !== "string" || acquiredAt.length === 0) {
+    return null;
+  }
+  return { pid, acquiredAt };
+}
+
+/**
+ * Split chain file bytes into per-record canonical line payloads (without trailing newlines).
+ * Any empty line (including a trailing blank after the final record) is corruption.
+ */
 function splitChainLines(buffer: Buffer): Uint8Array[] {
   const lines: Uint8Array[] = [];
   let start = 0;
@@ -54,11 +125,10 @@ function splitChainLines(buffer: Buffer): Uint8Array[] {
   for (let index = 0; index < buffer.length; index += 1) {
     if (buffer[index] === 0x0a) {
       const lineLength = index - start;
-      if (lineLength > 0) {
-        lines.push(new Uint8Array(buffer.subarray(start, index)));
-      } else if (index < buffer.length - 1) {
+      if (lineLength === 0) {
         throw new CorruptionError("empty line in chain file");
       }
+      lines.push(new Uint8Array(buffer.subarray(start, index)));
       start = index + 1;
     }
   }
@@ -155,7 +225,11 @@ export class FileSoulStore implements SoulStore {
    * Open a soulchain directory after recovering from a torn append.
    *
    * Removes a stale `.append.lock` if present (crash mid-append), truncates a partial trailing
-   * chain line when the file lacks a terminating newline, then validates like {@link open}.
+   * chain line when the file lacks a terminating newline (and strips blank tails), then validates
+   * like {@link open}.
+   *
+   * Must not run concurrently with live appenders on the same directory: lock clearing has a
+   * read-then-unlink race (v0.1 single-host / manual recovery per RUNBOOK).
    */
   static async openWithRecovery(
     dir: string,
@@ -165,19 +239,56 @@ export class FileSoulStore implements SoulStore {
     const store = new FileSoulStore(absoluteDir, options?.doorPublicKeys, null, null);
     await store.ensureLayout();
 
-    if (existsSync(store.lockPath)) {
-      try {
-        await unlink(store.lockPath);
-      } catch (error) {
-        if (!isNodeError(error) || error.code !== "ENOENT") {
-          throw error;
-        }
-      }
-    }
+    await store.clearStaleAppendLock();
 
     const truncatedBytes = await store.recoverTornChain();
     await store.loadChain();
     return { store, truncatedBytes };
+  }
+
+  /**
+   * Remove `.append.lock` only when safe: dead PID, over max age, or legacy/unparseable.
+   * Refuses while a live holder owns a fresh lock.
+   *
+   * TOCTOU: between reading meta and `unlink`, a new appender could recreate the lock and lose
+   * it. Acceptable for v0.1 manual recovery; do not run recovery alongside live writers.
+   */
+  private async clearStaleAppendLock(): Promise<void> {
+    if (!existsSync(this.lockPath)) {
+      return;
+    }
+
+    let raw: string;
+    try {
+      raw = await readFile(this.lockPath, "utf8");
+    } catch (error) {
+      if (isNodeError(error) && error.code === "ENOENT") {
+        return;
+      }
+      throw new StorageError(`failed to read append lock: ${nodeErrorMessage(error)}`);
+    }
+
+    const meta = parseAppendLockMeta(raw);
+    if (meta !== null) {
+      const acquiredMs = Date.parse(meta.acquiredAt);
+      const ageMs = Number.isFinite(acquiredMs)
+        ? Date.now() - acquiredMs
+        : Number.POSITIVE_INFINITY;
+      const fresh = ageMs < LOCK_MAX_AGE_MS;
+      if (isProcessAlive(meta.pid) && fresh) {
+        throw new ConcurrentAppendError(
+          "another append is in progress (live .append.lock — refuse openWithRecovery)"
+        );
+      }
+    }
+
+    try {
+      await unlink(this.lockPath);
+    } catch (error) {
+      if (!isNodeError(error) || error.code !== "ENOENT") {
+        throw error;
+      }
+    }
   }
 
   /** Append a signed record to the chain and return its CID. */
@@ -204,6 +315,9 @@ export class FileSoulStore implements SoulStore {
         if (validatedRecord.seq !== 0 || validatedRecord.prev !== null) {
           throw new ChainMismatchError("first append requires seq 0 and prev null");
         }
+        if (validatedRecord.type !== "genesis") {
+          throw new ChainMismatchError("first append requires type genesis");
+        }
       } else if (
         validatedRecord.prev !== this.headInfo.cid ||
         validatedRecord.seq !== this.headInfo.seq + 1
@@ -212,6 +326,20 @@ export class FileSoulStore implements SoulStore {
           `append prev/seq mismatch: expected prev ${this.headInfo.cid} seq ${this.headInfo.seq + 1}`
         );
       }
+
+      let soulPublicKey: Uint8Array;
+      if (validatedRecord.type === "genesis" && validatedRecord.seq === 0) {
+        soulPublicKey = decodePublicKey(validatedRecord.body.soul_pubkey);
+      } else if (this.soulPublicKey === null) {
+        throw new StorageError("soul public key missing for non-empty store");
+      } else {
+        soulPublicKey = this.soulPublicKey;
+      }
+
+      await verifyRecord(validatedRecord, {
+        soulPublicKey,
+        ...(this.doorPublicKeys !== undefined ? { doorPublicKeys: this.doorPublicKeys } : {})
+      });
 
       const bytes = canonicalize(validatedRecord);
       const cid = await computeCidFromCanonicalBytes(bytes);
@@ -227,7 +355,7 @@ export class FileSoulStore implements SoulStore {
 
       try {
         const line = Buffer.concat([Buffer.from(bytes), Buffer.from("\n")]);
-        writeSync(chainFd, line);
+        writeAllSync(chainFd, line);
         fsyncSync(chainFd);
       } finally {
         closeSync(chainFd);
@@ -426,6 +554,24 @@ export class FileSoulStore implements SoulStore {
       return;
     }
 
+    if (this.soulPublicKey === null) {
+      const firstLine = lines[0];
+      if (firstLine !== undefined) {
+        let firstParsed: unknown;
+        try {
+          firstParsed = JSON.parse(new TextDecoder().decode(firstLine));
+        } catch (error) {
+          throw new CorruptionError(
+            `invalid JSON in chain genesis during refresh: ${nodeErrorMessage(error)}`
+          );
+        }
+        const firstSchema = RecordSchema.safeParse(firstParsed);
+        if (firstSchema.success && firstSchema.data.type === "genesis") {
+          this.soulPublicKey = decodePublicKey(firstSchema.data.body.soul_pubkey);
+        }
+      }
+    }
+
     const cid = await computeCidFromCanonicalBytes(lastLine);
     let parsed: unknown;
     try {
@@ -480,7 +626,7 @@ export class FileSoulStore implements SoulStore {
     }
 
     try {
-      writeSync(blobFd, bytes);
+      writeAllSync(blobFd, bytes);
       fsyncSync(blobFd);
     } finally {
       closeSync(blobFd);
@@ -511,23 +657,31 @@ export class FileSoulStore implements SoulStore {
     }
 
     const buffer = await readFile(this.chainPath);
-    if (buffer.length > 0 && buffer[buffer.length - 1] === 0x0a) {
-      return 0;
-    }
-
     const oldSize = buffer.length;
-    let newSize = 0;
-    let lastNewline = -1;
-    for (let index = 0; index < buffer.length; index += 1) {
-      if (buffer[index] === 0x0a) {
-        lastNewline = index;
+    let newSize = oldSize;
+
+    // Torn trailing line (no final newline): truncate to last complete line.
+    if (buffer.length > 0 && buffer[buffer.length - 1] !== 0x0a) {
+      let lastNewline = -1;
+      for (let index = 0; index < buffer.length; index += 1) {
+        if (buffer[index] === 0x0a) {
+          lastNewline = index;
+        }
       }
+      newSize = lastNewline === -1 ? 0 : lastNewline + 1;
     }
 
-    if (lastNewline === -1) {
+    // Strip trailing empty lines (`record\n\n`) so the next append cannot brick the store.
+    while (newSize >= 2 && buffer[newSize - 1] === 0x0a && buffer[newSize - 2] === 0x0a) {
+      newSize -= 1;
+    }
+    // Lone `\n` (empty-line-only file) cannot be reduced by the loop above (needs length ≥ 2).
+    if (newSize === 1 && buffer[0] === 0x0a) {
       newSize = 0;
-    } else {
-      newSize = lastNewline + 1;
+    }
+
+    if (newSize === oldSize) {
+      return 0;
     }
 
     await truncate(this.chainPath, newSize);
@@ -705,6 +859,11 @@ export class FileSoulStore implements SoulStore {
         );
       }
 
+      const reCanonical = canonicalize(parsed);
+      if (!bytesEqual(lineBytes, reCanonical)) {
+        throw new CorruptionError(`non-canonical chain line for CID ${cid}`);
+      }
+
       records.push(parsed);
     }
 
@@ -719,6 +878,11 @@ export class FileSoulStore implements SoulStore {
       parsed = JSON.parse(new TextDecoder().decode(lineBytes));
     } catch (error) {
       throw new CorruptionError(`invalid JSON in chain head: ${nodeErrorMessage(error)}`);
+    }
+
+    const reCanonical = canonicalize(parsed);
+    if (!bytesEqual(lineBytes, reCanonical)) {
+      throw new CorruptionError(`non-canonical chain line for CID ${cid}`);
     }
 
     const schemaResult = RecordSchema.safeParse(parsed);
@@ -758,8 +922,9 @@ export class FileSoulStore implements SoulStore {
 
   /** Acquire the exclusive append lock. */
   private acquireLock(): void {
+    let lockFd: number;
     try {
-      this.lockFd = openSync(this.lockPath, "wx");
+      lockFd = openSync(this.lockPath, "wx");
     } catch (error) {
       if (isNodeError(error) && error.code === "EEXIST") {
         throw new ConcurrentAppendError(
@@ -767,6 +932,25 @@ export class FileSoulStore implements SoulStore {
         );
       }
       throw new StorageError(`failed to acquire append lock: ${nodeErrorMessage(error)}`);
+    }
+
+    this.lockFd = lockFd;
+
+    const meta: AppendLockMeta = {
+      pid: process.pid,
+      acquiredAt: new Date().toISOString()
+    };
+    const metaBytes = new TextEncoder().encode(`${JSON.stringify(meta)}\n`);
+    try {
+      writeAllSync(lockFd, metaBytes);
+      fsyncSync(lockFd);
+    } catch (error) {
+      try {
+        this.releaseLock();
+      } catch {
+        // Best-effort cleanup after failed lock metadata write.
+      }
+      throw new StorageError(`failed to write append lock metadata: ${nodeErrorMessage(error)}`);
     }
   }
 
