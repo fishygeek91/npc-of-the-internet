@@ -308,11 +308,45 @@ export async function verifyChain(
   }
 
   const storeHead = await store.head();
-  if (
-    result.head !== null &&
-    storeHead !== null &&
-    (storeHead.cid !== result.head.cid || storeHead.seq !== result.head.seq)
-  ) {
+
+  if (result.head === null && storeHead === null) {
+    return result;
+  }
+
+  if (result.head === null && storeHead !== null) {
+    return {
+      valid: false,
+      failures: [
+        {
+          seq: storeHead.seq,
+          cid: storeHead.cid,
+          rule: "forked_head",
+          message: "store head is set but verified chain is empty"
+        }
+      ]
+    };
+  }
+
+  if (result.head !== null && storeHead === null) {
+    return {
+      valid: false,
+      failures: [
+        {
+          seq: result.head.seq,
+          cid: result.head.cid,
+          rule: "forked_head",
+          message: "verified chain head is set but store head is null"
+        }
+      ]
+    };
+  }
+
+  // Both heads are non-null after the XOR checks above.
+  if (result.head === null || storeHead === null) {
+    return result;
+  }
+
+  if (storeHead.cid !== result.head.cid || storeHead.seq !== result.head.seq) {
     return {
       valid: false,
       failures: [

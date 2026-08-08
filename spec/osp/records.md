@@ -419,6 +419,17 @@ A fork is verified as its own chain starting at a new genesis with `fork_point` 
 - **v0.2+:** IPFS pinning via `helia`; same record bytes and CIDs.
 - Records are immutable once appended; correction is by append-only successor records, never mutation.
 
+### SoulStore append and load contracts
+
+Implementations of `SoulStore.append` MUST:
+
+1. Validate the record schema.
+2. Enforce chain linkage (`prev` / `seq`), and require `type: "genesis"` when the store is empty.
+3. Cryptographically verify the record (`verifyRecord`: soul signature against the genesis soul public key, and cosigners against configured Door keys when present) **before** any durable write.
+4. Persist **canonical** record bytes only (sorted keys, no insignificant whitespace — see [Canonical serialization](#canonical-serialization)).
+
+On load, chain line bytes MUST round-trip: `bytesEqual(lineBytes, canonicalize(JSON.parse(lineBytes)))`. Non-canonical lines are corruption. CIDs are computed over those exact canonical bytes so a second implementation (or IPFS store) cannot silently fork CID space by re-encoding.
+
 ---
 
 ## Related specifications
