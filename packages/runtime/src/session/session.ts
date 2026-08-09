@@ -363,9 +363,8 @@ export class Session {
     if (this.phase === "live") {
       this.stop();
       await this.drainAppends();
-    } else if (this.phase !== "departing") {
-      throw new SessionError("session is not live");
     }
+    // Remaining phase is `departing` (retry after mid-pipeline failure).
 
     const brain = options.brain ?? this.brain;
     const candidates = await this.ensureDepartCandidates(options.transcript, brain);
@@ -409,6 +408,9 @@ export class Session {
       progress.screenCategories.add(category);
     }
 
+    // Contract: host_rejected appends are all-or-nothing per residency. A crash
+    // mid-batch leaves hasHostRejected true and under-records the rest until a
+    // future RejectedBody schema carries per-shard shard_id for individual dedupe.
     if (!progress.hasHostRejected) {
       for (const decision of decisions) {
         if (decision.status !== "rejected") {

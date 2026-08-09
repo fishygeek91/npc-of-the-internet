@@ -2,7 +2,13 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { verifyChain, type OspRecord, type SoulStore } from "@npc/osp-core";
+import {
+  verifyChain,
+  type AppendResult,
+  type HeadInfo,
+  type OspRecord,
+  type SoulStore
+} from "@npc/osp-core";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { FakeBrain } from "../src/brain/fake-brain.js";
@@ -119,6 +125,42 @@ async function collectRecords(store: SoulStore): Promise<OspRecord[]> {
     records.push(record);
   }
   return records;
+}
+
+/**
+ * SoulStore wrapper that runs a hook once after the first {@link iterate} completes.
+ * Used to append a rejection in the window between the pre-scan head capture and
+ * the end of {@link scanQuarantineState} (or immediately after that scan).
+ */
+class AfterFirstIterateStore implements SoulStore {
+  private firstIterateDone = false;
+
+  constructor(
+    private readonly inner: SoulStore,
+    private readonly afterFirstIterate: () => Promise<void>
+  ) {}
+
+  async append(record: OspRecord): Promise<AppendResult> {
+    return this.inner.append(record);
+  }
+
+  async head(): Promise<HeadInfo | null> {
+    return this.inner.head();
+  }
+
+  async get(cid: string): Promise<OspRecord> {
+    return this.inner.get(cid);
+  }
+
+  async *iterate(): AsyncIterable<OspRecord> {
+    for await (const record of this.inner.iterate()) {
+      yield record;
+    }
+    if (!this.firstIterateDone) {
+      this.firstIterateDone = true;
+      await this.afterFirstIterate();
+    }
+  }
 }
 
 describe("quarantine commit TOCTOU + flag idempotency", () => {
@@ -287,5 +329,88 @@ describe("quarantine commit TOCTOU + flag idempotency", () => {
         record.body.candidate_cid === flaggedCid
     );
     expect(rejectionRecords).toHaveLength(1);
+  });
+
+  it("skips a candidate flagged during the pre-loop scan (baseline head captured before scan)", async () => {
+    const inner = await buildGenesisStore();
+    const transcriptDir = await makeTempDir("scan-window-transcript-");
+    const journalDir = await makeTempDir("scan-window-journal-");
+    const source = await writeTranscript(transcriptDir, sampleTranscriptLines());
+
+    const shardTexts = nShards(5);
+    const clock = new FakeClock(CLOCK_START);
+    const timer = new FakeTimer();
+    const keyring = new SingleKeyKeyring(SOUL.privateKey);
+    const door = new DoorStub({
+      doorId: DOOR_ID,
+      doorKeypair: DOOR,
+      soulPublicKey: SOUL.publicKey,
+      clock
+    });
+    const brain = new FakeBrain([shardsJson(shardTexts), SAMPLE_JOURNAL]);
+
+    const session = await Session.start({
+      store: inner,
+      brain,
+      door,
+      keyring,
+      doorId: DOOR_ID,
+      timer,
+      clock,
+      heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS,
+      doorPublicKeys: doorPublicKeyFor(DOOR_ID, DOOR.publicKey)
+    });
+
+    const departResult = await session.depart({
+      transcript: source,
+      journalDir
+    });
+
+    const flagDuringScanCid = departResult.candidateCids[0];
+    if (flagDuringScanCid === undefined) {
+      throw new Error("expected candidate cid");
+    }
+
+    advanceClock(clock, QUARANTINE_WINDOW_MS + 1);
+
+    // First iterate inside commit is scanQuarantineState; flag after it finishes so
+    // the rejection is absent from scan.rejectedCandidateCids but seq > scanHeadSeq
+    // (head was captured before the scan).
+    const store = new AfterFirstIterateStore(inner, async () => {
+      await flagCandidate({
+        store: inner,
+        keyring,
+        candidateCid: flagDuringScanCid,
+        clock
+      });
+    });
+
+    const commitResult = await commitQuarantinedShards({
+      store,
+      keyring,
+      door,
+      doorId: DOOR_ID,
+      epoch: session.epoch,
+      clock,
+      quarantineWindowMs: QUARANTINE_WINDOW_MS,
+      journalMarkdown: departResult.journalMarkdown
+    });
+
+    expect(commitResult.skippedCids).toContain(flagDuringScanCid);
+    expect(commitResult.committedCids).toHaveLength(4);
+
+    const records = await collectRecords(inner);
+    const flaggedCommitted = records.some(
+      (record) =>
+        record.type === "memory" &&
+        record.body.kind === "shard" &&
+        record.body.candidate_cid === flagDuringScanCid
+    );
+    expect(flaggedCommitted).toBe(false);
+
+    const chainResult = await verifyChain(inner, {
+      doorPublicKeys: doorPublicKeyFor(DOOR_ID, DOOR.publicKey)
+    });
+    expect(chainResult.valid).toBe(true);
   });
 });

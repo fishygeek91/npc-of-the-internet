@@ -60,9 +60,11 @@ export type CommitQuarantineResult = {
 export async function commitQuarantinedShards(
   options: CommitQuarantinedShardsOptions
 ): Promise<CommitQuarantineResult> {
-  const scan = await scanQuarantineState(options.store);
+  // Capture baseline BEFORE the scan so a flag landing during/after iterate is
+  // still visible to scanRejectedCandidateCidsSince (seq > scanHeadSeq).
   const scanHead = await options.store.head();
   const scanHeadSeq = scanHead?.seq ?? -1;
+  const scan = await scanQuarantineState(options.store);
   const committedCids: string[] = [];
   const ripeningCids: string[] = [];
   const skippedCids: string[] = [];

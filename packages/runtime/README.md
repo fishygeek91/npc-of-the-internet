@@ -166,7 +166,7 @@ import { Session, move, type DepartOptions } from "@npc/runtime";
 
 ### `Session.depart`
 
-Call on a live session to end the residency. Enters a `departing` phase immediately (`stop()` + `await drainAppends()` — no further heartbeats or inbound handling). Safe to retry after a mid-pipeline failure until `travel` is appended (`departed`); transcript lines, candidates, journal, and review decisions are cached in-process across retries. The transcript is read once then destroyed; subsequent distill attempts use `MemoryTranscriptSource` over the cached lines.
+Call on a live session to end the residency. Enters a `departing` phase immediately (`stop()` + `await drainAppends()` — no further heartbeats or inbound handling). Safe to retry after a mid-pipeline failure until `travel` is appended (`departed`); transcript lines, candidates, journal, and review decisions are cached in-process across retries. The transcript is read once then destroyed; subsequent distill attempts use `MemoryTranscriptSource` over the cached lines. Retry is **in-process only** — a process crash mid-depart cannot re-read the destroyed transcript (privacy deliberately wins over durability).
 
 Order of operations:
 
