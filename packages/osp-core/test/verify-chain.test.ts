@@ -117,7 +117,8 @@ async function createArrivalForDoor(
   session: Ed25519Keypair,
   doorId: string,
   seq: number,
-  prev: string
+  prev: string,
+  epoch = 1
 ) {
   const fields = {
     seq,
@@ -127,11 +128,41 @@ async function createArrivalForDoor(
       kind: "arrival" as const,
       pop_version: "pop/0.1" as const,
       door_id: doorId,
-      epoch: 1,
+      epoch,
       session_pubkey: encodePublicKey(session.publicKey),
       at: "2026-01-02T00:00:00.000Z"
     },
-    residency: `door:${doorId}/epoch:1`
+    residency: `door:${doorId}/epoch:${epoch}`
+  };
+  const cosig = signCore(fields, door.privateKey);
+  return createRecord({
+    ...fields,
+    cosigners: [cosig],
+    soulPrivateKey: soul.privateKey
+  });
+}
+
+/** Build a signed departure attestation. */
+async function createDepartureRecord(
+  soul: Ed25519Keypair,
+  door: Ed25519Keypair,
+  seq: number,
+  prev: string,
+  doorId = DOOR_ID,
+  epoch = 1
+) {
+  const fields = {
+    seq,
+    prev,
+    type: "attestation" as const,
+    body: {
+      kind: "departure" as const,
+      pop_version: "pop/0.1" as const,
+      door_id: doorId,
+      epoch,
+      at: "2026-01-03T00:00:00.000Z"
+    },
+    residency: `door:${doorId}/epoch:${epoch}`
   };
   const cosig = signCore(fields, door.privateKey);
   return createRecord({
@@ -368,6 +399,56 @@ describe("verifyRecords", () => {
       }
     });
     expectInvalid(result, "presence_conflict");
+  });
+
+  it("rejects presence_conflict when epoch is reused after departure at a different Door", async () => {
+    const genesis = await createGenesisRecord(soul);
+    const otherDoor = generateKeypair();
+    const arrivalA = await createArrivalRecord(soul, door, session, 1, genesis.cid);
+    const departure = await createDepartureRecord(soul, door, 2, arrivalA.cid);
+    const arrivalB = await createArrivalForDoor(
+      soul,
+      otherDoor,
+      session,
+      OTHER_DOOR_ID,
+      3,
+      departure.cid,
+      1
+    );
+    const records = [genesis.record, arrivalA.record, departure.record, arrivalB.record];
+
+    const result = await verifyRecords(records, {
+      doorPublicKeys: {
+        [DOOR_ID]: door.publicKey,
+        [OTHER_DOOR_ID]: otherDoor.publicKey
+      }
+    });
+    expectInvalid(result, "presence_conflict");
+  });
+
+  it("rejects bad_session_continuity when heartbeat follows a newer-epoch arrival", async () => {
+    const genesis = await createGenesisRecord(soul);
+    const otherDoor = generateKeypair();
+    const arrivalA = await createArrivalRecord(soul, door, session, 1, genesis.cid);
+    const arrivalB = await createArrivalForDoor(
+      soul,
+      otherDoor,
+      session,
+      OTHER_DOOR_ID,
+      2,
+      arrivalA.cid,
+      2
+    );
+    const heartbeat = await createHeartbeatRecord(soul, door, session, 3, arrivalB.cid);
+    const records = [genesis.record, arrivalA.record, arrivalB.record, heartbeat.record];
+
+    const result = await verifyRecords(records, {
+      doorPublicKeys: {
+        [DOOR_ID]: door.publicKey,
+        [OTHER_DOOR_ID]: otherDoor.publicKey
+      }
+    });
+    expectInvalid(result, "bad_session_continuity");
   });
 
   it("rejects bad_genesis when the first record is not genesis", async () => {

@@ -5,8 +5,7 @@ import { decodePublicKey, EncodingError, parseDoorPublicKeyMap } from "@npc/osp-
 import { z } from "zod";
 
 const fixtureMetaSchema = z.object({
-  doorPublicKeys: z.record(z.string().min(1)).optional(),
-  doorPublicKey: z.string().min(1).optional()
+  doorPublicKeys: z.record(z.string().min(1)).optional()
 });
 
 const atlasSiteConfigSchema = z.object({
@@ -67,10 +66,6 @@ async function loadDoorKeysFromFixtureMeta(
       map[doorId] = decodePublicKey(keyB64);
     }
     return map;
-  }
-
-  if (parsed.data.doorPublicKey !== undefined) {
-    return undefined;
   }
 
   return undefined;

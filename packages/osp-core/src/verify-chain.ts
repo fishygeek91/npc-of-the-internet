@@ -26,6 +26,14 @@ type ActiveSession = {
   sessionPubkey: string;
 };
 
+/** Mutable PoP presence state walked by {@link collectPresenceFailures}. */
+type PresenceState = {
+  /** Open sessions only — departure / travel / newer arrival may close these. */
+  activeSessions: Map<number, ActiveSession>;
+  /** Permanent first `door_id` seen per epoch (never deleted). */
+  epochDoors: Map<number, string>;
+};
+
 /** Returns true when the record type requires a non-empty Door cosignature. */
 function requiresCosigner(record: OspRecord): boolean {
   if (record.type === "memory" && record.body.kind === "shard") {
@@ -149,12 +157,12 @@ async function materializeRecords(
 
 /**
  * Collect PoP continuity and presence-conflict failures for an attestation.
- * Mutates `activeSessions` when the record advances session state.
+ * Mutates `state.activeSessions` and `state.epochDoors` as the chain advances.
  */
 function collectPresenceFailures(
   record: OspRecord,
   cid: string,
-  activeSessions: Map<number, ActiveSession>
+  state: PresenceState
 ): ChainFailure[] {
   if (record.type !== "attestation") {
     return [];
@@ -163,8 +171,8 @@ function collectPresenceFailures(
   const kind = record.body.kind;
   if (kind !== "arrival" && kind !== "heartbeat" && kind !== "departure") {
     if (kind === "travel") {
-      // Travel means no live session; clear any open epochs (Ghost: typically one).
-      activeSessions.clear();
+      // Travel means no live session; clear open epochs only (epoch history is permanent).
+      state.activeSessions.clear();
     }
     return [];
   }
@@ -172,46 +180,73 @@ function collectPresenceFailures(
   const failures: ChainFailure[] = [];
   const epoch = record.body.epoch;
   const doorId = record.body.door_id;
-  const existing = activeSessions.get(epoch);
+  const recordedDoor = state.epochDoors.get(epoch);
+  const openSession = state.activeSessions.get(epoch);
 
-  if (existing !== undefined && existing.doorId !== doorId) {
+  if (recordedDoor !== undefined && recordedDoor !== doorId) {
     failures.push({
       seq: record.seq,
       cid,
       rule: "presence_conflict",
-      message: `presence conflict for epoch ${epoch}: Door "${doorId}" conflicts with open Door "${existing.doorId}"`
+      message: `presence conflict for epoch ${epoch}: Door "${doorId}" conflicts with Door "${recordedDoor}"`
     });
   }
 
   if (kind === "arrival") {
-    if (existing !== undefined) {
+    if (recordedDoor !== undefined) {
+      // Epoch already claimed (including after departure) — reuse is a conflict.
+      failures.push({
+        seq: record.seq,
+        cid,
+        rule: "presence_conflict",
+        message: `second arrival for epoch ${epoch} (epoch already claimed by Door "${recordedDoor}")`
+      });
+      return failures;
+    }
+
+    if (openSession !== undefined) {
       failures.push({
         seq: record.seq,
         cid,
         rule: "presence_conflict",
         message: `second arrival for epoch ${epoch} without a prior departure`
       });
-    } else {
-      activeSessions.set(epoch, {
-        doorId,
-        sessionPubkey: record.body.session_pubkey
-      });
+      return failures;
     }
+
+    // New epoch retires prior open session keys (pop/0.1 global monotonic epoch).
+    for (const openEpoch of [...state.activeSessions.keys()]) {
+      if (openEpoch < epoch) {
+        state.activeSessions.delete(openEpoch);
+      }
+    }
+
+    state.epochDoors.set(epoch, doorId);
+    state.activeSessions.set(epoch, {
+      doorId,
+      sessionPubkey: record.body.session_pubkey
+    });
     return failures;
   }
 
-  if (existing === undefined) {
+  // Record first door_id for this epoch from heartbeat/departure if somehow first
+  // (normally arrival records it). Still useful for conflict detection.
+  if (recordedDoor === undefined) {
+    state.epochDoors.set(epoch, doorId);
+  }
+
+  if (openSession === undefined) {
     failures.push({
       seq: record.seq,
       cid,
       rule: "bad_session_continuity",
-      message: `${kind} for epoch ${epoch} has no matching arrival attestation`
+      message: `${kind} for epoch ${epoch} has no matching open arrival attestation`
     });
     return failures;
   }
 
   if (kind === "heartbeat") {
-    if (record.body.session_pubkey !== existing.sessionPubkey) {
+    if (record.body.session_pubkey !== openSession.sessionPubkey) {
       failures.push({
         seq: record.seq,
         cid,
@@ -222,8 +257,8 @@ function collectPresenceFailures(
     return failures;
   }
 
-  // departure — close the epoch after continuity checks
-  activeSessions.delete(epoch);
+  // departure — close the open session; keep epochDoors for conflict history
+  state.activeSessions.delete(epoch);
   return failures;
 }
 
@@ -255,7 +290,10 @@ export async function verifyRecords(
   let previousCid: string | null = null;
   let soulPublicKey: Uint8Array | null = null;
   const shardCids = new Set<string>();
-  const activeSessions = new Map<number, ActiveSession>();
+  const presenceState: PresenceState = {
+    activeSessions: new Map<number, ActiveSession>(),
+    epochDoors: new Map<number, string>()
+  };
   let lastHead: HeadInfo | null = null;
 
   for (let index = 0; index < ordered.length; index += 1) {
@@ -335,7 +373,7 @@ export async function verifyRecords(
       }
     }
 
-    failures.push(...collectPresenceFailures(record, cid, activeSessions));
+    failures.push(...collectPresenceFailures(record, cid, presenceState));
 
     // Belt-and-suspenders: RecordSchema already rejects empty cosigners for these kinds
     // (schema_violation + continue), so this branch is unreachable for schema-valid records.

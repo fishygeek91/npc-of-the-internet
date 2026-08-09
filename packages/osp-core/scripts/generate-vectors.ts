@@ -25,6 +25,7 @@ const DOOR_ID = "discord:g";
 const OTHER_DOOR_ID = "irc:other";
 const RESIDENCY = `door:${DOOR_ID}/epoch:1`;
 const OTHER_RESIDENCY = `door:${OTHER_DOOR_ID}/epoch:1`;
+const OTHER_RESIDENCY_E2 = `door:${OTHER_DOOR_ID}/epoch:2`;
 const WRONG_PREV_CID = "bagu" + "a".repeat(57);
 
 /** TEST-ONLY: deterministic Ed25519 keypair from a fixed 32-byte private key fill pattern. */
@@ -53,11 +54,6 @@ type VectorCase = {
   doorPublicKeys: Record<string, string>;
   records: OspRecord[];
 };
-
-/** Build door id → base64url public key map for vector JSON. */
-function doorPublicKeyMap(entries: Readonly<Record<string, string>>): Record<string, string> {
-  return { ...entries };
-}
 
 /** Build a signed genesis record. */
 async function createGenesisRecord(soul: Ed25519Keypair) {
@@ -143,6 +139,43 @@ async function createHeartbeatRecord(
       epoch,
       session_pubkey: encodePublicKey(session.publicKey),
       at: options?.at ?? "2026-01-02T00:30:00.000Z"
+    },
+    residency
+  };
+  const cosig = signCore(fields, door.privateKey);
+  return createRecord({
+    ...fields,
+    cosigners: [cosig],
+    soulPrivateKey: soul.privateKey
+  });
+}
+
+/** Build a signed departure attestation with door cosignature. */
+async function createDepartureRecord(
+  soul: Ed25519Keypair,
+  door: Ed25519Keypair,
+  seq: number,
+  prev: string,
+  options?: {
+    doorId?: string;
+    residency?: string;
+    epoch?: number;
+    at?: string;
+  }
+) {
+  const doorId = options?.doorId ?? DOOR_ID;
+  const residency = options?.residency ?? RESIDENCY;
+  const epoch = options?.epoch ?? 1;
+  const fields = {
+    seq,
+    prev,
+    type: "attestation" as const,
+    body: {
+      kind: "departure" as const,
+      pop_version: "pop/0.1" as const,
+      door_id: doorId,
+      epoch,
+      at: options?.at ?? "2026-01-03T00:00:00.000Z"
     },
     residency
   };
@@ -298,11 +331,11 @@ async function buildVectors(): Promise<VectorCase[]> {
   const soulPub = encodePublicKey(SOUL.publicKey);
   const doorPub = encodePublicKey(DOOR.publicKey);
   const otherDoorPub = encodePublicKey(OTHER_DOOR.publicKey);
-  const discordDoorKeys = doorPublicKeyMap({ [DOOR_ID]: doorPub });
-  const bothDoorKeys = doorPublicKeyMap({
+  const discordDoorKeys: Record<string, string> = { [DOOR_ID]: doorPub };
+  const bothDoorKeys: Record<string, string> = {
     [DOOR_ID]: doorPub,
     [OTHER_DOOR_ID]: otherDoorPub
-  });
+  };
 
   const chain = await createValidMiniChain(SOUL, DOOR, SESSION);
 
@@ -372,7 +405,7 @@ async function buildVectors(): Promise<VectorCase[]> {
     description: "Cosignatures verify under door A but doorPublicKeys lists only door B",
     expected: "missing_cosigner",
     soulPublicKey: soulPub,
-    doorPublicKeys: doorPublicKeyMap({ [OTHER_DOOR_ID]: otherDoorPub }),
+    doorPublicKeys: { [OTHER_DOOR_ID]: otherDoorPub },
     records: [chain.genesis.record, chain.arrival.record, chain.shard.record, chain.drift.record]
   };
 
@@ -731,6 +764,62 @@ async function buildVectors(): Promise<VectorCase[]> {
     records: [conflictGenesis.record, conflictArrivalA.record, conflictArrivalB.record]
   };
 
+  const reuseGenesis = await createGenesisRecord(SOUL);
+  const reuseArrivalA = await createArrivalRecord(SOUL, DOOR, SESSION, 1, reuseGenesis.cid);
+  const reuseDeparture = await createDepartureRecord(SOUL, DOOR, 2, reuseArrivalA.cid);
+  const reuseArrivalB = await createArrivalRecord(
+    SOUL,
+    OTHER_DOOR,
+    OTHER_SESSION,
+    3,
+    reuseDeparture.cid,
+    { doorId: OTHER_DOOR_ID, residency: OTHER_RESIDENCY, epoch: 1 }
+  );
+  const presenceConflictEpochReuse: VectorCase = {
+    filename: "presence-conflict-epoch-reuse.json",
+    description:
+      "Arrival at door B for epoch 1 after door A already arrived and departed that epoch",
+    expected: "presence_conflict",
+    soulPublicKey: soulPub,
+    doorPublicKeys: bothDoorKeys,
+    records: [
+      reuseGenesis.record,
+      reuseArrivalA.record,
+      reuseDeparture.record,
+      reuseArrivalB.record
+    ]
+  };
+
+  const staleGenesis = await createGenesisRecord(SOUL);
+  const staleArrivalA = await createArrivalRecord(SOUL, DOOR, SESSION, 1, staleGenesis.cid);
+  const staleArrivalB = await createArrivalRecord(
+    SOUL,
+    OTHER_DOOR,
+    OTHER_SESSION,
+    2,
+    staleArrivalA.cid,
+    { doorId: OTHER_DOOR_ID, residency: OTHER_RESIDENCY_E2, epoch: 2 }
+  );
+  const staleHeartbeat = await createHeartbeatRecord(SOUL, DOOR, SESSION, 3, staleArrivalB.cid, {
+    doorId: DOOR_ID,
+    residency: RESIDENCY,
+    epoch: 1
+  });
+  const staleHeartbeatAfterNewEpoch: VectorCase = {
+    filename: "stale-heartbeat-after-new-epoch.json",
+    description:
+      "Heartbeat for epoch 1 after a newer arrival retires that session (bad_session_continuity)",
+    expected: "bad_session_continuity",
+    soulPublicKey: soulPub,
+    doorPublicKeys: bothDoorKeys,
+    records: [
+      staleGenesis.record,
+      staleArrivalA.record,
+      staleArrivalB.record,
+      staleHeartbeat.record
+    ]
+  };
+
   return [
     validMiniChain,
     badSoulSig,
@@ -753,6 +842,8 @@ async function buildVectors(): Promise<VectorCase[]> {
     schemaBadEvidence,
     badSessionContinuity,
     conflictingAttestations,
+    presenceConflictEpochReuse,
+    staleHeartbeatAfterNewEpoch,
     quarantineCandidateToShard,
     quarantineCandidateToRejected,
     schemaRejectedWithPayload

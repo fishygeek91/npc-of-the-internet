@@ -407,12 +407,13 @@ High-level rules for `verifyChain` (full vector suite deferred to **T1.3**). A c
 ### PoP continuity and conflicts (Ghost)
 
 13. **Session continuity:** track the open `{epoch, door_id, session_pubkey}` from each `arrival`. A `heartbeat` for that epoch MUST carry the same `session_pubkey`; a `heartbeat` or `departure` without a matching open arrival is invalid (`bad_session_continuity`). See `spec/pop/overview.md` §7–§8.
-14. **Presence conflict:** two presence attestations (`arrival` / `heartbeat` / `departure`) for the **same epoch** with **different `door_id` values**, or a second `arrival` for an epoch that is still open (no prior `departure`), are a `presence_conflict`. Ghost `osp verify` MUST detect these (pop/0.1 §8.2 / §10). Conflict-proof submission format and Atlas violation UI are PoP v0.2 (T7.3), not Ghost.
+14. **Presence conflict:** two presence attestations (`arrival` / `heartbeat` / `departure`) for the **same epoch** with **different `door_id` values** are a `presence_conflict`, including when the first residency has already departed — conflict detection walks the **entire chain** and retains epoch→door history permanently. A second `arrival` for an epoch that was already claimed (open or closed) is also a `presence_conflict`. A new `arrival` at epoch *n* retires open sessions with epoch < *n*; a later heartbeat for a retired epoch is `bad_session_continuity`. Ghost `osp verify` MUST detect these (pop/0.1 §8.2 / §10). Conflict-proof submission format and Atlas violation UI are PoP v0.2 (T7.3), not Ghost.
 
 ### Not required in Ghost (v0.1)
 
 - **Chain anchoring:** Merkle roots on a public L2 are specified in ARCHITECTURE.md for tamper-evidence but **not required for verification in Ghost**. Local file / IPFS storage is sufficient. Anchor checks are added in v0.3 (T7.6).
 - **`transaction` / `sleep`:** absence is valid.
+- **Non-monotonic arrival epochs:** verifying that each new arrival's `epoch` is strictly greater than every prior claimed epoch is not checked in Ghost (v0.1); implementers SHOULD still assign epochs monotonically per pop/0.1.
 
 ### Forks
 

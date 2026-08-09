@@ -200,7 +200,7 @@ Each task lists **Deps**, **Deliverables**, and **Acceptance** (how a reviewer v
 - Deps: T1.3
 - Deliverables: `doorPublicKeys` as `doorId → publicKey` map; cosigner verify against residency Door only; envelope `body.epoch` + strictly ascending cosigners; `verifyRecords` session continuity + `presence_conflict`; vectors + atlas/osp-cli/runtime call sites.
 - Acceptance: New vectors labeled + passing; downstream keyed API updated; `pnpm check` green; changeset.
-- Notes: Agent: Cursor Grok 4.5 Maestro, 2026-08-08. `ATLAS_DOOR_PUBKEYS` / `--door-key` are now `doorId=base64url`. ChainRules: `bad_session_continuity`, `presence_conflict`. New vectors: wrong-door-cosign, bad-session-continuity, schema-epoch-mismatch, schema-unsorted-cosigners, conflicting-attestations.
+- Notes: Agent: Cursor Grok 4.5 Maestro, 2026-08-08. `ATLAS_DOOR_PUBKEYS` / `--door-key` are now `doorId=base64url`. ChainRules: `bad_session_continuity`, `presence_conflict`. New vectors: wrong-door-cosign, bad-session-continuity, schema-epoch-mismatch, schema-unsorted-cosigners, conflicting-attestations. Review follow-up: permanent epoch→door history (epoch reuse + retire lower epochs on arrival); vectors presence-conflict-epoch-reuse, stale-heartbeat-after-new-epoch.
 
 ## Phase 7 — Post-Ghost (v0.2/0.3 — spec first, then build)
 
