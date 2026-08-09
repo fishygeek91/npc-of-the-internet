@@ -198,7 +198,7 @@ async function main() {
   const door = new InProcessDoorConnection(doorCore);
 
   const store = await FileSoulStore.open(chainDir, {
-    doorPublicKeys: [doorPublicKey]
+    doorPublicKeys: { [doorId]: doorPublicKey }
   });
 
   const timer = new FakeTimer();
@@ -215,7 +215,7 @@ async function main() {
       timer,
       clock,
       heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS,
-      doorPublicKeys: [doorPublicKey]
+      doorPublicKeys: { [doorId]: doorPublicKey }
     });
 
     let records = await collectRecords(store);

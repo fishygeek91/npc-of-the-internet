@@ -48,7 +48,10 @@ async function main(): Promise<void> {
   mkdirSync(OUTPUT_DIR, { recursive: true });
 
   const store = await FileSoulStore.open(OUTPUT_DIR, {
-    doorPublicKeys: [DOOR.publicKey, OTHER_DOOR.publicKey]
+    doorPublicKeys: {
+      [DOOR_ID]: DOOR.publicKey,
+      [OTHER_DOOR_ID]: OTHER_DOOR.publicKey
+    }
   });
   try {
     const genesis = await createGenesisRecord(SOUL);
@@ -154,8 +157,10 @@ async function main(): Promise<void> {
   }
 
   const meta = {
-    doorPublicKey: DOOR_PUBLIC_KEY_B64,
-    doorPublicKeys: [DOOR_PUBLIC_KEY_B64, OTHER_DOOR_PUBLIC_KEY_B64]
+    doorPublicKeys: {
+      [DOOR_ID]: DOOR_PUBLIC_KEY_B64,
+      [OTHER_DOOR_ID]: OTHER_DOOR_PUBLIC_KEY_B64
+    }
   };
   writeFileSync(
     join(OUTPUT_DIR, "fixture-meta.json"),

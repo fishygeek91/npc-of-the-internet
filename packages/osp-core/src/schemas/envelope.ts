@@ -229,6 +229,71 @@ function validateAttestationDoorId(
   }
 }
 
+/** Cross-checks attestation body.epoch against the epoch portion of residency. */
+function validateAttestationEpoch(
+  record: {
+    type: string;
+    body: unknown;
+    residency: string | null;
+  },
+  ctx: z.RefinementCtx
+): void {
+  if (record.type !== "attestation" || record.residency === null) {
+    return;
+  }
+
+  if (
+    typeof record.body !== "object" ||
+    record.body === null ||
+    !("kind" in record.body) ||
+    typeof record.body.kind !== "string" ||
+    !("epoch" in record.body) ||
+    typeof record.body.epoch !== "number"
+  ) {
+    return;
+  }
+
+  const bodyKind = record.body.kind;
+  if (bodyKind !== "arrival" && bodyKind !== "heartbeat" && bodyKind !== "departure") {
+    return;
+  }
+
+  const parsed = parseResidency(record.residency);
+  if (parsed === null) {
+    return;
+  }
+
+  if (record.body.epoch !== parsed.epoch) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `epoch must match the epoch portion of residency (expected ${parsed.epoch})`,
+      path: ["body", "epoch"]
+    });
+  }
+}
+
+/**
+ * Cosigners must be strictly ascending lexicographic order (UTF-16 code units).
+ * Implies uniqueness; matches createRecord sort + records.md append order.
+ */
+function validateCosignerOrdering(record: { cosigners: string[] }, ctx: z.RefinementCtx): void {
+  for (let index = 1; index < record.cosigners.length; index += 1) {
+    const previous = record.cosigners[index - 1];
+    const current = record.cosigners[index];
+    if (previous === undefined || current === undefined) {
+      continue;
+    }
+    if (current <= previous) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "cosigners must be strictly ascending lexicographic order",
+        path: ["cosigners", index]
+      });
+      return;
+    }
+  }
+}
+
 const GenesisRecordSchema = EnvelopeFieldsSchema.extend({
   type: z.literal("genesis"),
   body: GenesisBodySchema
@@ -285,6 +350,8 @@ export const RecordSchemaBase = z.discriminatedUnion("type", [
 export const RecordSchema = RecordSchemaBase.superRefine((record, ctx) => {
   validateChainLinkFields(record, ctx);
   validateCosignerRules(record, ctx);
+  validateCosignerOrdering(record, ctx);
   validateSignatureFields(record, ctx);
   validateAttestationDoorId(record, ctx);
+  validateAttestationEpoch(record, ctx);
 });

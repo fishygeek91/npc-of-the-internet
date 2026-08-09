@@ -11,7 +11,7 @@ const VALID_ENV: NodeJS.ProcessEnv = {
   DOOR_HTTP_HOST: "127.0.0.1",
   DOOR_HTTP_PORT: "3000",
   CURRENT_DOOR_ID: "discord:test-guild",
-  ATLAS_DOOR_PUBKEYS: encodePublicKey(DOOR.publicKey),
+  ATLAS_DOOR_PUBKEYS: `discord:test-guild=${encodePublicKey(DOOR.publicKey)}`,
   ANTHROPIC_API_KEY: "test-api-key"
 };
 
@@ -23,7 +23,7 @@ describe("loadDaemonConfig", () => {
     expect(config.doorHttpHost).toBe("127.0.0.1");
     expect(config.doorHttpPort).toBe(3000);
     expect(config.doorId).toBe("discord:test-guild");
-    expect(config.doorPublicKeys).toHaveLength(1);
+    expect(Object.keys(config.doorPublicKeys)).toEqual(["discord:test-guild"]);
     expect(config.brain.apiKey).toBe("test-api-key");
     expect(config.readyFilePath).toBe("/tmp/npc-runtime.ready");
   });

@@ -39,6 +39,11 @@ export type {
   VerifyRecordOptions,
   VerifyRecordResult
 } from "./record.js";
+export {
+  parseDoorPublicKeyBinding,
+  parseDoorPublicKeyMap,
+  hasDoorPublicKeys
+} from "./door-keys.js";
 export { verifyRecords, verifyChain } from "./verify-chain.js";
 export type {
   ChainRule,

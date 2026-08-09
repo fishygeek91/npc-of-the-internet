@@ -12,11 +12,14 @@ OSP soulchain primitives: Zod record schemas, canonical JSON, Ed25519 signing, C
 | Ed25519 | `generateKeypair`, `sign`, `verify` |
 | CIDs | `computeCid`, `computeCidFromCanonicalBytes` — dag-json codec + sha2-256 → CIDv1 base32 strings (typically `bagu…`, not `bafy…` which is dag-pb) |
 | Records | `createRecord`, `verifyRecord`, `signCore`, `corePayload`, `soulPayload` |
+| Door keys | `parseDoorPublicKeyBinding`, `parseDoorPublicKeyMap`, `hasDoorPublicKeys` — `doorId=base64url` bindings |
 | Chain verify | `verifyRecords`, `verifyChain`, `ChainRule`, `ChainFailure`, `VerifyChainResult`, `VerifyChainOptions` |
 
 ## Chain verification
 
 - `verifyRecords(records, opts)` — walk an array/async iterable (including raw JSON for vectors). Returns `{ valid, head }` or `{ valid: false, failures }` with stable `ChainRule` ids.
+- `opts.doorPublicKeys` is a **doorId → public key** map (residency Door portion, e.g. `discord:guild123`). Cosigners verify only against that Door's key.
+- PoP: tracks arrival sessions for `bad_session_continuity` and same-epoch multi-door `presence_conflict`.
 - `verifyChain(store, opts)` — same rules via `store.iterate()`, then cross-checks `store.head()`. A head mismatch uses rule `forked_head` (message: store head ≠ verified head); duplicate-seq forks also use `forked_head` but originate inside `verifyRecords`.
 - After a mid-chain `schema_violation`, later `seq_gap` / `broken_prev_link` entries may appear as cascade noise; check rule presence rather than assuming a minimal `failures` list.
 | SoulStore | `SoulStore`, `FileSoulStore`, `HeadInfo`, `AppendResult`, `FileSoulStoreOpenOptions` |

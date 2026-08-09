@@ -55,7 +55,7 @@ describe("channel binding", () => {
       clock,
       timer,
       heartbeatIntervalMs: 60_000,
-      doorPublicKeys: [DOOR.publicKey]
+      doorPublicKeys: { [doorIdForGuild(GUILD_ID)]: DOOR.publicKey }
     });
 
     const before = gateway.sent.length;

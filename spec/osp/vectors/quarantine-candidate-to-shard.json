@@ -2,7 +2,9 @@
   "description": "Valid genesis → arrival → candidate → shard with candidate_cid linkage and door cosignature",
   "expected": "valid",
   "soulPublicKey": "6kpsY-KcUgq-9VB7Ey7F-ZVHdq6-vnuSQh7qaRRG0iw",
-  "doorPublicKeys": ["E5j2LG0aRXxRumpLXz29L2n8qTIWIY3ImX5Ba9F9k8o"],
+  "doorPublicKeys": {
+    "discord:g": "E5j2LG0aRXxRumpLXz29L2n8qTIWIY3ImX5Ba9F9k8o"
+  },
   "records": [
     {
       "spec": "osp/0.1",

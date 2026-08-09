@@ -8,7 +8,16 @@ import { createRecord, signCore, soulPayload, verifyRecord } from "../src/record
 import { SchemaError, VerificationError } from "../src/errors.js";
 
 const PREV_CID = "bagu" + "a".repeat(57);
-const RESIDENCY = "door:discord:g/epoch:1";
+const DOOR_ID = "discord:g";
+const OTHER_DOOR_ID = "discord:h";
+const RESIDENCY = `door:${DOOR_ID}/epoch:1`;
+
+function doorPublicKeysForResidency(
+  doorId: string,
+  publicKey: Uint8Array
+): Readonly<Record<string, Uint8Array>> {
+  return { [doorId]: publicKey };
+}
 
 type RecordCase = {
   name: string;
@@ -57,7 +66,8 @@ async function createAndVerify(
 
   await verifyRecord(record, {
     soulPublicKey: soul.publicKey,
-    doorPublicKeys: cosigners.length > 0 ? [door.publicKey] : undefined,
+    doorPublicKeys:
+      cosigners.length > 0 ? doorPublicKeysForResidency(DOOR_ID, door.publicKey) : undefined,
     expectedCid: cid
   });
 
@@ -210,7 +220,7 @@ describe("createRecord / verifyRecord", () => {
         body: {
           kind: "arrival",
           pop_version: "pop/0.1",
-          door_id: "discord:g",
+          door_id: DOOR_ID,
           epoch: 1,
           session_pubkey: encodePublicKey(session.publicKey),
           at: "2026-01-04T00:00:00.000Z"
@@ -229,7 +239,7 @@ describe("createRecord / verifyRecord", () => {
         body: {
           kind: "heartbeat",
           pop_version: "pop/0.1",
-          door_id: "discord:g",
+          door_id: DOOR_ID,
           epoch: 1,
           session_pubkey: encodePublicKey(session.publicKey),
           at: "2026-01-04T00:10:00.000Z"
@@ -248,7 +258,7 @@ describe("createRecord / verifyRecord", () => {
         body: {
           kind: "departure",
           pop_version: "pop/0.1",
-          door_id: "discord:g",
+          door_id: DOOR_ID,
           epoch: 1,
           at: "2026-01-04T01:00:00.000Z"
         },
@@ -266,7 +276,7 @@ describe("createRecord / verifyRecord", () => {
         body: {
           kind: "travel",
           pop_version: "pop/0.1",
-          from_door_id: "discord:g",
+          from_door_id: DOOR_ID,
           from_epoch: 1,
           at: "2026-01-04T02:00:00.000Z"
         },
@@ -317,7 +327,7 @@ describe("createRecord / verifyRecord", () => {
     expect(canonicalize(first.record)).toEqual(canonicalize(second.record));
     await verifyRecord(first.record, {
       soulPublicKey: caseSoul.publicKey,
-      doorPublicKeys: [caseDoor.publicKey],
+      doorPublicKeys: doorPublicKeysForResidency(DOOR_ID, caseDoor.publicKey),
       expectedCid: first.cid
     });
   });
@@ -473,7 +483,7 @@ describe("cosigner scope", () => {
     await expect(
       verifyRecord(record, {
         soulPublicKey: soulKeys.publicKey,
-        doorPublicKeys: [doorKeys.publicKey]
+        doorPublicKeys: doorPublicKeysForResidency(DOOR_ID, doorKeys.publicKey)
       })
     ).rejects.toThrow(VerificationError);
   });
@@ -501,8 +511,72 @@ describe("cosigner scope", () => {
 
     await verifyRecord(record, {
       soulPublicKey: soulKeys.publicKey,
-      doorPublicKeys: [doorKeys.publicKey],
+      doorPublicKeys: doorPublicKeysForResidency(DOOR_ID, doorKeys.publicKey),
       expectedCid: cid
+    });
+  });
+
+  it("accepts cosignature when doorPublicKeys map is keyed by residency Door id", async () => {
+    const soulKeys = generateKeypair();
+    const doorKeys = generateKeypair();
+    const fields = {
+      seq: 1,
+      prev: PREV_CID,
+      type: "memory" as const,
+      body: {
+        kind: "shard" as const,
+        text: "Map-keyed door keys.",
+        distilled_at: "2026-01-02T00:00:00.000Z"
+      },
+      residency: RESIDENCY
+    };
+    const cosig = signCore(fields, doorKeys.privateKey);
+    const { record, cid } = await createRecord({
+      ...fields,
+      cosigners: [cosig],
+      soulPrivateKey: soulKeys.privateKey
+    });
+
+    await verifyRecord(record, {
+      soulPublicKey: soulKeys.publicKey,
+      doorPublicKeys: { [DOOR_ID]: doorKeys.publicKey },
+      expectedCid: cid
+    });
+  });
+
+  it("rejects cosignature from a different Door when map has both Door keys", async () => {
+    const soulKeys = generateKeypair();
+    const residencyDoorKeys = generateKeypair();
+    const otherDoorKeys = generateKeypair();
+    const fields = {
+      seq: 1,
+      prev: PREV_CID,
+      type: "memory" as const,
+      body: {
+        kind: "shard" as const,
+        text: "Wrong Door cosigner.",
+        distilled_at: "2026-01-02T00:00:00.000Z"
+      },
+      residency: RESIDENCY
+    };
+    const wrongCosig = signCore(fields, otherDoorKeys.privateKey);
+    const { record } = await createRecord({
+      ...fields,
+      cosigners: [wrongCosig],
+      soulPrivateKey: soulKeys.privateKey
+    });
+
+    await expect(
+      verifyRecord(record, {
+        soulPublicKey: soulKeys.publicKey,
+        doorPublicKeys: {
+          [DOOR_ID]: residencyDoorKeys.publicKey,
+          [OTHER_DOOR_ID]: otherDoorKeys.publicKey
+        }
+      })
+    ).rejects.toMatchObject({
+      name: "VerificationError",
+      message: expect.stringMatching(/cosigner signature/)
     });
   });
 });

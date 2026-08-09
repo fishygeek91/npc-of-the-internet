@@ -81,7 +81,7 @@ chmod 700 /tmp/npc-ghost/keys /tmp/npc-ghost/rclone
 Docker Desktop on macOS remaps ownership and often works without this step;
 on Linux it is required.
 
-Set `SOUL_PUBLIC_KEY` in `ops/.env` to the base64url public key that matches `soul.key`. Set `ATLAS_DOOR_PUBKEYS` to the base64url public key that matches `door.key` (comma-separated if multiple doors).
+Set `SOUL_PUBLIC_KEY` in `ops/.env` to the base64url public key that matches `soul.key`. Set `ATLAS_DOOR_PUBKEYS` to `doorId=base64url` bindings that match `door.key` (comma-separated if multiple doors; door id must match `CURRENT_DOOR_ID` for the active residency).
 
 Configure `BACKUP_RCLONE_REMOTE` to point at the remote defined in `rclone.conf` (for example `ghost-remote:npc/soulchain`).
 
@@ -239,14 +239,14 @@ docker cp "${RUNTIME_CID}:/data/soulchain/." ./_soulchain-snapshot/
 
 ### 4.3 Pre-upgrade verify
 
-Pass door public keys from `ATLAS_DOOR_PUBKEYS` in `ops/.env` (comma-separated values become multiple `--door-key` flags):
+Pass door public key bindings from `ATLAS_DOOR_PUBKEYS` in `ops/.env` (each `doorId=base64url` value is one `--door-key` flag):
 
 ```bash
 node packages/osp-cli/dist/cli.js verify ./_soulchain-snapshot \
   --door-key "$(grep '^ATLAS_DOOR_PUBKEYS=' ops/.env | cut -d= -f2- | cut -d, -f1)"
 ```
 
-If you have multiple door keys, repeat `--door-key` for each value in `ATLAS_DOOR_PUBKEYS`. For the offline fixture chain used by the restore drill, read public keys from `packages/atlas/test/fixtures/multi-residency/fixture-meta.json` (`doorPublicKeys` array) — those are TEST-ONLY fill-byte keys, not production secrets.
+If you have multiple door keys, repeat `--door-key` for each binding in `ATLAS_DOOR_PUBKEYS`. For the offline fixture chain used by the restore drill, read bindings from `packages/atlas/test/fixtures/multi-residency/fixture-meta.json` (`doorPublicKeys` object) — those are TEST-ONLY fill-byte keys, not production secrets.
 
 Exit code `0` means the chain is valid. Exit code `1` means verification failed (printed rule failures). Exit code `2` means corruption or I/O error — see [Crash recovery](#6-crash-recovery) before proceeding.
 

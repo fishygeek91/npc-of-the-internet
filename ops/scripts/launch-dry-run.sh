@@ -85,9 +85,12 @@ RESIDENCY_OUT="$(
   CHAIN_DIR="$CHAIN_DIR" node "$RESIDENCY_BIN"
 )"
 DOOR_PUBLIC_KEY="$(printf '%s\n' "$RESIDENCY_OUT" | sed -n 's/^DOOR_PUBLIC_KEY=//p')"
+DOOR_ID="$(printf '%s\n' "$RESIDENCY_OUT" | sed -n 's/^DOOR_ID=//p')"
 RESIDENCY_OK="$(printf '%s\n' "$RESIDENCY_OUT" | sed -n 's/^RESIDENCY_OK=//p')"
 [[ "$RESIDENCY_OK" == "1" ]] || die "launch-first-residency.mjs did not report RESIDENCY_OK=1"
 [[ -n "$DOOR_PUBLIC_KEY" ]] || die "failed to parse DOOR_PUBLIC_KEY from residency harness"
+[[ -n "$DOOR_ID" ]] || die "failed to parse DOOR_ID from residency harness"
+DOOR_KEY_BINDING="${DOOR_ID}=${DOOR_PUBLIC_KEY}"
 log "First residency complete (door key ${DOOR_PUBLIC_KEY:0:13}…)"
 
 # 3. Verify live chain before backup
@@ -95,7 +98,7 @@ log "osp verify on live chain"
 (
   cd "$REPO_ROOT"
   # Equals form required: base64url keys may start with '-' and confuse argv parsers.
-  node "$OSP_BIN" verify "$CHAIN_DIR" --door-key="$DOOR_PUBLIC_KEY"
+  node "$OSP_BIN" verify "$CHAIN_DIR" --door-key="$DOOR_KEY_BINDING"
 )
 
 # 4. Atlas API smoke against live chain
@@ -115,7 +118,7 @@ server.listen(0, \"127.0.0.1\", () => {
 "
 )"
 log "Starting atlas-api on 127.0.0.1:${ATLAS_PORT}"
-ATLAS_CHAIN_DIR="$CHAIN_DIR" ATLAS_PORT="$ATLAS_PORT" ATLAS_DOOR_PUBKEYS="$DOOR_PUBLIC_KEY" \
+ATLAS_CHAIN_DIR="$CHAIN_DIR" ATLAS_PORT="$ATLAS_PORT" ATLAS_DOOR_PUBKEYS="$DOOR_KEY_BINDING" \
   node "$ATLAS_BIN" &
 ATLAS_PID=$!
 
@@ -191,7 +194,7 @@ rclone sync "drilllocal:${REMOTE_DIR}" "$RESTORED_DIR" --config "$RCLONE_CONF" -
 log "osp verify on restored chain"
 (
   cd "$REPO_ROOT"
-  node "$OSP_BIN" verify "$RESTORED_DIR" --door-key="$DOOR_PUBLIC_KEY"
+  node "$OSP_BIN" verify "$RESTORED_DIR" --door-key="$DOOR_KEY_BINDING"
 )
 
 printf 'Genesis CID: %s\n' "$GENESIS_CID"

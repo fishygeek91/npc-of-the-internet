@@ -21,7 +21,7 @@ import { SessionError } from "../src/session/errors.js";
 import type { InboundFrame } from "../src/session/types.js";
 import { DoorStub } from "./helpers/door-stub.js";
 import { FakeClock, FakeTimer } from "./helpers/fake-timer.js";
-import { createGenesisRecord, DOOR_ID } from "./helpers/fixtures.js";
+import { createGenesisRecord, DOOR_ID, doorPublicKeyFor } from "./helpers/fixtures.js";
 import { DOOR, SOUL } from "./helpers/fixed-keys.js";
 import { MemorySoulStore } from "./helpers/memory-soul-store.js";
 
@@ -167,7 +167,7 @@ function createSessionHarness(
         timer,
         clock,
         heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS,
-        doorPublicKeys: [DOOR.publicKey]
+        doorPublicKeys: doorPublicKeyFor(DOOR_ID, DOOR.publicKey)
       });
     }
   };
@@ -266,7 +266,9 @@ describe("Session.depart", () => {
       expect(travel.cosigners).toEqual([]);
     }
 
-    const chainResult = await verifyChain(store, { doorPublicKeys: [DOOR.publicKey] });
+    const chainResult = await verifyChain(store, {
+      doorPublicKeys: doorPublicKeyFor(DOOR_ID, DOOR.publicKey)
+    });
     expect(chainResult.valid).toBe(true);
 
     await expect(session.handleInbound(createInboundFrame("too late", "in-late"))).rejects.toThrow(
@@ -332,7 +334,9 @@ describe("Session.depart", () => {
       }
     }
 
-    const chainResult = await verifyChain(store, { doorPublicKeys: [DOOR.publicKey] });
+    const chainResult = await verifyChain(store, {
+      doorPublicKeys: doorPublicKeyFor(DOOR_ID, DOOR.publicKey)
+    });
     expect(chainResult.valid).toBe(true);
   });
 
@@ -372,7 +376,9 @@ describe("Session.depart", () => {
       .filter((record) => record.type === "attestation" && record.body.kind === "heartbeat");
     expect(heartbeatsAfterDeparture).toHaveLength(0);
 
-    const chainResult = await verifyChain(store, { doorPublicKeys: [DOOR.publicKey] });
+    const chainResult = await verifyChain(store, {
+      doorPublicKeys: doorPublicKeyFor(DOOR_ID, DOOR.publicKey)
+    });
     expect(chainResult.valid).toBe(true);
   });
 });

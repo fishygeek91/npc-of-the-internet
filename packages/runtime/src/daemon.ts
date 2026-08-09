@@ -30,7 +30,7 @@ export type ResidencyDaemonDeps = {
   loadSoulPrivateKey?: (path: string) => Uint8Array;
   openStore?: (
     dir: string,
-    options: { doorPublicKeys: readonly Uint8Array[] }
+    options: { doorPublicKeys: Readonly<Record<string, Uint8Array>> }
   ) => Promise<{ store: FileSoulStore; truncatedBytes: number }>;
   /** When true, do not register SIGTERM/SIGINT handlers. */
   skipSignals?: boolean;

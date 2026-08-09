@@ -13,7 +13,7 @@ const USAGE = `osp — OpenSoul Protocol CLI
 
 Usage:
   osp init <dir> [--charter <path>]
-  osp verify <dir> [--door-key <base64url>]...
+  osp verify <dir> [--door-key <doorId=base64url>]...
   osp log <dir>
   osp show <cid> --dir <dir>
 

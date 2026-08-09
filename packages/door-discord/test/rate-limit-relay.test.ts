@@ -62,7 +62,7 @@ describe("inbound rate limiting", () => {
       clock,
       timer,
       heartbeatIntervalMs: 60_000,
-      doorPublicKeys: [DOOR.publicKey]
+      doorPublicKeys: { [doorIdForGuild(GUILD_ID)]: DOOR.publicKey }
     });
 
     for (let i = 0; i < 5; i += 1) {

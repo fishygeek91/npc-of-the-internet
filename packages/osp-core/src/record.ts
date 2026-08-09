@@ -3,7 +3,7 @@ import { computeCid } from "./crypto/cid.js";
 import { sign, verify } from "./crypto/ed25519.js";
 import { decodeSignature, encodeSignature } from "./encoding/base64url.js";
 import { SchemaError, VerificationError } from "./errors.js";
-import { OSP_SPEC, RecordSchema, type OspRecord } from "./schemas/index.js";
+import { OSP_SPEC, RecordSchema, parseResidency, type OspRecord } from "./schemas/index.js";
 
 /** Fields shared by core and soul signing payloads. */
 type EnvelopeCoreFields = {
@@ -41,8 +41,11 @@ export type CreateRecordResult = {
 /** Options for {@link verifyRecord}. */
 export type VerifyRecordOptions = {
   soulPublicKey: Uint8Array;
-  /** When cosigners are present, each signature must verify against at least one of these keys over core bytes. */
-  doorPublicKeys?: readonly Uint8Array[];
+  /**
+   * When cosigners are present, each signature must verify against the Door public key
+   * for this record's residency (`parseResidency(residency).doorId`).
+   */
+  doorPublicKeys?: Readonly<Record<string, Uint8Array>>;
   /** When provided, must equal the recomputed CID. */
   expectedCid?: string;
 };
@@ -188,20 +191,31 @@ export async function verifyRecord(
 
   if (record.cosigners.length > 0) {
     const doorKeys = options.doorPublicKeys;
-    if (doorKeys === undefined || doorKeys.length === 0) {
+    if (doorKeys === undefined || Object.keys(doorKeys).length === 0) {
       throw new VerificationError("doorPublicKeys required when cosigners are present");
+    }
+
+    if (record.residency === null) {
+      throw new VerificationError(
+        "cosigners require a non-null residency to resolve Door public key"
+      );
+    }
+
+    const residencyParts = parseResidency(record.residency);
+    if (residencyParts === null) {
+      throw new VerificationError("residency must match door:<platform>:<door-id>/epoch:<n>");
+    }
+
+    const doorKey = Reflect.get(doorKeys, residencyParts.doorId);
+    if (!(doorKey instanceof Uint8Array)) {
+      throw new VerificationError(
+        `no doorPublicKeys entry for residency Door "${residencyParts.doorId}"`
+      );
     }
 
     for (const [index, cosignerEncoded] of record.cosigners.entries()) {
       const cosignerSig = decodeSignature(cosignerEncoded);
-      let verified = false;
-      for (const doorKey of doorKeys) {
-        if (verify(coreBytes, cosignerSig, doorKey)) {
-          verified = true;
-          break;
-        }
-      }
-      if (!verified) {
+      if (!verify(coreBytes, cosignerSig, doorKey)) {
         throw new VerificationError(
           `cosigner signature at index ${index} failed verification over core bytes`
         );

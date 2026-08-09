@@ -16,8 +16,12 @@ import {
   createArrivalRecord,
   createGenesisRecord,
   createShardRecord,
+  DOOR_ID,
+  doorPublicKeyFor,
   DRIFT_SUMMARY,
+  fixtureDoorPublicKeys,
   JOURNAL_TEXT,
+  OTHER_DOOR_ID,
   REJECTED_CATEGORY,
   SHARD_A_TEXT,
   SHARD_B_TEXT
@@ -106,7 +110,7 @@ describe("composeSelf", () => {
 
     let caught: unknown;
     try {
-      await composeSelf(store, { doorPublicKeys: [DOOR.publicKey] });
+      await composeSelf(store, { doorPublicKeys: doorPublicKeyFor(DOOR_ID, DOOR.publicKey) });
     } catch (error) {
       caught = error;
     }
@@ -142,14 +146,16 @@ describe("composeSelf", () => {
     }
   });
 
-  it("produces identical output regardless of doorPublicKeys order", async () => {
+  it("produces identical output regardless of doorPublicKeys map construction order", async () => {
     const { store } = await buildFixtureB();
-    const orderA = await composeSelf(store, {
-      doorPublicKeys: [DOOR.publicKey, OTHER_DOOR.publicKey]
-    });
-    const orderB = await composeSelf(store, {
-      doorPublicKeys: [OTHER_DOOR.publicKey, DOOR.publicKey]
-    });
+    const mapA: Record<string, Uint8Array> = {};
+    mapA[DOOR_ID] = DOOR.publicKey;
+    mapA[OTHER_DOOR_ID] = OTHER_DOOR.publicKey;
+    const mapB: Record<string, Uint8Array> = {};
+    mapB[OTHER_DOOR_ID] = OTHER_DOOR.publicKey;
+    mapB[DOOR_ID] = DOOR.publicKey;
+    const orderA = await composeSelf(store, { doorPublicKeys: mapA });
+    const orderB = await composeSelf(store, { doorPublicKeys: mapB });
 
     expect(
       Buffer.from(orderA.systemPrompt, "utf8").compare(Buffer.from(orderB.systemPrompt, "utf8"))
@@ -175,7 +181,7 @@ describe("composeSelf", () => {
     await store.append(shard.record);
 
     const { systemPrompt } = await composeSelf(store, {
-      doorPublicKeys: [DOOR.publicKey, OTHER_DOOR.publicKey]
+      doorPublicKeys: fixtureDoorPublicKeys()
     });
 
     expect(systemPrompt).toContain(poisonText);

@@ -22,6 +22,7 @@ const cliPath = path.join(packageRoot, "dist", "cli.js");
 const repoRoot = path.resolve(packageRoot, "..", "..");
 const charterPath = path.join(repoRoot, "spec", "osp", "genesis.md");
 const RESIDENCY = "door:discord:g/epoch:1";
+const DOOR_ID = "discord:g";
 
 /** Run the built CLI and return stdout, stderr, and exit code. */
 function runCli(args: string[], cwd?: string): { stdout: string; stderr: string; status: number } {
@@ -78,7 +79,7 @@ async function appendCosignedShard(
   const soulKeyEncoded = (await readFile(path.join(soulDir, "soul.key"), "utf8")).trim();
   const soulPrivateKey = decodeBase64Url(soulKeyEncoded);
 
-  const store = await FileSoulStore.open(soulDir, { doorPublicKeys: [doorPublicKey] });
+  const store = await FileSoulStore.open(soulDir, { doorPublicKeys: { [DOOR_ID]: doorPublicKey } });
   try {
     const head = await store.head();
     if (head === null) {
@@ -276,8 +277,8 @@ describe("osp CLI e2e", () => {
 
       await appendCosignedShard(soulDir, door.publicKey, door.privateKey);
 
-      const doorKey = encodePublicKey(door.publicKey);
-      const wrongKey = encodePublicKey(wrongDoor.publicKey);
+      const doorKey = `${DOOR_ID}=${encodePublicKey(door.publicKey)}`;
+      const wrongKey = `${DOOR_ID}=${encodePublicKey(wrongDoor.publicKey)}`;
 
       expect(await runVerify({ dir: soulDir, doorKeys: [doorKey] })).toBe(0);
       expect(await runVerify({ dir: soulDir, doorKeys: [wrongKey] })).toBe(1);

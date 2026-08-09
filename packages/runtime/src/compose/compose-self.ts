@@ -10,7 +10,7 @@ export type MemoryIndexEntry = { cid: string; seq: number; text: string };
 export type ComposedSelf = { systemPrompt: string; memoryIndex: MemoryIndexEntry[] };
 
 /** Options for {@link composeSelf}; door keys are verification-only inputs. */
-export type ComposeSelfOptions = { doorPublicKeys?: readonly Uint8Array[] };
+export type ComposeSelfOptions = { doorPublicKeys?: Readonly<Record<string, Uint8Array>> };
 
 type Section = "charter" | "drifts" | "shards";
 

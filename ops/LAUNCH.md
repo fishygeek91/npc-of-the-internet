@@ -158,11 +158,12 @@ node --input-type=module -e "
 import { loadDoorKeypairFromPath } from \"./packages/door-discord/dist/load-door-key.js\";
 import { encodePublicKey } from \"./packages/osp-core/dist/index.js\";
 const kp = loadDoorKeypairFromPath(process.argv[1]);
-process.stdout.write(encodePublicKey(kp.publicKey) + \"\\n\");
+const doorId = process.argv[2] ?? \"discord:YOUR_GUILD_ID\";
+process.stdout.write(doorId + \"=\" + encodePublicKey(kp.publicKey) + \"\\n\");
 " /var/lib/npc-ghost/keys/door.key
 ```
 
-Set `DOOR_KEY_HOST_PATH=/var/lib/npc-ghost/keys/door.key` (or your persistent path from §0) and paste the printed base64url value into `ATLAS_DOOR_PUBKEYS` in `ops/.env`.
+Set `DOOR_KEY_HOST_PATH=/var/lib/npc-ghost/keys/door.key` (or your persistent path from §0) and paste the printed `doorId=base64url` binding into `ATLAS_DOOR_PUBKEYS` in `ops/.env` (door id must match `CURRENT_DOOR_ID`).
 
 ---
 

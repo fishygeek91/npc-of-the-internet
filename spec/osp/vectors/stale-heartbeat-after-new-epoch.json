@@ -1,9 +1,10 @@
 {
-  "description": "Sequence jumps from 1 to 4 (expected 2)",
-  "expected": "seq_gap",
+  "description": "Heartbeat for epoch 1 after a newer arrival retires that session (bad_session_continuity)",
+  "expected": "bad_session_continuity",
   "soulPublicKey": "6kpsY-KcUgq-9VB7Ey7F-ZVHdq6-vnuSQh7qaRRG0iw",
   "doorPublicKeys": {
-    "discord:g": "E5j2LG0aRXxRumpLXz29L2n8qTIWIY3ImX5Ba9F9k8o"
+    "discord:g": "E5j2LG0aRXxRumpLXz29L2n8qTIWIY3ImX5Ba9F9k8o",
+    "irc:other": "Q6cucUQBdi32a2jCbfvfJoKq7J8kdOykYT5CSg-6_Tw"
   },
   "records": [
     {
@@ -41,18 +42,40 @@
     },
     {
       "spec": "osp/0.1",
-      "seq": 4,
+      "seq": 2,
       "prev": "baguqeera7etvhlmlq3lfysn2mfvtb45uzrfhngc3xb5b7q7z43tzt23tha3a",
+      "residency": "door:irc:other/epoch:2",
+      "cosigners": [
+        "GyPGmNAwvhwZvpHN8F5GNAcw4SX25Yaiwew1QNUA0jPYRDwh_JWnDnrNJSeWmS8bD_z62m9nx8X87qJMp3GgDA"
+      ],
+      "sig": "j4_4mM_CEKjh0J7825GoKLx83MPbpUXn5yv6o79QN9o-Jro3-ZaB1aMDeCELJvMU40MbXF4dnDrXvQPRLqOJAA",
+      "type": "attestation",
+      "body": {
+        "kind": "arrival",
+        "pop_version": "pop/0.1",
+        "door_id": "irc:other",
+        "epoch": 2,
+        "session_pubkey": "Zr5-Myx6RTMyvZ0Kf32wVfXF7xoGraZtmLOftoEMRzo",
+        "at": "2026-01-02T00:00:00.000Z"
+      }
+    },
+    {
+      "spec": "osp/0.1",
+      "seq": 3,
+      "prev": "baguqeera2wfozun4eeruedz2pop3grcksprubftsdoz6mfemspi5vxoda6ha",
       "residency": "door:discord:g/epoch:1",
       "cosigners": [
-        "I5Mc-8x5gkMJvK8bdao5vaojGiBfMIxRV52VzQHu1ZYc7Zh-kPp_2nF-dFuIaJVFepBTLOoYj5jyKNuJRYEzCg"
+        "lF1dZyi-1h9MH0fmuIsPA3hBJD_8H3HdPz1k8CeOsgHoAsEJDuXOh-A0kIQoc1L-YkszYQfhgPxqZfe8cwWwBQ"
       ],
-      "sig": "MRvpRUlLxtNjdxgHMdZxlXh7MTYp5aPofgwblE8rg8_bQmF7S-ibSwdAnekOkviWMgK5KBT8oMR-_bzmbnMmBw",
-      "type": "memory",
+      "sig": "hS5MtftwIUk73ACXg00oBDBxG_uB0UL5ty7858TlMXPygg3T82hWmk8ArxmiAYpLsO191dneaU6ZgEva7yKKDg",
+      "type": "attestation",
       "body": {
-        "kind": "shard",
-        "text": "Sequence gap.",
-        "distilled_at": "2026-01-02T01:00:00.000Z"
+        "kind": "heartbeat",
+        "pop_version": "pop/0.1",
+        "door_id": "discord:g",
+        "epoch": 1,
+        "session_pubkey": "_RckOFqgx1tk-3jNYC-h2ZH96_drE8WO1wLqyDXp9hg",
+        "at": "2026-01-02T00:30:00.000Z"
       }
     }
   ]

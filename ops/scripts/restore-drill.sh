@@ -116,8 +116,13 @@ done < <(
   node --input-type=module -e "
 import { readFileSync } from \"node:fs\";
 const meta = JSON.parse(readFileSync(process.argv[1], \"utf8\"));
-for (const key of meta.doorPublicKeys ?? []) {
-  if (typeof key === \"string\" && key.length > 0) process.stdout.write(key + \"\\n\");
+const keys = meta.doorPublicKeys;
+if (keys !== undefined && keys !== null && typeof keys === \"object\" && !Array.isArray(keys)) {
+  for (const [doorId, keyB64] of Object.entries(keys)) {
+    if (typeof doorId === \"string\" && doorId.length > 0 && typeof keyB64 === \"string\" && keyB64.length > 0) {
+      process.stdout.write(doorId + \"=\" + keyB64 + \"\\n\");
+    }
+  }
 }
 " "$FIXTURE_META"
 )

@@ -18,14 +18,16 @@ const CHAIN_RULES: readonly ChainRule[] = [
   "missing_cosigner",
   "forked_head",
   "bad_genesis",
-  "bad_drift_evidence"
+  "bad_drift_evidence",
+  "bad_session_continuity",
+  "presence_conflict"
 ];
 
 type VectorFile = {
   description: string;
   expected: "valid" | ChainRule;
   soulPublicKey: string;
-  doorPublicKeys: string[];
+  doorPublicKeys: Record<string, string>;
   records: unknown[];
 };
 
@@ -53,8 +55,20 @@ function parseVectorFile(raw: string, filename: string): VectorFile {
   if (typeof soulPublicKey !== "string") {
     throw new Error(`${filename}: soulPublicKey must be a string`);
   }
-  if (!Array.isArray(doorPublicKeys) || !doorPublicKeys.every((key) => typeof key === "string")) {
-    throw new Error(`${filename}: doorPublicKeys must be an array of strings`);
+  if (
+    typeof doorPublicKeys !== "object" ||
+    doorPublicKeys === null ||
+    Array.isArray(doorPublicKeys)
+  ) {
+    throw new Error(`${filename}: doorPublicKeys must be an object`);
+  }
+  for (const [doorId, encoded] of Object.entries(doorPublicKeys)) {
+    if (typeof doorId !== "string" || doorId.length === 0) {
+      throw new Error(`${filename}: doorPublicKeys keys must be non-empty strings`);
+    }
+    if (typeof encoded !== "string") {
+      throw new Error(`${filename}: doorPublicKeys values must be base64url strings`);
+    }
   }
   if (!Array.isArray(records)) {
     throw new Error(`${filename}: records must be an array`);
@@ -104,7 +118,10 @@ describe("conformance vectors", () => {
       const vector = await loadVector(filename);
 
       decodePublicKey(vector.soulPublicKey);
-      const doorPublicKeys = vector.doorPublicKeys.map((encoded) => decodePublicKey(encoded));
+      const doorPublicKeys: Record<string, Uint8Array> = {};
+      for (const [doorId, encoded] of Object.entries(vector.doorPublicKeys)) {
+        doorPublicKeys[doorId] = decodePublicKey(encoded);
+      }
 
       const result = await verifyRecords(vector.records, { doorPublicKeys });
 
