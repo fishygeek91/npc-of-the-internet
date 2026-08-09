@@ -6,7 +6,11 @@ import { ConcurrentAppendError, StorageError } from "../errors.js";
 import { writeAllSync } from "./fsync.js";
 import { isNodeError, nodeErrorMessage } from "./node-fs-error.js";
 
-/** Max age of a lock file before recovery may steal it even if the PID is alive. */
+/**
+ * Max age of a lock file before recovery may steal it even if the PID is alive.
+ * v0.1 policy constant (appends are sub-second); a future config pass may surface this
+ * via {@link FileLock} `options.maxAgeMs`.
+ */
 export const LOCK_MAX_AGE_MS = 3_600_000;
 
 /** On-disk lock metadata written after exclusive create. */
@@ -105,16 +109,21 @@ export class FileLock {
     }
   }
 
-  /** Release the exclusive lock. */
+  /**
+   * Release the exclusive lock held by this instance.
+   * No-op when this instance does not hold the lock (must not unlink another holder's file).
+   */
   release(): void {
-    if (this.lockFd !== null) {
-      try {
-        closeSync(this.lockFd);
-      } catch {
-        // Ignore close errors during lock cleanup.
-      }
-      this.lockFd = null;
+    if (this.lockFd === null) {
+      return;
     }
+
+    try {
+      closeSync(this.lockFd);
+    } catch {
+      // Ignore close errors during lock cleanup.
+    }
+    this.lockFd = null;
 
     try {
       unlinkSync(this.lockPath);

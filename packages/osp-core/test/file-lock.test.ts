@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
@@ -40,6 +41,14 @@ describe("FileLock", () => {
     first.release();
     second.acquire();
     second.release();
+  });
+
+  it("release() by a non-holder leaves a live lock intact", () => {
+    const holder = new FileLock(lockPath);
+    holder.acquire();
+    new FileLock(lockPath).release();
+    expect(existsSync(lockPath)).toBe(true);
+    holder.release();
   });
 
   it("clearStale refuses a live fresh lock", async () => {
