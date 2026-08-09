@@ -14,8 +14,15 @@ The `osp` command-line tool for initializing and inspecting a local soulchain.
 | --- | --- |
 | `osp init <dir>` | Generate a soul key, write genesis from the charter, append to a new chain |
 | `osp verify <dir>` | Verify signatures, links, and schema for the full chain (read-only) |
+| `osp verify --from-ipfs <head-cid> [--gateway <url>]` | Fetch head→genesis via trustless gateway raw blocks, then verify (no CI network) |
+| `osp manifest <dir>` | Build/sign a pin manifest for an `IpfsSoulStore` directory; print manifest CID |
+| `osp export-car <dir> --out <path>` | Build/sign manifest and write a CARv1 rooted at the manifest CID |
 | `osp log <dir>` | Stream a human-readable listing of chain records |
 | `osp show <cid> --dir <dir>` | Pretty-print one record by CID |
+
+### Pin manifest / CAR (`IpfsSoulStore` layout)
+
+`osp manifest` and `osp export-car` require an on-disk `IpfsSoulStore` (`blocks/`, `HEAD`, `seq-index.jsonl`) plus `soul.key` (default `<dir>/soul.key`, override with `--soul-key`). Use `--generated-at <iso>` for deterministic timestamps in tests.
 
 ### Charter resolution
 

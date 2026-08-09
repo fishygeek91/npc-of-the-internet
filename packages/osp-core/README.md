@@ -14,6 +14,8 @@ OSP soulchain primitives: Zod record schemas, canonical JSON, Ed25519 signing, C
 | Records | `createRecord`, `verifyRecord`, `signCore`, `corePayload`, `soulPayload` |
 | Door keys | `parseDoorPublicKeyBinding`, `parseDoorPublicKeyMap`, `hasDoorPublicKeys` — `doorId=base64url` bindings |
 | Chain verify | `verifyRecords`, `verifyChain`, `ChainRule`, `ChainFailure`, `VerifyChainResult`, `VerifyChainOptions` |
+| Pin manifest | `buildUnsignedPinManifest`, `signPinManifest`, `verifyPinManifest`, `encodePinManifest`, `decodePinManifest`, `computeManifestCid`, `listRecordCidsFromIpfsDir`, `buildAndSignPinManifestForIpfsDir` |
+| CAR | `exportSoulchainCar`, `importSoulchainCar` |
 
 ## Chain verification
 
@@ -61,6 +63,22 @@ Local blockstore-backed store using `blockstore-fs` (no helia, no network). Same
 ### DualSoulStore (v0.2 dual-write)
 
 `DualSoulStore.open(fileDir, ipfsDir)` opens both stores. When both are non-empty, differing heads are a fatal `CorruptionError`. `append` writes to `FileSoulStore` first (authoritative), then `IpfsSoulStore`; `head`/`get`/`iterate` read from file. If IPFS append fails after file succeeded, the error propagates (dual-write integrity is not auto-repaired).
+
+### Pin manifest and CAR (T7.1c)
+
+Distribution artifacts for recursive pinning and volunteer CAR imports (`spec/osp/ipfs-store.md` §4).
+
+| API | Purpose |
+|-----|---------|
+| `buildUnsignedPinManifest`, `signPinManifest`, `verifyPinManifest` | Build, soul-sign, and verify dag-json pin manifests |
+| `encodePinManifest` / `decodePinManifest` / `encodeUnsignedPinManifest` | dag-json bytes round-trip (CID links, canonical key order) |
+| `computeManifestCid`, `computeManifestCidFromBytes` | Manifest block CID (dag-json codec + sha2-256) |
+| `listRecordCidsFromIpfsDir`, `buildAndSignPinManifestForIpfsDir` | Derive a manifest from an on-disk `IpfsSoulStore` via `seq-index.jsonl` |
+| `exportSoulchainCar`, `importSoulchainCar` | CARv1 export/import with manifest root; record bytes are opaque (never re-encoded) |
+
+**Manifest:** `osp_pin_manifest: "osp-ipfs/0.1"`, IPLD links for `head`, `genesis`, `records[]`, optional `prev_manifest`, `generated_at`, soul-key `sig` over unsigned dag-json bytes. Not a chain record — regenerable from the store at any time.
+
+**CAR:** Root is the manifest CID; contains manifest block + every record block in original bytes. Import writes `blocks/`, `seq-index.jsonl`, and `HEAD` so `IpfsSoulStore.openReadOnly` works on the result.
 
 ## Test
 

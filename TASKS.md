@@ -235,6 +235,8 @@ These are sequenced but intentionally coarser; split them into T-numbered subtas
     - Notes: Agent: Cursor Grok 4.5 Maestro, 2026-08-09. `ipfs-store.md` Normative; `schema-dag-json-reserved` vector + RecordSchema deep-walk; `store-conformance.ts` × FileSoulStore; docs point at blockstore-fs (no helia in L1). Next: T7.1b IpfsSoulStore + DualSoulStore.
   - **T7.1b ✅ IpfsSoulStore + DualSoulStore** (blockstore-fs L1; conformance ×3; CID identity) — Deps: T7.1a — Agent: Cursor Grok 4.5 Maestro, 2026-08-09 — Issue: #115
     - Notes: `IpfsSoulStore` (blocks/HEAD/seq-index/LOCK), `DualSoulStore` (file authoritative); shared conformance + CID identity + ipfs vectors tests. Next: T7.1c manifest + CAR.
+  - **T7.1c ✅ Pin manifest + CAR + CLI** (manifest build/sign/verify; export-car / manifest / verify --from-ipfs; round-trip) — Deps: T7.1b — Agent: Cursor Grok 4.5 Maestro, 2026-08-09 — Issue: #117
+    - Notes: `@ipld/dag-json` + `@ipld/car`; pin-manifest via seq-index (not iterate); CAR round-trip; invalid-vector injection; CLI with injectable gateway fetcher. Next: T7.1d (Phase D) after #83.
 - **T7.2 ⬜ door-web** (embeddable widget, client-side signature verification, PRESENT/ELSEWHERE state) — Deps: T6.2
 - **T7.3 ⬜ PoP v0.2** (real session-key rotation, handover ceremony records, conflict-proof format + Atlas violation log) — Deps: T7.2
 - **T7.4 ⬜ Verifier ensemble** (k-model immune screening per ARCHITECTURE.md §5, escalation, public rejection log) — Deps: T7.1 — Note from T3.1 (#40): add measurable corpus fixtures for known static-screen FPs (benign docs URLs with "instructions", casual "system prompt" discussion) before tightening `URL_INSTRUCTION_PATTERN` / instruction heuristics.

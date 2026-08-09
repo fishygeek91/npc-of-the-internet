@@ -58,3 +58,27 @@ export type {
   VerifyChainResult,
   VerifyChainOptions
 } from "./verify-chain.js";
+export {
+  OSP_PIN_MANIFEST_VERSION,
+  buildUnsignedPinManifest,
+  encodeUnsignedPinManifest,
+  encodePinManifest,
+  decodePinManifest,
+  signPinManifest,
+  verifyPinManifest,
+  computeManifestCid,
+  computeManifestCidFromBytes,
+  listRecordCidsFromIpfsDir,
+  buildAndSignPinManifestForIpfsDir,
+  type UnsignedPinManifest,
+  type PinManifest,
+  type BuildUnsignedPinManifestInput,
+  type BuildPinManifestForIpfsDirOptions
+} from "./manifest/index.js";
+export {
+  exportSoulchainCar,
+  importSoulchainCar,
+  type ExportSoulchainCarInput,
+  type ImportSoulchainCarInput,
+  type ImportSoulchainCarResult
+} from "./car/index.js";
