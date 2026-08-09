@@ -424,7 +424,8 @@ A fork is verified as its own chain starting at a new genesis with `fork_point` 
 ## Storage (informative)
 
 - **Ghost (v0.1):** append-only JSONL log + content-addressed blob directory behind `SoulStore` (ENGINEERING.md D2).
-- **v0.2+:** IPFS pinning via `helia`; same record bytes and CIDs.
+- **v0.2+:** local `blockstore-fs` SoulStore plus outbound pinning per [`spec/osp/ipfs-store.md`](ipfs-store.md) (helia-ecosystem components; no networked helia in L1 deployments); same record bytes and CIDs.
+- **dag-json reserved forms (`osp/0.1`):** create and verify MUST reject any record containing a JSON object whose sole key is `"/"` (see [`ipfs-store.md`](ipfs-store.md) §0.2). Validation-only; no serialization change.
 - Records are immutable once appended; correction is by append-only successor records, never mutation.
 
 ### SoulStore append and load contracts
@@ -448,6 +449,7 @@ On load, chain line bytes MUST round-trip: `bytesEqual(lineBytes, canonicalize(J
 | `spec/pop/overview.md` | Soul key, session keys, handover ceremony |
 | `spec/door/api.md` | Door endpoints (`hello`, `session`, `heartbeat`, `attest`, `cosign`) |
 | `ARCHITECTURE.md` §2 | Soulchain architecture |
+| `spec/osp/ipfs-store.md` | IPFS store layout, pin manifest, replication |
 | `spec/osp/vectors/` | Conformance test vectors (T1.3) |
 
 ---

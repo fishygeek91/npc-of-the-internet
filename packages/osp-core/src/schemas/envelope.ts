@@ -13,6 +13,7 @@ import {
   SleepBodySchema,
   TransactionBodySchema
 } from "./body.js";
+import { validateDagJsonReservedForm } from "./dag-json-reserved.js";
 
 /** Residency descriptor format: `door:<platform>:<door-id>/epoch:<n>`. */
 export const RESIDENCY_RE = /^door:[a-z0-9-]+:[A-Za-z0-9_-]+\/epoch:(0|[1-9][0-9]*)$/;
@@ -354,4 +355,5 @@ export const RecordSchema = RecordSchemaBase.superRefine((record, ctx) => {
   validateSignatureFields(record, ctx);
   validateAttestationDoorId(record, ctx);
   validateAttestationEpoch(record, ctx);
+  validateDagJsonReservedForm(record, ctx);
 });
