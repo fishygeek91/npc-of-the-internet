@@ -2,6 +2,7 @@
 
 import { pathToFileURL } from "node:url";
 
+import cors from "@fastify/cors";
 import Fastify, { type FastifyInstance, type FastifyReply } from "fastify";
 
 import { ChainView, type ChainSnapshot, type ChainViewOptions } from "./chain-view.js";
@@ -11,6 +12,7 @@ import {
   deriveJournals,
   deriveRecordsPage,
   deriveState,
+  type JournalsQuery,
   type RecordsQuery
 } from "./derive.js";
 import { AtlasError, atlasErrorToBody } from "./errors.js";
@@ -27,6 +29,11 @@ export async function createAtlasServer(config: AtlasConfig): Promise<FastifyIns
   const chainView = new ChainView(chainViewOptions);
 
   const app = Fastify({ logger: false });
+
+  await app.register(cors, {
+    origin: true,
+    methods: ["GET"]
+  });
 
   app.setErrorHandler((error, _request, reply) => {
     if (error instanceof AtlasError) {
@@ -96,13 +103,26 @@ export async function createAtlasServer(config: AtlasConfig): Promise<FastifyIns
     void reply.send(result);
   });
 
-  app.get("/journals", async (_request, reply) => {
+  app.get<{
+    Querystring: { page?: string; per_page?: string };
+  }>("/journals", async (request, reply) => {
     const snap = await chainView.snapshot();
     if (replyIfUnreadable(snap, reply)) {
       return;
     }
 
-    const result = await deriveJournals(snap.records, snap.verified);
+    const page = parseOptionalInt(request.query.page);
+    const perPage = parseOptionalInt(request.query.per_page);
+
+    const journalsQuery: JournalsQuery = {};
+    if (page !== undefined) {
+      journalsQuery.page = page;
+    }
+    if (perPage !== undefined) {
+      journalsQuery.per_page = perPage;
+    }
+
+    const result = await deriveJournals(snap.records, snap.verified, journalsQuery);
     void reply.send(result);
   });
 
@@ -114,13 +134,11 @@ function replyIfUnreadable(snap: ChainSnapshot, reply: FastifyReply): boolean {
   if (snap.unreadable !== true) {
     return false;
   }
+  const detail = snap.unreadableMessage ?? "chain is unreadable";
+  process.stderr.write(`atlas chain_unreadable: ${detail}\n`);
   void reply
     .status(503)
-    .send(
-      atlasErrorToBody(
-        new AtlasError("chain_unreadable", snap.unreadableMessage ?? "chain is unreadable", 503)
-      )
-    );
+    .send(atlasErrorToBody(new AtlasError("chain_unreadable", "chain is unreadable", 503)));
   return true;
 }
 

@@ -6,10 +6,17 @@ import type { VerifyChainResult } from "@npc/osp-core";
  * When the chain verifies, every record is verified. Otherwise records at or after
  * the earliest failure (or explicitly listed in failures) are unverified; the prefix
  * before the first failure remains verified.
+ *
+ * Fail-closed: `valid: false` with an empty `failures` list marks every record
+ * unverified (never treat "unknown failure locus" as fully verified).
  */
 export function recordVerified(seq: number, verifyResult: VerifyChainResult): boolean {
   if (verifyResult.valid) {
     return true;
+  }
+
+  if (verifyResult.failures.length === 0) {
+    return false;
   }
 
   const failureSeqs = new Set(verifyResult.failures.map((failure) => failure.seq));

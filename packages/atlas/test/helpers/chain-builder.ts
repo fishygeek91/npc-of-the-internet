@@ -176,6 +176,36 @@ export async function createTravelRecord(
   });
 }
 
+/** Build a signed sleep record (no door cosignature). */
+export async function createSleepRecord(
+  soul: Ed25519Keypair,
+  seq: number,
+  prev: string,
+  opts?: {
+    reason?: string;
+    balance?: string;
+    threshold?: string;
+    as_of?: string;
+    residency?: string;
+  }
+): Promise<CreateRecordResult> {
+  return createRecord({
+    seq,
+    prev,
+    type: "sleep",
+    body: {
+      reason: opts?.reason ?? "treasury_low",
+      balance: opts?.balance ?? "0",
+      threshold: opts?.threshold ?? "1",
+      as_of: opts?.as_of ?? "2026-01-02T03:00:00.000Z"
+    },
+    // Sleep after genesis requires a residency string (envelope rule for seq > 0).
+    residency: opts?.residency ?? RESIDENCY_1,
+    cosigners: [],
+    soulPrivateKey: soul.privateKey
+  });
+}
+
 /** Build a signed memory shard with optional journal and door cosignature. */
 export async function createShardRecord(
   soul: Ed25519Keypair,

@@ -11,6 +11,7 @@ export {
   recordSummary,
   type HeadResponse,
   type JournalEntry,
+  type JournalsQuery,
   type JournalsResponse,
   type RecordListItem,
   type RecordsPageResponse,

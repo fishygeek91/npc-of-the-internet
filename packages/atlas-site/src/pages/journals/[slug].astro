@@ -11,14 +11,15 @@ export async function getStaticPaths() {
 }
 
 const { entry } = Astro.props;
+const pageTitle = `Journal — ${entry.door_id} epoch ${entry.epoch}`;
 ---
 
 <BaseLayout
-  title={entry.journal}
+  title={pageTitle}
   description={`Journal from ${entry.door_id}, epoch ${entry.epoch}.`}
   current="journals"
 >
-  <h1 class="page-title">{entry.journal}</h1>
+  <h1 class="page-title">{pageTitle}</h1>
   <p class="journal-list__meta">
     {entry.door_id} · epoch {entry.epoch}
   </p>
