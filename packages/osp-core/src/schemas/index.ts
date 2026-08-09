@@ -1,12 +1,21 @@
 export {
   OSP_SPEC,
+  OSP_SPEC_V01,
+  OSP_SPEC_V02,
   POP_VERSION,
   IsoUtcTimestampSchema,
+  BlobContentHashSchema,
+  TombstoneReasonSchema,
   GenesisBodySchema,
+  ShardBodyV01Schema,
+  ShardBodyV02Schema,
   ShardBodySchema,
+  CandidateBodyV01Schema,
+  CandidateBodyV02Schema,
   CandidateBodySchema,
   RejectedBodySchema,
   MemoryBodySchema,
+  TombstoneBodySchema,
   DriftBodySchema,
   DecisionBodySchema,
   TransactionBodySchema,
@@ -18,6 +27,7 @@ export {
   HandoverBodySchema,
   AttestationBodySchema
 } from "./body.js";
+export type { OspSpecVersion } from "./body.js";
 
 export {
   EnvelopeFieldsSchema,
@@ -43,6 +53,7 @@ import type {
   RejectedBodySchema,
   ShardBodySchema,
   SleepBodySchema,
+  TombstoneBodySchema,
   TransactionBodySchema,
   TravelBodySchema
 } from "./body.js";
@@ -54,6 +65,7 @@ export type ShardBody = z.infer<typeof ShardBodySchema>;
 export type CandidateBody = z.infer<typeof CandidateBodySchema>;
 export type RejectedBody = z.infer<typeof RejectedBodySchema>;
 export type MemoryBody = z.infer<typeof MemoryBodySchema>;
+export type TombstoneBody = z.infer<typeof TombstoneBodySchema>;
 export type DriftBody = z.infer<typeof DriftBodySchema>;
 export type DecisionBody = z.infer<typeof DecisionBodySchema>;
 export type TransactionBody = z.infer<typeof TransactionBodySchema>;

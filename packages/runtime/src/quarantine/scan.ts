@@ -70,6 +70,10 @@ export async function scanQuarantineState(store: SoulStore): Promise<QuarantineS
           "invalid_record"
         );
       }
+      // Ghost writes osp/0.1 inline text; osp/0.2 text_cid candidates resolve in #119 PR2.
+      if (!("text" in body)) {
+        continue;
+      }
 
       candidates.push({
         cid: await computeCid(record),
@@ -96,7 +100,7 @@ export async function scanQuarantineState(store: SoulStore): Promise<QuarantineS
         assertValidCandidateCid(candidateCid, `shard record at seq ${String(record.seq)}`);
         committedCandidateCids.add(candidateCid);
       }
-      if (body.journal !== undefined && record.residency !== null) {
+      if ("journal" in body && body.journal !== undefined && record.residency !== null) {
         residenciesWithJournal.add(record.residency);
       }
     }

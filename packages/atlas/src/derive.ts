@@ -114,6 +114,8 @@ export function extractRecordTimestamp(record: OspRecord): string | null {
       return record.body.at;
     case "sleep":
       return record.body.as_of;
+    case "tombstone":
+      return record.body.erased_at;
   }
 }
 
@@ -140,6 +142,8 @@ export function recordSummary(record: OspRecord): string {
       return "transaction";
     case "sleep":
       return "sleep";
+    case "tombstone":
+      return "tombstone";
     case "attestation": {
       const body = record.body;
       switch (body.kind) {
@@ -333,7 +337,11 @@ export async function deriveJournals(
     if (record === undefined || record.type !== "memory" || record.body.kind !== "shard") {
       continue;
     }
-    const journal = record.body.journal;
+    const body = record.body;
+    if (!("journal" in body)) {
+      continue;
+    }
+    const journal = body.journal;
     if (journal === undefined) {
       continue;
     }

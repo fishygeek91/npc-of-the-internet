@@ -23,6 +23,7 @@ Each `*.json` file contains:
 | `soulPublicKey` | Base64url-encoded soul public key (from genesis) |
 | `doorPublicKeys` | Door public keys keyed by residency Door id (e.g. `"discord:g": "<base64url>"`) passed to verification |
 | `records` | Ordered signed OSP records |
+| `blobs` | Optional. Map of side-blob bytes for `osp/0.2` vectors: `{ "<cid>": "<base64url-bytes>", … }`. Keys are side-blob CIDs; values are base64url-encoded opaque blob bytes. **`verifyChain` does not require blobs to be present** — chain verification binds to CID + hash references. When supplied, verifiers MAY optionally check `sha256(blobBytes)` against the corresponding `text_hash` / `journal_hash`. |
 
 ## TEST-ONLY keys
 

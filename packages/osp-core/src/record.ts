@@ -3,11 +3,17 @@ import { computeCid } from "./crypto/cid.js";
 import { sign, verify } from "./crypto/ed25519.js";
 import { decodeSignature, encodeSignature } from "./encoding/base64url.js";
 import { SchemaError, VerificationError } from "./errors.js";
-import { OSP_SPEC, RecordSchema, parseResidency, type OspRecord } from "./schemas/index.js";
+import {
+  OSP_SPEC,
+  RecordSchema,
+  parseResidency,
+  type OspRecord,
+  type OspSpecVersion
+} from "./schemas/index.js";
 
 /** Fields shared by core and soul signing payloads. */
 type EnvelopeCoreFields = {
-  spec: typeof OSP_SPEC;
+  spec: OspSpecVersion;
   seq: number;
   prev: string | null;
   type: string;
@@ -29,7 +35,8 @@ export type CreateRecordFields = {
 /** Full input to {@link createRecord}. */
 export type CreateRecordInput = CreateRecordFields & {
   soulPrivateKey: Uint8Array;
-  spec?: typeof OSP_SPEC;
+  /** Defaults to {@link OSP_SPEC} (`osp/0.1` until runtime cutover). */
+  spec?: OspSpecVersion;
 };
 
 /** Result of {@link createRecord}. */
@@ -60,7 +67,7 @@ export type VerifyRecordResult = {
  * Build the Door (core) signing payload — envelope fields with `cosigners` and `sig` omitted.
  */
 export function corePayload(fields: {
-  spec: typeof OSP_SPEC;
+  spec: OspSpecVersion;
   seq: number;
   prev: string | null;
   type: string;
@@ -81,7 +88,7 @@ export function corePayload(fields: {
  * Build the soul-key signing payload — envelope fields with only `sig` omitted (includes cosigners).
  */
 export function soulPayload(fields: {
-  spec: typeof OSP_SPEC;
+  spec: OspSpecVersion;
   seq: number;
   prev: string | null;
   type: string;
@@ -105,7 +112,7 @@ export function soulPayload(fields: {
  * Returns a base64url-encoded Ed25519 signature over canonical core bytes.
  */
 export function signCore(
-  fields: Omit<CreateRecordFields, "cosigners"> & { spec?: typeof OSP_SPEC },
+  fields: Omit<CreateRecordFields, "cosigners"> & { spec?: OspSpecVersion },
   doorPrivateKey: Uint8Array
 ): string {
   const spec = fields.spec ?? OSP_SPEC;

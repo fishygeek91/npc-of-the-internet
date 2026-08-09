@@ -47,6 +47,18 @@ export type {
   VerifyRecordResult
 } from "./record.js";
 export {
+  encodeMemoryTextBlob,
+  decodeMemoryTextBlob,
+  encodeShardTextBlob,
+  decodeShardTextBlob,
+  encodeJournalBlob,
+  decodeJournalBlob,
+  hashBlobBytes,
+  cidMatchesHash,
+  assertCidMatchesHash,
+  contentAddressSideBlob
+} from "./memory-blob.js";
+export {
   parseDoorPublicKeyBinding,
   parseDoorPublicKeyMap,
   hasDoorPublicKeys

@@ -9,8 +9,10 @@ import {
   DriftBodySchema,
   GenesisBodySchema,
   MemoryBodySchema,
-  OSP_SPEC,
+  OSP_SPEC_V01,
+  OSP_SPEC_V02,
   SleepBodySchema,
+  TombstoneBodySchema,
   TransactionBodySchema
 } from "./body.js";
 import { validateDagJsonReservedForm } from "./dag-json-reserved.js";
@@ -69,7 +71,7 @@ export function parseResidency(residency: string): { doorId: string; epoch: numb
 /** Shared envelope fields present on every soulchain record. */
 export const EnvelopeFieldsSchema = z
   .object({
-    spec: z.literal(OSP_SPEC),
+    spec: z.enum([OSP_SPEC_V01, OSP_SPEC_V02]),
     seq: z.number().int().nonnegative(),
     prev: CidSchema.nullable(),
     residency: z.string().nullable(),
@@ -78,11 +80,44 @@ export const EnvelopeFieldsSchema = z
   })
   .strict();
 
-/** Validates `prev` and `residency` nullability rules against `seq`. */
+/**
+ * Validates `prev` and `residency` nullability rules against `seq` and `type`.
+ * Tombstones allow `residency: null` (chain-level erasure audit events).
+ */
 function validateChainLinkFields(
-  record: { seq: number; prev: string | null; residency: string | null },
+  record: {
+    type: string;
+    seq: number;
+    prev: string | null;
+    residency: string | null;
+  },
   ctx: z.RefinementCtx
 ): void {
+  if (record.type === "tombstone") {
+    if (record.seq === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "tombstone records cannot have seq 0",
+        path: ["seq"]
+      });
+    }
+    if (record.prev === null || record.prev.length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "tombstone records require a non-empty prev CID",
+        path: ["prev"]
+      });
+    }
+    if (record.residency !== null) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "tombstone records must have residency null",
+        path: ["residency"]
+      });
+    }
+    return;
+  }
+
   if (record.seq === 0) {
     if (record.prev !== null) {
       ctx.addIssue({
@@ -146,6 +181,15 @@ function validateCosignerRules(
     return;
   }
 
+  if (record.type === "tombstone" && record.cosigners.length > 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "tombstone records must have an empty cosigners array",
+      path: ["cosigners"]
+    });
+    return;
+  }
+
   const bodyKind =
     typeof record.body === "object" &&
     record.body !== null &&
@@ -174,6 +218,64 @@ function validateCosignerRules(
         code: z.ZodIssueCode.custom,
         message: `${bodyKind} attestation records require at least one cosigner`,
         path: ["cosigners"]
+      });
+    }
+  }
+}
+
+/**
+ * Record body / type constraints that depend on the envelope `spec` version.
+ * Tombstones are osp/0.2-only; memory shard/candidate shapes must match the version.
+ */
+function validateSpecBodyCompatibility(
+  record: {
+    spec: string;
+    type: string;
+    body: unknown;
+  },
+  ctx: z.RefinementCtx
+): void {
+  if (record.type === "tombstone" && record.spec !== OSP_SPEC_V02) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "tombstone records require spec osp/0.2",
+      path: ["spec"]
+    });
+    return;
+  }
+
+  if (record.type !== "memory") {
+    return;
+  }
+  if (typeof record.body !== "object" || record.body === null || !("kind" in record.body)) {
+    return;
+  }
+  const kind = record.body.kind;
+  if (kind !== "shard" && kind !== "candidate") {
+    return;
+  }
+
+  const hasInlineText = "text" in record.body;
+  const hasTextCid = "text_cid" in record.body;
+
+  if (record.spec === OSP_SPEC_V01) {
+    if (!hasInlineText || hasTextCid) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "osp/0.1 memory shard/candidate bodies must use inline text (not text_cid)",
+        path: ["body"]
+      });
+    }
+    return;
+  }
+
+  if (record.spec === OSP_SPEC_V02) {
+    if (!hasTextCid || hasInlineText) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          "osp/0.2 memory shard/candidate bodies must use text_cid/text_hash (not inline text)",
+        path: ["body"]
       });
     }
   }
@@ -330,6 +432,11 @@ const SleepRecordSchema = EnvelopeFieldsSchema.extend({
   body: SleepBodySchema
 }).strict();
 
+const TombstoneRecordSchema = EnvelopeFieldsSchema.extend({
+  type: z.literal("tombstone"),
+  body: TombstoneBodySchema
+}).strict();
+
 /**
  * Structural OSP soulchain record schema (no chain-link or cosigner refinements).
  * Used for JSON Schema emission; runtime validation uses {@link RecordSchema}.
@@ -341,7 +448,8 @@ export const RecordSchemaBase = z.discriminatedUnion("type", [
   DecisionRecordSchema,
   TransactionRecordSchema,
   AttestationRecordSchema,
-  SleepRecordSchema
+  SleepRecordSchema,
+  TombstoneRecordSchema
 ]);
 
 /**
@@ -355,5 +463,6 @@ export const RecordSchema = RecordSchemaBase.superRefine((record, ctx) => {
   validateSignatureFields(record, ctx);
   validateAttestationDoorId(record, ctx);
   validateAttestationEpoch(record, ctx);
+  validateSpecBodyCompatibility(record, ctx);
   validateDagJsonReservedForm(record, ctx);
 });

@@ -87,7 +87,8 @@ export async function composeSelf(
         driftSummaries.push(record.body.summary);
         break;
       case "memory":
-        if (record.body.kind === "shard") {
+        // osp/0.2 text_cid shards resolve in #119 PR2; Ghost still writes osp/0.1 inline text.
+        if (record.body.kind === "shard" && "text" in record.body) {
           shardTexts.push(record.body.text);
           memoryIndex.push({
             cid: await computeCid(record),
@@ -100,6 +101,7 @@ export async function composeSelf(
       case "decision":
       case "transaction":
       case "sleep":
+      case "tombstone":
         break;
       default: {
         const _exhaustive: never = record;

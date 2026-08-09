@@ -12,12 +12,17 @@ import * as ed from "@noble/ed25519";
 import { sha512 } from "@noble/hashes/sha512";
 
 import {
+  contentAddressSideBlob,
   createRecord,
-  signCore,
+  encodeJournalBlob,
   encodePublicKey,
+  encodeShardTextBlob,
+  OSP_SPEC_V02,
+  signCore,
   type Ed25519Keypair,
   type OspRecord
 } from "../src/index.js";
+import { encodeBase64Url } from "../src/encoding/base64url.js";
 
 ed.etc.sha512Sync = (...messages: Uint8Array[]) => sha512(ed.etc.concatBytes(...messages));
 
@@ -53,11 +58,14 @@ type VectorCase = {
   soulPublicKey: string;
   doorPublicKeys: Record<string, string>;
   records: OspRecord[];
+  /** Optional side-blob map (CID → base64url bytes) for osp/0.2 vectors. */
+  blobs?: Record<string, string>;
 };
 
 /** Build a signed genesis record. */
-async function createGenesisRecord(soul: Ed25519Keypair) {
+async function createGenesisRecord(soul: Ed25519Keypair, options?: { spec?: typeof OSP_SPEC_V02 }) {
   return createRecord({
+    spec: options?.spec,
     seq: 0,
     prev: null,
     type: "genesis",
@@ -84,12 +92,14 @@ async function createArrivalRecord(
     residency?: string;
     epoch?: number;
     at?: string;
+    spec?: typeof OSP_SPEC_V02;
   }
 ) {
   const doorId = options?.doorId ?? DOOR_ID;
   const residency = options?.residency ?? RESIDENCY;
   const epoch = options?.epoch ?? 1;
   const fields = {
+    spec: options?.spec,
     seq,
     prev,
     type: "attestation" as const,
@@ -224,6 +234,90 @@ async function createShardRecord(
   });
 }
 
+/** Build a signed osp/0.2 memory shard with side-blob text (and optional journal). */
+async function createShardRecordV02(
+  soul: Ed25519Keypair,
+  door: Ed25519Keypair,
+  seq: number,
+  prev: string,
+  text: string,
+  options?: { candidateCid?: string; journal?: string }
+): Promise<{
+  result: Awaited<ReturnType<typeof createRecord>>;
+  blobs: Record<string, string>;
+}> {
+  const textBytes = encodeShardTextBlob(text);
+  const textAddr = await contentAddressSideBlob(textBytes);
+  const blobs: Record<string, string> = {
+    [textAddr.cid]: encodeBase64Url(textBytes)
+  };
+  const body: {
+    kind: "shard";
+    text_cid: string;
+    text_hash: string;
+    distilled_at: string;
+    candidate_cid?: string;
+    journal_cid?: string;
+    journal_hash?: string;
+  } = {
+    kind: "shard",
+    text_cid: textAddr.cid,
+    text_hash: textAddr.hash,
+    distilled_at: "2026-01-02T01:00:00.000Z"
+  };
+  if (options?.candidateCid !== undefined) {
+    body.candidate_cid = options.candidateCid;
+  }
+  if (options?.journal !== undefined) {
+    const journalBytes = encodeJournalBlob(options.journal);
+    const journalAddr = await contentAddressSideBlob(journalBytes);
+    body.journal_cid = journalAddr.cid;
+    body.journal_hash = journalAddr.hash;
+    blobs[journalAddr.cid] = encodeBase64Url(journalBytes);
+  }
+  const fields = {
+    spec: OSP_SPEC_V02,
+    seq,
+    prev,
+    type: "memory" as const,
+    body,
+    residency: RESIDENCY
+  };
+  const cosig = signCore(fields, door.privateKey);
+  const result = await createRecord({
+    ...fields,
+    cosigners: [cosig],
+    soulPrivateKey: soul.privateKey
+  });
+  return { result, blobs };
+}
+
+/** Build a signed osp/0.2 tombstone (soul-signed, residency null). */
+async function createTombstoneRecord(
+  soul: Ed25519Keypair,
+  seq: number,
+  prev: string,
+  targetCid: string,
+  blobCid: string,
+  reason: "erasure_request" | "dmca" | "illegal_content" | "operator"
+) {
+  return createRecord({
+    spec: OSP_SPEC_V02,
+    seq,
+    prev,
+    type: "tombstone",
+    body: {
+      target_cid: targetCid,
+      blob_cid: blobCid,
+      reason,
+      erased_at: "2026-01-03T00:00:00.000Z"
+    },
+    residency: null,
+    cosigners: [],
+    soulPrivateKey: soul.privateKey
+  });
+}
+
 /** Build a signed quarantine candidate memory (no door cosignature). */
 async function createCandidateRecord(
   soul: Ed25519Keypair,
@@ -283,14 +377,16 @@ async function createDriftRecord(
   soul: Ed25519Keypair,
   seq: number,
   prev: string,
-  evidence: string[]
+  evidence: string[],
+  options?: { spec?: typeof OSP_SPEC_V02; summary?: string }
 ) {
   return createRecord({
+    spec: options?.spec,
     seq,
     prev,
     type: "drift",
     body: {
-      summary: "I feel more patient after the long stay.",
+      summary: options?.summary ?? "I feel more patient after the long stay.",
       evidence,
       effective_at: "2026-01-03T00:00:00.000Z"
     },
@@ -393,7 +489,7 @@ async function buildVectors(): Promise<VectorCase[]> {
     records: [
       chain.genesis.record,
       mutateRecord(chain.arrival.record, (draft) => {
-        draft.spec = "osp/0.2";
+        draft.spec = "osp/9.9";
       }),
       chain.shard.record,
       chain.drift.record
@@ -820,6 +916,132 @@ async function buildVectors(): Promise<VectorCase[]> {
     ]
   };
 
+  const v02Genesis = await createGenesisRecord(SOUL, { spec: OSP_SPEC_V02 });
+  const v02Arrival = await createArrivalRecord(SOUL, DOOR, SESSION, 1, v02Genesis.cid, {
+    spec: OSP_SPEC_V02
+  });
+  const v02Shard = await createShardRecordV02(
+    SOUL,
+    DOOR,
+    2,
+    v02Arrival.cid,
+    "I learned a word for leaving gently."
+  );
+  const validOsp02MiniChain: VectorCase = {
+    filename: "valid-osp-0.2-mini-chain.json",
+    description: "Valid osp/0.2 mini-chain with side-blob memory text",
+    expected: "valid",
+    soulPublicKey: soulPub,
+    doorPublicKeys: discordDoorKeys,
+    records: [v02Genesis.record, v02Arrival.record, v02Shard.result.record],
+    blobs: v02Shard.blobs
+  };
+
+  const tombstoneShard = await createShardRecordV02(
+    SOUL,
+    DOOR,
+    2,
+    v02Arrival.cid,
+    "A memory that will be erased."
+  );
+  const textBlobCid = Object.keys(tombstoneShard.blobs)[0];
+  if (textBlobCid === undefined) {
+    throw new Error("expected text blob CID for tombstone vector");
+  }
+  const tombstone = await createTombstoneRecord(
+    SOUL,
+    3,
+    tombstoneShard.result.cid,
+    tombstoneShard.result.cid,
+    textBlobCid,
+    "erasure_request"
+  );
+  const validTombstoneAfterShard: VectorCase = {
+    filename: "valid-tombstone-after-shard.json",
+    description:
+      "Valid osp/0.2 chain: shard then tombstone (blob bytes omitted — chain still verifies)",
+    expected: "valid",
+    soulPublicKey: soulPub,
+    doorPublicKeys: discordDoorKeys,
+    records: [v02Genesis.record, v02Arrival.record, tombstoneShard.result.record, tombstone.record]
+  };
+
+  // Migration vector: same narrative content as valid-mini-chain, rewritten as osp/0.2.
+  const migrateSource = chain;
+  const migrateShardText =
+    migrateSource.shard.record.type === "memory" &&
+    migrateSource.shard.record.body.kind === "shard" &&
+    "text" in migrateSource.shard.record.body
+      ? migrateSource.shard.record.body.text
+      : "A committed shard memory.";
+  const migrateGenesis = await createGenesisRecord(SOUL, { spec: OSP_SPEC_V02 });
+  const migrateArrival = await createArrivalRecord(SOUL, DOOR, SESSION, 1, migrateGenesis.cid, {
+    spec: OSP_SPEC_V02
+  });
+  const migrateShard = await createShardRecordV02(
+    SOUL,
+    DOOR,
+    2,
+    migrateArrival.cid,
+    migrateShardText
+  );
+  const migrateDrift = await createDriftRecord(
+    SOUL,
+    3,
+    migrateShard.result.cid,
+    [migrateShard.result.cid],
+    { spec: OSP_SPEC_V02 }
+  );
+  const migrate01to02: VectorCase = {
+    filename: "migrate-0.1-to-0.2.json",
+    description:
+      "Deterministic osp/0.1→osp/0.2 migration of the valid mini-chain (text extracted to side blobs)",
+    expected: "valid",
+    soulPublicKey: soulPub,
+    doorPublicKeys: discordDoorKeys,
+    records: [
+      migrateGenesis.record,
+      migrateArrival.record,
+      migrateShard.result.record,
+      migrateDrift.record
+    ],
+    blobs: migrateShard.blobs
+  };
+
+  const tombstoneWithProse = mutateRecord(tombstone.record, (draft) => {
+    if (draft.type === "tombstone") {
+      (draft.body as { erased_text?: string }).erased_text = "leaked prose must fail schema";
+    }
+  });
+  const schemaTombstoneProse: VectorCase = {
+    filename: "schema-tombstone-prose.json",
+    description: "Tombstone body carrying free-text / erased prose is a schema_violation",
+    expected: "schema_violation",
+    soulPublicKey: soulPub,
+    doorPublicKeys: discordDoorKeys,
+    records: [
+      v02Genesis.record,
+      v02Arrival.record,
+      tombstoneShard.result.record,
+      tombstoneWithProse
+    ]
+  };
+
+  // Homogeneous osp/0.1 chain with a tombstone (tombstones are osp/0.2-only).
+  const tombstoneOnV01 = mutateRecord(tombstone.record, (draft) => {
+    draft.spec = "osp/0.1";
+    draft.seq = 2;
+    draft.prev = chain.arrival.cid;
+  });
+  const schemaTombstoneV01: VectorCase = {
+    filename: "schema-tombstone-v01.json",
+    description: "Tombstone record under osp/0.1 is a schema_violation (osp/0.2 only)",
+    expected: "schema_violation",
+    soulPublicKey: soulPub,
+    doorPublicKeys: discordDoorKeys,
+    records: [chain.genesis.record, chain.arrival.record, tombstoneOnV01]
+  };
+
   return [
     validMiniChain,
     badSoulSig,
@@ -846,7 +1068,12 @@ async function buildVectors(): Promise<VectorCase[]> {
     staleHeartbeatAfterNewEpoch,
     quarantineCandidateToShard,
     quarantineCandidateToRejected,
-    schemaRejectedWithPayload
+    schemaRejectedWithPayload,
+    validOsp02MiniChain,
+    validTombstoneAfterShard,
+    migrate01to02,
+    schemaTombstoneProse,
+    schemaTombstoneV01
   ];
 }
 
@@ -858,7 +1085,14 @@ async function main(): Promise<void> {
 
   const vectors = await buildVectors();
   for (const vector of vectors) {
-    const { filename, ...payload } = vector;
+    const { filename, blobs, ...rest } = vector;
+    const payload =
+      blobs === undefined
+        ? rest
+        : {
+            ...rest,
+            blobs
+          };
     const path = join(vectorsDir, filename);
     const json = `${JSON.stringify(payload, null, 2)}\n`;
     writeFileSync(path, json, "utf8");

@@ -18,7 +18,7 @@ This document is a design and ops policy for the project. It is **not legal advi
 
 Option (a) (immutability of shard text on-chain forever) is **rejected for now**. It remains reachable later via an explicit sealing ceremony after stronger screening exists (see §9).
 
-Schema/format work for `osp/0.2` is **not** defined here — see follow-up issue [#119](https://github.com/fishygeek91/npc-of-the-internet/issues/119). Until that lands, Ghost continues to use `osp/0.1` local storage; **no public push of memory text** until Phase D is unblocked by this gate *and* operators configure replication.
+Schema/format work for `osp/0.2` is **not** defined here — record, tombstone, and side-blob shapes are normative in [`records.md`](./records.md) (`osp/0.2`). See also follow-up issue [#119](https://github.com/fishygeek91/npc-of-the-internet/issues/119). Until that lands, Ghost continues to use `osp/0.1` local storage; **no public push of memory text** until Phase D is unblocked by this gate *and* operators configure replication.
 
 ---
 
@@ -74,7 +74,7 @@ Unpinning from services we control **reduces availability**; it does **not** era
 ## 6. Erasure and tombstones
 
 1. Operator or requester opens a privacy request (see §7).
-2. Maintainers review. If granted for erasable blob text: delete/unpin the blob from infrastructure we control; append a **tombstone** record (shape defined in [#119](https://github.com/fishygeek91/npc-of-the-internet/issues/119)) with a category-level reason — never the erased content.
+2. Maintainers review. If granted for erasable blob text: delete/unpin the blob from infrastructure we control; append a **tombstone** record (shape defined in [`records.md`](./records.md) §Type: `tombstone`) with a category-level reason — never the erased content.
 3. Chain history remains verifiable: the identity ledger still shows that a memory existed and was later erased.
 4. Volunteer IPFS copies cannot be recalled. Announcements should not claim global erasure.
 
@@ -137,5 +137,5 @@ After T7.4 (verifier ensemble) is live and residencies have been observed, an ex
 |------|--------|
 | Charter privacy voice | [`genesis.md`](./genesis.md) |
 | IPFS store / unpin honesty | [`ipfs-store.md`](./ipfs-store.md) §5.3, §7 |
-| `osp/0.2` schema + tombstones | [#119](https://github.com/fishygeek91/npc-of-the-internet/issues/119) |
+| `osp/0.2` schema + tombstones | [`records.md`](./records.md) (`osp/0.2`); [#119](https://github.com/fishygeek91/npc-of-the-internet/issues/119) |
 | Door host disclosure template | [`ops/templates/announcement.md`](../../ops/templates/announcement.md) |

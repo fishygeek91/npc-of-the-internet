@@ -289,6 +289,8 @@ export async function verifyRecords(
   let previousSeq: number | null = null;
   let previousCid: string | null = null;
   let soulPublicKey: Uint8Array | null = null;
+  /** Homogeneous chain `spec` from the first successfully parsed record. */
+  let chainSpec: OspRecord["spec"] | null = null;
   const shardCids = new Set<string>();
   const presenceState: PresenceState = {
     activeSessions: new Map<number, ActiveSession>(),
@@ -314,6 +316,15 @@ export async function verifyRecords(
     }
 
     const record = parsed.data;
+    if (chainSpec === null) {
+      chainSpec = record.spec;
+    } else if (record.spec !== chainSpec) {
+      failures.push({
+        seq: record.seq,
+        rule: "schema_violation",
+        message: `mixed osp spec versions on one chain (expected ${chainSpec}, found ${record.spec})`
+      });
+    }
     const cid = await computeCid(record);
 
     if (seenSeq.has(record.seq)) {
