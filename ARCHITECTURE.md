@@ -56,7 +56,7 @@ Append-only log. Each record:
 }
 ```
 
-- Storage: records on IPFS, pinned by runtime + volunteer pinners; periodic Arweave snapshot.
+- Storage: records on IPFS per [`spec/osp/ipfs-store.md`](spec/osp/ipfs-store.md). The runtime keeps the authoritative full local copy but does not serve bitswap (no inbound ports); always-on public availability comes from outbound pinning services and volunteer pinners; periodic Arweave snapshot.
 - Anchoring: Merkle root of the last N records posted to a cheap public chain (e.g., an L2) every anchor epoch. Anchors are the tamper-evidence; IPFS is the data layer.
 - Verification: `osp verify <head-cid>` walks the chain, checks sigs, cosigs, and anchors. Target: full verification runnable on a laptop.
 - Forks: a fork is a new genesis record referencing the fork point. Tooling always displays lineage; the original is distinguished by continuous soul-key custody, not by social claim.

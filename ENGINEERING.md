@@ -40,7 +40,7 @@ npc-of-the-internet/
 - **Package manager: pnpm** with workspaces. Root `pnpm-workspace.yaml`.
 - **Schemas: Zod** for all record/message types, exported from `osp-core`. JSON Schema is *generated* from Zod (`zod-to-json-schema`) into `spec/` — never hand-written in two places.
 - **Crypto: `@noble/ed25519` + `@noble/hashes`** (audited, zero-dep). Ed25519 signatures, SHA-256 hashing, CIDs via `multiformats`. No homemade crypto ever.
-- **Storage v0.1:** append-only JSONL soulchain file + content-addressed blob dir, behind a `SoulStore` interface. IPFS (`helia`) is a v0.2 implementation of the same interface. Chain anchoring is v0.3 — stub the `Anchor` interface until then.
+- **Storage v0.1:** append-only JSONL soulchain file + content-addressed blob dir, behind a `SoulStore` interface. v0.2 SoulStore via helia-ecosystem components (`blockstore-fs`, `@ipld/*` for manifest/CAR per [`spec/osp/ipfs-store.md`](spec/osp/ipfs-store.md)); networked helia/`@helia/http` only if/when outbound fetch is needed. Chain anchoring is v0.3 — stub the `Anchor` interface until then.
 - **LLM access:** one `Brain` interface in `runtime` (`complete(messages, opts)`). Default implementation: Anthropic API. Model name, keys, temperature only from env/config — never hard-coded at call sites.
 - **Atlas:** Astro static site + a tiny Fastify read-API. No database — the soulchain is the database; Atlas derives everything.
 - **Config:** env vars validated by Zod at boot (`config.ts` per deployable). Fail fast with a readable message listing missing vars.

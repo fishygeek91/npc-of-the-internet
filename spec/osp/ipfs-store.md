@@ -4,7 +4,7 @@
 |---|---|
 | **Version** | `osp-ipfs/0.1` |
 | **License** | [CC-BY-4.0](https://creativecommons.org/licenses/by/4.0/) |
-| **Status** | **Draft plan** — authored by Claude (reviewer) for T7.1 (#55). The T7.1 implementer finalizes this document in PR A; when this spec and implementation disagree, this spec wins. |
+| **Status** | **Normative** — Phase A (T7.1a, #113) lands this document as normative. When this spec and implementation disagree, this spec wins. |
 | **Depends on** | `spec/osp/records.md` (`osp/0.1`), ENGINEERING.md D2/D5, ARCHITECTURE.md §2 |
 
 This document specifies how the soulchain lives on IPFS: the block layout, head tracking, the replication ("pinning") strategy, crash/concurrency semantics, and the privacy gate that must be satisfied before any record is publicly replicated. It is written so that a less capable agent can implement it without making design decisions.
