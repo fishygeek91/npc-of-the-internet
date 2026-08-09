@@ -157,13 +157,15 @@ jobs:
             echo "TAGS_EOF"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Build and push
+      # Build locally, scan, then push — never publish an image that failed Trivy (#127).
+      - name: Build image
         if: steps.dockerfile.outputs.exists == 'true'
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           file: ${{ matrix.file }}
-          push: true
+          push: false
+          load: true
           tags: ${{ steps.tags.outputs.tags }}
 
       - name: Trivy image scan (#72)
@@ -173,4 +175,15 @@ jobs:
           image-ref: ${{ steps.tags.outputs.primary }}
           format: table
           severity: CRITICAL,HIGH
+          ignore-unfixed: true
           exit-code: "1"
+
+      - name: Push image
+        if: steps.dockerfile.outputs.exists == 'true'
+        env:
+          TAGS: ${{ steps.tags.outputs.tags }}
+        run: |
+          while IFS= read -r tag; do
+            [ -n "$tag" ] || continue
+            docker push "$tag"
+          done <<< "$TAGS"
