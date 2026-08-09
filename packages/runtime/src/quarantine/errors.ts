@@ -6,6 +6,7 @@ export type QuarantineErrorReason =
   | "duplicate_shard_text"
   | "candidate_not_found"
   | "already_committed"
+  | "already_rejected"
   | "commit_failed"
   | "flag_failed";
 

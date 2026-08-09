@@ -41,6 +41,13 @@ export async function flagCandidate(options: FlagCandidateOptions): Promise<void
     );
   }
 
+  if (scan.rejectedCandidateCids.has(options.candidateCid)) {
+    throw new QuarantineError(
+      `candidate already rejected: ${options.candidateCid}`,
+      "already_rejected"
+    );
+  }
+
   const head = await options.store.head();
   if (head === null) {
     throw new QuarantineError("flag: store has no head", "flag_failed");

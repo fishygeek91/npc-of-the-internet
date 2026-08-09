@@ -202,6 +202,12 @@ Each task lists **Deps**, **Deliverables**, and **Acceptance** (how a reviewer v
 - Acceptance: New vectors labeled + passing; downstream keyed API updated; `pnpm check` green; changeset.
 - Notes: Agent: Cursor Grok 4.5 Maestro, 2026-08-08. `ATLAS_DOOR_PUBKEYS` / `--door-key` are now `doorId=base64url`. ChainRules: `bad_session_continuity`, `presence_conflict`. New vectors: wrong-door-cosign, bad-session-continuity, schema-epoch-mismatch, schema-unsorted-cosigners, conflicting-attestations. Review follow-up: permanent epoch→door history (epoch reuse + retire lower epochs on arrival); vectors presence-conflict-epoch-reuse, stale-heartbeat-after-new-epoch.
 
+### Bug #69 ✅ runtime: depart pipeline hardening (Cursor Grok 4.5 Maestro, 2026-08-08)
+- Deps: T2.3, T2.5, T3.1, T3.2
+- Deliverables: Retryable `depart()` via `departing` state + in-process caches + chain skip; destroy transcript after read (privacy) with MemoryTranscriptSource retry; per-line `screenText` on distill input; filter/dedupe Door review decisions; quarantine commit TOCTOU re-check + `flagCandidate` `already_rejected`.
+- Acceptance: New tests per issue checklist; handover + quarantine integration green; `pnpm check` green; changeset.
+- Notes: Agent: Cursor Grok 4.5 Maestro, 2026-08-08. Session phases `live|departing|departed`; transcript destroyed after first read with in-memory retry cache (in-process only — process crash strands residency). Commit captures `scanHeadSeq` before scan; rebinds/re-cosigns when head moves mid-loop. Follow-up: RejectedBody per-shard `shard_id` — today host_rejected skip is all-or-nothing per residency, so a mid-batch crash permanently under-records remaining rejections.
+
 ## Phase 7 — Post-Ghost (v0.2/0.3 — spec first, then build)
 
 These are sequenced but intentionally coarser; split them into T-numbered subtasks (same format) when their phase begins.
