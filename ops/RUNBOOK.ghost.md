@@ -289,9 +289,21 @@ chmod 700 /var/lib/npc-ghost/keys
 chmod 600 /var/lib/npc-ghost/keys/*
 ```
 
-**Also keep an offline copy of `soul.key` somewhere that is not this server
-and not your Mac alone** — e.g. a USB stick and/or your password manager's
-file attachment. If `soul.key` is lost, the being's identity is gone.
+**Encrypted offsite key backup (required):** configure `AGE_RECIPIENT` and a
+**separate** rclone remote (`KEY_BACKUP_RCLONE_REMOTE`, different B2 app key /
+bucket from the chain remote), then on the host (never in the backup sidecar):
+
+```bash
+bash ops/scripts/key-backup.sh
+# Offline fixture proof (CI / first setup):
+bash ops/scripts/key-backup-drill.sh
+# Live verify against host keys + remote latest/ (needs AGE_IDENTITY_PATH):
+NPC_KEY_DRILL_LIVE=1 bash ops/scripts/key-backup-drill.sh
+```
+
+Keep the age identity (`AGE_IDENTITY_PATH`) offline (USB / password manager),
+never on the VPS alone. If `soul.key` is lost without a decryptable backup,
+the being's identity is gone even if the chain restores.
 
 **Rotating keys later:** once `keys/` is owned by `10001:10001` with mode
 `0700`, `ghost` can no longer `scp` directly into that directory. To replace a
@@ -345,7 +357,7 @@ Test it:
 rclone lsd ghost-remote:    # should list your bucket, no errors
 ```
 
-`BACKUP_RCLONE_REMOTE` in .env will be `ghost-remote:npc-soulchain/soulchain`
+`BACKUP_RCLONE_REMOTE` in .env will be `ghost-remote:npc/soulchain`
 (remote-name:bucket/path). The sidecar uploads to this layout:
 
 ```
@@ -378,7 +390,8 @@ Replace every placeholder. The important ones:
 | `DISCORD_BOT_TOKEN` / guild / channel / operator IDs | your real Discord values |
 | `SOUL_PUBLIC_KEY` | the REAL soul public key — the .env.example value is a test fixture |
 | `ATLAS_DOOR_PUBKEYS` | the REAL door public key(s) — same warning |
-| `BACKUP_RCLONE_REMOTE` | `ghost-remote:npc-soulchain/soulchain` |
+| `BACKUP_RCLONE_REMOTE` | `ghost-remote:npc/soulchain` |
+| `AGE_RECIPIENT` / `KEY_BACKUP_RCLONE_REMOTE` | age pubkey + **separate** key-backup remote (never the chain remote) |
 
 Sanity-check that compose can parse everything:
 
@@ -415,9 +428,13 @@ docker compose --env-file ops/.env -f ops/compose.ghost.yml up -d
 That's a lot to type; make an alias. Add to `~/.bashrc` on the server:
 
 ```bash
-echo "alias ghostc='docker compose --env-file ~/npc/ops/.env -f ~/npc/ops/compose.ghost.yml'" >> ~/.bashrc
+echo "alias ghostc='bash ~/npc/ops/scripts/ghostc.sh'" >> ~/.bashrc
 source ~/.bashrc
 ```
+
+`ghostc` runs `ops/scripts/preflight.sh` before mutating compose commands
+(`up`, `restart`, …). Read-only helpers (`ps`, `logs`, `config`) skip preflight;
+set `NPC_SKIP_PREFLIGHT=1` only when deliberately debugging a failed preflight.
 
 From now on: `ghostc up -d`, `ghostc ps`, `ghostc logs -f runtime`, etc.
 
@@ -427,9 +444,10 @@ From now on: `ghostc up -d`, `ghostc ps`, `ghostc logs -f runtime`, etc.
 ghostc ps
 ```
 
-All four services should show `Up` (runtime shows `healthy` after its
-start period; it may restart once or twice while door-discord boots — that's
-the designed behavior, `restart: unless-stopped` retries the hello).
+All four services should show `Up` (runtime waits for door-discord
+`service_healthy` on `:9090`, then becomes `healthy` once its ready-file
+exists; backup becomes `healthy` after the first successful sync touches
+`/tmp/backup.ok`).
 
 Confirm bind-mounted secrets are readable inside the containers (exit 0 =
 readable; permission denied means host ownership is wrong — fix with
@@ -473,8 +491,8 @@ After the runtime has written something to the soulchain:
 
 ```bash
 ghostc logs backup | tail -20
-rclone ls ghost-remote:npc-soulchain/soulchain
-rclone ls ghost-remote:npc-soulchain/soulchain/history
+rclone ls ghost-remote:npc/soulchain
+rclone ls ghost-remote:npc/soulchain/history
 ```
 
 You should see `blobs/`, the live `chain.jsonl` tip, and archived tips under `history/<UTC>-<pid>/chain.jsonl`. Each successful chain overwrite adds a new `history/<UTC>-<pid>/` folder; **B2 bucket versioning is not required** for this guarantee.
@@ -542,7 +560,7 @@ behavior, or (post-Gate 2) at the tunnel URL. Until then,
 
 - Inbound: SSH only, key-only auth, no root login, fail2ban, two firewalls
 - Atlas bound to localhost; public exposure only ever via Cloudflare Tunnel
-- Keys: `0600`, root-owned dir `0700`, offline copy of `soul.key` elsewhere
+- Keys: `0600`, root-owned dir `0700`, age-encrypted remote key backup + offline age identity
 - Secrets in `ops/.env` (`0600`), never committed
 - OS patches itself; containers restart themselves
 - Soulchain backed up offsite continuously by the backup sidecar

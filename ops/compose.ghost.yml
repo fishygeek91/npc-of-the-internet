@@ -1,5 +1,12 @@
 # Ghost v0.1 — Docker Compose stack for a single VPS.
 # Images also built and pushed by `.github/workflows/release.yml` on version tags.
+#
+# Optional secret-file mounts (set in ops/.env, then add host bind volumes via
+# compose override or extend volumes below):
+#   ANTHROPIC_API_KEY_HOST_PATH → /run/secrets/anthropic_api_key (runtime)
+#   DISCORD_BOT_TOKEN_HOST_PATH → /run/secrets/discord_bot_token (door-discord)
+# When using files, set ANTHROPIC_API_KEY_FILE=/run/secrets/anthropic_api_key and/or
+# DISCORD_BOT_TOKEN_FILE=/run/secrets/discord_bot_token (exactly one of NAME or NAME_FILE).
 
 name: npc-ghost
 
@@ -10,11 +17,9 @@ services:
       dockerfile: ops/Dockerfile.runtime
     image: ghcr.io/fishygeek91/npc-runtime:${NPC_IMAGE_TAG:-latest}
     restart: unless-stopped
-    # Start after door-discord is created (no health condition — Door has no
-    # compose healthcheck). If Door is still booting, runtime exits on hello
-    # failure and `restart: unless-stopped` retries.
     depends_on:
-      - door-discord
+      door-discord:
+        condition: service_healthy
     environment:
       SOUL_KEY_PATH: /run/keys/soul.key
       SOULCHAIN_DIR: /data/soulchain
@@ -22,7 +27,8 @@ services:
       DOOR_HTTP_PORT: "9090"
       CURRENT_DOOR_ID: discord:${DISCORD_GUILD_ID}
       ATLAS_DOOR_PUBKEYS: ${ATLAS_DOOR_PUBKEYS:-}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_API_KEY_FILE: ${ANTHROPIC_API_KEY_FILE:-}
       NPC_BRAIN_MODEL: ${NPC_BRAIN_MODEL:-claude-sonnet-4-20250514}
       NPC_BRAIN_MAX_TOKENS: ${NPC_BRAIN_MAX_TOKENS:-1024}
       NPC_BRAIN_TIMEOUT_MS: ${NPC_BRAIN_TIMEOUT_MS:-60000}
@@ -35,6 +41,19 @@ services:
       timeout: 3s
       retries: 6
       start_period: 90s
+    mem_limit: 1g
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    cap_drop:
+      - ALL
+    security_opt:
+      - "no-new-privileges:true"
+    read_only: true
+    tmpfs:
+      - /tmp
 
   door-discord:
     build:
@@ -43,7 +62,8 @@ services:
     image: ghcr.io/fishygeek91/npc-door-discord:${NPC_IMAGE_TAG:-latest}
     restart: unless-stopped
     environment:
-      DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN}
+      DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN:-}
+      DISCORD_BOT_TOKEN_FILE: ${DISCORD_BOT_TOKEN_FILE:-}
       DISCORD_GUILD_ID: ${DISCORD_GUILD_ID}
       DISCORD_CHANNEL_ID: ${DISCORD_CHANNEL_ID}
       DISCORD_OPERATOR_IDS: ${DISCORD_OPERATOR_IDS}
@@ -63,6 +83,31 @@ services:
       - ${DOOR_KEY_HOST_PATH}:/run/keys/door.key:ro
     expose:
       - "9090"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:9090/').then(()=>process.exit(0)).catch(()=>process.exit(1))"
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 60s
+    mem_limit: 512m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    cap_drop:
+      - ALL
+    security_opt:
+      - "no-new-privileges:true"
+    read_only: true
+    tmpfs:
+      - /tmp
 
   atlas-api:
     build:
@@ -79,6 +124,31 @@ services:
       ATLAS_DOOR_PUBKEYS: ${ATLAS_DOOR_PUBKEYS:-}
     volumes:
       - soulchain:/data/soulchain:ro
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8787/state').then(()=>process.exit(0)).catch(()=>process.exit(1))"
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+    mem_limit: 512m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    cap_drop:
+      - ALL
+    security_opt:
+      - "no-new-privileges:true"
+    read_only: true
+    tmpfs:
+      - /tmp
 
   backup:
     build:
@@ -87,22 +157,42 @@ services:
     image: ghcr.io/fishygeek91/npc-backup:${NPC_IMAGE_TAG:-latest}
     restart: unless-stopped
     depends_on:
-      - runtime
+      runtime:
+        condition: service_started
     environment:
       BACKUP_SOURCE_DIR: /data/soulchain
       BACKUP_RCLONE_REMOTE: ${BACKUP_RCLONE_REMOTE}
       RCLONE_CONFIG: /config/rclone/rclone.conf
+      RCLONE_CACHE_DIR: /tmp/rclone-cache
+      BACKUP_OK_PATH: /tmp/backup.ok
       BACKUP_DEBOUNCE_SEC: ${BACKUP_DEBOUNCE_SEC:-5}
       BACKUP_INTERVAL_SEC: ${BACKUP_INTERVAL_SEC:-300}
     volumes:
       - soulchain:/data/soulchain:ro
       - ${RCLONE_CONFIG_HOST_PATH}:/config/rclone:ro
     healthcheck:
-      test: ["CMD", "test", "-r", "/config/rclone/rclone.conf"]
+      test:
+        [
+          "CMD-SHELL",
+          "test -f /tmp/backup.ok && test $$(($$(date +%s) - $$(stat -c %Y /tmp/backup.ok 2>/dev/null || stat -f %m /tmp/backup.ok))) -lt 900"
+        ]
       interval: 30s
-      timeout: 3s
+      timeout: 5s
       retries: 3
-      start_period: 10s
+      start_period: 120s
+    mem_limit: 256m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    cap_drop:
+      - ALL
+    security_opt:
+      - "no-new-privileges:true"
+    read_only: true
+    tmpfs:
+      - /tmp
 
 volumes:
   soulchain:

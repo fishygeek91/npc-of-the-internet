@@ -23,10 +23,13 @@ const text = await brain.complete([
 
 | Variable | Required | Default | Purpose |
 |----------|----------|---------|---------|
-| `ANTHROPIC_API_KEY` | yes | — | Anthropic API key |
+| `ANTHROPIC_API_KEY` | yes* | — | Anthropic API key (direct) |
+| `ANTHROPIC_API_KEY_FILE` | yes* | — | Path to file containing the API key (trimmed) |
 | `NPC_BRAIN_MODEL` | no | `claude-sonnet-4-20250514` | Model id |
 | `NPC_BRAIN_MAX_TOKENS` | no | `1024` | Default max output tokens |
 | `NPC_BRAIN_TIMEOUT_MS` | no | `60000` | Request timeout (ms) |
+
+\* Set exactly one of `ANTHROPIC_API_KEY` or `ANTHROPIC_API_KEY_FILE` (non-empty).
 
 See `ops/SECRETS.md` for the canonical secret registry.
 
@@ -293,10 +296,13 @@ Or after install: `npc-runtime` (bin in `@npc/runtime`). Ghost image `CMD` is `n
 | `DOOR_HTTP_PORT` | yes | — | Door HTTP/WS connect port |
 | `CURRENT_DOOR_ID` | yes | — | Expected Door id (e.g. `discord:123…`); must match Door hello |
 | `ATLAS_DOOR_PUBKEYS` | yes | — | Comma-separated `doorId=base64url` Door public key bindings for chain verify |
-| `ANTHROPIC_API_KEY` | yes | — | Brain API key (see Brain section) |
+| `ANTHROPIC_API_KEY` | yes* | — | Brain API key (direct; see Brain section) |
+| `ANTHROPIC_API_KEY_FILE` | yes* | — | Path to file containing the Brain API key |
 | `NPC_BRAIN_MODEL` | no | `claude-sonnet-4-20250514` | Model id |
 | `NPC_BRAIN_MAX_TOKENS` | no | `1024` | Default max output tokens |
 | `NPC_BRAIN_TIMEOUT_MS` | no | `60000` | Request timeout (ms) |
 | `NPC_RUNTIME_READY_FILE` | no | `/tmp/npc-runtime.ready` | Compose healthcheck path (present only while the session WS is connected) |
+
+\* Set exactly one of `ANTHROPIC_API_KEY` or `ANTHROPIC_API_KEY_FILE` (non-empty).
 
 Graceful shutdown (SIGTERM/SIGINT): remove ready file → close WS → `session.stop()` → `drainAppends()` → `store.close()` → exit 0.

@@ -61,12 +61,13 @@ Internally the script runs: `osp init` → `launch-first-residency.mjs` → `osp
 Complete these before any production ceremony step.
 
 1. **Approved release issue** — Gate 2 sign-off recorded (see above).
-2. **Host** — VPS with Docker and Docker Compose; `pnpm`, `node`, and `rclone` available for CLI work on the host or a trusted admin machine with volume access.
+2. **Host** — VPS with Docker and Docker Compose; `pnpm`, `node`, `rclone`, and `age` available for CLI work on the host or a trusted admin machine with volume access.
 3. **Repository** — fresh clone at the commit tagged for launch; from repo root:
 
    ```bash
    pnpm install --frozen-lockfile
    pnpm --filter @npc/osp-cli build
+   pnpm --filter @npc/osp-core build
    ```
 
 4. **Environment file** — copy and edit per [RUNBOOK §1.1](RUNBOOK.md#11-create-environment-file):
@@ -112,7 +113,21 @@ Complete these before any production ceremony step.
    bash ops/scripts/restore-drill.sh
    ```
 
-7. **Dry-run green** — `bash ops/scripts/launch-dry-run.sh` exits 0 on the same machine class you will use for verification commands.
+7. **Encrypted key backup remote** — configure a **separate** B2 bucket/prefix + app key (`KEY_BACKUP_RCLONE_REMOTE`, optional `KEY_BACKUP_RCLONE_CONFIG`) and an `AGE_RECIPIENT`. Prove the drill offline:
+
+   ```bash
+   bash ops/scripts/key-backup-drill.sh
+   ```
+
+8. **Dry-run green** — `bash ops/scripts/launch-dry-run.sh` exits 0 on the same machine class you will use for verification commands.
+
+9. **Preflight** — after keys, pubkeys, and rclone are filled in `ops/.env`:
+
+   ```bash
+   bash ops/scripts/preflight.sh
+   ```
+
+   Or use `ghostc` (wrapper runs preflight before mutating compose commands): [`RUNBOOK.ghost.md`](RUNBOOK.ghost.md).
 
 ---
 
@@ -123,7 +138,7 @@ The Wanderer's **soul private key is created only by `osp init`** — not by `op
 **Custody rules (non-negotiable):**
 
 - `soul.key` is the being's signing identity. **Losing it means losing continuity of authorship** — the chain may still verify, but no one can append as this soul.
-- Chain backup (`chain.jsonl` + `blobs/`) **without** a separate, access-controlled backup of `soul.key` is **incomplete** for operational continuity.
+- Chain backup (`chain.jsonl` + `blobs/`) **without** a separate, access-controlled backup of `soul.key` is **incomplete** for operational continuity. Use `ops/scripts/key-backup.sh` (age-encrypted to `KEY_BACKUP_RCLONE_REMOTE`) plus an offline identity; do not rely on the chain backup sidecar for keys.
 - Never commit `soul.key`, never copy it into `blobs/` or `chain.jsonl`, never leave it as the only copy on an unbacked-up scratch path.
 - After init, the canonical private key lives at `SOUL_KEY_HOST_PATH` (mode `0600`). The Docker soulchain volume holds **only** `chain.jsonl` and `blobs/`.
 

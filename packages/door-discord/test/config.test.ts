@@ -1,3 +1,7 @@
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { encodePublicKey } from "@npc/osp-core";
 import { describe, expect, it } from "vitest";
 
@@ -29,6 +33,40 @@ describe("loadDiscordDoorConfig", () => {
     delete env.DISCORD_BOT_TOKEN;
     expect(() => loadDiscordDoorConfig(env)).toThrow(DiscordDoorError);
     expect(() => loadDiscordDoorConfig(env)).toThrow(/DISCORD_BOT_TOKEN/);
+  });
+
+  it("loads bot token from DISCORD_BOT_TOKEN_FILE", () => {
+    const dir = mkdtempSync(join(tmpdir(), "npc-discord-token-"));
+    const tokenPath = join(dir, "bot-token");
+    writeFileSync(tokenPath, "  token-from-file  \n");
+
+    const env = baseEnv();
+    delete env.DISCORD_BOT_TOKEN;
+    env.DISCORD_BOT_TOKEN_FILE = tokenPath;
+
+    const config = loadDiscordDoorConfig(env);
+    expect(config.botToken).toBe("token-from-file");
+  });
+
+  it("fails when both DISCORD_BOT_TOKEN and DISCORD_BOT_TOKEN_FILE are set", () => {
+    const env = { ...baseEnv(), DISCORD_BOT_TOKEN_FILE: "/tmp/token" };
+    expect(() => loadDiscordDoorConfig(env)).toThrow(DiscordDoorError);
+    expect(() => loadDiscordDoorConfig(env)).toThrow(
+      /set only one of DISCORD_BOT_TOKEN or DISCORD_BOT_TOKEN_FILE/
+    );
+  });
+
+  it("fails when DISCORD_BOT_TOKEN_FILE points to an empty file", () => {
+    const dir = mkdtempSync(join(tmpdir(), "npc-discord-token-"));
+    const tokenPath = join(dir, "empty-token");
+    writeFileSync(tokenPath, "  \n");
+
+    const env = baseEnv();
+    delete env.DISCORD_BOT_TOKEN;
+    env.DISCORD_BOT_TOKEN_FILE = tokenPath;
+
+    expect(() => loadDiscordDoorConfig(env)).toThrow(DiscordDoorError);
+    expect(() => loadDiscordDoorConfig(env)).toThrow(/DISCORD_BOT_TOKEN_FILE at .+ is empty/);
   });
 
   it("fails fast naming DOOR_HTTP_PORT when invalid", () => {

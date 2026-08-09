@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 import { decodePublicKey } from "@npc/osp-core";
 import { z } from "zod";
 
@@ -42,6 +44,62 @@ export type DiscordDoorConfig = z.infer<typeof discordDoorConfigSchema>;
  */
 export function doorIdForGuild(guildId: string): string {
   return `discord:${guildId}`;
+}
+
+function isEnvSet(value: string | undefined): boolean {
+  return value !== undefined && value !== "";
+}
+
+/**
+ * Read a secret from a file path named by a `*_FILE` env var.
+ * Error messages name the env var and path only — never secret values.
+ */
+function readSecretFromFile(path: string, fileVarName: string): string {
+  let contents: string;
+  try {
+    contents = readFileSync(path, "utf8");
+  } catch (error: unknown) {
+    const detail = error instanceof Error ? error.message : "read failed";
+    throw new DiscordDoorError(
+      "invalid_config",
+      `failed to read ${fileVarName} at ${path}: ${detail}`
+    );
+  }
+
+  const trimmed = contents.trim();
+  if (trimmed === "") {
+    throw new DiscordDoorError("invalid_config", `${fileVarName} at ${path} is empty`);
+  }
+
+  return trimmed;
+}
+
+/**
+ * Resolve a secret from either a direct env var or a companion `*_FILE` path.
+ * Exactly one must be set (non-empty).
+ */
+function resolveSecretFromEnv(env: NodeJS.ProcessEnv, name: string, fileName: string): string {
+  const direct = env[name];
+  const filePath = env[fileName];
+  const hasDirect = isEnvSet(direct);
+  const hasFile = isEnvSet(filePath);
+
+  if (hasDirect && hasFile) {
+    throw new DiscordDoorError("invalid_config", `set only one of ${name} or ${fileName}`);
+  }
+  if (!hasDirect && !hasFile) {
+    throw new DiscordDoorError("invalid_config", `${name} is required but not set`);
+  }
+
+  if (hasFile && filePath !== undefined) {
+    return readSecretFromFile(filePath, fileName);
+  }
+
+  if (direct !== undefined) {
+    return direct;
+  }
+
+  throw new DiscordDoorError("invalid_config", `${name} is required but not set`);
 }
 
 function requireEnv(env: NodeJS.ProcessEnv, name: string): string {
@@ -99,7 +157,8 @@ function parseSoulPublicKey(raw: string): Uint8Array {
 /**
  * Load and validate Discord Door configuration from environment variables.
  *
- * Required: `DISCORD_BOT_TOKEN`, `DISCORD_GUILD_ID`, `DISCORD_CHANNEL_ID`,
+ * Required: `DISCORD_BOT_TOKEN` or `DISCORD_BOT_TOKEN_FILE` (exactly one),
+ * `DISCORD_GUILD_ID`, `DISCORD_CHANNEL_ID`,
  * `DISCORD_OPERATOR_IDS`, `DOOR_KEY_PATH`, `SOUL_PUBLIC_KEY`.
  *
  * Review timeout default rejects on expiry (safe default — a host who ignores
@@ -108,7 +167,7 @@ function parseSoulPublicKey(raw: string): Uint8Array {
  * @param env - Environment map; defaults to `process.env`. Inject a plain object in tests.
  */
 export function loadDiscordDoorConfig(env: NodeJS.ProcessEnv = process.env): DiscordDoorConfig {
-  const botToken = requireEnv(env, "DISCORD_BOT_TOKEN");
+  const botToken = resolveSecretFromEnv(env, "DISCORD_BOT_TOKEN", "DISCORD_BOT_TOKEN_FILE");
   const guildId = requireEnv(env, "DISCORD_GUILD_ID");
   const channelId = requireEnv(env, "DISCORD_CHANNEL_ID");
   const operatorIds = parseOperatorIds(requireEnv(env, "DISCORD_OPERATOR_IDS"));

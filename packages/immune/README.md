@@ -18,8 +18,9 @@ if (!result.ok) {
 ### API
 
 - **`screenText(text, opts?)`** — returns `{ ok: true }` or `{ ok: false, categories }`.
+- **`normalizeScreenText(text)`** — NFKC + strip Unicode format chars before screening; applied internally by `screenText`, exported for tests and callers that need the same normalization.
 - **`ScreenCategory`** — `pii.email`, `pii.phone`, `pii.handle`, `injection.instruction`, `injection.role_marker`, `injection.url_payload`.
-- **`ScreenOptions.allowlist`** — exact-span allowlist for PII matches only; injection is never allowlisted.
+- **`ScreenOptions.allowlist`** — exact-span allowlist for PII matches only; injection is never allowlisted. Entries are compared after `normalizeScreenText` (NFKC + strip format chars), so allowlist the normalized span, not a raw span that still contains Cf/compatibility characters.
 - **`ScreenLogger`** / **`ScreenSite`** — types for category-only rejection sinks at call sites.
 
 ### Purity
