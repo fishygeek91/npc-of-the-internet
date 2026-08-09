@@ -68,7 +68,7 @@ function readSecretFromFile(path: string, fileVarName: string): string {
  * Resolve a bearer token from `env[tokenEnv]` or `env[tokenEnv + "_FILE"]`.
  * Exactly one must be set when validation is required.
  */
-function resolveTokenFromEnv(env: NodeJS.ProcessEnv, tokenEnv: string): string {
+export function resolveTokenFromEnv(env: NodeJS.ProcessEnv, tokenEnv: string): string {
   const fileVarName = `${tokenEnv}_FILE`;
   const direct = env[tokenEnv];
   const filePath = env[fileVarName];

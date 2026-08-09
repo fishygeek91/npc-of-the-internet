@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { pathToFileURL } from "node:url";
-import { existsSync } from "node:fs";
+import { createReadStream, existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 
 import cors from "@fastify/cors";
@@ -154,8 +154,11 @@ export async function createAtlasServer(config: AtlasConfig): Promise<FastifyIns
         return;
       }
 
-      const carBytes = await readFile(carPath);
-      void reply.header("Content-Type", "application/vnd.ipld.car").send(carBytes);
+      // Stream the CAR — avoid buffering the whole file per request as chains grow.
+      // Return the send() promise so inject/light-my-request drains the stream.
+      return reply
+        .header("Content-Type", "application/vnd.ipld.car")
+        .send(createReadStream(carPath));
     });
   }
 

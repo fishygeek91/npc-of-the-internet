@@ -57,7 +57,7 @@ Local blockstore-backed store using `blockstore-fs` (no helia, no network). Same
 - `seq-index.jsonl` — append-only `{"seq":n,"cid":"bagu…"}` journal for ordered `iterate()`
 - `LOCK` — exclusive wx lock during append
 
-**Open:** `IpfsSoulStore.open(dir)` validates on load; torn seq-index tails throw `CorruptionError`. Use `IpfsSoulStore.openWithRecovery(dir)` to clear stale locks, truncate torn index lines, and advance a stale `HEAD` when blocks+index are ahead (block-written / HEAD-not-updated crash window). Returns `{ store, truncatedBytes }`.
+**Open:** `IpfsSoulStore.open(dir)` validates on load; torn seq-index tails throw `CorruptionError`. Use `IpfsSoulStore.openWithRecovery(dir)` to clear stale locks, truncate torn `seq-index.jsonl` / `replication.jsonl` tails, and advance a stale `HEAD` when blocks+index are ahead (block-written / HEAD-not-updated crash window). Returns `{ store, truncatedBytes }` (bytes removed from both journals).
 
 **Read-only:** `IpfsSoulStore.openReadOnly(dir)` requires existing layout; throws on corruption (no soft verification in Phase B).
 

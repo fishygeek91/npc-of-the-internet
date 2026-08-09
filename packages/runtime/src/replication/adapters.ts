@@ -1,7 +1,6 @@
 import { Buffer } from "node:buffer";
-import { readFileSync } from "node:fs";
 
-import type { ReplicationConfig, ReplicationTarget } from "./config.js";
+import { resolveTokenFromEnv, type ReplicationConfig, type ReplicationTarget } from "./config.js";
 
 /** Injectable fetch for CAR upload (tests inject a mock; production uses global fetch). */
 export type FetchImpl = typeof fetch;
@@ -13,33 +12,11 @@ export type CarUploadAdapter = {
 };
 
 /**
- * Read a bearer token from `env[tokenEnv]` or `env[tokenEnv + "_FILE"]`.
- * Caller must validate presence before adapter construction.
- */
-function resolveTokenForTarget(env: NodeJS.ProcessEnv, tokenEnv: string): string {
-  const fileVarName = `${tokenEnv}_FILE`;
-  const direct = env[tokenEnv];
-  const filePath = env[fileVarName];
-
-  if (filePath !== undefined && filePath !== "") {
-    const trimmed = readFileSync(filePath, "utf8").trim();
-    if (trimmed === "") {
-      throw new Error(`${fileVarName} is empty`);
-    }
-    return trimmed;
-  }
-
-  if (direct !== undefined && direct !== "") {
-    return direct;
-  }
-
-  throw new Error(`${tokenEnv} is not set`);
-}
-
-/**
  * Create a CAR upload adapter for Storacha/Filebase-style HTTPS CAR upload.
  *
- * POST `target.endpoint` with bearer auth, CAR content type, and manifest CID header.
+ * POST `target.endpoint` with bearer auth, CAR content type, and `X-Manifest-Cid`.
+ * The header/protocol shape is a placeholder until a Gate-2 live dry-run against
+ * each real service confirms the upload API; do not treat this as endpoint-tested.
  */
 export function createCarUploadAdapter(
   target: ReplicationTarget,
@@ -68,6 +45,8 @@ export function createCarUploadAdapter(
 
 /**
  * Build CAR upload adapters from replication config and environment tokens.
+ *
+ * Token resolution uses {@link resolveTokenFromEnv} (same rules as boot validation).
  */
 export function createAdaptersFromConfig(
   config: ReplicationConfig,
@@ -77,7 +56,7 @@ export function createAdaptersFromConfig(
   const adapters: CarUploadAdapter[] = [];
 
   for (const target of config.targets) {
-    const token = resolveTokenForTarget(env, target.tokenEnv);
+    const token = resolveTokenFromEnv(env, target.tokenEnv);
     adapters.push(createCarUploadAdapter(target, token, fetchImpl));
   }
 

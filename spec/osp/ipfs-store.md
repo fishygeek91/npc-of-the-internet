@@ -171,6 +171,8 @@ Because records carry no IPLD links (§0), we publish a **pin manifest**: a dag-
 
 `replication.jsonl`: append-only journal of `{"cid": …, "kind": "record" | "manifest" | "car", "enqueued_at": …}` plus ack lines `{"acked": cid, "target": "<service>", "at": …}`. At-least-once delivery; idempotent because everything is content-addressed (re-uploading a block is a no-op server-side). A small replicator loop inside the runtime process (no new container — D8 "three processes, period") drains the queue with exponential backoff. Replication lag is observable (`queue depth` in logs + Atlas `/state` later); it never blocks or fails `append`.
 
+**Scaling note:** the baseline drain re-uploads the full manifest-rooted CAR on each cadence/unacked tick (O(chain) bytes). Fine at early chain sizes; when chains grow, the escape hatch is incremental push (per-record raw block upload for `kind: "record"` entries) while keeping CAR upload for manifest roots.
+
 ### 5.2 Targets
 
 **≥ 2 independent pinning services** (single-service outage or account loss must not orphan the public copy). Selection criteria (evaluate at impl time; the API shapes to support):

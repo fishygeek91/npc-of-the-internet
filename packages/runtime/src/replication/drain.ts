@@ -226,13 +226,17 @@ export function startReplicationDrain(
         return;
       }
 
-      const { manifestCid } = await runManifestCadence({
+      const { manifest, manifestCid } = await runManifestCadence({
         ipfsDir: options.ipfsDir,
         soulPrivateKey: options.soulPrivateKey,
         publishedCarPath: options.publishedCarPath,
         manifestCidPath: options.manifestCidPath,
         now
       });
+
+      // Ack only CIDs present in the uploaded artifact (records ∪ manifest root).
+      // Entries enqueued after cadence (append race) stay pending and self-heal next tick.
+      const covered = new Set<string>([...manifest.records, manifestCid]);
 
       const carBytes = await readFile(options.publishedCarPath);
       const carUint8 = new Uint8Array(carBytes);
@@ -246,14 +250,22 @@ export function startReplicationDrain(
         try {
           await adapter.uploadCar(carUint8, manifestCid);
           const at = now();
+          let remaining = 0;
           for (const entry of pending) {
+            if (!covered.has(entry.cid)) {
+              remaining += 1;
+              continue;
+            }
             await ackReplication(options.ipfsDir, {
               acked: entry.cid,
               target: adapter.name,
               at
             });
           }
-          options.logger.info({ queueDepth: 0, target: adapter.name }, "replication_upload_ok");
+          options.logger.info(
+            { queueDepth: remaining, target: adapter.name },
+            "replication_upload_ok"
+          );
         } catch (error: unknown) {
           const message = error instanceof Error ? error.message : String(error);
           options.logger.warn(

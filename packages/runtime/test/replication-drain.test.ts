@@ -14,12 +14,14 @@ import {
   type Ed25519Keypair
 } from "@npc/osp-core";
 
-import { createCarUploadAdapter } from "../src/replication/adapters.js";
+import { createCarUploadAdapter, type CarUploadAdapter } from "../src/replication/adapters.js";
 import { startReplicationDrain } from "../src/replication/drain.js";
 
 const TARGET = "test-target";
 const ENQUEUED_AT = "2026-08-09T12:00:00.000Z";
 const FIXED_NOW = "2026-08-09T12:00:01.000Z";
+const ORPHAN_CID = "bagu" + "o".repeat(57);
+const RESIDENCY = "door:discord:g/epoch:1";
 
 async function makeTempDir(prefix: string): Promise<string> {
   return mkdtemp(path.join(tmpdir(), prefix));
@@ -118,6 +120,109 @@ describe("replication drain", () => {
     expect(manifestRaw.trim()).toMatch(/^bagu/);
     const carBytes = await readFile(publishedCarPath);
     expect(carBytes.length).toBeGreaterThan(0);
+  });
+
+  it("does not ack CIDs absent from the uploaded manifest", async () => {
+    await enqueueReplication(ipfsDir, {
+      cid: ORPHAN_CID,
+      kind: "record",
+      enqueued_at: ENQUEUED_AT
+    });
+
+    const fetchImpl: typeof fetch = async () => new Response(null, { status: 200 });
+    const adapter = createCarUploadAdapter(
+      {
+        name: TARGET,
+        kind: "car-upload",
+        endpoint: "https://pin.example/car",
+        tokenEnv: "TEST_TOKEN"
+      },
+      "test-token",
+      fetchImpl
+    );
+
+    const drain = startReplicationDrain({
+      ipfsDir,
+      soulPrivateKey: soul.privateKey,
+      publishedCarPath,
+      manifestCidPath,
+      targets: [adapter],
+      intervalMs: 60_000,
+      logger: pino({ level: "silent" }),
+      now: () => FIXED_NOW
+    });
+
+    await drain.tick();
+    await drain.stop();
+
+    const pending = await listUnackedForTarget(ipfsDir, TARGET);
+    expect(pending.some((entry) => entry.cid === ORPHAN_CID)).toBe(true);
+  });
+
+  it("keeps interleaved appends unacked until a later tick covers them", async () => {
+    let uploadCount = 0;
+    let interleavedCid = "";
+
+    const adapter: CarUploadAdapter = {
+      name: TARGET,
+      uploadCar: async (): Promise<void> => {
+        uploadCount += 1;
+        if (uploadCount !== 1) {
+          return;
+        }
+
+        const store = await IpfsSoulStore.open(ipfsDir, {
+          replication: { enabled: true },
+          now: () => FIXED_NOW
+        });
+        try {
+          const head = await store.head();
+          if (head === null) {
+            throw new Error("expected head before interleaved append");
+          }
+          const memory = await createRecord({
+            seq: head.seq + 1,
+            prev: head.cid,
+            type: "memory",
+            body: {
+              kind: "candidate",
+              text: "Interleaved after cadence.",
+              proposed_at: "2026-01-02T00:00:00.000Z"
+            },
+            residency: RESIDENCY,
+            cosigners: [],
+            soulPrivateKey: soul.privateKey
+          });
+          const { cid } = await store.append(memory.record);
+          interleavedCid = cid;
+        } finally {
+          await store.close();
+        }
+      }
+    };
+
+    const drain = startReplicationDrain({
+      ipfsDir,
+      soulPrivateKey: soul.privateKey,
+      publishedCarPath,
+      manifestCidPath,
+      targets: [adapter],
+      intervalMs: 60_000,
+      logger: pino({ level: "silent" }),
+      now: () => FIXED_NOW
+    });
+
+    await drain.tick();
+    expect(interleavedCid).toMatch(/^bagu/);
+    let pending = await listUnackedForTarget(ipfsDir, TARGET);
+    expect(pending.some((entry) => entry.cid === interleavedCid)).toBe(true);
+
+    await drain.tick();
+    pending = await listUnackedForTarget(ipfsDir, TARGET);
+    expect(pending).toEqual([]);
+    expect(uploadCount).toBe(2);
+
+    await drain.stop();
   });
 
   it("does not ack when adapter throws; retries on next tick", async () => {

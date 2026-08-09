@@ -582,8 +582,9 @@ Ghost compose ships with **dual-write paths and Atlas CAR hooks disabled by defa
 1. Obtain pinning-service tokens (Storacha, Filebase, or similar CAR-upload endpoint).
 2. Add tokens to `ops/.env` per `ops/SECRETS.md` (`STORACHA_TOKEN`, `FILEBASE_TOKEN`, etc.).
 3. Set `NPC_REPLICATION_ENABLED=1` and `NPC_REPLICATION_TARGETS` JSON array with at least two independent targets.
-4. `ghostc up -d` and watch `ghostc logs runtime` for `replication_upload_ok` / `replication_upload_failed`.
-5. Verify Atlas serves the CAR: `curl -s http://127.0.0.1:8787/soulchain/manifest` and download `/soulchain-latest.car` via SSH tunnel.
+4. Run a **live dry-run** against each real endpoint before leaving replication enabled — the injectable adapter's `X-Manifest-Cid` / POST shape is a placeholder until that dry-run confirms the service's upload protocol.
+5. `ghostc up -d` and watch `ghostc logs runtime` for `replication_upload_ok` / `replication_upload_failed`.
+6. Verify Atlas serves the CAR: `curl -s http://127.0.0.1:8787/soulchain/manifest` and download `/soulchain-latest.car` via SSH tunnel.
 
 An **empty target list with `NPC_REPLICATION_ENABLED=1`** is valid — the drain runs as a no-op (useful for staging manifest/CAR publishing without push).
 

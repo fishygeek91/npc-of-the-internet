@@ -24,7 +24,7 @@ import { FileLock } from "./file-lock.js";
 import { readHead, writeHeadAtomic } from "./head-file.js";
 import { bytesEqual, fsyncDirectory, fsyncPath } from "./fsync.js";
 import { isNodeError, nodeErrorMessage } from "./node-fs-error.js";
-import { enqueueReplication } from "../replication/queue.js";
+import { enqueueReplication, recoverReplicationJournal } from "../replication/queue.js";
 import {
   appendSeqIndex,
   readSeqIndex,
@@ -147,8 +147,9 @@ export class IpfsSoulStore implements SoulStore {
   /**
    * Open after recovering from torn writes or stale locks.
    *
-   * Clears stale LOCK, truncates torn seq-index tails, and advances HEAD when blocks+seq-index
-   * are ahead of a stale/missing HEAD (block-written / HEAD-not-updated crash window).
+   * Clears stale LOCK, truncates torn seq-index and `replication.jsonl` tails, and advances HEAD
+   * when blocks+seq-index are ahead of a stale/missing HEAD (block-written / HEAD-not-updated
+   * crash window).
    */
   static async openWithRecovery(
     dir: string,
@@ -163,11 +164,12 @@ export class IpfsSoulStore implements SoulStore {
 
     await store.appendLock.clearStale();
 
-    const truncatedBytes = await recoverTornSeqIndex(store.seqIndexPath);
+    const truncatedSeqIndex = await recoverTornSeqIndex(store.seqIndexPath);
+    const truncatedReplication = await recoverReplicationJournal(absoluteDir);
     await store.reconcileHeadWithSeqIndex();
     await store.loadChain();
 
-    return { store, truncatedBytes };
+    return { store, truncatedBytes: truncatedSeqIndex + truncatedReplication };
   }
 
   /**

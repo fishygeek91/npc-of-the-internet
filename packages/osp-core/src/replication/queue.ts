@@ -234,7 +234,12 @@ export async function recoverReplicationJournal(dir: string): Promise<number> {
 }
 
 /**
- * Enqueue entries not yet acked on any target (no ack line with matching `acked` cid).
+ * Enqueue entries that have no ack line yet for their CID on **any** target.
+ *
+ * A single ack from one target removes the CID from this list — it is **not** a
+ * "fully replicated to all targets" check. Use {@link listUnackedForTarget} for
+ * per-target pending work (drain loop). Current callers use this only for
+ * enqueue dedupe (`enqueueIfNotPending`).
  */
 export async function listPendingReplication(dir: string): Promise<ReplicationEnqueueEntry[]> {
   const journal = await readReplicationJournal(dir);
