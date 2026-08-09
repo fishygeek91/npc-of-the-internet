@@ -8,9 +8,19 @@ export type BlockFetcher = {
   fetchBlock(cid: string): Promise<Uint8Array>;
 };
 
+/** Thrown when fetched block bytes fail CID verification (verify exit 1). */
+export class IpfsVerifyContentError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "IpfsVerifyContentError";
+  }
+}
+
 /** Options for {@link createHttpGatewayFetcher}. */
 export type HttpGatewayFetcherOptions = {
   gatewayUrl: string;
+  /** Request timeout in milliseconds. Defaults to 30_000. */
+  timeoutMs?: number;
   /**
    * Injected fetch implementation. Defaults to global `fetch`.
    * Tests pass a stub; CI must never call the real network.
@@ -27,6 +37,7 @@ export type HttpGatewayFetcherOptions = {
 export function createHttpGatewayFetcher(options: HttpGatewayFetcherOptions): BlockFetcher {
   const base = options.gatewayUrl.replace(/\/+$/, "");
   const fetchImpl = options.fetchImpl ?? fetch;
+  const timeoutMs = options.timeoutMs ?? 30_000;
 
   return {
     async fetchBlock(cid: string): Promise<Uint8Array> {
@@ -34,7 +45,8 @@ export function createHttpGatewayFetcher(options: HttpGatewayFetcherOptions): Bl
       const response = await fetchImpl(url, {
         headers: {
           Accept: "application/vnd.ipld.raw"
-        }
+        },
+        signal: AbortSignal.timeout(timeoutMs)
       });
 
       if (!response.ok) {
@@ -44,7 +56,9 @@ export function createHttpGatewayFetcher(options: HttpGatewayFetcherOptions): Bl
       const buffer = new Uint8Array(await response.arrayBuffer());
       const computedCid = await computeCidFromCanonicalBytes(buffer);
       if (computedCid !== cid) {
-        throw new Error(`gateway block CID mismatch for ${cid}: computed ${computedCid}`);
+        throw new IpfsVerifyContentError(
+          `gateway block CID mismatch for ${cid}: computed ${computedCid}`
+        );
       }
 
       return buffer;

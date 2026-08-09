@@ -1,3 +1,4 @@
+import { decode, encode } from "@ipld/dag-json";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -10,6 +11,7 @@ import {
   encodeSignature,
   encodeUnsignedPinManifest,
   generateKeypair,
+  SchemaError,
   signPinManifest,
   verifyPinManifest,
   VerificationError,
@@ -138,5 +140,36 @@ describe("pin manifest", () => {
     };
 
     await expect(verifyPinManifest(tampered, soul.publicKey)).rejects.toThrow(VerificationError);
+  });
+
+  it("rejects decoded manifest when head or seq disagree with records", async () => {
+    const soul = generateKeypair();
+    const genesisCid = await testCid(0, null, "invariant");
+    const headCid = await testCid(1, genesisCid, "invariant-head");
+
+    const signed = signPinManifest(
+      buildUnsignedPinManifest({
+        headCid,
+        genesisCid,
+        recordCids: [genesisCid, headCid],
+        seq: 1,
+        generatedAt: "2026-07-28T00:00:00Z"
+      }),
+      soul.privateKey
+    );
+
+    const dagJson = decode(encodePinManifest(signed)) as Record<string, unknown>;
+    dagJson.seq = 99;
+
+    expect(() => decodePinManifest(encode(dagJson))).toThrow(SchemaError);
+    expect(() => decodePinManifest(encode(dagJson))).toThrow(/seq must equal records.length - 1/);
+
+    const wrongHead = decode(encodePinManifest(signed)) as Record<string, unknown>;
+    wrongHead.head = { "/": genesisCid };
+
+    expect(() => decodePinManifest(encode(wrongHead))).toThrow(SchemaError);
+    expect(() => decodePinManifest(encode(wrongHead))).toThrow(
+      /head must equal the last records entry/
+    );
   });
 });

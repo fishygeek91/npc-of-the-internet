@@ -65,6 +65,28 @@ const PinManifestSchema = UnsignedPinManifestSchema.extend({
 }).strict();
 
 /**
+ * Enforce pin manifest structural invariants beyond Zod shape validation.
+ *
+ * @throws {SchemaError} when records, genesis, head, or seq are inconsistent.
+ */
+export function assertManifestInvariants(manifest: UnsignedPinManifest | PinManifest): void {
+  const { records, genesis, head, seq } = manifest;
+
+  if (records.length === 0) {
+    throw new SchemaError("records must contain at least one CID");
+  }
+  if (records[0] !== genesis) {
+    throw new SchemaError("genesis must equal records[0]");
+  }
+  if (records[records.length - 1] !== head) {
+    throw new SchemaError("head must equal the last records entry");
+  }
+  if (seq !== records.length - 1) {
+    throw new SchemaError(`seq must equal records.length - 1 (expected ${records.length - 1})`);
+  }
+}
+
+/**
  * Convert a dag-json decoded link value to a validated bagu CID string.
  */
 function cidLinkToString(value: unknown, field: string): string {
@@ -96,19 +118,6 @@ export function buildUnsignedPinManifest(
     return parsed.data;
   });
 
-  if (records.length === 0) {
-    throw new SchemaError("records must contain at least one CID");
-  }
-  if (records[0] !== genesis) {
-    throw new SchemaError("genesis must equal records[0]");
-  }
-  if (records[records.length - 1] !== head) {
-    throw new SchemaError("head must equal the last records entry");
-  }
-  if (input.seq !== records.length - 1) {
-    throw new SchemaError(`seq must equal records.length - 1 (expected ${records.length - 1})`);
-  }
-
   const manifest: UnsignedPinManifest = {
     osp_pin_manifest: OSP_PIN_MANIFEST_VERSION,
     head,
@@ -121,6 +130,8 @@ export function buildUnsignedPinManifest(
   if (input.prevManifestCid !== undefined && input.prevManifestCid !== null) {
     manifest.prev_manifest = CidSchema.parse(input.prevManifestCid);
   }
+
+  assertManifestInvariants(manifest);
 
   const validated = UnsignedPinManifestSchema.safeParse(manifest);
   if (!validated.success) {
@@ -244,10 +255,14 @@ export function decodePinManifest(bytes: Uint8Array): PinManifest {
   }
 
   const { prev_manifest: validatedPrev, ...validatedRest } = validated.data;
-  if (validatedPrev === undefined) {
-    return validatedRest;
-  }
-  return { ...validatedRest, prev_manifest: validatedPrev };
+  const result =
+    validatedPrev === undefined
+      ? validatedRest
+      : { ...validatedRest, prev_manifest: validatedPrev };
+
+  assertManifestInvariants(result);
+
+  return result;
 }
 
 /**

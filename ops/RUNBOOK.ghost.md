@@ -571,6 +571,24 @@ behavior, or (post-Gate 2) at the tunnel URL. Until then,
 
 ---
 
+## 10a. IPFS replication (optional, Gate 2 for live push)
+
+Ghost compose ships with **dual-write paths and Atlas CAR hooks disabled by default** — no outbound push until you explicitly enable replication.
+
+**Safe local dual-write (no public push):** compose already mounts `/data/soulchain-ipfs` and `/data/published`. Runtime uses `DualSoulStore` when `NPC_SOULCHAIN_IPFS_DIR` is set. Leave `NPC_REPLICATION_ENABLED` unset.
+
+**Enabling outbound replication (Gate 2):**
+
+1. Obtain pinning-service tokens (Storacha, Filebase, or similar CAR-upload endpoint).
+2. Add tokens to `ops/.env` per `ops/SECRETS.md` (`STORACHA_TOKEN`, `FILEBASE_TOKEN`, etc.).
+3. Set `NPC_REPLICATION_ENABLED=1` and `NPC_REPLICATION_TARGETS` JSON array with at least two independent targets.
+4. `ghostc up -d` and watch `ghostc logs runtime` for `replication_upload_ok` / `replication_upload_failed`.
+5. Verify Atlas serves the CAR: `curl -s http://127.0.0.1:8787/soulchain/manifest` and download `/soulchain-latest.car` via SSH tunnel.
+
+An **empty target list with `NPC_REPLICATION_ENABLED=1`** is valid — the drain runs as a no-op (useful for staging manifest/CAR publishing without push).
+
+---
+
 ## 11. If something goes wrong
 
 | Symptom | Likely cause / fix |

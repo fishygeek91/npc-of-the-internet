@@ -80,6 +80,8 @@ export type SessionOptions = {
   activeEpoch?: number | null;
   /** Called when a heartbeat Door call or chain append fails (production logging). */
   onHeartbeatError?: (error: unknown, stage: HeartbeatErrorStage) => void;
+  /** Optional callback after a successful depart (e.g. replication manifest cadence). */
+  onDeparted?: () => void;
 };
 
 /** Result of {@link Session.handleInbound}. */
@@ -129,6 +131,7 @@ export class Session {
   private readonly maxHistoryMessages: number;
   private readonly onScreenReject?: ScreenLogger;
   private readonly onHeartbeatError?: (error: unknown, stage: HeartbeatErrorStage) => void;
+  private readonly onDeparted?: () => void;
   private readonly sessionSigner: SessionSigner;
   private readonly systemPromptValue: string;
   private readonly residency: string;
@@ -173,6 +176,9 @@ export class Session {
     }
     if (options.onHeartbeatError !== undefined) {
       this.onHeartbeatError = options.onHeartbeatError;
+    }
+    if (options.onDeparted !== undefined) {
+      this.onDeparted = options.onDeparted;
     }
     this.systemPromptValue = composed.systemPrompt;
     this.epochValue = epoch;
@@ -580,6 +586,7 @@ export class Session {
 
     this.phase = "departed";
     this.clearDepartCaches();
+    this.onDeparted?.();
 
     return {
       journalPath: journal.path,

@@ -24,6 +24,7 @@ import { FileLock } from "./file-lock.js";
 import { readHead, writeHeadAtomic } from "./head-file.js";
 import { bytesEqual, fsyncDirectory, fsyncPath } from "./fsync.js";
 import { isNodeError, nodeErrorMessage } from "./node-fs-error.js";
+import { enqueueReplication } from "../replication/queue.js";
 import {
   appendSeqIndex,
   readSeqIndex,
@@ -84,6 +85,8 @@ export class IpfsSoulStore implements SoulStore {
   private readonly shard: NextToLast;
   private readonly appendLock: FileLock;
   private readonly doorPublicKeys: Readonly<Record<string, Uint8Array>> | undefined;
+  private readonly replicationEnabled: boolean;
+  private readonly now: () => string;
   private readonly readOnly: boolean;
   private headInfo: HeadInfo | null;
   private soulPublicKey: Uint8Array | null;
@@ -96,7 +99,9 @@ export class IpfsSoulStore implements SoulStore {
     doorPublicKeys: Readonly<Record<string, Uint8Array>> | undefined,
     head: HeadInfo | null,
     soulPublicKey: Uint8Array | null,
-    readOnly = false
+    readOnly = false,
+    replicationEnabled = false,
+    now: () => string = () => new Date().toISOString()
   ) {
     this.dir = dir;
     this.blocksPath = path.join(dir, BLOCKS_DIR);
@@ -105,6 +110,8 @@ export class IpfsSoulStore implements SoulStore {
     this.shard = shard;
     this.appendLock = new FileLock(path.join(dir, LOCK_FILE));
     this.doorPublicKeys = doorPublicKeys;
+    this.replicationEnabled = replicationEnabled;
+    this.now = now;
     this.readOnly = readOnly;
     this.headInfo = head;
     this.soulPublicKey = soulPublicKey;
@@ -131,14 +138,7 @@ export class IpfsSoulStore implements SoulStore {
     const { blockstore, shard } = IpfsSoulStore.createBlockstore(absoluteDir);
     await blockstore.open();
 
-    const store = new IpfsSoulStore(
-      absoluteDir,
-      blockstore,
-      shard,
-      options?.doorPublicKeys,
-      null,
-      null
-    );
+    const store = IpfsSoulStore.createInstance(absoluteDir, blockstore, shard, options, false);
     await store.ensureLayout();
     await store.loadChain();
     return store;
@@ -158,14 +158,7 @@ export class IpfsSoulStore implements SoulStore {
     const { blockstore, shard } = IpfsSoulStore.createBlockstore(absoluteDir);
     await blockstore.open();
 
-    const store = new IpfsSoulStore(
-      absoluteDir,
-      blockstore,
-      shard,
-      options?.doorPublicKeys,
-      null,
-      null
-    );
+    const store = IpfsSoulStore.createInstance(absoluteDir, blockstore, shard, options, false);
     await store.ensureLayout();
 
     await store.appendLock.clearStale();
@@ -202,17 +195,32 @@ export class IpfsSoulStore implements SoulStore {
     });
     await blockstore.open();
 
-    const store = new IpfsSoulStore(
+    const store = IpfsSoulStore.createInstance(absoluteDir, blockstore, shard, options, true);
+    await store.loadChain();
+    return store;
+  }
+
+  /** Build a store instance from open options (shared by open paths). */
+  private static createInstance(
+    absoluteDir: string,
+    blockstore: FsBlockstore,
+    shard: NextToLast,
+    options: IpfsSoulStoreOpenOptions | undefined,
+    readOnly: boolean
+  ): IpfsSoulStore {
+    const replicationEnabled = options?.replication?.enabled === true;
+    const now = options?.now ?? (() => new Date().toISOString());
+    return new IpfsSoulStore(
       absoluteDir,
       blockstore,
       shard,
       options?.doorPublicKeys,
       null,
       null,
-      true
+      readOnly,
+      replicationEnabled,
+      now
     );
-    await store.loadChain();
-    return store;
   }
 
   /** Append a signed record to the chain and return its CID. */
@@ -275,6 +283,18 @@ export class IpfsSoulStore implements SoulStore {
 
       if (validatedRecord.seq === 0 && validatedRecord.type === "genesis") {
         this.soulPublicKey = decodePublicKey(validatedRecord.body.soul_pubkey);
+      }
+
+      if (this.replicationEnabled) {
+        try {
+          await enqueueReplication(this.dir, {
+            cid,
+            kind: "record",
+            enqueued_at: this.now()
+          });
+        } catch {
+          // Replication enqueue must never fail append (spec §5.1).
+        }
       }
 
       return { cid };

@@ -37,6 +37,10 @@ export type ExportSoulchainCarInput = {
 export type ImportSoulchainCarInput = {
   carPathOrBytes: string | Uint8Array;
   outDir: string;
+  /** When set, import fails if the CAR root CID does not match. */
+  expectedManifestCid?: string;
+  /** When set, import fails if the manifest head CID does not match. */
+  expectedHeadCid?: string;
 };
 
 /** Result of {@link importSoulchainCar}. */
@@ -248,6 +252,18 @@ export async function importSoulchainCar(
 
   const soulPublicKey = decodePublicKey(genesisSchema.data.body.soul_pubkey);
   await verifyPinManifest(manifest, soulPublicKey);
+
+  if (input.expectedManifestCid !== undefined && input.expectedManifestCid !== manifestCid) {
+    throw new CorruptionError(
+      `manifest CID mismatch: expected ${input.expectedManifestCid}, got ${manifestCid}`
+    );
+  }
+
+  if (input.expectedHeadCid !== undefined && input.expectedHeadCid !== manifest.head) {
+    throw new CorruptionError(
+      `manifest head CID mismatch: expected ${input.expectedHeadCid}, got ${manifest.head}`
+    );
+  }
 
   const outDir = path.resolve(input.outDir);
   const blocksPath = path.join(outDir, BLOCKS_DIR);

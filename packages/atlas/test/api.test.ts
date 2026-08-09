@@ -583,4 +583,56 @@ describe("GET /records leak safety", () => {
       await app.close();
     }
   });
+
+  it("serves published CAR and manifest CID sidecar when configured", async () => {
+    const publishedDir = await makeTempDir("atlas-car-");
+    const publishedCarPath = join(publishedDir, "soulchain-latest.car");
+    const manifestCidPath = join(publishedDir, "manifest-cid.txt");
+    const manifestCid = "bagu" + "c".repeat(57);
+    await writeFile(publishedCarPath, Buffer.from([0x00, 0x01, 0x02]), "binary");
+    await writeFile(manifestCidPath, `${manifestCid}\n`, "utf8");
+
+    const app = await createAtlasServer({
+      chainDir: MULTI_RESIDENCY_FIXTURE_DIR,
+      port: 8787,
+      doorPublicKeys: doorPublicKeys(),
+      publishedCarPath,
+      manifestCidPath
+    });
+
+    try {
+      const carResponse = await app.inject({ method: "GET", url: "/soulchain-latest.car" });
+      expect(carResponse.statusCode).toBe(200);
+      expect(carResponse.headers["content-type"]).toBe("application/vnd.ipld.car");
+      expect(carResponse.rawPayload).toEqual(Buffer.from([0x00, 0x01, 0x02]));
+
+      const manifestResponse = await app.inject({ method: "GET", url: "/soulchain/manifest" });
+      expect(manifestResponse.statusCode).toBe(200);
+      expect(JSON.parse(manifestResponse.body)).toEqual({ manifestCid });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("returns 404 when published CAR file is missing", async () => {
+    const publishedDir = await makeTempDir("atlas-car-missing-");
+    const publishedCarPath = join(publishedDir, "missing.car");
+    const manifestCidPath = join(publishedDir, "manifest-cid.txt");
+
+    const app = await createAtlasServer({
+      chainDir: MULTI_RESIDENCY_FIXTURE_DIR,
+      port: 8787,
+      doorPublicKeys: doorPublicKeys(),
+      publishedCarPath,
+      manifestCidPath
+    });
+
+    try {
+      const response = await app.inject({ method: "GET", url: "/soulchain-latest.car" });
+      expect(response.statusCode).toBe(404);
+      expect(JSON.parse(response.body).error.code).toBe("car_not_found");
+    } finally {
+      await app.close();
+    }
+  });
 });

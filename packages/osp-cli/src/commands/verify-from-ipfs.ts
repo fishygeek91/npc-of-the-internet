@@ -8,7 +8,11 @@ import {
   type OspRecord
 } from "@npc/osp-core";
 
-import { createHttpGatewayFetcher, type BlockFetcher } from "../gateway-fetch.js";
+import {
+  createHttpGatewayFetcher,
+  IpfsVerifyContentError,
+  type BlockFetcher
+} from "../gateway-fetch.js";
 import { writeStderr } from "../io.js";
 import { EXIT_USAGE, EXIT_VERIFY_FAILED, printFailures } from "./verify.js";
 
@@ -57,6 +61,9 @@ export async function runVerifyFromIpfs(options: VerifyFromIpfsOptions): Promise
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     writeStderr(message);
+    if (error instanceof IpfsVerifyContentError) {
+      return EXIT_VERIFY_FAILED;
+    }
     return EXIT_USAGE;
   }
 
@@ -93,14 +100,16 @@ async function fetchChainByPrevWalk(headCid: string, fetcher: BlockFetcher): Pro
 
   while (currentCid !== null) {
     if (seen.has(currentCid)) {
-      throw new Error(`cycle detected while walking prev at CID ${currentCid}`);
+      throw new IpfsVerifyContentError(`cycle detected while walking prev at CID ${currentCid}`);
     }
     seen.add(currentCid);
 
     const bytes = await fetcher.fetchBlock(currentCid);
     const computedCid = await computeCidFromCanonicalBytes(bytes);
     if (computedCid !== currentCid) {
-      throw new Error(`fetched block CID mismatch for ${currentCid}: computed ${computedCid}`);
+      throw new IpfsVerifyContentError(
+        `fetched block CID mismatch for ${currentCid}: computed ${computedCid}`
+      );
     }
 
     let parsed: unknown;
@@ -108,12 +117,14 @@ async function fetchChainByPrevWalk(headCid: string, fetcher: BlockFetcher): Pro
       parsed = JSON.parse(new TextDecoder().decode(bytes));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      throw new Error(`invalid record JSON for ${currentCid}: ${message}`);
+      throw new IpfsVerifyContentError(`invalid record JSON for ${currentCid}: ${message}`);
     }
 
     const schema = RecordSchema.safeParse(parsed);
     if (!schema.success) {
-      throw new Error(`invalid record schema for ${currentCid}: ${schema.error.message}`);
+      throw new IpfsVerifyContentError(
+        `invalid record schema for ${currentCid}: ${schema.error.message}`
+      );
     }
 
     reversed.push(schema.data);

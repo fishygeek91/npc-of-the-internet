@@ -25,6 +25,7 @@ OSP soulchain primitives: Zod record schemas, canonical JSON, Ed25519 signing, C
 - `verifyChain(store, opts)` — same rules via `store.iterate()`, then cross-checks `store.head()`. A head mismatch uses rule `forked_head` (message: store head ≠ verified head); duplicate-seq forks also use `forked_head` but originate inside `verifyRecords`.
 - After a mid-chain `schema_violation`, later `seq_gap` / `broken_prev_link` entries may appear as cascade noise; check rule presence rather than assuming a minimal `failures` list.
 | SoulStore | `SoulStore`, `FileSoulStore`, `IpfsSoulStore`, `DualSoulStore`, `HeadInfo`, `AppendResult`, open-option types |
+| Replication | `enqueueReplication`, `ackReplication`, `readReplicationJournal`, `recoverReplicationJournal`, `listPendingReplication`, `listUnackedForTarget`, enqueue/ack types |
 | Errors | `SchemaError`, `VerificationError`, `EncodingError`, `StorageError`, `CorruptionError`, `ConcurrentAppendError`, `ChainMismatchError` |
 
 ## SoulStore
@@ -63,6 +64,14 @@ Local blockstore-backed store using `blockstore-fs` (no helia, no network). Same
 ### DualSoulStore (v0.2 dual-write)
 
 `DualSoulStore.open(fileDir, ipfsDir)` opens both stores. When both are non-empty, differing heads are a fatal `CorruptionError`. `append` writes to `FileSoulStore` first (authoritative), then `IpfsSoulStore`; `head`/`get`/`iterate` read from file. If IPFS append fails after file succeeded, the error propagates (dual-write integrity is not auto-repaired).
+
+`DualSoulStore.openWithRecovery(fileDir, ipfsDir)` runs `FileSoulStore.openWithRecovery` and `IpfsSoulStore.openWithRecovery`, asserts compatible heads, and returns `{ store, truncatedBytes }` (sum of both recoveries).
+
+### Replication queue (T7.1d)
+
+`replication.jsonl` under the IPFS soulchain directory is an append-only journal of enqueue lines `{"cid","kind","enqueued_at"}` and per-target ack lines `{"acked","target","at"}`. `enqueueReplication`, `ackReplication`, `readReplicationJournal`, `recoverReplicationJournal`, `listPendingReplication`, and `listUnackedForTarget` implement the queue. Torn trailing lines throw on plain read; `recoverReplicationJournal` truncates like seq-index recovery.
+
+When `IpfsSoulStoreOpenOptions.replication.enabled` is true, successful appends enqueue the record CID after HEAD is durable; enqueue failures never fail append.
 
 ### Pin manifest and CAR (T7.1c)
 

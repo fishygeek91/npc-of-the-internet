@@ -188,15 +188,20 @@ Credentials via env (`ops/SECRETS.md` entries; Zod-validated at boot, per D2). P
 
 ### 5.4 Volunteer pinners
 
-Published on the Atlas ("Pin the soul" page, later task) and in `spec/osp/ipfs-store.md` appendix:
+Published on the Atlas and in this appendix:
 
-```
-# one-time, and again whenever a new manifest is announced
-curl -LO https://<atlas>/soulchain-latest.car
+```bash
+# Fetch the latest CAR and manifest CID from Atlas (SSH tunnel or public URL when Gate 2 approves)
+curl -LO https://<atlas-host>/soulchain-latest.car
+curl -s https://<atlas-host>/soulchain/manifest
+# → {"manifestCid":"bagu..."} — verify this CID matches the CAR root before pinning
+
 ipfs dag import soulchain-latest.car
-ipfs pin add --recursive <manifest-cid>   # printed by the Atlas next to the CAR
+ipfs pin add --recursive <manifest-cid>   # use manifestCid from /soulchain/manifest
 ipfs pin rm <previous-manifest-cid>       # optional; old records are shared, dedup keeps cost ≈ 0
 ```
+
+Re-run when a new manifest is announced (departure or every ~500 appends).
 
 Sybil/abuse surface: none — pinning is permissionless replication of public signed data; volunteers need no registration and get no protocol role (invitation weight is unrelated).
 

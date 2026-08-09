@@ -7,6 +7,7 @@ import {
   buildAndSignPinManifestForIpfsDir,
   computeCid,
   computeCidFromCanonicalBytes,
+  CorruptionError,
   createRecord,
   encodePublicKey,
   exportSoulchainCar,
@@ -137,6 +138,37 @@ describe("soulchain CAR round-trip", () => {
       }
 
       expect(imported.manifestCid).toBeTruthy();
+    } finally {
+      await rm(importDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects import when expectedManifestCid does not match CAR root", async () => {
+    const store = await IpfsSoulStore.open(sourceDir);
+    const genesis = await createGenesisRecord(soul);
+    await store.append(genesis.record);
+    await store.close();
+
+    const manifest = await buildAndSignPinManifestForIpfsDir(sourceDir, soul.privateKey, {
+      generatedAt: "2026-07-28T00:00:00Z"
+    });
+
+    const carPath = path.join(sourceDir, "soulchain.car");
+    await exportSoulchainCar({
+      ipfsDir: sourceDir,
+      manifest,
+      outPath: carPath
+    });
+
+    const importDir = await makeTempDir("osp-car-import-bad-manifest-");
+    try {
+      await expect(
+        importSoulchainCar({
+          carPathOrBytes: carPath,
+          outDir: importDir,
+          expectedManifestCid: genesis.cid
+        })
+      ).rejects.toThrow(CorruptionError);
     } finally {
       await rm(importDir, { recursive: true, force: true });
     }

@@ -11,7 +11,13 @@ import {
   sessionBindSigningPayload,
   WsDoorSessionClient
 } from "@npc/door-sdk";
-import { encodePublicKey, encodeSignature, FileSoulStore } from "@npc/osp-core";
+import {
+  DualSoulStore,
+  encodePublicKey,
+  encodeSignature,
+  FileSoulStore,
+  type SoulStore
+} from "@npc/osp-core";
 import pino, { type Logger } from "pino";
 
 import { AnthropicBrain } from "./brain/anthropic-brain.js";
@@ -20,8 +26,19 @@ import { loadDaemonConfig, type DaemonConfig } from "./daemon-config.js";
 import { DaemonError } from "./daemon-errors.js";
 import { loadSoulPrivateKeyFromPath } from "./keyring/load-soul-key.js";
 import { SingleKeyKeyring } from "./keyring/single-key-keyring.js";
+import {
+  createAdaptersFromConfig,
+  notifyDepartureForReplication,
+  startReplicationDrain,
+  type ReplicationDrainHandle
+} from "./replication/index.js";
 import { Session } from "./session/session.js";
 import type { Clock, Timer } from "./session/types.js";
+
+/** SoulStore with lifecycle close (all runtime store implementations). */
+export type ClosableSoulStore = SoulStore & {
+  close(): Promise<void>;
+};
 
 /** Injectable dependencies for {@link startResidencyDaemon} (tests and production). */
 export type ResidencyDaemonDeps = {
@@ -30,8 +47,12 @@ export type ResidencyDaemonDeps = {
   loadSoulPrivateKey?: (path: string) => Uint8Array;
   openStore?: (
     dir: string,
-    options: { doorPublicKeys: Readonly<Record<string, Uint8Array>> }
-  ) => Promise<{ store: FileSoulStore; truncatedBytes: number }>;
+    options: {
+      doorPublicKeys: Readonly<Record<string, Uint8Array>>;
+      soulchainIpfsDir?: string;
+      replicationEnabled: boolean;
+    }
+  ) => Promise<{ store: ClosableSoulStore; truncatedBytes: number }>;
   /** When true, do not register SIGTERM/SIGINT handlers. */
   skipSignals?: boolean;
   /** Called after the ready file is written and residency is live. */
@@ -85,14 +106,33 @@ export async function startResidencyDaemon(
 ): Promise<ResidencyDaemonHandle> {
   const logger = deps.logger ?? pino({ name: "npc-runtime" });
   const loadSoulKey = deps.loadSoulPrivateKey ?? loadSoulPrivateKeyFromPath;
-  const openStore =
-    deps.openStore ?? (async (dir, options) => FileSoulStore.openWithRecovery(dir, options));
+  const defaultOpenStore = async (
+    dir: string,
+    options: {
+      doorPublicKeys: Readonly<Record<string, Uint8Array>>;
+      soulchainIpfsDir?: string;
+      replicationEnabled: boolean;
+    }
+  ): Promise<{ store: ClosableSoulStore; truncatedBytes: number }> => {
+    if (options.soulchainIpfsDir !== undefined) {
+      return DualSoulStore.openWithRecovery(dir, options.soulchainIpfsDir, {
+        doorPublicKeys: options.doorPublicKeys,
+        replication: { enabled: options.replicationEnabled }
+      });
+    }
+    return FileSoulStore.openWithRecovery(dir, {
+      doorPublicKeys: options.doorPublicKeys
+    });
+  };
+  const openStore = deps.openStore ?? defaultOpenStore;
 
   const soulPrivateKey = loadSoulKey(config.soulKeyPath);
   const keyring = new SingleKeyKeyring(soulPrivateKey);
 
   const { store, truncatedBytes } = await openStore(config.soulchainDir, {
-    doorPublicKeys: config.doorPublicKeys
+    doorPublicKeys: config.doorPublicKeys,
+    replicationEnabled: config.replication.enabled,
+    ...(config.soulchainIpfsDir !== undefined ? { soulchainIpfsDir: config.soulchainIpfsDir } : {})
   });
   if (truncatedBytes > 0) {
     logger.warn({ truncatedBytes }, "soulchain_recovery_truncated_torn_append");
@@ -128,6 +168,40 @@ export async function startResidencyDaemon(
   /** Counts heartbeat Door/append failures for ops visibility. */
   let heartbeatErrorCount = 0;
 
+  let replicationDrain: ReplicationDrainHandle | undefined;
+  if (config.replication.enabled && config.soulchainIpfsDir !== undefined) {
+    const adapters = createAdaptersFromConfig(config.replication);
+    replicationDrain = startReplicationDrain({
+      ipfsDir: config.soulchainIpfsDir,
+      soulPrivateKey,
+      publishedCarPath: config.replication.publishedCarPath,
+      manifestCidPath: config.replication.manifestCidPath,
+      targets: adapters,
+      intervalMs: config.replication.drainIntervalMs,
+      logger
+    });
+    logger.info(
+      { targetCount: adapters.length, intervalMs: config.replication.drainIntervalMs },
+      "replication_drain_started"
+    );
+  }
+
+  const ipfsDir = config.soulchainIpfsDir;
+  const onDeparted =
+    ipfsDir !== undefined
+      ? (): void => {
+          void notifyDepartureForReplication({
+            ipfsDir,
+            soulPrivateKey,
+            publishedCarPath: config.replication.publishedCarPath,
+            manifestCidPath: config.replication.manifestCidPath
+          }).catch((error: unknown) => {
+            const message = error instanceof Error ? error.message : String(error);
+            logger.warn({ err: message }, "replication_departure_cadence_failed");
+          });
+        }
+      : undefined;
+
   const session = await Session.start({
     store,
     door,
@@ -142,7 +216,8 @@ export async function startResidencyDaemon(
       heartbeatErrorCount += 1;
       const message = error instanceof Error ? error.message : String(error);
       logger.warn({ err: message, stage, heartbeatErrorCount }, "heartbeat_failed");
-    }
+    },
+    ...(onDeparted !== undefined ? { onDeparted } : {})
   });
 
   const sessionSigner = keyring.deriveSessionKey(config.doorId, session.epoch);
@@ -246,6 +321,9 @@ export async function startResidencyDaemon(
     await wsClient.close();
     session.stop();
     await session.drainAppends();
+    if (replicationDrain !== undefined) {
+      await replicationDrain.stop();
+    }
     await store.close();
   };
 
