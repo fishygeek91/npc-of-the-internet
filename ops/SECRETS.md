@@ -53,3 +53,5 @@ Environment variable names and purposes only. **Never commit values.**
 | `AGE_IDENTITY_PATH` | Path to age identity file for decrypt drills (`ops/scripts/key-backup-drill.sh` / restore). Never commit; never mount into containers. |
 | `KEY_BACKUP_RCLONE_REMOTE` | rclone remote path for encrypted key backup (e.g. `ghost-keys:npc/keys`). **Must differ** from `BACKUP_RCLONE_REMOTE`. |
 | `KEY_BACKUP_RCLONE_CONFIG` | Optional path to a separate `rclone.conf` (different B2 app key) for key backup. |
+| `NPC_KEY_DRILL_LIVE` | Set to `1` to force live key-backup drill (decrypt remote `latest/` and cmp host keys). Set to `0` to force offline fixture mode even if `AGE_IDENTITY_PATH` is set. |
+| `NPC_COMPOSE_SECRETS` | When `1`, `ghostc` also loads `ops/compose.secrets.yml` (bind-mounts `*_HOST_PATH` secrets). |

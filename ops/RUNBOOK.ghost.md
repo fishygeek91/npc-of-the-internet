@@ -295,7 +295,10 @@ bucket from the chain remote), then on the host (never in the backup sidecar):
 
 ```bash
 bash ops/scripts/key-backup.sh
-bash ops/scripts/key-backup-drill.sh   # offline proof; also cmp against live keys when pointed at prod
+# Offline fixture proof (CI / first setup):
+bash ops/scripts/key-backup-drill.sh
+# Live verify against host keys + remote latest/ (needs AGE_IDENTITY_PATH):
+NPC_KEY_DRILL_LIVE=1 bash ops/scripts/key-backup-drill.sh
 ```
 
 Keep the age identity (`AGE_IDENTITY_PATH`) offline (USB / password manager),

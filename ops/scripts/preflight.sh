@@ -2,6 +2,7 @@
 # Ghost ops preflight (#72): fail fast on placeholder .env, /tmp custody paths,
 # pubkey mismatches, unreachable rclone remote, or invalid compose config.
 # Requires bash ≥ 3.2 (no associative arrays).
+# Env file format: KEY=value only — no quotes, no `export` prefix (dotenv-simple).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -94,6 +95,29 @@ for key in ANTHROPIC_API_KEY_HOST_PATH DISCORD_BOT_TOKEN_HOST_PATH; do
   fi
 done
 
+# Exactly one of NAME or NAME_FILE for path-based secrets (matches package loaders).
+assert_exactly_one_secret() {
+  local name="$1"
+  local file_name="$2"
+  local direct file_path
+  direct="$(env_get "$name")"
+  file_path="$(env_get "$file_name")"
+  if [[ -n "$direct" && -n "$file_path" ]]; then
+    die "set only one of ${name} or ${file_name} (comment out the unused var)"
+  fi
+  if [[ -z "$direct" && -z "$file_path" ]]; then
+    die "${name} or ${file_name} is required"
+  fi
+}
+assert_exactly_one_secret ANTHROPIC_API_KEY ANTHROPIC_API_KEY_FILE
+assert_exactly_one_secret DISCORD_BOT_TOKEN DISCORD_BOT_TOKEN_FILE
+
+key_remote="$(env_get KEY_BACKUP_RCLONE_REMOTE)"
+chain_remote="$(env_get BACKUP_RCLONE_REMOTE)"
+if [[ -n "$key_remote" && -n "$chain_remote" && "$key_remote" == "$chain_remote" ]]; then
+  die "KEY_BACKUP_RCLONE_REMOTE must differ from BACKUP_RCLONE_REMOTE"
+fi
+
 command -v node >/dev/null 2>&1 || die "node not found on PATH"
 command -v docker >/dev/null 2>&1 || die "docker not found on PATH"
 command -v rclone >/dev/null 2>&1 || die "rclone not found on PATH"
@@ -144,10 +168,10 @@ rclone_conf_dir="$(env_get RCLONE_CONFIG_HOST_PATH)"
 rclone_conf="${rclone_conf_dir}/rclone.conf"
 [[ -r "$rclone_conf" ]] || die "rclone.conf not readable at ${rclone_conf}"
 
-remote_name="${rclone_remote%%:*}"
-log "checking rclone remote ${remote_name}"
-RCLONE_CONFIG="$rclone_conf" rclone lsd "${remote_name}:" >/dev/null 2>&1 || \
-  die "rclone remote unreachable: ${remote_name}: (fix rclone.conf / credentials)"
+# Probe the configured path (not the account root) so bucket-scoped B2 app keys work.
+log "checking rclone remote ${rclone_remote}"
+RCLONE_CONFIG="$rclone_conf" rclone lsjson --max-depth 1 "$rclone_remote" >/dev/null 2>&1 || \
+  die "rclone remote unreachable: ${rclone_remote} (fix rclone.conf / credentials)"
 
 log "validating compose config"
 docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" config >/dev/null || \
