@@ -1,5 +1,22 @@
 # @npc/door-sdk
 
+## 0.2.0
+
+### Patch Changes
+
+- d8d7e36: Verify cosign session binding and signatures before Discord review-gate posts (fixes unauthenticated attacker text in host channel, #65).
+- 019ff29: Harden Door protocol: arrival epoch replay/supersession + issued_at skew, HTTP body size cap (413), client verifies Door response signatures, WS closes on depart/supersede (#66).
+- Updated dependencies [6a5d6ac]
+- Updated dependencies [3f36562]
+- Updated dependencies [5782dc6]
+- Updated dependencies [2c7f13a]
+- Updated dependencies [eb91666]
+- Updated dependencies [b9b96f6]
+- Updated dependencies [cb20020]
+- Updated dependencies [403982e]
+- Updated dependencies [de4ec18]
+  - @npc/osp-core@0.2.0
+
 ## 0.1.0
 
 ### Minor Changes

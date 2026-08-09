@@ -1,5 +1,11 @@
 # @npc/immune
 
+## 0.2.0
+
+### Patch Changes
+
+- 3dcf737: Ops hardening (#72): immune NFKC/format-char normalize + bare base64 screen; door-discord rate-limit channel-first + idle eviction; ANTHROPIC_API_KEY_FILE / DISCORD_BOT_TOKEN_FILE secret loading.
+
 ## 0.1.0
 
 ### Minor Changes
