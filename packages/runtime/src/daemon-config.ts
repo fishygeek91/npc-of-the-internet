@@ -89,7 +89,11 @@ export function loadDaemonConfig(env: NodeJS.ProcessEnv = process.env): DaemonCo
     brain = loadBrainConfig(env);
   } catch (error) {
     if (error instanceof BrainError) {
-      const envVar = error.message.includes("ANTHROPIC_API_KEY") ? "ANTHROPIC_API_KEY" : undefined;
+      const envVar = error.message.includes("ANTHROPIC_API_KEY_FILE")
+        ? "ANTHROPIC_API_KEY_FILE"
+        : error.message.includes("ANTHROPIC_API_KEY")
+          ? "ANTHROPIC_API_KEY"
+          : undefined;
       throw new DaemonError(error.message, "invalid_config", envVar);
     }
     throw error;

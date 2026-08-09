@@ -5,7 +5,7 @@ export type { DiscordDoorConfig } from "./config.js";
 export { DiscordDoorError, operatorNotice } from "./errors.js";
 export { loadDoorKeypairFromPath } from "./load-door-key.js";
 export { DualRateLimiter, TokenBucket } from "./rate-limit.js";
-export type { RateClock } from "./rate-limit.js";
+export type { DualRateLimiterOptions, RateClock } from "./rate-limit.js";
 export {
   ReviewGate,
   APPROVE_EMOJI,

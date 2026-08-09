@@ -1,4 +1,5 @@
 import { collectInjectionCategories } from "./injection.js";
+import { normalizeScreenText } from "./normalize.js";
 import { collectPiiCategories } from "./pii.js";
 import type { ScreenCategory, ScreenOptions, ScreenResult } from "./types.js";
 
@@ -21,9 +22,10 @@ function orderCategories(found: readonly ScreenCategory[]): ScreenCategory[] {
  * Pure: no I/O, time, randomness, or logging. Results and errors carry categories only.
  */
 export function screenText(text: string, opts?: ScreenOptions): ScreenResult {
+  const normalized = normalizeScreenText(text);
   const allowlist = opts?.allowlist;
-  const piiCategories = collectPiiCategories(text, allowlist);
-  const injectionCategories = collectInjectionCategories(text);
+  const piiCategories = collectPiiCategories(normalized, allowlist);
+  const injectionCategories = collectInjectionCategories(normalized);
   const categories = orderCategories([...piiCategories, ...injectionCategories]);
 
   if (categories.length === 0) {

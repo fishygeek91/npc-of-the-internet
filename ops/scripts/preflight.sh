@@ -1,0 +1,156 @@
+#!/usr/bin/env bash
+# Ghost ops preflight (#72): fail fast on placeholder .env, /tmp custody paths,
+# pubkey mismatches, unreachable rclone remote, or invalid compose config.
+# Requires bash ≥ 3.2 (no associative arrays).
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+ENV_FILE="${NPC_ENV_FILE:-${REPO_ROOT}/ops/.env}"
+ENV_EXAMPLE="${REPO_ROOT}/ops/.env.example"
+COMPOSE_FILE="${REPO_ROOT}/ops/compose.ghost.yml"
+KEYS_HELPER="${SCRIPT_DIR}/preflight-keys.mjs"
+
+log() {
+  echo "[preflight] $*"
+}
+
+die() {
+  echo "[preflight] ERROR: $*" >&2
+  exit 1
+}
+
+# Read KEY from a dotenv-style file (first match). Prints value without trailing newline issues.
+env_lookup() {
+  local file="$1"
+  local key="$2"
+  local line
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    case "$line" in
+      \#*|"") continue ;;
+    esac
+    if [[ "$line" == "${key}="* ]]; then
+      printf '%s' "${line#${key}=}"
+      return 0
+    fi
+  done <"$file"
+  return 1
+}
+
+env_get() {
+  local key="$1"
+  local value=""
+  value="$(env_lookup "$ENV_FILE" "$key" || true)"
+  printf '%s' "$value"
+}
+
+example_get() {
+  local key="$1"
+  local value=""
+  value="$(env_lookup "$ENV_EXAMPLE" "$key" || true)"
+  printf '%s' "$value"
+}
+
+[[ -f "$ENV_FILE" ]] || die "missing env file: ${ENV_FILE} (copy ops/.env.example → ops/.env)"
+[[ -f "$ENV_EXAMPLE" ]] || die "missing ${ENV_EXAMPLE}"
+[[ -f "$COMPOSE_FILE" ]] || die "missing ${COMPOSE_FILE}"
+
+# Secret / identity / path keys that must not equal .env.example (plan decision 11).
+COMPARE_KEYS=(
+  ANTHROPIC_API_KEY
+  DISCORD_BOT_TOKEN
+  DISCORD_GUILD_ID
+  DISCORD_CHANNEL_ID
+  DISCORD_OPERATOR_IDS
+  SOUL_PUBLIC_KEY
+  ATLAS_DOOR_PUBKEYS
+  SOUL_KEY_HOST_PATH
+  DOOR_KEY_HOST_PATH
+  RCLONE_CONFIG_HOST_PATH
+  BACKUP_RCLONE_REMOTE
+)
+
+for key in "${COMPARE_KEYS[@]}"; do
+  actual="$(env_get "$key")"
+  example="$(example_get "$key")"
+  if [[ -n "$actual" && -n "$example" && "$actual" == "$example" ]]; then
+    die "${key} still equals ops/.env.example default — replace before launch"
+  fi
+done
+
+PATH_KEYS=(SOUL_KEY_HOST_PATH DOOR_KEY_HOST_PATH RCLONE_CONFIG_HOST_PATH)
+for key in "${PATH_KEYS[@]}"; do
+  value="$(env_get "$key")"
+  [[ -n "$value" ]] || die "${key} is unset"
+  if [[ "$value" == /tmp/* ]]; then
+    die "${key}=${value} starts with /tmp (not persistent custody)"
+  fi
+done
+
+for key in ANTHROPIC_API_KEY_HOST_PATH DISCORD_BOT_TOKEN_HOST_PATH; do
+  value="$(env_get "$key")"
+  if [[ -n "$value" && "$value" == /tmp/* ]]; then
+    die "${key}=${value} starts with /tmp"
+  fi
+done
+
+command -v node >/dev/null 2>&1 || die "node not found on PATH"
+command -v docker >/dev/null 2>&1 || die "docker not found on PATH"
+command -v rclone >/dev/null 2>&1 || die "rclone not found on PATH"
+
+[[ -f "${REPO_ROOT}/packages/osp-core/dist/index.js" ]] || \
+  die "build @npc/osp-core first (pnpm --filter @npc/osp-core build)"
+
+soul_key_path="$(env_get SOUL_KEY_HOST_PATH)"
+door_key_path="$(env_get DOOR_KEY_HOST_PATH)"
+[[ -r "$soul_key_path" ]] || die "SOUL_KEY_HOST_PATH not readable: ${soul_key_path}"
+[[ -r "$door_key_path" ]] || die "DOOR_KEY_HOST_PATH not readable: ${door_key_path}"
+
+derived_soul="$(node "$KEYS_HELPER" soul "$soul_key_path")" || die "failed to derive soul public key"
+env_soul="$(env_get SOUL_PUBLIC_KEY)"
+[[ -n "$env_soul" ]] || die "SOUL_PUBLIC_KEY is unset"
+if [[ "$derived_soul" != "$env_soul" ]]; then
+  die "SOUL_PUBLIC_KEY does not match public key derived from ${soul_key_path}"
+fi
+
+derived_door="$(node "$KEYS_HELPER" door "$door_key_path")" || die "failed to derive door public key"
+guild_id="$(env_get DISCORD_GUILD_ID)"
+[[ -n "$guild_id" ]] || die "DISCORD_GUILD_ID is unset"
+door_id="discord:${guild_id}"
+atlas_bindings="$(env_get ATLAS_DOOR_PUBKEYS)"
+[[ -n "$atlas_bindings" ]] || die "ATLAS_DOOR_PUBKEYS is unset"
+
+found_binding=""
+old_ifs="$IFS"
+IFS=','
+# shellcheck disable=SC2086
+set -- $atlas_bindings
+IFS="$old_ifs"
+for part in "$@"; do
+  trimmed="$(printf '%s' "$part" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+  if [[ "$trimmed" == "${door_id}="* ]]; then
+    found_binding="${trimmed#${door_id}=}"
+    break
+  fi
+done
+[[ -n "$found_binding" ]] || die "ATLAS_DOOR_PUBKEYS missing binding for ${door_id}"
+if [[ "$found_binding" != "$derived_door" ]]; then
+  die "ATLAS_DOOR_PUBKEYS binding for ${door_id} does not match ${door_key_path}"
+fi
+
+rclone_remote="$(env_get BACKUP_RCLONE_REMOTE)"
+[[ -n "$rclone_remote" ]] || die "BACKUP_RCLONE_REMOTE is unset"
+rclone_conf_dir="$(env_get RCLONE_CONFIG_HOST_PATH)"
+rclone_conf="${rclone_conf_dir}/rclone.conf"
+[[ -r "$rclone_conf" ]] || die "rclone.conf not readable at ${rclone_conf}"
+
+remote_name="${rclone_remote%%:*}"
+log "checking rclone remote ${remote_name}"
+RCLONE_CONFIG="$rclone_conf" rclone lsd "${remote_name}:" >/dev/null 2>&1 || \
+  die "rclone remote unreachable: ${remote_name}: (fix rclone.conf / credentials)"
+
+log "validating compose config"
+docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" config >/dev/null || \
+  die "docker compose config failed for ${COMPOSE_FILE}"
+
+log "OK"

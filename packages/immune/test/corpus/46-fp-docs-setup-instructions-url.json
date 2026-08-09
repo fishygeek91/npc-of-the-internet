@@ -1,0 +1,4 @@
+{
+  "text": "See https://docs.example.com/setup-instructions for details.",
+  "expect": ["injection.url_payload"]
+}

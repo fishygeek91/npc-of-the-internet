@@ -1,3 +1,7 @@
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { describe, expect, it, vi } from "vitest";
 
 import { AnthropicBrain } from "../src/brain/anthropic-brain.js";
@@ -31,6 +35,41 @@ describe("loadBrainConfig", () => {
   it("throws BrainError when API key is missing", () => {
     expect(() => loadBrainConfig({})).toThrow(BrainError);
     expect(() => loadBrainConfig({})).toThrow(/ANTHROPIC_API_KEY is required/);
+  });
+
+  it("loads API key from ANTHROPIC_API_KEY_FILE", () => {
+    const dir = mkdtempSync(join(tmpdir(), "npc-brain-key-"));
+    const keyPath = join(dir, "api-key");
+    writeFileSync(keyPath, "  sk-from-file  \n");
+
+    const config = loadBrainConfig({ ANTHROPIC_API_KEY_FILE: keyPath });
+    expect(config.apiKey).toBe("sk-from-file");
+  });
+
+  it("throws when both ANTHROPIC_API_KEY and ANTHROPIC_API_KEY_FILE are set", () => {
+    expect(() =>
+      loadBrainConfig({
+        ANTHROPIC_API_KEY: "sk-direct",
+        ANTHROPIC_API_KEY_FILE: "/tmp/key"
+      })
+    ).toThrow(BrainError);
+    expect(() =>
+      loadBrainConfig({
+        ANTHROPIC_API_KEY: "sk-direct",
+        ANTHROPIC_API_KEY_FILE: "/tmp/key"
+      })
+    ).toThrow(/set only one of ANTHROPIC_API_KEY or ANTHROPIC_API_KEY_FILE/);
+  });
+
+  it("throws when ANTHROPIC_API_KEY_FILE points to an empty file", () => {
+    const dir = mkdtempSync(join(tmpdir(), "npc-brain-key-"));
+    const keyPath = join(dir, "empty-key");
+    writeFileSync(keyPath, "   \n");
+
+    expect(() => loadBrainConfig({ ANTHROPIC_API_KEY_FILE: keyPath })).toThrow(BrainError);
+    expect(() => loadBrainConfig({ ANTHROPIC_API_KEY_FILE: keyPath })).toThrow(
+      /ANTHROPIC_API_KEY_FILE at .+ is empty/
+    );
   });
 });
 

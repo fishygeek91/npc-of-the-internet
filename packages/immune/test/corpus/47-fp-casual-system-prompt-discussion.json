@@ -1,0 +1,4 @@
+{
+  "text": "We talked about system prompt engineering today.",
+  "expect": ["injection.instruction"]
+}

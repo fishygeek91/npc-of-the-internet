@@ -2,6 +2,7 @@
 export const packageName = "@npc/immune";
 
 export { screenText } from "./screen.js";
+export { normalizeScreenText } from "./normalize.js";
 
 export type {
   ScreenCategory,

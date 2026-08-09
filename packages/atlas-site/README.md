@@ -54,7 +54,7 @@ Workflow: [`.github/workflows/deploy-atlas-site.yml`](../../.github/workflows/de
 
 1. In the GitHub repo: **Settings → Pages → Build and deployment → Source: GitHub Actions**.
 2. On push to `main` (or `workflow_dispatch`), CI builds from the fixture chain with `ATLAS_SITE_BASE=/npc-of-the-internet/` and deploys via `actions/deploy-pages`.
-3. Until Pages is enabled, the deploy job is `continue-on-error: true` so main stays green; you can also run the workflow manually after enabling Pages.
+3. Until Pages is enabled, the deploy job soft-fails (`continue-on-error` when repo variable `PAGES_ENABLED` is not `true`) so main stays green. After enabling Pages, set **Settings → Secrets and variables → Actions → Variables → `PAGES_ENABLED=true`** so deploy failures are hard errors.
 
 ## Tests
 

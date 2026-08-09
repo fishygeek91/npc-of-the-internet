@@ -13,7 +13,8 @@ Discord Door adapter: one guild channel becomes a Door. Wraps `@npc/door-sdk` `D
 
 | Variable | Required | Purpose |
 |----------|----------|---------|
-| `DISCORD_BOT_TOKEN` | yes | Bot token |
+| `DISCORD_BOT_TOKEN` | yes* | Bot token (direct) |
+| `DISCORD_BOT_TOKEN_FILE` | yes* | Path to file containing the bot token (trimmed) |
 | `DISCORD_GUILD_ID` | yes | Bound guild (also forms `door_id` = `discord:<guild-id>`) |
 | `DISCORD_CHANNEL_ID` | yes | Bound text channel |
 | `DISCORD_OPERATOR_IDS` | yes | Comma-separated operator user ids |
@@ -24,6 +25,8 @@ Discord Door adapter: one guild channel becomes a Door. Wraps `@npc/door-sdk` `D
 | `DOOR_HTTP_HOST` / `DOOR_HTTP_PORT` | no | Door REST + WebSocket session listen (default `127.0.0.1:9090`; WS path `/door/session`) |
 | `DISCORD_USER_RATE_PER_MIN` / `DISCORD_USER_BURST` | no | Per-user inbound token bucket |
 | `DISCORD_CHANNEL_RATE_PER_MIN` / `DISCORD_CHANNEL_BURST` | no | Per-channel inbound token bucket |
+
+\* Set exactly one of `DISCORD_BOT_TOKEN` or `DISCORD_BOT_TOKEN_FILE` (non-empty).
 
 See `ops/SECRETS.md` for secret names only.
 

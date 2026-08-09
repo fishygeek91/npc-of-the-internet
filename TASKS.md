@@ -220,6 +220,12 @@ Each task lists **Deps**, **Deliverables**, and **Acceptance** (how a reviewer v
 - Acceptance: Tests per finding; read-only guarantee tests green; `pnpm check` green.
 - Notes: Agent: Cursor Grok 4.5 Maestro, 2026-08-08. Zero-dep marked renderer escapes raw HTML + strips dangerous URL schemes; journal page title `Journal — {door_id} epoch {epoch}`; 503 message fixed + unreadable snapshots uncached; sleep→sleeping; `/journals` paginated like `/records`; `@fastify/cors` GET; `recordVerified` fail-closed. CID memoization left as non-goal.
 
+### Bug #72 ✅ Ops hardening + immune normalize + rate-limit (Cursor Grok 4.5 Maestro, 2026-08-08)
+- Deps: Bug #63, Bug #64, T3.1, T4.2, T6.1
+- Deliverables: compose.ghost mem_limit/logging/lockdown/healthchecks/`depends_on: service_healthy`; age-encrypted key backup + drill (separate B2 remote); `preflight.sh` + `ghostc` wrapper; CI concurrency/dependabot/audit/trivy/SHA-pin/Pages gate; `ANTHROPIC_API_KEY_FILE` / `DISCORD_BOT_TOKEN_FILE`; immune NFKC+Cf strip + bare base64 + FP corpus; door-discord rate-limit channel-first + idle eviction.
+- Acceptance: `docker compose config` valid with hardening; drills green; corpus tests green; `pnpm check` green.
+- Notes: Agent: Cursor Grok 4.5 Maestro, 2026-08-08. age (not GPG) for key backup; Door health via GET :9090 (404 OK); FP corpus documents current fail categories (T7.4 tighten later); backup.ok age healthcheck closes #63 deferral.
+
 ## Phase 7 — Post-Ghost (v0.2/0.3 — spec first, then build)
 
 These are sequenced but intentionally coarser; split them into T-numbered subtasks (same format) when their phase begins.

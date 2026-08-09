@@ -4,7 +4,9 @@ Environment variable names and purposes only. **Never commit values.**
 
 | Name | Purpose |
 |------|---------|
-| `ANTHROPIC_API_KEY` | Anthropic API key for `AnthropicBrain` (runtime LLM completions). |
+| `ANTHROPIC_API_KEY` | Anthropic API key for `AnthropicBrain` (runtime LLM completions). Exactly one of this or `ANTHROPIC_API_KEY_FILE`. |
+| `ANTHROPIC_API_KEY_FILE` | In-container path to a file containing the Anthropic API key (trimmed). Prefer over env so the token is not visible in `docker inspect`. |
+| `ANTHROPIC_API_KEY_HOST_PATH` | Host path bind-mounted read-only to `/run/secrets/anthropic_api_key` when using file-based secrets (compose override / documented mount). |
 | `NPC_BRAIN_MODEL` | Claude model id for Brain completions (default: `claude-sonnet-4-20250514`). |
 | `NPC_BRAIN_MAX_TOKENS` | Default max output tokens per Brain completion (default: `1024`). |
 | `NPC_BRAIN_TIMEOUT_MS` | HTTP timeout in milliseconds for Anthropic API requests (default: `60000`). |
@@ -21,7 +23,9 @@ Environment variable names and purposes only. **Never commit values.**
 | `ATLAS_PORT` | TCP port for the Atlas read API HTTP server (default: `8787`). |
 | `ATLAS_DOOR_PUBKEYS` | Comma-separated `doorId=base64url` Ed25519 **public** door key bindings for cosignature verification (public config, not secret). Example: `discord:123456789012345678=keyB64`. Passed to runtime for chain verify and to atlas-api. |
 | `CURRENT_DOOR_ID` | Door id of the active residency (public config, not secret). Ghost compose derives `discord:${DISCORD_GUILD_ID}`; must match the Door hello response. |
-| `DISCORD_BOT_TOKEN` | Discord bot token for `@npc/door-discord`. |
+| `DISCORD_BOT_TOKEN` | Discord bot token for `@npc/door-discord`. Exactly one of this or `DISCORD_BOT_TOKEN_FILE`. |
+| `DISCORD_BOT_TOKEN_FILE` | In-container path to a file containing the Discord bot token (trimmed). |
+| `DISCORD_BOT_TOKEN_HOST_PATH` | Host path bind-mounted read-only to `/run/secrets/discord_bot_token` when using file-based secrets. |
 | `DOOR_KEY_PATH` | In-container path to the Door Ed25519 private key file (compose sets `/run/keys/door.key`). |
 | `SOUL_PUBLIC_KEY` | Wanderer soul Ed25519 public key (base64url) for Door session verification (public config). |
 | `DISCORD_GUILD_ID` | Discord guild snowflake bound to this Door (public config). |
@@ -42,5 +46,10 @@ Environment variable names and purposes only. **Never commit values.**
 | `BACKUP_DEBOUNCE_SEC` | Seconds to wait after a change before syncing (default `5`). |
 | `BACKUP_INTERVAL_SEC` | Periodic safety sync interval in seconds (default `300`). |
 | `ALLOW_CHAIN_SHRINK` | Ops override: set to `1` only intentionally to allow uploading a smaller `chain.jsonl` than the remote tip. Default unset (refuse size regression). |
-| `BACKUP_OK_PATH` | Filesystem path touched after a successful backup cycle (default `/tmp/backup.ok`). Healthcheck consumer: issue #72. |
+| `BACKUP_OK_PATH` | Filesystem path touched after a successful backup cycle (default `/tmp/backup.ok`). Ghost compose healthcheck requires the marker to be newer than 900s. |
 | `RCLONE_CONFIG` | In-container path to rclone config file (compose sets `/config/rclone/rclone.conf`). |
+| `RCLONE_CACHE_DIR` | rclone cache directory (compose sets `/tmp/rclone-cache` under tmpfs for read-only rootfs). |
+| `AGE_RECIPIENT` | age recipient public key for encrypted `soul.key`/`door.key` backup (`ops/scripts/key-backup.sh`). Host-only. |
+| `AGE_IDENTITY_PATH` | Path to age identity file for decrypt drills (`ops/scripts/key-backup-drill.sh` / restore). Never commit; never mount into containers. |
+| `KEY_BACKUP_RCLONE_REMOTE` | rclone remote path for encrypted key backup (e.g. `ghost-keys:npc/keys`). **Must differ** from `BACKUP_RCLONE_REMOTE`. |
+| `KEY_BACKUP_RCLONE_CONFIG` | Optional path to a separate `rclone.conf` (different B2 app key) for key backup. |
