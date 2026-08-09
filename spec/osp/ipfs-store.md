@@ -50,7 +50,7 @@ dag-json decoders interpret a JSON map whose **only** key is `"/"` as a link (an
 |---|---|---|
 | **G1** | #67 (append-time verification + canonical-bytes enforcement) merged | Otherwise the second store bakes in the "append accepts unverifiable records / non-canonical bytes brick" contract twice |
 | **G2** | #79 store extraction (at minimum: blob-write, head-pointer, lock primitives extracted from `FileSoulStore`) merged | `IpfsSoulStore` reuses these primitives instead of duplicating fsync/lock/recovery logic |
-| **G3 (E1)** | Privacy & erasure decision (§7) recorded | Public replication of `memory` records is irreversible; the decision must precede the first push |
+| **G3 (E1)** | Privacy & erasure decision (§7) recorded — **(b)** in [`privacy.md`](./privacy.md) | Public replication of `memory` records is irreversible; the decision must precede the first push |
 
 Phases A–B (§8) may proceed after G1+G2. Phase D (public replication) additionally requires G3.
 
@@ -222,14 +222,18 @@ Sybil/abuse surface: none — pinning is permissionless replication of public si
 
 ## 7. E1 — Privacy & erasure gate (normative, blocks Phase D)
 
-Ghost's chain contains distilled `memory` text (and journals) derived from real people's messages. Today it lives on one VPS + a private B2 bucket, so deletion is *operationally* possible. **Public IPFS replication removes that option permanently.** Before the first push of any `memory` record, the project must adopt, in writing (a `spec/osp/privacy.md` + charter update), exactly one of:
+Ghost's chain contains distilled `memory` text (and journals) derived from real people's messages. Today it lives on one VPS + a private B2 bucket, so deletion is *operationally* possible. **Public IPFS replication removes that option permanently** unless erasure is designed in from the start.
 
-- **(a) Immutability accepted.** Shard text stays on-chain. Requires: strengthened PII screen (beyond the current 3 regexes — this is #T7.4 territory), explicit host-consent language in the Door cosign flow, a published takedown policy that is honest about its limits (unpin ≠ erase, §5.3), and a documented legal-risk acceptance by the operator.
-- **(b) Text-off-chain-by-reference (`osp/0.2`).** `memory.body.text` (and `journal`) move to side blobs; the chain records a blob CID + hash. Erasure = delete/unpin the blob; the chain keeps a verifiable tombstone (hash remains, content gone). Costs: `osp/0.1→0.2` schema bump with migration vectors (per D7 spec-versioning rules), Self-Composer fetch path, cosign semantics over blob bytes, "tombstoned shard" handling in composition, and a WHITEPAPER §3.1/§3.2 wording update in the same PR ("shards are published to the soulchain" becomes "published via the soulchain"; the append-only *identity* claim is unchanged — erasure is itself public and auditable). Under (b), Arweave/cold snapshots (§9) receive envelope blocks only, never text blobs.
+**Decision recorded: (b) — text-off-chain-by-reference (`osp/0.2`), durability by default.** Full policy: [`spec/osp/privacy.md`](./privacy.md). Under (b):
 
-**Recommendation (Claude, reviewer): (b).** It is the only option compatible with both "the soul is public forever" and "a human can make us delete what a bot memorized about them." It also cleanly separates *identity* (permanently pinned envelopes) from *content* (pinned-until-erased blobs) — the chain's integrity never depends on blob availability. Decision is the owner's; either choice unblocks Phase D once recorded.
+- `memory.body.text` (and `journal`) move to **side blobs**; the chain records a blob CID + hash.
+- **Erasure** = delete/unpin the blob from infrastructure we control; the chain keeps a verifiable tombstone (hash remains, content gone). Unpin ≠ erase for volunteer copies already held elsewhere (§5.3) — announcements and policies must be honest about that asymmetry.
+- **Durability by default:** blobs are pinned and retained indefinitely; erasure is an exceptional, on-chain-visible event.
+- Under (b), Arweave/cold snapshots (§9) receive **envelope blocks only**, never text blobs.
 
-Interim rule regardless of choice: Phases A–C are unaffected (local-only). If Phase D ships before E1 is decided, replication MUST be configured to an **empty target set** — the code path exists, nothing leaves the box.
+Schema/format work for `osp/0.2` is tracked in [#119](https://github.com/fishygeek91/npc-of-the-internet/issues/119) (migration vectors per D7, Self-Composer fetch path, cosign semantics over blob bytes, tombstoned-shard handling in composition). WHITEPAPER §3.1/§3.2 and genesis charter are updated in the same gate. The append-only *identity* claim is unchanged — erasure is itself public and auditable.
+
+Phases A–C are unaffected (local-only). Until `#119` lands and operators explicitly configure Phase D replication, replication MUST be configured to an **empty target set** — the code path exists, nothing leaves the box.
 
 ---
 

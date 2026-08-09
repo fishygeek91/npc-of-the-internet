@@ -65,11 +65,11 @@ Each record is a signed, hash-linked entry:
 | `transaction` | Wallet activity |
 | `attestation` | Proof-of-Presence checkpoints |
 
-Records are stored on IPFS/Arweave; the hash chain is anchored periodically to a public chain for tamper-evidence. **The soul is the entity.** Any conforming runtime that loads the soulchain and holds the soul key *is* the Wanderer; anything else is provably an impostor.
+Record **envelopes** are stored on IPFS (and may be snapshotted to Arweave). Under Gate E1 option (b) ([`spec/osp/privacy.md`](spec/osp/privacy.md)), shard and journal **text** lives in erasable side blobs — Arweave receives envelopes only, never text blobs. The hash chain is anchored periodically to a public chain for tamper-evidence. **The soul is the entity.** Any conforming runtime that loads the soulchain and holds the soul key *is* the Wanderer; anything else is provably an impostor.
 
 ### 3.2 Memory distillation
 
-Raw conversations are not stored (privacy). At the end of each residency, the Wanderer distills experience into **memory shards** — short, first-person memories ("The people of server X taught me a word for missing a place you've never been"). Shards are published to the soulchain. Hosts co-sign shards from their residency, attesting they are fair accounts.
+Transcripts may exist during a residency and are destroyed when the residency ends (depart); they are not kept as a long-term archive. At the end of each residency, the Wanderer distills experience into **memory shards** — short, first-person memories ("The people of server X taught me a word for missing a place you've never been"). Shards are published **via** the soulchain; prose is held in side blobs per the privacy policy. Hosts co-sign shards from their residency, attesting they are fair accounts.
 
 ### 3.3 Drift, not fine-tuning
 
