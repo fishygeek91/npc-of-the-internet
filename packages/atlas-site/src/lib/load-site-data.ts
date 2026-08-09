@@ -230,7 +230,19 @@ async function loadSiteDataUncached(env: NodeJS.ProcessEnv): Promise<AtlasSiteDa
   const state = deriveState(snapshot.records, chainVerified);
   const head = await deriveHead(snapshot.records, chainVerified);
   const journey = await deriveJourney(snapshot.records);
-  const journalsResponse = await deriveJournals(snapshot.records, chainVerified);
+  const sideBlobs = snapshot.sideBlobs;
+  const journalsResponse =
+    sideBlobs === undefined
+      ? await deriveJournals(snapshot.records, chainVerified)
+      : await deriveJournals(snapshot.records, chainVerified, undefined, {
+          getSideBlob: async (cid: string): Promise<Uint8Array> => {
+            const bytes = sideBlobs.get(cid);
+            if (bytes === undefined) {
+              throw new Error(`side blob not found for CID ${cid}`);
+            }
+            return bytes;
+          }
+        });
 
   const journals: JournalWithHtml[] = journalsResponse.journals.map((entry) => ({
     ...entry,

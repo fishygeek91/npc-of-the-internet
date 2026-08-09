@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 
-import { createRecord, signCore } from "@npc/osp-core";
+import {
+  OSP_SPEC_V02,
+  contentAddressSideBlob,
+  createRecord,
+  encodeJournalBlob,
+  encodePublicKey,
+  encodeShardTextBlob,
+  signCore
+} from "@npc/osp-core";
 
 import { deriveJournals, deriveRecordsPage, deriveState } from "../src/derive.js";
 import {
@@ -210,5 +218,49 @@ describe("deriveJournals", () => {
     expect(page.journals).toHaveLength(1);
     expect(page.journals[0]?.journal).toBe("JOURNAL_TWO");
     expect(page.per_page).toBe(1);
+  });
+
+  it("marks osp/0.2 journal_cid entries unavailable when no blob resolver is provided", async () => {
+    const genesis = await createRecord({
+      spec: OSP_SPEC_V02,
+      seq: 0,
+      prev: null,
+      type: "genesis",
+      body: {
+        charter: "# Wanderer",
+        soul_pubkey: encodePublicKey(DEFAULT_SOUL.publicKey),
+        created_at: "2026-01-01T00:00:00.000Z"
+      },
+      residency: null,
+      cosigners: [],
+      soulPrivateKey: DEFAULT_SOUL.privateKey
+    });
+
+    const textAddr = await contentAddressSideBlob(encodeShardTextBlob("shard"));
+    const journalAddr = await contentAddressSideBlob(encodeJournalBlob("secret journal"));
+    const shardFields = {
+      spec: OSP_SPEC_V02,
+      seq: 1,
+      prev: genesis.cid,
+      type: "memory" as const,
+      body: {
+        kind: "shard" as const,
+        text_cid: textAddr.cid,
+        text_hash: textAddr.hash,
+        journal_cid: journalAddr.cid,
+        journal_hash: journalAddr.hash,
+        distilled_at: "2026-01-02T01:00:00.000Z"
+      },
+      residency: DEFAULT_RESIDENCY
+    };
+    const shard = await createRecord({
+      ...shardFields,
+      cosigners: [signCore(shardFields, DEFAULT_DOOR.privateKey)],
+      soulPrivateKey: DEFAULT_SOUL.privateKey
+    });
+
+    const result = await deriveJournals([genesis.record, shard.record], true);
+    expect(result.total).toBe(1);
+    expect(result.journals[0]?.journal).toBe("[journal unavailable]");
   });
 });

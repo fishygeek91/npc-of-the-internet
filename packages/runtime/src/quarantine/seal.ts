@@ -1,5 +1,4 @@
 import {
-  OSP_SPEC,
   RecordSchema,
   canonicalize,
   computeCid,
@@ -10,6 +9,7 @@ import {
 } from "@npc/osp-core";
 
 import type { Keyring } from "../keyring/types.js";
+import { RUNTIME_OSP_SPEC } from "../osp-spec.js";
 import { QuarantineError } from "./errors.js";
 
 /**
@@ -24,7 +24,7 @@ export async function sealQuarantineRecord(
 
   const soulBytes = canonicalize(
     soulPayload({
-      spec: OSP_SPEC,
+      spec: RUNTIME_OSP_SPEC,
       seq: fields.seq,
       prev: fields.prev,
       type: fields.type,
@@ -36,7 +36,7 @@ export async function sealQuarantineRecord(
   const soulSignature = encodeSignature(keyring.signWithSoulKey(soulBytes));
 
   const unsignedRecord = {
-    spec: OSP_SPEC,
+    spec: RUNTIME_OSP_SPEC,
     seq: fields.seq,
     prev: fields.prev,
     type: fields.type,

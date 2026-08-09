@@ -18,6 +18,7 @@ export type { Brain, BrainMessage, CompleteOptions } from "./brain/types.js";
 export { ComposeError } from "./compose/errors.js";
 export { composeSelf } from "./compose/compose-self.js";
 export type { ComposedSelf, ComposeSelfOptions, MemoryIndexEntry } from "./compose/compose-self.js";
+export { RUNTIME_OSP_SPEC, SpecCutoverError, assertRuntimeWritableChain } from "./osp-spec.js";
 export { generateJournal } from "./journal/generate-journal.js";
 export { JournalError } from "./journal/errors.js";
 export type { JournalErrorReason } from "./journal/errors.js";

@@ -1,4 +1,11 @@
-import { computeCid, verifyRecords, type OspRecord, type SoulStore } from "@npc/osp-core";
+import {
+  StorageError,
+  computeCid,
+  decodeShardTextBlob,
+  verifyRecords,
+  type OspRecord,
+  type SoulStore
+} from "@npc/osp-core";
 
 import { ComposeError } from "./errors.js";
 import { SYSTEM_TEMPLATE } from "../prompts/composer/system.js";
@@ -18,6 +25,14 @@ type Section = "charter" | "drifts" | "shards";
 const EMPTY_SECTION = "(none yet)";
 
 /**
+ * Visible marker for a tombstoned (or missing-after-erasure) shard.
+ * Must never silently omit the shard from composition.
+ */
+export function erasedMemoryMarker(reason: string): string {
+  return `[memory erased: ${reason}]`;
+}
+
+/**
  * Render the system prompt by substituting template placeholders in a single pass.
  * Replacer-function form keeps `$&` / `{{...}}` in chain content inert.
  */
@@ -30,6 +45,46 @@ function renderSystemPrompt(sections: Record<Section, string>): string {
 
 function joinSection(items: readonly string[]): string {
   return items.length === 0 ? EMPTY_SECTION : items.join("\n");
+}
+
+/** Collect blob_cid → tombstone reason for erased side blobs. */
+function collectTombstoneReasons(records: readonly OspRecord[]): Map<string, string> {
+  const reasons = new Map<string, string>();
+  for (const record of records) {
+    if (record.type === "tombstone") {
+      reasons.set(record.body.blob_cid, record.body.reason);
+    }
+  }
+  return reasons;
+}
+
+/**
+ * Resolve shard display text for composition (inline osp/0.1 or side-blob osp/0.2).
+ */
+async function resolveShardText(
+  store: SoulStore,
+  body: Extract<OspRecord, { type: "memory" }>["body"] & { kind: "shard" },
+  tombstones: ReadonlyMap<string, string>
+): Promise<string> {
+  if ("text" in body) {
+    return body.text;
+  }
+
+  const erasedReason = tombstones.get(body.text_cid);
+  if (erasedReason !== undefined) {
+    return erasedMemoryMarker(erasedReason);
+  }
+
+  try {
+    const bytes = await store.getSideBlob(body.text_cid);
+    return decodeShardTextBlob(bytes);
+  } catch (error) {
+    if (error instanceof StorageError) {
+      // Missing blob without a tombstone — still surface a visible marker (availability).
+      return erasedMemoryMarker("unavailable");
+    }
+    throw error;
+  }
 }
 
 /**
@@ -73,6 +128,8 @@ export async function composeSelf(
     ]);
   }
 
+  const tombstones = collectTombstoneReasons(records);
+
   let charter: string | undefined;
   const driftSummaries: string[] = [];
   const shardTexts: string[] = [];
@@ -87,13 +144,13 @@ export async function composeSelf(
         driftSummaries.push(record.body.summary);
         break;
       case "memory":
-        // osp/0.2 text_cid shards resolve in #119 PR2; Ghost still writes osp/0.1 inline text.
-        if (record.body.kind === "shard" && "text" in record.body) {
-          shardTexts.push(record.body.text);
+        if (record.body.kind === "shard") {
+          const text = await resolveShardText(store, record.body, tombstones);
+          shardTexts.push(text);
           memoryIndex.push({
             cid: await computeCid(record),
             seq: record.seq,
-            text: record.body.text
+            text
           });
         }
         break;

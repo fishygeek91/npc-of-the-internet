@@ -1,4 +1,4 @@
-import { computeCid, isValidCid, type SoulStore } from "@npc/osp-core";
+import { computeCid, decodeShardTextBlob, isValidCid, type SoulStore } from "@npc/osp-core";
 
 import { QuarantineError } from "./errors.js";
 
@@ -16,7 +16,10 @@ export type QuarantineScan = {
   candidates: QuarantineCandidate[];
   rejectedCandidateCids: ReadonlySet<string>;
   committedCandidateCids: ReadonlySet<string>;
-  /** Residencies that already have a committed shard carrying `body.journal`. */
+  /**
+   * Residencies that already have a committed shard carrying an inline `journal`
+   * or osp/0.2 `journal_cid` reference.
+   */
   residenciesWithJournal: ReadonlySet<string>;
 };
 
@@ -50,12 +53,24 @@ export function isCandidateRipe(
 /**
  * Scan the soulchain for quarantine candidates and lifecycle cross-references.
  * Candidates are returned in ascending `seq` order.
+ *
+ * Tombstoned (or otherwise erased) candidate text blobs are skipped — a committed
+ * shard and its candidate share a content-addressed blob, so erasure of the shard
+ * prose must not brick every subsequent scan.
  */
 export async function scanQuarantineState(store: SoulStore): Promise<QuarantineScan> {
   const candidates: QuarantineCandidate[] = [];
   const rejectedCandidateCids = new Set<string>();
   const committedCandidateCids = new Set<string>();
   const residenciesWithJournal = new Set<string>();
+  const tombstonedBlobCids = new Set<string>();
+
+  // First pass: tombstones (erased blob CIDs) so candidate resolution can skip them.
+  for await (const record of store.iterate()) {
+    if (record.type === "tombstone") {
+      tombstonedBlobCids.add(record.body.blob_cid);
+    }
+  }
 
   for await (const record of store.iterate()) {
     if (record.type !== "memory") {
@@ -70,15 +85,35 @@ export async function scanQuarantineState(store: SoulStore): Promise<QuarantineS
           "invalid_record"
         );
       }
-      // Ghost writes osp/0.1 inline text; osp/0.2 text_cid candidates resolve in #119 PR2.
-      if (!("text" in body)) {
-        continue;
+
+      let text: string;
+      if ("text" in body) {
+        text = body.text;
+      } else if ("text_cid" in body) {
+        if (tombstonedBlobCids.has(body.text_cid)) {
+          // Prose erased (often via the committed shard that shares this CID) — skip.
+          continue;
+        }
+        try {
+          text = decodeShardTextBlob(await store.getSideBlob(body.text_cid));
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "unknown error";
+          throw new QuarantineError(
+            `memory candidate at seq ${String(record.seq)}: cannot resolve text blob: ${message}`,
+            "invalid_record"
+          );
+        }
+      } else {
+        throw new QuarantineError(
+          `memory candidate at seq ${String(record.seq)} has neither text nor text_cid`,
+          "invalid_record"
+        );
       }
 
       candidates.push({
         cid: await computeCid(record),
         seq: record.seq,
-        text: body.text,
+        text,
         proposedAt: body.proposed_at,
         residency: record.residency
       });
@@ -100,7 +135,9 @@ export async function scanQuarantineState(store: SoulStore): Promise<QuarantineS
         assertValidCandidateCid(candidateCid, `shard record at seq ${String(record.seq)}`);
         committedCandidateCids.add(candidateCid);
       }
-      if ("journal" in body && body.journal !== undefined && record.residency !== null) {
+      const hasInlineJournal = "journal" in body && body.journal !== undefined;
+      const hasJournalCid = "journal_cid" in body && body.journal_cid !== undefined;
+      if ((hasInlineJournal || hasJournalCid) && record.residency !== null) {
         residenciesWithJournal.add(record.residency);
       }
     }

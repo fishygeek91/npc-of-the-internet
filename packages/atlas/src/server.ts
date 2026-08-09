@@ -122,7 +122,19 @@ export async function createAtlasServer(config: AtlasConfig): Promise<FastifyIns
       journalsQuery.per_page = perPage;
     }
 
-    const result = await deriveJournals(snap.records, snap.verified, journalsQuery);
+    const sideBlobs = snap.sideBlobs;
+    const result =
+      sideBlobs === undefined
+        ? await deriveJournals(snap.records, snap.verified, journalsQuery)
+        : await deriveJournals(snap.records, snap.verified, journalsQuery, {
+            getSideBlob: async (cid: string): Promise<Uint8Array> => {
+              const bytes = sideBlobs.get(cid);
+              if (bytes === undefined) {
+                throw new Error(`side blob not found for CID ${cid}`);
+              }
+              return bytes;
+            }
+          });
     void reply.send(result);
   });
 

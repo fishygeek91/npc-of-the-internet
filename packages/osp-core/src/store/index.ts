@@ -1,6 +1,7 @@
 export type {
   HeadInfo,
   AppendResult,
+  PutSideBlobResult,
   FileSoulStoreOpenOptions,
   IpfsSoulStoreOpenOptions,
   DualSoulStoreOpenOptions,

@@ -8,7 +8,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { createRecord, encodePublicKey, FileSoulStore } from "@npc/osp-core";
+import { OSP_SPEC_V02, createRecord, encodePublicKey, FileSoulStore } from "@npc/osp-core";
 import {
   FakeBrain,
   FileTranscriptSource,
@@ -43,6 +43,7 @@ async function main(): Promise<void> {
   const head = await store.head();
   if (head === null) {
     const genesis = await createRecord({
+      spec: OSP_SPEC_V02,
       seq: 0,
       prev: null,
       type: "genesis",

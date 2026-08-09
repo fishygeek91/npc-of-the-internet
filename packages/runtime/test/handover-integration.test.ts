@@ -14,7 +14,12 @@ import { Session } from "../src/session/session.js";
 import type { InboundFrame } from "../src/session/types.js";
 import { DoorStub } from "./helpers/door-stub.js";
 import { FakeClock, FakeTimer } from "./helpers/fake-timer.js";
-import { createGenesisRecord, DOOR_ID, fixtureDoorPublicKeys } from "./helpers/fixtures.js";
+import {
+  createGenesisRecord,
+  DOOR_ID,
+  fixtureDoorPublicKeys,
+  resolveMemoryText
+} from "./helpers/fixtures.js";
 import { DOOR, OTHER_DOOR, SOUL } from "./helpers/fixed-keys.js";
 import { MemorySoulStore } from "./helpers/memory-soul-store.js";
 
@@ -248,9 +253,10 @@ describe("handover integration (reside → depart → arrive)", () => {
       const memoryIndex = records.indexOf(candidateRecord);
       expect(memoryIndex).toBeLessThan(departureIndex);
       if (candidateRecord.type === "memory" && candidateRecord.body.kind === "candidate") {
-        expect(candidateRecord.body.text).toBe(shardTexts[index]);
+        expect(await resolveMemoryText(store, candidateRecord)).toBe(shardTexts[index]);
         expect(candidateRecord.cosigners).toEqual([]);
         expect("journal" in candidateRecord.body).toBe(false);
+        expect("journal_cid" in candidateRecord.body).toBe(false);
       }
     }
 

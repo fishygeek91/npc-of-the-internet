@@ -17,6 +17,7 @@ import {
   encodeJournalBlob,
   encodePublicKey,
   encodeShardTextBlob,
+  OSP_SPEC_V01,
   OSP_SPEC_V02,
   signCore,
   type Ed25519Keypair,
@@ -63,9 +64,12 @@ type VectorCase = {
 };
 
 /** Build a signed genesis record. */
-async function createGenesisRecord(soul: Ed25519Keypair, options?: { spec?: typeof OSP_SPEC_V02 }) {
+async function createGenesisRecord(
+  soul: Ed25519Keypair,
+  options?: { spec?: typeof OSP_SPEC_V01 | typeof OSP_SPEC_V02 }
+) {
   return createRecord({
-    spec: options?.spec,
+    spec: options?.spec ?? OSP_SPEC_V01,
     seq: 0,
     prev: null,
     type: "genesis",
@@ -92,14 +96,14 @@ async function createArrivalRecord(
     residency?: string;
     epoch?: number;
     at?: string;
-    spec?: typeof OSP_SPEC_V02;
+    spec?: typeof OSP_SPEC_V01 | typeof OSP_SPEC_V02;
   }
 ) {
   const doorId = options?.doorId ?? DOOR_ID;
   const residency = options?.residency ?? RESIDENCY;
   const epoch = options?.epoch ?? 1;
   const fields = {
-    spec: options?.spec,
+    spec: options?.spec ?? OSP_SPEC_V01,
     seq,
     prev,
     type: "attestation" as const,
@@ -139,6 +143,7 @@ async function createHeartbeatRecord(
   const residency = options?.residency ?? RESIDENCY;
   const epoch = options?.epoch ?? 1;
   const fields = {
+    spec: OSP_SPEC_V01,
     seq,
     prev,
     type: "attestation" as const,
@@ -177,6 +182,7 @@ async function createDepartureRecord(
   const residency = options?.residency ?? RESIDENCY;
   const epoch = options?.epoch ?? 1;
   const fields = {
+    spec: OSP_SPEC_V01,
     seq,
     prev,
     type: "attestation" as const,
@@ -220,6 +226,7 @@ async function createShardRecord(
     body.candidate_cid = candidateCid;
   }
   const fields = {
+    spec: OSP_SPEC_V01,
     seq,
     prev,
     type: "memory" as const,
@@ -326,6 +333,7 @@ async function createCandidateRecord(
   text: string
 ) {
   return createRecord({
+    spec: OSP_SPEC_V01,
     seq,
     prev,
     type: "memory",
@@ -362,6 +370,7 @@ async function createRejectedRecord(
     body.candidate_cid = candidateCid;
   }
   return createRecord({
+    spec: OSP_SPEC_V01,
     seq,
     prev,
     type: "memory",
@@ -381,7 +390,7 @@ async function createDriftRecord(
   options?: { spec?: typeof OSP_SPEC_V02; summary?: string }
 ) {
   return createRecord({
-    spec: options?.spec,
+    spec: options?.spec ?? OSP_SPEC_V01,
     seq,
     prev,
     type: "drift",

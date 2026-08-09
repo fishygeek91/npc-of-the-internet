@@ -7,6 +7,7 @@ import {
   type AppendResult,
   type HeadInfo,
   type OspRecord,
+  type PutSideBlobResult,
   type SoulStore
 } from "@npc/osp-core";
 import { afterEach, describe, expect, it } from "vitest";
@@ -160,6 +161,18 @@ class AfterFirstIterateStore implements SoulStore {
       this.firstIterateDone = true;
       await this.afterFirstIterate();
     }
+  }
+
+  async putSideBlob(bytes: Uint8Array): Promise<PutSideBlobResult> {
+    return this.inner.putSideBlob(bytes);
+  }
+
+  async getSideBlob(cid: string): Promise<Uint8Array> {
+    return this.inner.getSideBlob(cid);
+  }
+
+  async deleteSideBlob(cid: string): Promise<void> {
+    return this.inner.deleteSideBlob(cid);
   }
 }
 

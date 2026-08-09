@@ -1,4 +1,9 @@
-import { computeCid, parseResidency as parseOspResidency, type OspRecord } from "@npc/osp-core";
+import {
+  computeCid,
+  decodeJournalBlob,
+  parseResidency as parseOspResidency,
+  type OspRecord
+} from "@npc/osp-core";
 
 import { AtlasError } from "./errors.js";
 
@@ -77,7 +82,8 @@ const RECORD_TYPES = [
   "decision",
   "transaction",
   "attestation",
-  "sleep"
+  "sleep",
+  "tombstone"
 ] as const;
 
 type RecordType = (typeof RECORD_TYPES)[number];
@@ -317,9 +323,15 @@ export async function deriveRecordsPage(
   };
 }
 
+/** Optional side-blob fetch for osp/0.2 journal_cid resolution. */
+export type DeriveJournalsOptions = {
+  getSideBlob?: (cid: string) => Promise<Uint8Array>;
+};
+
 /**
  * Derive journal entries from memory shard records (newest first).
- * Skips shards without a journal field.
+ * Supports osp/0.1 inline `journal` and osp/0.2 `journal_cid` (via `getSideBlob`).
+ * Tombstoned / missing journal blobs become a visible erased marker string.
  *
  * When `query` is omitted (library / static-site callers), returns the full list
  * with `page: 1` and `per_page` equal to `total` (or `50` when `total` is 0).
@@ -328,9 +340,16 @@ export async function deriveRecordsPage(
 export async function deriveJournals(
   records: readonly OspRecord[],
   verified: boolean,
-  query?: JournalsQuery
+  query?: JournalsQuery,
+  options?: DeriveJournalsOptions
 ): Promise<JournalsResponse> {
   const journals: JournalEntry[] = [];
+  const tombstonedBlobCids = new Set<string>();
+  for (const record of records) {
+    if (record.type === "tombstone") {
+      tombstonedBlobCids.add(record.body.blob_cid);
+    }
+  }
 
   for (let index = records.length - 1; index >= 0; index -= 1) {
     const record = records[index];
@@ -338,14 +357,28 @@ export async function deriveJournals(
       continue;
     }
     const body = record.body;
-    if (!("journal" in body)) {
-      continue;
-    }
-    const journal = body.journal;
-    if (journal === undefined) {
-      continue;
-    }
     if (record.residency === null) {
+      continue;
+    }
+
+    let journal: string | undefined;
+    if ("journal" in body && body.journal !== undefined) {
+      journal = body.journal;
+    } else if ("journal_cid" in body && body.journal_cid !== undefined) {
+      if (tombstonedBlobCids.has(body.journal_cid)) {
+        journal = "[journal erased]";
+      } else if (options?.getSideBlob !== undefined) {
+        try {
+          journal = decodeJournalBlob(await options.getSideBlob(body.journal_cid));
+        } catch {
+          journal = "[journal erased]";
+        }
+      } else {
+        // Misconfigured Atlas (no blob resolver) — surface a marker so operators
+        // can tell this apart from "residency has no journal".
+        journal = "[journal unavailable]";
+      }
+    } else {
       continue;
     }
 

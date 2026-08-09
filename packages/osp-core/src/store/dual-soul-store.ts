@@ -5,7 +5,13 @@ import { CorruptionError, StorageError } from "../errors.js";
 import { FileSoulStore } from "./file-soul-store.js";
 import { IpfsSoulStore } from "./ipfs-soul-store.js";
 
-import type { AppendResult, DualSoulStoreOpenOptions, HeadInfo, SoulStore } from "./types.js";
+import type {
+  AppendResult,
+  DualSoulStoreOpenOptions,
+  HeadInfo,
+  PutSideBlobResult,
+  SoulStore
+} from "./types.js";
 import type { OspRecord } from "../schemas/index.js";
 
 /**
@@ -70,6 +76,32 @@ export class DualSoulStore implements SoulStore {
   async *iterate(): AsyncIterable<OspRecord> {
     this.assertOpen();
     yield* this.fileStore.iterate();
+  }
+
+  /** Dual-write side blob: file first, then IPFS mirror. */
+  async putSideBlob(bytes: Uint8Array): Promise<PutSideBlobResult> {
+    this.assertOpen();
+    const result = await this.fileStore.putSideBlob(bytes);
+    const ipfsResult = await this.ipfsStore.putSideBlob(bytes);
+    if (result.cid !== ipfsResult.cid) {
+      throw new CorruptionError(
+        `dual-write side-blob CID mismatch: file ${result.cid} vs ipfs ${ipfsResult.cid}`
+      );
+    }
+    return result;
+  }
+
+  /** Fetch side blob from the authoritative file store. */
+  async getSideBlob(cid: string): Promise<Uint8Array> {
+    this.assertOpen();
+    return this.fileStore.getSideBlob(cid);
+  }
+
+  /** Delete side blob from both stores (erasure). */
+  async deleteSideBlob(cid: string): Promise<void> {
+    this.assertOpen();
+    await this.fileStore.deleteSideBlob(cid);
+    await this.ipfsStore.deleteSideBlob(cid);
   }
 
   /** Close both backing stores. */

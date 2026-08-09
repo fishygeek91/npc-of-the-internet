@@ -105,4 +105,14 @@ describe("BlobDir", () => {
     const disk = await readFile(path.join(dir, cid));
     expect(disk.equals(Buffer.from(wrongBytes))).toBe(true);
   });
+
+  it("delete removes a blob and is idempotent when missing", async () => {
+    const bytes = canonicalize(SAMPLE_RECORD);
+    const cid = await computeCidFromCanonicalBytes(bytes);
+
+    await blobs.putIdempotent(cid, bytes);
+    await blobs.delete(cid);
+    await expect(blobs.readVerified(cid)).rejects.toThrow(StorageError);
+    await blobs.delete(cid);
+  });
 });

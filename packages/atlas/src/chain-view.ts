@@ -18,6 +18,11 @@ export type ChainSnapshot = {
   /** True when structural read failed — routes should return 503. */
   unreadable?: boolean;
   unreadableMessage?: string;
+  /**
+   * Side-blob bytes keyed by CID (osp/0.2 journal/text blobs found while loading).
+   * Missing CIDs are omitted (tombstoned or unavailable).
+   */
+  sideBlobs?: ReadonlyMap<string, Uint8Array>;
 };
 
 type ChainFingerprint = {
@@ -84,9 +89,36 @@ export class ChainView {
         for await (const record of store.iterate()) {
           records.push(record);
         }
+        // Eager load of referenced side blobs into the snapshot. Fine at Ghost
+        // scale; journals are uncapped so this map grows with chain length —
+        // revisit lazy/fetch-on-demand if Atlas memory becomes an issue.
+        const sideBlobs = new Map<string, Uint8Array>();
+        for (const record of records) {
+          if (record.type !== "memory" || record.body.kind !== "shard") {
+            continue;
+          }
+          const body = record.body;
+          const cids: string[] = [];
+          if ("text_cid" in body) {
+            cids.push(body.text_cid);
+          }
+          if ("journal_cid" in body && body.journal_cid !== undefined) {
+            cids.push(body.journal_cid);
+          }
+          for (const cid of cids) {
+            if (sideBlobs.has(cid)) {
+              continue;
+            }
+            try {
+              sideBlobs.set(cid, await store.getSideBlob(cid));
+            } catch {
+              // Tombstoned or missing — derive paths surface erased markers.
+            }
+          }
+        }
         const verified = store.verification().valid;
         const head = await store.head();
-        return this.storeSnapshot(fingerprint, { records, head, verified });
+        return this.storeSnapshot(fingerprint, { records, head, verified, sideBlobs });
       } finally {
         await store.close();
       }

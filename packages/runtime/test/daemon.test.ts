@@ -3,7 +3,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { Door, HttpDoorServer, type HostPolicy, WsDoorSessionServer } from "@npc/door-sdk";
-import { createRecord, encodeBase64Url, encodePublicKey, FileSoulStore } from "@npc/osp-core";
+import {
+  OSP_SPEC_V02,
+  createRecord,
+  encodeBase64Url,
+  encodePublicKey,
+  FileSoulStore
+} from "@npc/osp-core";
 import pino from "pino";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type WebSocket from "ws";
@@ -48,6 +54,7 @@ async function createDaemonTestEnv(): Promise<DaemonTestEnv> {
     doorPublicKeys: { [DOOR_ID]: DOOR.publicKey }
   });
   const genesis = await createRecord({
+    spec: OSP_SPEC_V02,
     seq: 0,
     prev: null,
     type: "genesis",

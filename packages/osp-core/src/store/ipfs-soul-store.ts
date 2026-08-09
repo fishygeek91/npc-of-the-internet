@@ -31,7 +31,13 @@ import {
   type SeqIndexEntry
 } from "./seq-index.js";
 
-import type { AppendResult, HeadInfo, IpfsSoulStoreOpenOptions, SoulStore } from "./types.js";
+import type {
+  AppendResult,
+  HeadInfo,
+  IpfsSoulStoreOpenOptions,
+  PutSideBlobResult,
+  SoulStore
+} from "./types.js";
 
 const BLOCKS_DIR = "blocks";
 const SEQ_INDEX_FILE = "seq-index.jsonl";
@@ -284,6 +290,49 @@ export class IpfsSoulStore implements SoulStore {
       return null;
     }
     return { cid: this.headInfo.cid, seq: this.headInfo.seq };
+  }
+
+  /**
+   * Store opaque side-blob bytes (osp/0.2 memory text/journal).
+   * Shares the record blockstore; CID-keyed opaque bytes.
+   */
+  async putSideBlob(bytes: Uint8Array): Promise<PutSideBlobResult> {
+    this.assertOpen();
+    if (this.readOnly) {
+      throw new StorageError("IpfsSoulStore is read-only");
+    }
+    const cid = await computeCidFromCanonicalBytes(bytes);
+    await this.putBlockIdempotent(cid, bytes);
+    return { cid };
+  }
+
+  /** Fetch side-blob bytes and verify CID identity. */
+  async getSideBlob(cid: string): Promise<Uint8Array> {
+    this.assertOpen();
+    if (!isValidCid(cid)) {
+      throw new StorageError(`invalid CID format: ${cid}`);
+    }
+    const parsedCid = CID.parse(cid);
+    if (!(await this.blockstore.has(parsedCid))) {
+      throw new StorageError(`side blob not found for CID ${cid}`);
+    }
+    return this.readBlockVerified(cid);
+  }
+
+  /** Remove side-blob bytes (idempotent erasure). */
+  async deleteSideBlob(cid: string): Promise<void> {
+    this.assertOpen();
+    if (this.readOnly) {
+      throw new StorageError("IpfsSoulStore is read-only");
+    }
+    if (!isValidCid(cid)) {
+      throw new StorageError(`invalid CID format: ${cid}`);
+    }
+    const parsedCid = CID.parse(cid);
+    if (!(await this.blockstore.has(parsedCid))) {
+      return;
+    }
+    await this.blockstore.delete(parsedCid);
   }
 
   /** Fetch a record by CID. */

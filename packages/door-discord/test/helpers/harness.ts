@@ -2,7 +2,7 @@ import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { createRecord, encodePublicKey } from "@npc/osp-core";
+import { OSP_SPEC_V02, createRecord, encodePublicKey } from "@npc/osp-core";
 
 import type { DiscordDoorConfig } from "../../src/config.js";
 import { APPROVE_EMOJI } from "../../src/review-gate.js";
@@ -73,6 +73,7 @@ export async function testConfig(
 export async function genesisStore(): Promise<MemorySoulStore> {
   const store = new MemorySoulStore();
   const genesis = await createRecord({
+    spec: OSP_SPEC_V02,
     seq: 0,
     prev: null,
     type: "genesis",

@@ -177,7 +177,7 @@ describe("composeSelf", () => {
     const arrival = await createArrivalRecord(SOUL, DOOR, SESSION, 1, genesis.cid);
     await store.append(arrival.record);
 
-    const shard = await createShardRecord(SOUL, DOOR, 2, arrival.cid, poisonText);
+    const shard = await createShardRecord(SOUL, DOOR, 2, arrival.cid, poisonText, { store });
     await store.append(shard.record);
 
     const { systemPrompt } = await composeSelf(store, {
@@ -207,7 +207,10 @@ describe("composeSelf", () => {
       head: async () => ({
         cid: realHead.cid,
         seq: realHead.seq + 1
-      })
+      }),
+      putSideBlob: (bytes) => store.putSideBlob(bytes),
+      getSideBlob: (cid) => store.getSideBlob(cid),
+      deleteSideBlob: (cid) => store.deleteSideBlob(cid)
     };
 
     let caught: unknown;

@@ -241,7 +241,7 @@ import {
 3. **Operator flag** — `flagCandidate({ store, keyring, candidateCid, clock, category? })` appends a `memory.rejected` referencing the candidate CID (category only). Throws `QuarantineError` with reason `"already_rejected"` if that CID was already flagged.
 4. **Commit** — `commitQuarantinedShards({ store, keyring, door, doorId, epoch, clock, quarantineWindowMs, journalMarkdown? })` promotes ripe, unflagged candidates to cosigned `memory.shard` records. Re-checks for rejection records before each Door cosign and again before seal (TOCTOU). Returns `{ committedCids, ripeningCids, skippedCids, journalAttached }`.
 
-`composeSelf` includes only committed `memory.shard` texts — candidates and rejections are excluded (see fixture B goldens and `test/quarantine-integration.test.ts`).
+`composeSelf` includes only committed `memory.shard` texts — candidates and rejections are excluded (see fixture B goldens and `test/quarantine-integration.test.ts`). Under `osp/0.2`, shard prose lives in SoulStore side blobs (`text_cid`/`text_hash`); tombstoned or missing blobs render as a visible `[memory erased: <reason>]` marker (never silently omitted).
 
 ### v0.1 constraints
 
