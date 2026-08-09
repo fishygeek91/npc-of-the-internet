@@ -116,6 +116,8 @@ jobs:
             file: ops/Dockerfile.door-discord
           - name: atlas-api
             file: ops/Dockerfile.atlas-api
+          - name: backup
+            file: ops/Dockerfile.backup
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
