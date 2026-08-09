@@ -1,5 +1,22 @@
 # @npc/osp-core
 
+## 0.2.0
+
+### Minor Changes
+
+- 3f36562: Add IpfsSoulStore (blockstore-fs) and DualSoulStore with shared conformance and CID identity.
+- 5782dc6: Add pin-manifest + CAR export and osp CLI export-car / manifest / verify --from-ipfs.
+- 2c7f13a: osp/0.2 runtime cutover: SoulStore side blobs, erase+tombstone guards, compose erased marker, Atlas journal blob resolve, migrate CLI + boot guard (#119 PR2)
+- eb91666: osp/0.2 schema: side-blob memory refs, tombstone record type, dual-version verifyChain + migration vectors (#119 PR1)
+- b9b96f6: Add outbound replication queue/drain (Storacha/Filebase CAR upload), DualSoulStore Ghost wiring, and Atlas CAR download hook.
+- 403982e: Bind cosigner verification to residency Door keys; enforce PoP session continuity and presence conflicts in chain verify.
+
+### Patch Changes
+
+- 6a5d6ac: Reject dag-json reserved sole-key "/" objects at create/verify (§0.2); land IPFS store spec as normative with FileSoulStore conformance harness.
+- cb20020: Harden FileSoulStore: verify on append, full writeSync loops, PID-aware recovery locks, load-time canonical bytes, and stricter ISO-UTC / fork_point schemas.
+- de4ec18: Extract BlobDir, FileLock, and fsync helpers from FileSoulStore for reuse by IpfsSoulStore (T7.1). Store-internal modules are re-exported from the store barrel (`@internal`) for in-package SoulStore backends; package-root public API remains FileSoulStore-focused.
+
 ## 0.1.0
 
 ### Minor Changes

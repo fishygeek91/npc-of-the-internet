@@ -1,5 +1,27 @@
 # @npc/door-discord
 
+## 0.2.0
+
+### Patch Changes
+
+- 2c7f13a: osp/0.2 runtime cutover: SoulStore side blobs, erase+tombstone guards, compose erased marker, Atlas journal blob resolve, migrate CLI + boot guard (#119 PR2)
+- d8d7e36: Verify cosign session binding and signatures before Discord review-gate posts (fixes unauthenticated attacker text in host channel, #65).
+- 3dcf737: Ops hardening (#72): immune NFKC/format-char normalize + bare base64 screen; door-discord rate-limit channel-first + idle eviction; ANTHROPIC_API_KEY_FILE / DISCORD_BOT_TOKEN_FILE secret loading.
+- 53d007d: Loud, actionable permission errors when soul/door key files are unreadable (uid/gid 10001 mount contract, #84).
+- Updated dependencies [6a5d6ac]
+- Updated dependencies [3f36562]
+- Updated dependencies [5782dc6]
+- Updated dependencies [2c7f13a]
+- Updated dependencies [eb91666]
+- Updated dependencies [b9b96f6]
+- Updated dependencies [d8d7e36]
+- Updated dependencies [019ff29]
+- Updated dependencies [cb20020]
+- Updated dependencies [403982e]
+- Updated dependencies [de4ec18]
+  - @npc/osp-core@0.2.0
+  - @npc/door-sdk@0.2.0
+
 ## 0.1.0
 
 ### Minor Changes
