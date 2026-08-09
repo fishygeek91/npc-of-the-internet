@@ -374,8 +374,9 @@ export async function deriveJournals(
           journal = "[journal erased]";
         }
       } else {
-        // No blob resolver — skip rather than invent content.
-        continue;
+        // Misconfigured Atlas (no blob resolver) — surface a marker so operators
+        // can tell this apart from "residency has no journal".
+        journal = "[journal unavailable]";
       }
     } else {
       continue;

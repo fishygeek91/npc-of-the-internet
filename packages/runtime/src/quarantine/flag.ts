@@ -1,6 +1,7 @@
 import { isValidCid, type SoulStore } from "@npc/osp-core";
 
 import type { Keyring } from "../keyring/types.js";
+import { assertRuntimeWritableChain } from "../osp-spec.js";
 import type { Clock } from "../session/types.js";
 import { QuarantineError } from "./errors.js";
 import { scanQuarantineState } from "./scan.js";
@@ -24,6 +25,8 @@ export async function flagCandidate(options: FlagCandidateOptions): Promise<void
   if (!isValidCid(options.candidateCid)) {
     throw new QuarantineError(`invalid candidate CID: ${options.candidateCid}`, "invalid_cid");
   }
+
+  await assertRuntimeWritableChain(options.store);
 
   const scan = await scanQuarantineState(options.store);
   const candidate = scan.candidates.find((entry) => entry.cid === options.candidateCid);

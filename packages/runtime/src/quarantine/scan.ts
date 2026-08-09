@@ -53,12 +53,24 @@ export function isCandidateRipe(
 /**
  * Scan the soulchain for quarantine candidates and lifecycle cross-references.
  * Candidates are returned in ascending `seq` order.
+ *
+ * Tombstoned (or otherwise erased) candidate text blobs are skipped — a committed
+ * shard and its candidate share a content-addressed blob, so erasure of the shard
+ * prose must not brick every subsequent scan.
  */
 export async function scanQuarantineState(store: SoulStore): Promise<QuarantineScan> {
   const candidates: QuarantineCandidate[] = [];
   const rejectedCandidateCids = new Set<string>();
   const committedCandidateCids = new Set<string>();
   const residenciesWithJournal = new Set<string>();
+  const tombstonedBlobCids = new Set<string>();
+
+  // First pass: tombstones (erased blob CIDs) so candidate resolution can skip them.
+  for await (const record of store.iterate()) {
+    if (record.type === "tombstone") {
+      tombstonedBlobCids.add(record.body.blob_cid);
+    }
+  }
 
   for await (const record of store.iterate()) {
     if (record.type !== "memory") {
@@ -78,6 +90,10 @@ export async function scanQuarantineState(store: SoulStore): Promise<QuarantineS
       if ("text" in body) {
         text = body.text;
       } else if ("text_cid" in body) {
+        if (tombstonedBlobCids.has(body.text_cid)) {
+          // Prose erased (often via the committed shard that shares this CID) — skip.
+          continue;
+        }
         try {
           text = decodeShardTextBlob(await store.getSideBlob(body.text_cid));
         } catch (error) {

@@ -8,7 +8,7 @@ import {
 
 import type { Keyring } from "../keyring/types.js";
 import { storeJournalBlob, storeShardTextBlob } from "../memory-side-blobs.js";
-import { RUNTIME_OSP_SPEC } from "../osp-spec.js";
+import { assertRuntimeWritableChain, RUNTIME_OSP_SPEC } from "../osp-spec.js";
 import {
   DOOR_PROTOCOL_VERSION,
   cosignCommitSigningPayload,
@@ -60,6 +60,8 @@ export type CommitQuarantineResult = {
 export async function commitQuarantinedShards(
   options: CommitQuarantinedShardsOptions
 ): Promise<CommitQuarantineResult> {
+  await assertRuntimeWritableChain(options.store);
+
   // Capture baseline BEFORE the scan so a flag landing during/after iterate is
   // still visible to scanRejectedCandidateCidsSince (seq > scanHeadSeq).
   const scanHead = await options.store.head();

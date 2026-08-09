@@ -89,6 +89,9 @@ export class ChainView {
         for await (const record of store.iterate()) {
           records.push(record);
         }
+        // Eager load of referenced side blobs into the snapshot. Fine at Ghost
+        // scale; journals are uncapped so this map grows with chain length —
+        // revisit lazy/fetch-on-demand if Atlas memory becomes an issue.
         const sideBlobs = new Map<string, Uint8Array>();
         for (const record of records) {
           if (record.type !== "memory" || record.body.kind !== "shard") {

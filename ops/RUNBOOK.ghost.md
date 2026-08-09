@@ -518,7 +518,35 @@ be added to compose as a fifth service later.
 
 ---
 
-## 9. Routine operations
+## 9. osp/0.2 cutover (required before Ghost runtime after #119)
+
+Ghost runtime **only appends** `osp/0.2` records. Homogeneous `osp/0.1` chains
+still verify and compose for read-only tools, but `Session.start` / quarantine
+commit **refuse to start** with `SpecCutoverError` so the first new append cannot
+poison the chain into a mixed-spec state.
+
+If the VPS soulchain was initialized under `osp/0.1`, migrate **before** deploying
+a runtime that writes `osp/0.2`:
+
+```bash
+# On the host (or a Mac with the chain dir + keys), with Door private keys for
+# every Door that cosigned records on the chain:
+pnpm --filter @npc/osp-cli exec node dist/cli.js migrate --to osp/0.2 /var/lib/npc-ghost/soulchain \
+  --door-private-key "discord:YOUR_GUILD=<door-private-key-base64url>"
+```
+
+- The command rewrites the whole chain (extracts inline `text`/`journal` to side
+  blobs, re-signs under the soul key + Door keys, rebuilds `prev` / evidence CIDs).
+- Original directory is moved to `*.pre-osp-0.2-<timestamp>` beside the new chain.
+- Record CIDs change — any bookmarks or published CIDs from the pre-migration
+  chain do not survive (see `spec/osp/records.md` §Spec migration).
+- Then `osp verify <dir> --door-key …` and restart the stack.
+
+Fresh `osp init` already writes `osp/0.2` genesis — no migrate needed.
+
+---
+
+## 10. Routine operations
 
 **Deploy a new release** (after CI pushes new images for tag `vX.Y.Z`):
 
@@ -543,11 +571,12 @@ behavior, or (post-Gate 2) at the tunnel URL. Until then,
 
 ---
 
-## 10. If something goes wrong
+## 11. If something goes wrong
 
 | Symptom | Likely cause / fix |
 |---|---|
 | Locked out of SSH | Hetzner console → server → "Console" button (web keyboard) |
+| `runtime` restart-looping with `SpecCutoverError` / `soulchain is osp/0.1` | Chain still on `osp/0.1` — run §9 migrate before starting runtime |
 | `runtime` restart-looping forever | `ghostc logs runtime` — usually bad key path, bad `SOUL_PUBLIC_KEY`, or door-discord failing first |
 | `door-discord` up but bot offline in Discord | bad token, or bot not invited to the guild with the right intents |
 | `backup` erroring | `rclone lsd ghost-remote:` on the host — if that fails, fix rclone.conf and `ghostc restart backup` |

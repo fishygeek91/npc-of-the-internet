@@ -18,6 +18,13 @@ export function generateKeypair(): Ed25519Keypair {
 }
 
 /**
+ * Derive the Ed25519 public key for a 32-byte private key.
+ */
+export function publicKeyFromPrivate(privateKey: Uint8Array): Uint8Array {
+  return ed.getPublicKey(privateKey);
+}
+
+/**
  * Sign a message with an Ed25519 private key (64-byte signature).
  */
 export function sign(message: Uint8Array, privateKey: Uint8Array): Uint8Array {

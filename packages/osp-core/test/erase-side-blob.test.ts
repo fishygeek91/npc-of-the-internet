@@ -134,4 +134,87 @@ describe("eraseSideBlob", () => {
       await store.close();
     }
   });
+
+  it("refuses to delete a record CID disguised as blobCid (chain stays intact)", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "erase-guard-record-"));
+    dirs.push(dir);
+
+    const soul = generateKeypair();
+    const door = generateKeypair();
+    const store = await FileSoulStore.open(dir, {
+      doorPublicKeys: { [DOOR_ID]: door.publicKey }
+    });
+
+    try {
+      const genesis = await createRecord({
+        spec: OSP_SPEC_V02,
+        seq: 0,
+        prev: null,
+        type: "genesis",
+        body: {
+          charter: "# Wanderer",
+          soul_pubkey: encodePublicKey(soul.publicKey),
+          created_at: "2026-01-01T00:00:00.000Z"
+        },
+        residency: null,
+        cosigners: [],
+        soulPrivateKey: soul.privateKey
+      });
+      await store.append(genesis.record);
+
+      const textBytes = encodeShardTextBlob("guarded memory");
+      const { cid: textCid, hash: textHash } = await contentAddressSideBlob(textBytes);
+      await store.putSideBlob(textBytes);
+
+      const shardFields = {
+        spec: OSP_SPEC_V02,
+        seq: 1,
+        prev: genesis.cid,
+        type: "memory" as const,
+        body: {
+          kind: "shard" as const,
+          text_cid: textCid,
+          text_hash: textHash,
+          distilled_at: "2026-01-02T01:00:00.000Z"
+        },
+        residency: RESIDENCY
+      };
+      const shard = await createRecord({
+        ...shardFields,
+        cosigners: [signCore(shardFields, door.privateKey)],
+        soulPrivateKey: soul.privateKey
+      });
+      await store.append(shard.record);
+
+      await expect(
+        eraseSideBlob({
+          store,
+          soulPrivateKey: soul.privateKey,
+          targetCid: shard.cid,
+          blobCid: shard.cid,
+          reason: "operator",
+          erasedAt: "2026-01-03T00:00:00.000Z"
+        })
+      ).rejects.toThrow(/not text_cid\/journal_cid/);
+
+      await expect(
+        eraseSideBlob({
+          store,
+          soulPrivateKey: soul.privateKey,
+          targetCid: shard.cid,
+          blobCid: genesis.cid,
+          reason: "operator",
+          erasedAt: "2026-01-03T00:00:00.000Z"
+        })
+      ).rejects.toThrow(/not text_cid\/journal_cid/);
+
+      // Chain records and the real prose blob remain readable.
+      expect(await store.get(shard.cid)).toBeDefined();
+      expect(await store.getSideBlob(textCid)).toEqual(textBytes);
+      const head = await store.head();
+      expect(head?.cid).toBe(shard.cid);
+    } finally {
+      await store.close();
+    }
+  });
 });

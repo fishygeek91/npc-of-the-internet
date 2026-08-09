@@ -7,6 +7,7 @@ import { runExportCar } from "./commands/export-car.js";
 import { runInit } from "./commands/init.js";
 import { runLog } from "./commands/log.js";
 import { runManifest } from "./commands/manifest.js";
+import { runMigrate } from "./commands/migrate.js";
 import { runShow } from "./commands/show.js";
 import { EXIT_USAGE, runVerify } from "./commands/verify.js";
 import { runVerifyFromIpfs } from "./commands/verify-from-ipfs.js";
@@ -16,6 +17,7 @@ const USAGE = `osp — OpenSoul Protocol CLI
 
 Usage:
   osp init <dir> [--charter <path>]
+  osp migrate --to osp/0.2 <dir> [--door-private-key <doorId=base64url>]... [--door-key <doorId=base64url>]...
   osp verify <dir> [--door-key <doorId=base64url>]...
   osp verify --from-ipfs <head-cid> [--gateway <url>] [--door-key <doorId=base64url>]...
   osp manifest <dir> [--soul-key <path>] [--generated-at <iso>] [--prev-manifest <cid>]
@@ -85,6 +87,50 @@ export async function main(argv: readonly string[] = process.argv): Promise<void
         const result = await runInit(initOptions);
         writeStdout(`Soul public key: ${result.publicKey}`);
         writeStdout(`Genesis CID: ${result.genesisCid}`);
+        process.exit(0);
+        break;
+      }
+
+      case "migrate": {
+        const { positionals, values } = parseArgs({
+          args: argv.slice(3),
+          options: {
+            to: { type: "string" },
+            "door-private-key": { type: "string", multiple: true },
+            "door-key": { type: "string", multiple: true }
+          },
+          allowPositionals: true
+        });
+
+        const dir = positionals[0];
+        if (dir === undefined) {
+          usageError("migrate requires a soulchain directory");
+        }
+        if (values.to === undefined) {
+          usageError("migrate requires --to osp/0.2");
+        }
+
+        const doorPrivateRaw = values["door-private-key"];
+        const doorPrivateKeys =
+          doorPrivateRaw === undefined
+            ? undefined
+            : Array.isArray(doorPrivateRaw)
+              ? doorPrivateRaw
+              : [doorPrivateRaw];
+        const doorPublicRaw = values["door-key"];
+        const doorPublicKeys =
+          doorPublicRaw === undefined
+            ? undefined
+            : Array.isArray(doorPublicRaw)
+              ? doorPublicRaw
+              : [doorPublicRaw];
+
+        await runMigrate({
+          dir,
+          to: values.to,
+          ...(doorPrivateKeys === undefined ? {} : { doorPrivateKeys }),
+          ...(doorPublicKeys === undefined ? {} : { doorPublicKeys })
+        });
         process.exit(0);
         break;
       }
@@ -268,6 +314,7 @@ export async function main(argv: readonly string[] = process.argv): Promise<void
   } catch (error) {
     if (
       subcommand === "init" ||
+      subcommand === "migrate" ||
       subcommand === "manifest" ||
       subcommand === "export-car" ||
       subcommand === "verify"

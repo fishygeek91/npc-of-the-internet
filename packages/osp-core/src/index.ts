@@ -30,7 +30,7 @@ export {
   encodeSignature,
   decodeSignature
 } from "./encoding/base64url.js";
-export { generateKeypair, sign, verify } from "./crypto/ed25519.js";
+export { generateKeypair, publicKeyFromPrivate, sign, verify } from "./crypto/ed25519.js";
 export type { Ed25519Keypair } from "./crypto/ed25519.js";
 export {
   CID_RE,
@@ -65,9 +65,13 @@ export type {
   EraseSideBlobOptions,
   EraseSideBlobResult
 } from "./erase-side-blob.js";
+export { migrateChainToV02 } from "./migrate-to-v02.js";
+export type { MigrateChainToV02Options, MigrateChainToV02Result } from "./migrate-to-v02.js";
 export {
   parseDoorPublicKeyBinding,
   parseDoorPublicKeyMap,
+  parseDoorPrivateKeyBinding,
+  parseDoorPrivateKeyMap,
   hasDoorPublicKeys
 } from "./door-keys.js";
 export { verifyRecords, verifyChain } from "./verify-chain.js";

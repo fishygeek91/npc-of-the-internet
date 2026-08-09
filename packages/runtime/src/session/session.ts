@@ -17,6 +17,7 @@ import {
 import type { Brain } from "../brain/types.js";
 import { BrainError } from "../brain/errors.js";
 import { composeSelf } from "../compose/compose-self.js";
+import { assertRuntimeWritableChain } from "../osp-spec.js";
 import { distillTranscripts } from "../distill/distill-transcripts.js";
 import { MemoryTranscriptSource } from "../distill/memory-transcript-source.js";
 import type { CandidateShard, TranscriptLine, TranscriptSource } from "../distill/types.js";
@@ -204,6 +205,9 @@ export class Session {
    * Begin a residency: compose self, append arrival attestation, arm heartbeat timer.
    */
   static async start(options: SessionOptions): Promise<Session> {
+    // Refuse before any append — osp/0.1 chains must be migrated first.
+    await assertRuntimeWritableChain(options.store);
+
     const doorPublicKeys = options.doorPublicKeys;
     const composed = await composeSelf(options.store, {
       ...(doorPublicKeys === undefined ? {} : { doorPublicKeys })
@@ -725,7 +729,10 @@ export class Session {
               const bytes = await this.store.getSideBlob(body.text_cid);
               candidateCidsByText.set(decodeShardTextBlob(bytes), await computeCid(record));
             } catch {
-              // Missing blob — skip mapping; depart may re-append if not recoverable.
+              // Tombstoned/missing blob: cannot dedupe by content. A later depart may
+              // re-append a duplicate candidate for the same prose (edge case after
+              // erasure); acceptable — commit/scan treat the prior candidate as
+              // committed or skip-erased rather than re-promoting erased prose.
             }
           }
           continue;
