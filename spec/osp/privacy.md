@@ -54,6 +54,8 @@ The project does not intend to build a surveillance archive of private individua
 
 Defensible phrasing (aligns with ARCHITECTURE and #75 A.4): transcripts are not “never written”; they are **destroyed after the residency ends** (specifically at depart read), not kept as a long-term archive.
 
+**Crash-orphaned transcripts:** destroy runs at depart-read. If the runtime crashes mid-residency, the transcript file can remain on disk until a later successful depart (or indefinitely if that residency never resumes). Operators should treat residual transcript files under the residency data directory as sensitive and delete them on recovery; a startup sweep may be added as ops follow-up (not required for this gate).
+
 ---
 
 ## 5. On-chain vs blobs
@@ -84,7 +86,7 @@ Until `osp/0.2` exists, erasure of local/`osp/0.1` content is operational (VPS +
 
 **Canonical contact is GitHub-native. No personal email addresses are published in this repository.**
 
-Takedown and erasure requests: open a privacy-labeled issue at https://github.com/fishygeek91/npc-of-the-internet. Requests are reviewed by the repo maintainers. Private/sensitive reports: use the repository's private security reporting form.
+Takedown and erasure requests: open a privacy-labeled issue at https://github.com/fishygeek91/npc-of-the-internet/issues/new?template=privacy-takedown.md. Requests are reviewed by the repo maintainers. Private/sensitive reports: use the repository's private security reporting form.
 
 Use the **Privacy / takedown** issue template (label `privacy`). Provide:
 
@@ -119,7 +121,7 @@ Under decision (b):
 
 ## 10. Third-party processors
 
-LLM completions go through the runtime `Brain` interface. Ghost’s default implementation is the **Anthropic** API (`ANTHROPIC_API_KEY` / `ANTHROPIC_API_KEY_FILE`, model via `NPC_BRAIN_MODEL` — see [`ops/SECRETS.md`](../../ops/SECRETS.md)). The interface is provider-agnostic; swapping providers does not change the retention rules above. Message content and distillation prompts may be sent to the configured provider under their terms.
+LLM completions go through the runtime `Brain` interface. Ghost’s **current** default implementation is the **Anthropic** API (`ANTHROPIC_API_KEY` / `ANTHROPIC_API_KEY_FILE`, model via `NPC_BRAIN_MODEL` — see [`ops/SECRETS.md`](../../ops/SECRETS.md)). The interface is provider-agnostic; retention rules above do not depend on which provider is configured. If the default Brain changes (e.g. multi-provider / budget tiering), update the named default in this section in the same PR. Message content and distillation prompts may be sent to the configured provider under their terms.
 
 ---
 

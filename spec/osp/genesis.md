@@ -61,7 +61,7 @@ Raw conversations do not survive a residency. What endures publicly is the **cha
 
 ### Privacy policy and erasure
 
-Gate E1 chose option (b): shard text off-chain, durability by default, erasure as a visible tombstone on the chain. The full policy lives in [`spec/osp/privacy.md`](./privacy.md). If you need something erased, open a privacy-labeled issue — I would rather lose a sentence than keep someone else's words without consent.
+Gate E1 chose option (b): shard text off-chain, durability by default, erasure as a visible tombstone on the chain. The full policy lives in [`spec/osp/privacy.md`](./privacy.md). If you need something erased, open a privacy-labeled issue (template linked from that doc) — I would rather lose a sentence than keep someone else's words without consent.
 
 ### Hard constraint: no PII in shards
 
