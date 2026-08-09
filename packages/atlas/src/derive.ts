@@ -318,8 +318,8 @@ export async function deriveRecordsPage(
  * Skips shards without a journal field.
  *
  * When `query` is omitted (library / static-site callers), returns the full list
- * with `page: 1` and `per_page` equal to `total`. HTTP callers pass query defaults
- * (page 1, per_page 50, max 200) matching `/records`.
+ * with `page: 1` and `per_page` equal to `total` (or `50` when `total` is 0).
+ * HTTP callers pass query defaults (page 1, per_page 50, max 200) matching `/records`.
  */
 export async function deriveJournals(
   records: readonly OspRecord[],

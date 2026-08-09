@@ -44,7 +44,8 @@ class JournalRenderer extends Renderer {
     if (isDangerousUrl(href)) {
       return content;
     }
-    const titleAttr = title === undefined || title === "" ? "" : ` title="${escapeHtml(title)}"`;
+    // marked passes `title: null` (not undefined) for title-less links.
+    const titleAttr = title == null || title === "" ? "" : ` title="${escapeHtml(title)}"`;
     return `<a href="${escapeHtml(href)}"${titleAttr}>${content}</a>`;
   }
 
@@ -53,7 +54,8 @@ class JournalRenderer extends Renderer {
     if (isDangerousUrl(href)) {
       return escapeHtml(text);
     }
-    const titleAttr = title === undefined || title === "" ? "" : ` title="${escapeHtml(title)}"`;
+    // marked passes `title: null` (not undefined) for title-less images.
+    const titleAttr = title == null || title === "" ? "" : ` title="${escapeHtml(title)}"`;
     return `<img src="${escapeHtml(href)}" alt="${escapeHtml(text)}"${titleAttr}>`;
   }
 }

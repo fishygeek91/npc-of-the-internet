@@ -43,6 +43,18 @@ describe("build output", () => {
     expect(linkHtml).toContain("click");
   });
 
+  it("renders ordinary markdown links and images without throwing", () => {
+    const titled = renderJournalHtml('[x](https://example.com "t")');
+    expect(titled).toContain('<a href="https://example.com" title="t">x</a>');
+
+    const untitled = renderJournalHtml("[x](https://example.com)");
+    expect(untitled).toContain('<a href="https://example.com">x</a>');
+    expect(untitled).not.toContain("title=");
+
+    const image = renderJournalHtml("![alt](https://ok.com/a.png)");
+    expect(image).toContain('<img src="https://ok.com/a.png" alt="alt">');
+  });
+
   it("wraps plain-text fixture journals in paragraph markup", async () => {
     const data = await loadSiteData(fixtureEnv());
     for (const journal of data.journals) {
