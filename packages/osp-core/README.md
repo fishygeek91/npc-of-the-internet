@@ -27,7 +27,7 @@ OSP soulchain primitives: Zod record schemas, canonical JSON, Ed25519 signing, C
 
 ## SoulStore
 
-`FileSoulStore` is the v0.1 append-only local implementation of `SoulStore` (`append`, `head`, `get`, `iterate`).
+`FileSoulStore` is the v0.1 append-only local implementation of `SoulStore` (`append`, `head`, `get`, `iterate`). Internally it composes store modules (`BlobDir` for CID-addressed blobs, `FileLock` for exclusive append, and `fsync` helpers for durable writes).
 
 **Layout** (under the soulchain directory):
 

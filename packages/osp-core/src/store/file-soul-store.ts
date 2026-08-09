@@ -1,13 +1,5 @@
-import {
-  closeSync,
-  createReadStream,
-  existsSync,
-  fsyncSync,
-  openSync,
-  unlinkSync,
-  writeSync
-} from "node:fs";
-import { mkdir, readFile, stat, truncate, unlink } from "node:fs/promises";
+import { closeSync, createReadStream, existsSync, fsyncSync, openSync } from "node:fs";
+import { mkdir, readFile, stat, truncate } from "node:fs/promises";
 import * as path from "node:path";
 import * as readline from "node:readline";
 
@@ -16,7 +8,6 @@ import { computeCidFromCanonicalBytes, isValidCid } from "../crypto/cid.js";
 import { decodePublicKey } from "../encoding/base64url.js";
 import {
   ChainMismatchError,
-  ConcurrentAppendError,
   CorruptionError,
   SchemaError,
   StorageError,
@@ -26,93 +17,17 @@ import { verifyRecord } from "../record.js";
 import { RecordSchema, type OspRecord } from "../schemas/index.js";
 import { verifyRecords, type VerifyChainResult } from "../verify-chain.js";
 
+import { BlobDir } from "./blob-dir.js";
+import { FileLock } from "./file-lock.js";
+import { bytesEqual, fsyncDirectory, fsyncPath, writeAllSync } from "./fsync.js";
+import { isNodeError, nodeErrorMessage } from "./node-fs-error.js";
+
 import type { ChainFailure } from "../chain-types.js";
 import type { AppendResult, FileSoulStoreOpenOptions, HeadInfo, SoulStore } from "./types.js";
 
 const CHAIN_FILE = "chain.jsonl";
 const BLOBS_DIR = "blobs";
 const LOCK_FILE = ".append.lock";
-/**
- * Max age of an `.append.lock` before `openWithRecovery` may steal it even if the PID is alive.
- * v0.1 policy constant (appends are sub-second); a future config pass may surface this.
- */
-const LOCK_MAX_AGE_MS = 3_600_000;
-
-/** On-disk lock metadata written after exclusive create. */
-type AppendLockMeta = {
-  pid: number;
-  acquiredAt: string;
-};
-
-/** Compare two byte arrays for equality. */
-function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
-  if (left.length !== right.length) {
-    return false;
-  }
-  for (let index = 0; index < left.length; index += 1) {
-    if (left[index] !== right[index]) {
-      return false;
-    }
-  }
-  return true;
-}
-
-/**
- * Write every byte of `data` to `fd`, looping until complete.
- * POSIX `write` may return a short count; ignoring it can fsync a torn line as durable.
- */
-function writeAllSync(fd: number, data: Uint8Array): void {
-  let offset = 0;
-  while (offset < data.length) {
-    const written = writeSync(fd, data, offset, data.length - offset);
-    if (written === 0) {
-      throw new StorageError("writeSync wrote 0 bytes before completing the buffer");
-    }
-    offset += written;
-  }
-}
-
-/** True when `process.kill(pid, 0)` succeeds (process exists and is signalable). */
-function isProcessAlive(pid: number): boolean {
-  if (!Number.isInteger(pid) || pid <= 0) {
-    return false;
-  }
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/** Parse lock file contents; empty/legacy/invalid → null (treat as stale). */
-function parseAppendLockMeta(raw: string): AppendLockMeta | null {
-  const trimmed = raw.trim();
-  if (trimmed.length === 0) {
-    return null;
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(trimmed);
-  } catch {
-    return null;
-  }
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    return null;
-  }
-  if (!("pid" in parsed) || !("acquiredAt" in parsed)) {
-    return null;
-  }
-  const pid = parsed.pid;
-  const acquiredAt = parsed.acquiredAt;
-  if (typeof pid !== "number" || !Number.isInteger(pid)) {
-    return null;
-  }
-  if (typeof acquiredAt !== "string" || acquiredAt.length === 0) {
-    return null;
-  }
-  return { pid, acquiredAt };
-}
 
 /**
  * Split chain file bytes into per-record canonical line payloads (without trailing newlines).
@@ -142,14 +57,13 @@ function splitChainLines(buffer: Buffer): Uint8Array[] {
 export class FileSoulStore implements SoulStore {
   private readonly dir: string;
   private readonly chainPath: string;
-  private readonly blobsDir: string;
-  private readonly lockPath: string;
+  private readonly blobs: BlobDir;
+  private readonly appendLock: FileLock;
   private readonly doorPublicKeys: Readonly<Record<string, Uint8Array>> | undefined;
   private readonly readOnly: boolean;
   private headInfo: HeadInfo | null;
   private soulPublicKey: Uint8Array | null;
   private verificationResult: VerifyChainResult;
-  private lockFd: number | null;
   private closed: boolean;
 
   private constructor(
@@ -161,14 +75,13 @@ export class FileSoulStore implements SoulStore {
   ) {
     this.dir = dir;
     this.chainPath = path.join(dir, CHAIN_FILE);
-    this.blobsDir = path.join(dir, BLOBS_DIR);
-    this.lockPath = path.join(dir, LOCK_FILE);
+    this.blobs = new BlobDir(path.join(dir, BLOBS_DIR));
+    this.appendLock = new FileLock(path.join(dir, LOCK_FILE));
     this.doorPublicKeys = doorPublicKeys;
     this.readOnly = readOnly;
     this.headInfo = head;
     this.soulPublicKey = soulPublicKey;
     this.verificationResult = { valid: true, head };
-    this.lockFd = null;
     this.closed = false;
   }
 
@@ -239,56 +152,11 @@ export class FileSoulStore implements SoulStore {
     const store = new FileSoulStore(absoluteDir, options?.doorPublicKeys, null, null);
     await store.ensureLayout();
 
-    await store.clearStaleAppendLock();
+    await store.appendLock.clearStale();
 
     const truncatedBytes = await store.recoverTornChain();
     await store.loadChain();
     return { store, truncatedBytes };
-  }
-
-  /**
-   * Remove `.append.lock` only when safe: dead PID, over max age, or legacy/unparseable.
-   * Refuses while a live holder owns a fresh lock.
-   *
-   * TOCTOU: between reading meta and `unlink`, a new appender could recreate the lock and lose
-   * it. Acceptable for v0.1 manual recovery; do not run recovery alongside live writers.
-   */
-  private async clearStaleAppendLock(): Promise<void> {
-    if (!existsSync(this.lockPath)) {
-      return;
-    }
-
-    let raw: string;
-    try {
-      raw = await readFile(this.lockPath, "utf8");
-    } catch (error) {
-      if (isNodeError(error) && error.code === "ENOENT") {
-        return;
-      }
-      throw new StorageError(`failed to read append lock: ${nodeErrorMessage(error)}`);
-    }
-
-    const meta = parseAppendLockMeta(raw);
-    if (meta !== null) {
-      const acquiredMs = Date.parse(meta.acquiredAt);
-      const ageMs = Number.isFinite(acquiredMs)
-        ? Date.now() - acquiredMs
-        : Number.POSITIVE_INFINITY;
-      const fresh = ageMs < LOCK_MAX_AGE_MS;
-      if (isProcessAlive(meta.pid) && fresh) {
-        throw new ConcurrentAppendError(
-          "another append is in progress (live .append.lock — refuse openWithRecovery)"
-        );
-      }
-    }
-
-    try {
-      await unlink(this.lockPath);
-    } catch (error) {
-      if (!isNodeError(error) || error.code !== "ENOENT") {
-        throw error;
-      }
-    }
   }
 
   /** Append a signed record to the chain and return its CID. */
@@ -305,7 +173,7 @@ export class FileSoulStore implements SoulStore {
     }
     const validatedRecord = parsed.data;
 
-    this.acquireLock();
+    this.appendLock.acquire();
 
     try {
       // Re-read head from disk under the lock so a second store instance cannot fork the chain.
@@ -343,8 +211,8 @@ export class FileSoulStore implements SoulStore {
 
       const bytes = canonicalize(validatedRecord);
       const cid = await computeCidFromCanonicalBytes(bytes);
-      await this.writeBlobIdempotent(cid, bytes);
-      await FileSoulStore.fsyncDirectory(this.blobsDir);
+      await this.blobs.putIdempotent(cid, bytes);
+      await fsyncDirectory(this.blobs.dirPath);
 
       let chainFd: number;
       try {
@@ -369,7 +237,7 @@ export class FileSoulStore implements SoulStore {
 
       return { cid };
     } finally {
-      this.releaseLock();
+      this.appendLock.release();
     }
   }
 
@@ -386,26 +254,7 @@ export class FileSoulStore implements SoulStore {
   async get(cid: string): Promise<OspRecord> {
     this.assertOpen();
 
-    if (!isValidCid(cid)) {
-      throw new StorageError(`invalid CID format: ${cid}`);
-    }
-
-    const blobPath = path.join(this.blobsDir, cid);
-    let bytes: Buffer;
-    try {
-      bytes = await readFile(blobPath);
-    } catch (error) {
-      if (isNodeError(error) && error.code === "ENOENT") {
-        throw new StorageError(`record not found for CID ${cid}`);
-      }
-      throw new StorageError(`failed to read blob ${cid}: ${nodeErrorMessage(error)}`);
-    }
-
-    const canonicalBytes = new Uint8Array(bytes);
-    const computedCid = await computeCidFromCanonicalBytes(canonicalBytes);
-    if (computedCid !== cid) {
-      throw new CorruptionError(`blob CID mismatch for ${cid}: computed ${computedCid}`);
-    }
+    const canonicalBytes = await this.blobs.readVerified(cid);
 
     let parsed: unknown;
     try {
@@ -504,9 +353,7 @@ export class FileSoulStore implements SoulStore {
       return;
     }
 
-    if (this.lockFd !== null) {
-      this.releaseLock();
-    }
+    this.appendLock.release();
 
     this.closed = true;
   }
@@ -514,7 +361,7 @@ export class FileSoulStore implements SoulStore {
   /** Ensure directory layout exists under the store root. */
   private async ensureLayout(): Promise<void> {
     await mkdir(this.dir, { recursive: true });
-    await mkdir(this.blobsDir, { recursive: true });
+    await mkdir(this.blobs.dirPath, { recursive: true });
   }
 
   /**
@@ -592,47 +439,6 @@ export class FileSoulStore implements SoulStore {
     this.headInfo = { cid, seq: schemaResult.data.seq };
   }
 
-  /**
-   * Write blob bytes, treating an existing byte-identical blob as already written
-   * (idempotent retry after crash between blob and chain append).
-   */
-  private async writeBlobIdempotent(cid: string, bytes: Uint8Array): Promise<void> {
-    // invariant: cid is computed, not caller-supplied — assertion guards against a future refactor passing external input
-    if (!isValidCid(cid)) {
-      throw new StorageError(`invalid CID format: ${cid}`);
-    }
-
-    const blobPath = path.join(this.blobsDir, cid);
-
-    let blobFd: number;
-    try {
-      blobFd = openSync(blobPath, "wx");
-    } catch (error) {
-      if (isNodeError(error) && error.code === "EEXIST") {
-        let existing: Buffer;
-        try {
-          existing = await readFile(blobPath);
-        } catch (readError) {
-          throw new StorageError(
-            `failed to read existing blob ${cid}: ${nodeErrorMessage(readError)}`
-          );
-        }
-        if (bytesEqual(new Uint8Array(existing), bytes)) {
-          return;
-        }
-        throw new CorruptionError(`blob already exists for CID ${cid} with different bytes`);
-      }
-      throw new StorageError(`failed to create blob ${cid}: ${nodeErrorMessage(error)}`);
-    }
-
-    try {
-      writeAllSync(blobFd, bytes);
-      fsyncSync(blobFd);
-    } finally {
-      closeSync(blobFd);
-    }
-  }
-
   /** Truncate a torn chain file; returns the number of bytes removed. */
   private async recoverTornChain(): Promise<number> {
     let chainStat;
@@ -646,7 +452,7 @@ export class FileSoulStore implements SoulStore {
         } finally {
           closeSync(fd);
         }
-        await FileSoulStore.fsyncDirectory(this.dir);
+        await fsyncDirectory(this.dir);
         return 0;
       }
       throw error;
@@ -685,7 +491,7 @@ export class FileSoulStore implements SoulStore {
     }
 
     await truncate(this.chainPath, newSize);
-    await FileSoulStore.fsyncPath(this.chainPath);
+    await fsyncPath(this.chainPath);
     return oldSize - newSize;
   }
 
@@ -698,7 +504,7 @@ export class FileSoulStore implements SoulStore {
       } finally {
         closeSync(fd);
       }
-      await FileSoulStore.fsyncDirectory(this.dir);
+      await fsyncDirectory(this.dir);
       this.headInfo = null;
       this.soulPublicKey = null;
       this.verificationResult = { valid: true, head: null };
@@ -833,19 +639,7 @@ export class FileSoulStore implements SoulStore {
         throw new StorageError(`invalid CID format: ${cid}`);
       }
 
-      const blobPath = path.join(this.blobsDir, cid);
-
-      let blobBytes: Buffer;
-      try {
-        blobBytes = await readFile(blobPath);
-      } catch (error) {
-        if (isNodeError(error) && error.code === "ENOENT") {
-          throw new CorruptionError(`missing blob for CID ${cid}`);
-        }
-        throw new StorageError(`failed to read blob ${cid}: ${nodeErrorMessage(error)}`);
-      }
-
-      const blobCanonical = new Uint8Array(blobBytes);
+      const blobCanonical = await this.blobs.readBytes(cid, { missingAs: "corruption" });
       if (!bytesEqual(lineBytes, blobCanonical)) {
         throw new CorruptionError(`blob bytes mismatch for CID ${cid}`);
       }
@@ -920,106 +714,9 @@ export class FileSoulStore implements SoulStore {
     }
   }
 
-  /** Acquire the exclusive append lock. */
-  private acquireLock(): void {
-    let lockFd: number;
-    try {
-      lockFd = openSync(this.lockPath, "wx");
-    } catch (error) {
-      if (isNodeError(error) && error.code === "EEXIST") {
-        throw new ConcurrentAppendError(
-          "another append is in progress (or a stale .append.lock remains after a crash — use openWithRecovery)"
-        );
-      }
-      throw new StorageError(`failed to acquire append lock: ${nodeErrorMessage(error)}`);
-    }
-
-    this.lockFd = lockFd;
-
-    const meta: AppendLockMeta = {
-      pid: process.pid,
-      acquiredAt: new Date().toISOString()
-    };
-    const metaBytes = new TextEncoder().encode(`${JSON.stringify(meta)}\n`);
-    try {
-      writeAllSync(lockFd, metaBytes);
-      fsyncSync(lockFd);
-    } catch (error) {
-      try {
-        this.releaseLock();
-      } catch {
-        // Best-effort cleanup after failed lock metadata write.
-      }
-      throw new StorageError(`failed to write append lock metadata: ${nodeErrorMessage(error)}`);
-    }
-  }
-
-  /** Release the exclusive append lock. */
-  private releaseLock(): void {
-    if (this.lockFd !== null) {
-      try {
-        closeSync(this.lockFd);
-      } catch {
-        // Ignore close errors during lock cleanup.
-      }
-      this.lockFd = null;
-    }
-
-    try {
-      unlinkSync(this.lockPath);
-    } catch (error) {
-      if (!isNodeError(error) || error.code !== "ENOENT") {
-        throw error;
-      }
-    }
-  }
-
   private assertOpen(): void {
     if (this.closed) {
       throw new StorageError("FileSoulStore is closed");
     }
   }
-
-  private static async fsyncPath(targetPath: string): Promise<void> {
-    let fd: number;
-    try {
-      fd = openSync(targetPath, "r");
-    } catch (error) {
-      throw new StorageError(`failed to open for fsync: ${nodeErrorMessage(error)}`);
-    }
-
-    try {
-      fsyncSync(fd);
-    } finally {
-      closeSync(fd);
-    }
-  }
-
-  private static async fsyncDirectory(dirPath: string): Promise<void> {
-    let fd: number;
-    try {
-      fd = openSync(dirPath, "r");
-    } catch (error) {
-      throw new StorageError(`failed to open directory for fsync: ${nodeErrorMessage(error)}`);
-    }
-
-    try {
-      fsyncSync(fd);
-    } finally {
-      closeSync(fd);
-    }
-  }
-}
-
-type NodeError = Error & { code?: string };
-
-function isNodeError(error: unknown): error is NodeError {
-  return error instanceof Error && "code" in error;
-}
-
-function nodeErrorMessage(error: unknown): string {
-  if (error instanceof Error) {
-    return error.message;
-  }
-  return String(error);
 }
