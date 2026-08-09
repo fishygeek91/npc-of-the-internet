@@ -55,9 +55,18 @@ export type JournalEntry = {
   journal: string;
 };
 
+/** Query parameters for `GET /journals`. */
+export type JournalsQuery = {
+  page?: number;
+  per_page?: number;
+};
+
 /** Response shape for `GET /journals`. */
 export type JournalsResponse = {
   journals: JournalEntry[];
+  page: number;
+  per_page: number;
+  total: number;
   verified: boolean;
 };
 
@@ -163,7 +172,8 @@ export function parseResidency(residency: string): { door_id: string; epoch: num
 
 /**
  * Derive Wanderer presence state from chain records.
- * Scans attestations from newest to oldest.
+ * Scans newest to oldest: a `sleep` record before any attestation means sleeping
+ * (do not fake presence after the soul has recorded sleep).
  */
 export function deriveState(records: readonly OspRecord[], verified: boolean): StateResponse {
   const head = records.length > 0 ? records[records.length - 1] : undefined;
@@ -171,7 +181,21 @@ export function deriveState(records: readonly OspRecord[], verified: boolean): S
 
   for (let index = records.length - 1; index >= 0; index -= 1) {
     const record = records[index];
-    if (record === undefined || record.type !== "attestation") {
+    if (record === undefined) {
+      continue;
+    }
+
+    if (record.type === "sleep") {
+      return {
+        status: "sleeping",
+        door_id: null,
+        epoch: null,
+        last_record_at: lastRecordAt,
+        verified
+      };
+    }
+
+    if (record.type !== "attestation") {
       continue;
     }
 
@@ -292,10 +316,15 @@ export async function deriveRecordsPage(
 /**
  * Derive journal entries from memory shard records (newest first).
  * Skips shards without a journal field.
+ *
+ * When `query` is omitted (library / static-site callers), returns the full list
+ * with `page: 1` and `per_page` equal to `total` (or `50` when `total` is 0).
+ * HTTP callers pass query defaults (page 1, per_page 50, max 200) matching `/records`.
  */
 export async function deriveJournals(
   records: readonly OspRecord[],
-  verified: boolean
+  verified: boolean,
+  query?: JournalsQuery
 ): Promise<JournalsResponse> {
   const journals: JournalEntry[] = [];
 
@@ -325,5 +354,27 @@ export async function deriveJournals(
     });
   }
 
-  return { journals, verified };
+  const total = journals.length;
+  if (query === undefined) {
+    return {
+      journals,
+      page: 1,
+      per_page: total === 0 ? 50 : total,
+      total,
+      verified
+    };
+  }
+
+  const page = Math.max(query.page ?? 1, 1);
+  const perPage = Math.min(Math.max(query.per_page ?? 50, 1), 200);
+  const start = (page - 1) * perPage;
+  const slice = start >= total ? [] : journals.slice(start, start + perPage);
+
+  return {
+    journals: slice,
+    page,
+    per_page: perPage,
+    total,
+    verified
+  };
 }

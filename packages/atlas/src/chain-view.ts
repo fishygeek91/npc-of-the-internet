@@ -119,6 +119,14 @@ export class ChainView {
     fingerprint: ChainFingerprint | null,
     snapshot: ChainSnapshot
   ): ChainSnapshot {
+    // Never cache unreadable snapshots: blob-side CorruptionError is keyed only
+    // on chain.jsonl size+mtime, so a mid-restore blob repair would otherwise
+    // stick on 503 until the next append or process restart.
+    if (snapshot.unreadable === true) {
+      this.fingerprint = null;
+      this.cachedSnapshot = null;
+      return snapshot;
+    }
     this.fingerprint = fingerprint;
     this.cachedSnapshot = snapshot;
     return snapshot;

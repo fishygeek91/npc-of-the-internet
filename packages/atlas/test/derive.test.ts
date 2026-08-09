@@ -2,11 +2,13 @@ import { describe, expect, it } from "vitest";
 
 import { createRecord, signCore } from "@npc/osp-core";
 
-import { deriveRecordsPage, deriveState } from "../src/derive.js";
+import { deriveJournals, deriveRecordsPage, deriveState } from "../src/derive.js";
 import {
   createArrivalRecord,
   createDepartureRecord,
   createGenesisRecord,
+  createShardRecord,
+  createSleepRecord,
   createTravelRecord,
   DEFAULT_DOOR,
   DEFAULT_DOOR_ID,
@@ -68,6 +70,27 @@ describe("deriveState", () => {
       status: "traveling",
       door_id: null,
       epoch: 1
+    });
+  });
+
+  it("returns sleeping when a sleep record is newer than arrival", async () => {
+    const genesis = await createGenesisRecord(DEFAULT_SOUL);
+    const arrival = await createArrivalRecord(
+      DEFAULT_SOUL,
+      DEFAULT_DOOR,
+      DEFAULT_SESSION,
+      1,
+      genesis.cid,
+      DEFAULT_DOOR_ID,
+      1,
+      DEFAULT_RESIDENCY,
+      "2026-01-02T00:00:00.000Z"
+    );
+    const sleep = await createSleepRecord(DEFAULT_SOUL, 2, arrival.cid);
+    expect(deriveState([genesis.record, arrival.record, sleep.record], true)).toMatchObject({
+      status: "sleeping",
+      door_id: null,
+      epoch: null
     });
   });
 
@@ -139,5 +162,53 @@ describe("deriveRecordsPage", () => {
     expect(page.total).toBe(3);
     expect(page.records.map((item) => item.summary)).not.toContain("SECRET_SHARD_TEXT");
     expect(page.records.some((item) => item.summary === "memory/shard")).toBe(true);
+  });
+});
+
+describe("deriveJournals", () => {
+  it("returns all journals when query is omitted and paginates when provided", async () => {
+    const genesis = await createGenesisRecord(DEFAULT_SOUL);
+    const arrival = await createArrivalRecord(
+      DEFAULT_SOUL,
+      DEFAULT_DOOR,
+      DEFAULT_SESSION,
+      1,
+      genesis.cid,
+      DEFAULT_DOOR_ID,
+      1,
+      DEFAULT_RESIDENCY,
+      "2026-01-02T00:00:00.000Z"
+    );
+    const first = await createShardRecord(
+      DEFAULT_SOUL,
+      DEFAULT_DOOR,
+      2,
+      arrival.cid,
+      "shard-one",
+      DEFAULT_RESIDENCY,
+      { journal: "JOURNAL_ONE" }
+    );
+    const second = await createShardRecord(
+      DEFAULT_SOUL,
+      DEFAULT_DOOR,
+      3,
+      first.cid,
+      "shard-two",
+      DEFAULT_RESIDENCY,
+      { journal: "JOURNAL_TWO" }
+    );
+    const chain = [genesis.record, arrival.record, first.record, second.record];
+
+    const all = await deriveJournals(chain, true);
+    expect(all.total).toBe(2);
+    expect(all.journals).toHaveLength(2);
+    expect(all.page).toBe(1);
+    expect(all.per_page).toBe(2);
+
+    const page = await deriveJournals(chain, true, { page: 1, per_page: 1 });
+    expect(page.total).toBe(2);
+    expect(page.journals).toHaveLength(1);
+    expect(page.journals[0]?.journal).toBe("JOURNAL_TWO");
+    expect(page.per_page).toBe(1);
   });
 });

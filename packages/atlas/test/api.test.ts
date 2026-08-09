@@ -345,7 +345,7 @@ describe("torn tail policy", () => {
 });
 
 describe("schema-invalid mid-chain records", () => {
-  it("returns 503 chain_unreadable on every endpoint (not 500)", async () => {
+  it("returns 503 chain_unreadable on every endpoint (not 500) without path leak", async () => {
     const copyDir = await makeTempDir("atlas-schema-skew-");
     await cp(MULTI_RESIDENCY_FIXTURE_DIR, copyDir, { recursive: true });
     const chainPath = join(copyDir, "chain.jsonl");
@@ -371,10 +371,65 @@ describe("schema-invalid mid-chain records", () => {
       for (const url of ["/state", "/chain/head", "/records", "/journals"]) {
         const response = await app.inject({ method: "GET", url });
         expect(response.statusCode).toBe(503);
-        expect(response.json()).toMatchObject({
-          error: { code: "chain_unreadable" }
+        expect(response.json()).toEqual({
+          error: { code: "chain_unreadable", message: "chain is unreadable" }
         });
+        expect(response.body.includes(copyDir)).toBe(false);
+        expect(response.body.includes("blobs")).toBe(false);
       }
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+describe("unreadable snapshot cache", () => {
+  it("recovers after a missing blob is restored without chain.jsonl change", async () => {
+    const copyDir = await makeTempDir("atlas-blob-restore-");
+    await cp(MULTI_RESIDENCY_FIXTURE_DIR, copyDir, { recursive: true });
+    const chainPath = join(copyDir, "chain.jsonl");
+    const chainText = await readFile(chainPath, "utf8");
+    const lines = chainText.split("\n").filter((line) => line.length > 0);
+    const midLine = lines[1];
+    if (midLine === undefined) {
+      throw new Error("fixture chain too short for blob restore test");
+    }
+    const midCid = await computeCidFromCanonicalBytes(new TextEncoder().encode(midLine));
+    const blobPath = join(copyDir, "blobs", midCid);
+    const blobBytes = await readFile(blobPath);
+    await rm(blobPath);
+
+    const app = await openServer(copyDir);
+    try {
+      const broken = await app.inject({ method: "GET", url: "/state" });
+      expect(broken.statusCode).toBe(503);
+      expect(broken.json()).toEqual({
+        error: { code: "chain_unreadable", message: "chain is unreadable" }
+      });
+      expect(broken.body.includes(copyDir)).toBe(false);
+
+      await writeFile(blobPath, blobBytes);
+
+      const recovered = await app.inject({ method: "GET", url: "/state" });
+      expect(recovered.statusCode).toBe(200);
+      expect(recovered.json()).toMatchObject({ status: "present", verified: true });
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+describe("CORS", () => {
+  it("reflects Origin on GET responses", async () => {
+    const app = await openServer(MULTI_RESIDENCY_FIXTURE_DIR);
+    try {
+      const response = await app.inject({
+        method: "GET",
+        url: "/state",
+        headers: { origin: "https://example.com" }
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.headers["access-control-allow-origin"]).toBe("https://example.com");
     } finally {
       await app.close();
     }
@@ -474,16 +529,22 @@ describe("GET /records pagination", () => {
 });
 
 describe("GET /journals", () => {
-  it("returns journals newest first and skips shards without journal", async () => {
+  it("returns journals newest first, paginates, and skips shards without journal", async () => {
     const app = await openServer(MULTI_RESIDENCY_FIXTURE_DIR);
     try {
       const response = await app.inject({ method: "GET", url: "/journals" });
       expect(response.statusCode).toBe(200);
       const body = response.json() as {
         verified: boolean;
+        page: number;
+        per_page: number;
+        total: number;
         journals: Array<{ epoch: number; journal: string; door_id: string }>;
       };
       expect(body.verified).toBe(true);
+      expect(body.page).toBe(1);
+      expect(body.per_page).toBe(50);
+      expect(body.total).toBeGreaterThanOrEqual(2);
       expect(body.journals.length).toBeGreaterThanOrEqual(2);
       expect(body.journals[0]?.journal).toBe(JOURNAL_EPOCH_2);
       expect(body.journals[1]?.journal).toBe(JOURNAL_EPOCH_1);
@@ -491,6 +552,20 @@ describe("GET /journals", () => {
       expect(body.journals[1]?.epoch).toBe(1);
       expect(body.journals[0]?.door_id).toBe(DEFAULT_OTHER_DOOR_ID);
       expect(body.journals[1]?.door_id).toBe(DEFAULT_DOOR_ID);
+
+      const paged = await app.inject({ method: "GET", url: "/journals?per_page=1&page=1" });
+      const pagedBody = paged.json() as {
+        journals: Array<{ journal: string }>;
+        per_page: number;
+        total: number;
+      };
+      expect(pagedBody.per_page).toBe(1);
+      expect(pagedBody.journals).toHaveLength(1);
+      expect(pagedBody.journals[0]?.journal).toBe(JOURNAL_EPOCH_2);
+      expect(pagedBody.total).toBe(body.total);
+
+      const clamped = await app.inject({ method: "GET", url: "/journals?per_page=999" });
+      expect(clamped.json()).toMatchObject({ per_page: 200, total: body.total });
     } finally {
       await app.close();
     }

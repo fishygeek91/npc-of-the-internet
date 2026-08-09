@@ -214,6 +214,12 @@ Each task lists **Deps**, **Deliverables**, and **Acceptance** (how a reviewer v
 - Acceptance: Interleaved inbound history/Brain order; heartbeat stage tests; epoch crash-window test; daemon serialized inbound; `pnpm check` green; changeset.
 - Notes: Agent: Cursor Grok 4.5 Maestro, 2026-08-08. `inboundChain` mirrors `enqueueAppend`; FakeBrain handlers may return `Promise<string>` for concurrency tests. SIGTERM remains document-only (no depart). No pending-inbound drop/overflow policy — sequential Brain under flood still bills.
 
+### Bug #71 ✅ atlas: journal XSS + read-API polish (Cursor Grok 4.5 Maestro, 2026-08-08)
+- Deps: T5.1, T5.2
+- Deliverables: Sanitize/escape journal markdown HTML on atlas-site; generic `chain_unreadable` 503 (no path leak); do not cache unreadable ChainView snapshots; `deriveState` honors `sleep` records; paginate `GET /journals`; CORS for GET; badge fail-closed on empty failures; mid-chain blob tamper badge test.
+- Acceptance: Tests per finding; read-only guarantee tests green; `pnpm check` green.
+- Notes: Agent: Cursor Grok 4.5 Maestro, 2026-08-08. Zero-dep marked renderer escapes raw HTML + strips dangerous URL schemes; journal page title `Journal — {door_id} epoch {epoch}`; 503 message fixed + unreadable snapshots uncached; sleep→sleeping; `/journals` paginated like `/records`; `@fastify/cors` GET; `recordVerified` fail-closed. CID memoization left as non-goal.
+
 ## Phase 7 — Post-Ghost (v0.2/0.3 — spec first, then build)
 
 These are sequenced but intentionally coarser; split them into T-numbered subtasks (same format) when their phase begins.

@@ -8,7 +8,7 @@ Static public Atlas for the NPC of the Internet. Built with Astro from a soulcha
 |-------|---------|
 | `/` | Location banner (present / traveling / sleeping), current door, head CID |
 | `/journey` | Timeline of arrival attestations |
-| `/journals`, `/journals/[cid]` | Residency journals (markdown → HTML) |
+| `/journals`, `/journals/[cid]` | Residency journals (markdown → sanitized HTML; page title is `Journal — {door_id} epoch {epoch}`) |
 | `/soul`, `/soul/page/[n]` | Paginated soulchain records |
 | `/soul/type/[type]/…` | Filter by top-level record type |
 | `/soul/[cid]` | Record detail + verification badge |
@@ -62,4 +62,6 @@ Workflow: [`.github/workflows/deploy-atlas-site.yml`](../../.github/workflows/de
 pnpm --filter @npc/atlas-site test
 ```
 
-Covers data-loader expectations on the fixture, tampered-chain unverified badges, rejected/candidate display bodies, markdown rendering, and build output paths.
+Covers data-loader expectations on the fixture, tampered-chain unverified badges (truncation + mid-chain signature tamper), rejected/candidate display bodies, journal markdown XSS neutralization, verification badge fail-closed, and build output paths.
+
+Journal HTML escapes raw HTML tokens and strips `javascript:` / `data:` / `vbscript:` URLs — a chain signature proves authorship, not browser safety.

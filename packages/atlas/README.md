@@ -22,19 +22,24 @@ ATLAS_CHAIN_DIR=./soulchain-data pnpm --filter @npc/atlas start
 
 ## State derivation (`GET /state`)
 
-Scans **attestation** records from newest to oldest:
+Scans newest to oldest. A `sleep` record encountered before any attestation yields `sleeping` (do not fake presence). Otherwise the latest attestation maps as:
 
-| Latest attestation `body.kind` | `status` | `door_id` | `epoch` |
-|-------------------------------|----------|-----------|---------|
-| `arrival`, `heartbeat` | `present` | `body.door_id` | `body.epoch` |
-| `departure` | `traveling` | `null` | `body.epoch` |
-| `travel` | `traveling` | `null` | `body.from_epoch` |
-| `handover` | `traveling` | `null` | `body.depart_epoch` |
+| Record | `status` | `door_id` | `epoch` |
+|--------|----------|-----------|---------|
+| `type: sleep` | `sleeping` | `null` | `null` |
+| attestation `arrival` / `heartbeat` | `present` | `body.door_id` | `body.epoch` |
+| attestation `departure` | `traveling` | `null` | `body.epoch` |
+| attestation `travel` | `traveling` | `null` | `body.from_epoch` |
+| attestation `handover` | `traveling` | `null` | `body.depart_epoch` |
 | (none) | `sleeping` | `null` | `null` |
 
 `last_record_at` comes from the **head** record body's type-specific timestamp (`created_at`, `at`, `distilled_at`, etc.).
 
 **Torn-tail policy:** incomplete last line is ignored; intact prefix remains readable; `verified` is `false` when chain verification fails.
+
+**CORS:** `@fastify/cors` with `origin: true` and `methods: ["GET"]` (for door-web and other browser clients).
+
+**Unreadable chain:** `503` with `{ error: { code: "chain_unreadable", message: "chain is unreadable" } }`. Detail (including filesystem paths) is logged server-side only. Unreadable snapshots are not cached, so repairing `blobs/` recovers on the next request without an append/restart.
 
 ## Endpoints
 
@@ -58,7 +63,11 @@ Returns `{ records, page, per_page, total, verified }`. Each record: `{ cid, seq
 
 ### `GET /journals`
 
-Memory shards with `body.journal`, newest first: `{ journals: [{ epoch, door_id, cid, journal }], verified }`.
+Memory shards with `body.journal`, newest first.
+
+Query: `page` (default 1), `per_page` (default 50, max 200).
+
+Returns `{ journals: [{ epoch, door_id, cid, journal }], page, per_page, total, verified }`.
 
 ## Library usage
 

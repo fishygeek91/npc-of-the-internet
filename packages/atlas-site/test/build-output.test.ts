@@ -28,6 +28,33 @@ describe("build output", () => {
     expect(html).toContain("Hello");
   });
 
+  it("neutralizes script-tag, event-handler, and javascript-link payloads", () => {
+    const scriptHtml = renderJournalHtml("Hello <script>alert(1)</script> world");
+    expect(scriptHtml.toLowerCase()).not.toContain("<script");
+    expect(scriptHtml).toContain("&lt;script&gt;");
+
+    const imgHtml = renderJournalHtml("Look <img src=x onerror=alert(1)>");
+    expect(imgHtml.toLowerCase()).not.toMatch(/<img[^>]*onerror/i);
+    expect(imgHtml).toContain("&lt;img");
+
+    const linkHtml = renderJournalHtml("[click](javascript:alert(1))");
+    expect(linkHtml.toLowerCase()).not.toContain("javascript:");
+    expect(linkHtml).not.toMatch(/<a\s/i);
+    expect(linkHtml).toContain("click");
+  });
+
+  it("renders ordinary markdown links and images without throwing", () => {
+    const titled = renderJournalHtml('[x](https://example.com "t")');
+    expect(titled).toContain('<a href="https://example.com" title="t">x</a>');
+
+    const untitled = renderJournalHtml("[x](https://example.com)");
+    expect(untitled).toContain('<a href="https://example.com">x</a>');
+    expect(untitled).not.toContain("title=");
+
+    const image = renderJournalHtml("![alt](https://ok.com/a.png)");
+    expect(image).toContain('<img src="https://ok.com/a.png" alt="alt">');
+  });
+
   it("wraps plain-text fixture journals in paragraph markup", async () => {
     const data = await loadSiteData(fixtureEnv());
     for (const journal of data.journals) {
