@@ -383,6 +383,6 @@ If anything is wrong **before** public announcement, prefer stopping over improv
 | Bad genesis seed / wrong soul key | Stop stack; **do not** announce. If volume has only the mistaken genesis, destroy volume only with explicit human approval: `down -v` ([§2](RUNBOOK.md#2-stop)). Re-run sections 1–2 from a fresh `osp init` staging dir |
 | Chain corrupt / torn tail | [RUNBOOK §6](RUNBOOK.md#6-crash-recovery) — snapshot, `FileSoulStore.openWithRecovery`, verify, copy back |
 | Need previous chain state | [RUNBOOK §5.2](RUNBOOK.md#52-production-restore) — restore from `BACKUP_RCLONE_REMOTE`, verify **before** writing to volume |
-| Graceful daemon stop | `docker compose … stop runtime` — does **not** run ceremonial depart; see [RUNBOOK §1.3](RUNBOOK.md#13-build-and-start-the-stack) and [MANUAL_TEST §7](../packages/door-discord/MANUAL_TEST.md#7-cross-container-session-compose) |
+| Graceful daemon stop | `docker compose … stop runtime` — does **not** run ceremonial depart; SIGTERM skips departure attestation and restart burns a new epoch ([RUNBOOK §1.3](RUNBOOK.md#13-build-and-start-the-stack)); see also [MANUAL_TEST §7](../packages/door-discord/MANUAL_TEST.md#7-cross-container-session-compose) |
 
 **Never** delete `soul.key` without a verified backup of both the key and the chain. Losing the soul key cannot be recovered from chain backup alone.

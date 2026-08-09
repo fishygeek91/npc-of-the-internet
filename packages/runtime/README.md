@@ -133,8 +133,10 @@ import {
 | `maxHistoryMessages` | no | `40` | Rolling brain context cap |
 | `doorPublicKeys` | no | — | Passed to `composeSelf` / chain verify when cosigners present |
 | `onScreenReject` | no | — | Category-only callback when inbound text fails `@npc/immune` `screenText` (never receives payload text) |
+| `activeEpoch` | no | — | Optional floor from Door `hello.active_epoch`; after a mid-arrival crash, epoch allocation uses `max(chain_derived, activeEpoch + 1)` |
+| `onHeartbeatError` | no | — | Optional callback when heartbeat attestation fails at `door` or `append` stage |
 
-`Session.start` composes self from the verified chain, derives a session key via HKDF-SHA-512 (`deriveSessionKey(doorId, epoch)`), appends an arrival attestation, and arms the heartbeat timer. Inbound frames are handled with `handleInbound`; call `drainAppends()` in tests to await async chain writes. Call `stop()` to end the residency. Before departure (T2.5), call `stop()` then `await drainAppends()` so no heartbeat attestation races the departure record — `Session.depart` does this automatically.
+`Session.start` composes self from the verified chain, derives a session key via HKDF-SHA-512 (`deriveSessionKey(doorId, epoch)`), appends an arrival attestation, and arms the heartbeat timer. Inbound frames are handled with `handleInbound` (serialized per session — one in-flight Brain call); call `drainAppends()` in tests to await async chain writes. Call `stop()` to end the residency. Before departure (T2.5), call `stop()` then `await drainAppends()` so no heartbeat attestation races the departure record — `Session.depart` does this automatically.
 
 Inbound Door text is screened through `@npc/immune` `screenText` before any Brain call. On failure, `handleInbound` returns `{ ok: false, screened: true, categories }` — no outbound reply, no history update, no chain write; the session stays live. Optional `onScreenReject(category, "session.inbound")` logs category hits only.
 

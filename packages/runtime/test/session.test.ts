@@ -67,6 +67,36 @@ class PausingStore implements SoulStore {
   }
 }
 
+/**
+ * Fails on the Nth {@link append} call (1-based) to simulate crash windows / disk errors.
+ */
+class FailNthAppendStore implements SoulStore {
+  private readonly inner = new MemorySoulStore();
+  private appendCount = 0;
+
+  constructor(private readonly failOnAppendNumber: number) {}
+
+  async append(record: OspRecord): Promise<AppendResult> {
+    this.appendCount += 1;
+    if (this.appendCount === this.failOnAppendNumber) {
+      throw new Error("simulated append failure");
+    }
+    return this.inner.append(record);
+  }
+
+  async head(): Promise<HeadInfo | null> {
+    return this.inner.head();
+  }
+
+  async get(cid: string): Promise<OspRecord> {
+    return this.inner.get(cid);
+  }
+
+  async *iterate(): AsyncIterable<OspRecord> {
+    yield* this.inner.iterate();
+  }
+}
+
 function createInboundFrame(text: string, msgId: string): InboundFrame {
   return {
     type: "inbound",
@@ -378,5 +408,217 @@ describe("Session", () => {
       (record) => record.type === "attestation" && record.body.kind === "arrival"
     );
     expect(arrivals).toHaveLength(1);
+  });
+
+  it("serializes concurrent handleInbound so history stays ordered and Brain calls do not overlap", async () => {
+    const store = await buildGenesisStore();
+    const clock = new FakeClock(CLOCK_START);
+    const timer = new FakeTimer();
+    const keyring = new SingleKeyKeyring(SOUL.privateKey);
+    const door = new DoorStub({
+      doorId: DOOR_ID,
+      doorKeypair: DOOR,
+      soulPublicKey: SOUL.publicKey,
+      clock
+    });
+
+    let releaseFirst: (() => void) | undefined;
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let inFlight = 0;
+    let maxInFlight = 0;
+    let callIndex = 0;
+    const brain = new FakeBrain(async (messages) => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      callIndex += 1;
+      const thisCall = callIndex;
+      if (thisCall === 1) {
+        await firstGate;
+      }
+      inFlight -= 1;
+      const userMessages = messages.filter((message) => message.role === "user");
+      return `reply-${String(userMessages.length)}`;
+    });
+
+    const session = await Session.start({
+      store,
+      brain,
+      door,
+      keyring,
+      doorId: DOOR_ID,
+      timer,
+      clock,
+      heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS,
+      doorPublicKeys: doorPublicKeyFor(DOOR_ID, DOOR.publicKey)
+    });
+
+    const firstPromise = session.handleInbound(createInboundFrame("first", "in-1"));
+    const secondPromise = session.handleInbound(createInboundFrame("second", "in-2"));
+
+    await Promise.resolve();
+    expect(brain.calls).toHaveLength(1);
+
+    if (releaseFirst === undefined) {
+      throw new Error("expected first Brain gate");
+    }
+    releaseFirst();
+
+    const [first, second] = await Promise.all([firstPromise, secondPromise]);
+    expect(first.ok).toBe(true);
+    expect(second.ok).toBe(true);
+    expect(maxInFlight).toBe(1);
+    expect(brain.calls).toHaveLength(2);
+
+    const secondUserContents = brain.calls[1]?.messages
+      .filter((message) => message.role === "user")
+      .map((message) => message.content);
+    expect(secondUserContents).toEqual(["first", "second"]);
+
+    if (first.ok && second.ok) {
+      expect(first.outbound.body.text).toBe("reply-1");
+      expect(second.outbound.body.text).toBe("reply-2");
+      expect(first.outbound.msg_id).toBe("out-1");
+      expect(second.outbound.msg_id).toBe("out-2");
+    }
+
+    session.stop();
+  });
+
+  it("onHeartbeatError reports door stage when Door heartbeat fails", async () => {
+    const store = await buildGenesisStore();
+    const clock = new FakeClock(CLOCK_START);
+    const timer = new FakeTimer();
+    const keyring = new SingleKeyKeyring(SOUL.privateKey);
+    const door = new DoorStub({
+      doorId: DOOR_ID,
+      doorKeypair: DOOR,
+      soulPublicKey: SOUL.publicKey,
+      clock
+    });
+    const brain = new FakeBrain(["ok"]);
+    const stages: Array<"door" | "append"> = [];
+
+    door.heartbeat = async () => {
+      throw new Error("simulated door heartbeat failure");
+    };
+
+    const session = await Session.start({
+      store,
+      brain,
+      door,
+      keyring,
+      doorId: DOOR_ID,
+      timer,
+      clock,
+      heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS,
+      doorPublicKeys: doorPublicKeyFor(DOOR_ID, DOOR.publicKey),
+      onHeartbeatError: (_error, stage) => {
+        stages.push(stage);
+      }
+    });
+
+    timer.tick();
+    await session.drainAppends();
+
+    expect(stages).toEqual(["door"]);
+    expect(session.lastHeartbeatError).not.toBeNull();
+
+    session.stop();
+  });
+
+  it("onHeartbeatError reports append stage when store.append fails after attest", async () => {
+    // Append 1 = genesis, 2 = arrival, 3 = heartbeat body — fail the heartbeat append.
+    const store = new FailNthAppendStore(3);
+    const genesis = await createGenesisRecord(SOUL);
+    await store.append(genesis.record);
+
+    const clock = new FakeClock(CLOCK_START);
+    const timer = new FakeTimer();
+    const keyring = new SingleKeyKeyring(SOUL.privateKey);
+    const door = new DoorStub({
+      doorId: DOOR_ID,
+      doorKeypair: DOOR,
+      soulPublicKey: SOUL.publicKey,
+      clock
+    });
+    const brain = new FakeBrain(["ok"]);
+    const stages: Array<"door" | "append"> = [];
+
+    const session = await Session.start({
+      store,
+      brain,
+      door,
+      keyring,
+      doorId: DOOR_ID,
+      timer,
+      clock,
+      heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS,
+      doorPublicKeys: doorPublicKeyFor(DOOR_ID, DOOR.publicKey),
+      onHeartbeatError: (_error, stage) => {
+        stages.push(stage);
+      }
+    });
+
+    // Manual genesis = append #1, arrival = #2; heartbeat body fails on append #3.
+    timer.tick();
+    await session.drainAppends();
+
+    expect(stages).toEqual(["append"]);
+    expect(session.lastHeartbeatError).not.toBeNull();
+
+    session.stop();
+  });
+
+  it("Session.start uses max(chainDerived, activeEpoch+1) after mid-arrival crash window", async () => {
+    // Append 1 = genesis, 2 = arrival — fail after Door attest accepts epoch 1.
+    const failingStore = new FailNthAppendStore(2);
+    const genesis = await createGenesisRecord(SOUL);
+    await failingStore.append(genesis.record);
+
+    const clock = new FakeClock(CLOCK_START);
+    const timer = new FakeTimer();
+    const keyring = new SingleKeyKeyring(SOUL.privateKey);
+    const door = new DoorStub({
+      doorId: DOOR_ID,
+      doorKeypair: DOOR,
+      soulPublicKey: SOUL.publicKey,
+      clock
+    });
+    const brain = new FakeBrain(["ok"]);
+
+    await expect(
+      Session.start({
+        store: failingStore,
+        brain,
+        door,
+        keyring,
+        doorId: DOOR_ID,
+        timer,
+        clock,
+        heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS,
+        doorPublicKeys: doorPublicKeyFor(DOOR_ID, DOOR.publicKey)
+      })
+    ).rejects.toThrow("simulated append failure");
+
+    // Door accepted arrival epoch 1; chain still genesis-only.
+    const recoveryStore = await buildGenesisStore();
+    const recoverySession = await Session.start({
+      store: recoveryStore,
+      brain,
+      door,
+      keyring,
+      doorId: DOOR_ID,
+      timer: new FakeTimer(),
+      clock,
+      heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS,
+      doorPublicKeys: doorPublicKeyFor(DOOR_ID, DOOR.publicKey),
+      activeEpoch: 1
+    });
+
+    expect(recoverySession.epoch).toBe(2);
+
+    recoverySession.stop();
   });
 });

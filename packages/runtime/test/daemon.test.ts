@@ -183,4 +183,87 @@ describe("startResidencyDaemon", () => {
     });
     await reopened.close();
   });
+
+  it("serializes concurrent inbound frames through one Brain at a time", async () => {
+    let releaseFirst: (() => void) | undefined;
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let inFlight = 0;
+    let maxInFlight = 0;
+    let callIndex = 0;
+    const brain = new FakeBrain(async (messages) => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      callIndex += 1;
+      if (callIndex === 1) {
+        await firstGate;
+      }
+      inFlight -= 1;
+      const lastUser = [...messages].reverse().find((message) => message.role === "user");
+      return `echo:${lastUser?.content ?? ""}`;
+    });
+
+    const handle = await startResidencyDaemon(env.config, {
+      brain,
+      logger: pino({ level: "silent" }),
+      skipSignals: true
+    });
+
+    await waitForReadyFile(env.readyFilePath);
+
+    const serverSockets = [...env.wsServer.getActiveClients()];
+    expect(serverSockets.length).toBe(1);
+    const serverSocket = serverSockets[0];
+    if (serverSocket === undefined) {
+      throw new Error("expected one active server socket");
+    }
+
+    const outbounds: Array<Record<string, unknown>> = [];
+    const outboundDone = new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("outbound timeout")), 5000);
+      serverSocket.on("message", (data: WebSocket.RawData) => {
+        const text = typeof data === "string" ? data : data.toString("utf8");
+        outbounds.push(JSON.parse(text) as Record<string, unknown>);
+        if (outbounds.length >= 2) {
+          clearTimeout(timer);
+          resolve();
+        }
+      });
+    });
+
+    env.wsServer.broadcastInbound({ text: "msg-a", author_id: "user-daemon" }, "in-daemon-a");
+    env.wsServer.broadcastInbound({ text: "msg-b", author_id: "user-daemon" }, "in-daemon-b");
+
+    const started = Date.now();
+    while (brain.calls.length < 1) {
+      if (Date.now() - started > 2000) {
+        throw new Error("first Brain call did not start");
+      }
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 10);
+      });
+    }
+    // Still gated on first complete — second must not start yet.
+    expect(brain.calls).toHaveLength(1);
+
+    if (releaseFirst === undefined) {
+      throw new Error("expected first Brain gate");
+    }
+    releaseFirst();
+    await outboundDone;
+
+    expect(maxInFlight).toBe(1);
+    expect(brain.calls).toHaveLength(2);
+    expect(outbounds).toHaveLength(2);
+    expect(outbounds[0]?.body).toEqual({ text: "echo:msg-a" });
+    expect(outbounds[1]?.body).toEqual({ text: "echo:msg-b" });
+
+    const secondCallUsers = brain.calls[1]?.messages
+      .filter((message) => message.role === "user")
+      .map((message) => message.content);
+    expect(secondCallUsers).toEqual(["msg-a", "msg-b"]);
+
+    await handle.shutdown();
+  });
 });
