@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { mkdtemp, rm, readFile, writeFile, open as fsOpen } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
@@ -15,7 +16,9 @@ import {
   type OspRecord,
   type Ed25519Keypair
 } from "../src/index.js";
+import { resolveBlockPath } from "../src/store/ipfs-soul-store.js";
 import { appendSeqIndex } from "../src/store/seq-index.js";
+import { fsyncPath } from "../src/store/fsync.js";
 
 const RESIDENCY = "door:discord:g/epoch:1";
 const WRONG_PREV_CID = "bagu" + "a".repeat(57);
@@ -241,6 +244,26 @@ describe("IpfsSoulStore", () => {
       expect(iterated[1]?.body).toEqual(memoryRecord.body);
     } finally {
       await recovered.close();
+    }
+  });
+
+  it("fsyncs the sharded block path after append (path derivation matches on-disk layout)", async () => {
+    const store = await IpfsSoulStore.open(dir);
+    try {
+      const genesis = await appendGenesis(store, soul);
+      const blockPath = resolveBlockPath(path.join(dir, "blocks"), genesis.cid);
+
+      expect(existsSync(blockPath)).toBe(true);
+      // Path derivation matches FsBlockstore layout; fsyncPath succeeds on the real file.
+      await expect(fsyncPath(blockPath)).resolves.toBeUndefined();
+
+      const relative = path.relative(path.join(dir, "blocks"), blockPath);
+      const parts = relative.split(path.sep);
+      expect(parts).toHaveLength(2);
+      expect(parts[0]?.length).toBe(2);
+      expect(parts[1]?.endsWith(".data")).toBe(true);
+    } finally {
+      await store.close();
     }
   });
 

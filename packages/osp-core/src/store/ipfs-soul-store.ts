@@ -3,6 +3,7 @@ import { mkdir, stat } from "node:fs/promises";
 import * as path from "node:path";
 
 import { FsBlockstore } from "blockstore-fs";
+import { NextToLast } from "blockstore-fs/sharding";
 import { CID } from "multiformats/cid";
 
 import { canonicalize } from "../canonical.js";
@@ -21,7 +22,7 @@ import { verifyRecords } from "../verify-chain.js";
 
 import { FileLock } from "./file-lock.js";
 import { readHead, writeHeadAtomic } from "./head-file.js";
-import { bytesEqual, fsyncDirectory } from "./fsync.js";
+import { bytesEqual, fsyncDirectory, fsyncPath } from "./fsync.js";
 import { isNodeError, nodeErrorMessage } from "./node-fs-error.js";
 import {
   appendSeqIndex,
@@ -35,6 +36,19 @@ import type { AppendResult, HeadInfo, IpfsSoulStoreOpenOptions, SoulStore } from
 const BLOCKS_DIR = "blocks";
 const SEQ_INDEX_FILE = "seq-index.jsonl";
 const LOCK_FILE = "LOCK";
+
+/**
+ * Resolve the on-disk path for a CID under a blocks directory using the same
+ * NextToLast sharding strategy FsBlockstore defaults to.
+ */
+export function resolveBlockPath(
+  blocksPath: string,
+  cid: string,
+  shard = new NextToLast()
+): string {
+  const { dir, file } = shard.encode(CID.parse(cid));
+  return path.join(blocksPath, dir, file);
+}
 
 /** Collect all chunks from a blockstore get() async generator into one Uint8Array. */
 async function collectBytes(gen: AsyncIterable<Uint8Array>): Promise<Uint8Array> {
@@ -61,6 +75,7 @@ export class IpfsSoulStore implements SoulStore {
   private readonly blocksPath: string;
   private readonly seqIndexPath: string;
   private readonly blockstore: FsBlockstore;
+  private readonly shard: NextToLast;
   private readonly appendLock: FileLock;
   private readonly doorPublicKeys: Readonly<Record<string, Uint8Array>> | undefined;
   private readonly readOnly: boolean;
@@ -71,6 +86,7 @@ export class IpfsSoulStore implements SoulStore {
   private constructor(
     dir: string,
     blockstore: FsBlockstore,
+    shard: NextToLast,
     doorPublicKeys: Readonly<Record<string, Uint8Array>> | undefined,
     head: HeadInfo | null,
     soulPublicKey: Uint8Array | null,
@@ -80,6 +96,7 @@ export class IpfsSoulStore implements SoulStore {
     this.blocksPath = path.join(dir, BLOCKS_DIR);
     this.seqIndexPath = path.join(dir, SEQ_INDEX_FILE);
     this.blockstore = blockstore;
+    this.shard = shard;
     this.appendLock = new FileLock(path.join(dir, LOCK_FILE));
     this.doorPublicKeys = doorPublicKeys;
     this.readOnly = readOnly;
@@ -88,13 +105,34 @@ export class IpfsSoulStore implements SoulStore {
     this.closed = false;
   }
 
+  /** Create FsBlockstore bound to the same NextToLast shard used for durable fsync paths. */
+  private static createBlockstore(
+    absoluteDir: string,
+    init?: { createIfMissing?: boolean }
+  ): { blockstore: FsBlockstore; shard: NextToLast } {
+    const shard = new NextToLast();
+    const blocksPath = path.join(absoluteDir, BLOCKS_DIR);
+    const blockstore = new FsBlockstore(blocksPath, {
+      shardingStrategy: shard,
+      ...(init?.createIfMissing === undefined ? {} : { createIfMissing: init.createIfMissing })
+    });
+    return { blockstore, shard };
+  }
+
   /** Open a soulchain directory. Never auto-truncates torn writes; use {@link openWithRecovery} instead. */
   static async open(dir: string, options?: IpfsSoulStoreOpenOptions): Promise<IpfsSoulStore> {
     const absoluteDir = path.resolve(dir);
-    const blockstore = new FsBlockstore(path.join(absoluteDir, BLOCKS_DIR));
+    const { blockstore, shard } = IpfsSoulStore.createBlockstore(absoluteDir);
     await blockstore.open();
 
-    const store = new IpfsSoulStore(absoluteDir, blockstore, options?.doorPublicKeys, null, null);
+    const store = new IpfsSoulStore(
+      absoluteDir,
+      blockstore,
+      shard,
+      options?.doorPublicKeys,
+      null,
+      null
+    );
     await store.ensureLayout();
     await store.loadChain();
     return store;
@@ -111,10 +149,17 @@ export class IpfsSoulStore implements SoulStore {
     options?: IpfsSoulStoreOpenOptions
   ): Promise<{ store: IpfsSoulStore; truncatedBytes: number }> {
     const absoluteDir = path.resolve(dir);
-    const blockstore = new FsBlockstore(path.join(absoluteDir, BLOCKS_DIR));
+    const { blockstore, shard } = IpfsSoulStore.createBlockstore(absoluteDir);
     await blockstore.open();
 
-    const store = new IpfsSoulStore(absoluteDir, blockstore, options?.doorPublicKeys, null, null);
+    const store = new IpfsSoulStore(
+      absoluteDir,
+      blockstore,
+      shard,
+      options?.doorPublicKeys,
+      null,
+      null
+    );
     await store.ensureLayout();
 
     await store.appendLock.clearStale();
@@ -146,12 +191,15 @@ export class IpfsSoulStore implements SoulStore {
       throw new StorageError(`blocks directory does not exist: ${blocksPath}`);
     }
 
-    const blockstore = new FsBlockstore(blocksPath, { createIfMissing: false });
+    const { blockstore, shard } = IpfsSoulStore.createBlockstore(absoluteDir, {
+      createIfMissing: false
+    });
     await blockstore.open();
 
     const store = new IpfsSoulStore(
       absoluteDir,
       blockstore,
+      shard,
       options?.doorPublicKeys,
       null,
       null,
@@ -538,7 +586,7 @@ export class IpfsSoulStore implements SoulStore {
     return readSeqIndex(this.seqIndexPath);
   }
 
-  /** Idempotent block put with byte-identity check on collision. */
+  /** Idempotent block put with byte-identity check on collision and durable fsync. */
   private async putBlockIdempotent(cid: string, bytes: Uint8Array): Promise<void> {
     const parsedCid = CID.parse(cid);
 
@@ -551,6 +599,12 @@ export class IpfsSoulStore implements SoulStore {
     }
 
     await this.blockstore.put(parsedCid, bytes);
+
+    // FsBlockstore/steno does temp+rename with no fsync. Spec §3.2 requires the block
+    // durable before seq-index/HEAD; sync the sharded .data file and both directories.
+    const blockPath = resolveBlockPath(this.blocksPath, cid, this.shard);
+    await fsyncPath(blockPath);
+    await fsyncDirectory(path.dirname(blockPath));
     await fsyncDirectory(this.blocksPath);
   }
 
