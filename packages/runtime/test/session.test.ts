@@ -561,7 +561,7 @@ describe("Session", () => {
       }
     });
 
-    // Arrival used append #1; heartbeat attest then fails on append #2.
+    // Manual genesis = append #1, arrival = #2; heartbeat body fails on append #3.
     timer.tick();
     await session.drainAppends();
 
