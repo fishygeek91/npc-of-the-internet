@@ -1,5 +1,14 @@
 # @npc/runtime
 
+## 0.2.1
+
+### Patch Changes
+
+- 592486d: Release CI: Trivy gates on fixable CVEs only and scans before push.
+  - @npc/osp-core@0.2.1
+  - @npc/immune@0.2.1
+  - @npc/door-sdk@0.2.1
+
 ## 0.2.0
 
 ### Minor Changes
