@@ -406,4 +406,111 @@ describe("RecordSchema", () => {
       expect(result.success).toBe(true);
     }
   });
+
+  it("accepts osp/0.2 shard with matching text_cid and text_hash", () => {
+    const result = RecordSchema.safeParse({
+      spec: "osp/0.2",
+      seq: 2,
+      prev: PREV_CID,
+      type: "memory",
+      body: {
+        kind: "shard",
+        text_cid: "baguqeeralktwflryh65xe6xty6rw2skauw4micuysrjnemcpzfmp6pzvjz5a",
+        text_hash: "Wqdirjg_u3J688ejbUlApbjECpiUUtIwT8lY_z81Tno",
+        distilled_at: "2026-01-03T00:00:00.000Z"
+      },
+      residency: RESIDENCY,
+      cosigners: [TEST_DOOR_COSIG],
+      sig: TEST_SOUL_SIG
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects osp/0.2 shard with mismatched text_hash", () => {
+    const result = RecordSchema.safeParse({
+      spec: "osp/0.2",
+      seq: 2,
+      prev: PREV_CID,
+      type: "memory",
+      body: {
+        kind: "shard",
+        text_cid: "baguqeeralktwflryh65xe6xty6rw2skauw4micuysrjnemcpzfmp6pzvjz5a",
+        text_hash: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        distilled_at: "2026-01-03T00:00:00.000Z"
+      },
+      residency: RESIDENCY,
+      cosigners: [TEST_DOOR_COSIG],
+      sig: TEST_SOUL_SIG
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects osp/0.1 shard that uses text_cid", () => {
+    const result = RecordSchema.safeParse({
+      ...VALID_SHARD,
+      body: {
+        kind: "shard",
+        text_cid: "baguqeeralktwflryh65xe6xty6rw2skauw4micuysrjnemcpzfmp6pzvjz5a",
+        text_hash: "Wqdirjg_u3J688ejbUlApbjECpiUUtIwT8lY_z81Tno",
+        distilled_at: "2026-01-03T00:00:00.000Z"
+      }
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts tombstone with closed reason enum and residency null", () => {
+    const result = RecordSchema.safeParse({
+      spec: "osp/0.2",
+      seq: 3,
+      prev: PREV_CID,
+      type: "tombstone",
+      body: {
+        target_cid: PREV_CID,
+        blob_cid: "baguqeeralktwflryh65xe6xty6rw2skauw4micuysrjnemcpzfmp6pzvjz5a",
+        reason: "erasure_request",
+        erased_at: "2026-01-04T00:00:00.000Z"
+      },
+      residency: null,
+      cosigners: [],
+      sig: TEST_SOUL_SIG
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects tombstone with free-text reason or erased prose", () => {
+    const badReason = RecordSchema.safeParse({
+      spec: "osp/0.2",
+      seq: 3,
+      prev: PREV_CID,
+      type: "tombstone",
+      body: {
+        target_cid: PREV_CID,
+        blob_cid: "baguqeeralktwflryh65xe6xty6rw2skauw4micuysrjnemcpzfmp6pzvjz5a",
+        reason: "please delete this",
+        erased_at: "2026-01-04T00:00:00.000Z"
+      },
+      residency: null,
+      cosigners: [],
+      sig: TEST_SOUL_SIG
+    });
+    expect(badReason.success).toBe(false);
+
+    const withProse = RecordSchema.safeParse({
+      spec: "osp/0.2",
+      seq: 3,
+      prev: PREV_CID,
+      type: "tombstone",
+      body: {
+        target_cid: PREV_CID,
+        blob_cid: "baguqeeralktwflryh65xe6xty6rw2skauw4micuysrjnemcpzfmp6pzvjz5a",
+        reason: "dmca",
+        erased_at: "2026-01-04T00:00:00.000Z",
+        erased_text: "leaked"
+      },
+      residency: null,
+      cosigners: [],
+      sig: TEST_SOUL_SIG
+    });
+    expect(withProse.success).toBe(false);
+  });
 });

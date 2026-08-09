@@ -312,9 +312,21 @@ describe("verifyRecords", () => {
     const chain = await createValidMiniChain(soul, door, session);
     const invalid = {
       ...chain.arrival.record,
-      spec: "osp/0.2"
+      spec: "osp/9.9"
     };
     const records = [chain.genesis.record, invalid, chain.shard.record, chain.drift.record];
+
+    const result = await verifyRecords(records, { doorPublicKeys: doorPublicKeysMap(door) });
+    expectInvalid(result, "schema_violation");
+  });
+
+  it("rejects mixed osp spec versions on one chain", async () => {
+    const chain = await createValidMiniChain(soul, door, session);
+    const mixed = {
+      ...chain.arrival.record,
+      spec: "osp/0.2" as const
+    };
+    const records = [chain.genesis.record, mixed, chain.shard.record, chain.drift.record];
 
     const result = await verifyRecords(records, { doorPublicKeys: doorPublicKeysMap(door) });
     expectInvalid(result, "schema_violation");

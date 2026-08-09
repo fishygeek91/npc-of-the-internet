@@ -231,7 +231,7 @@ Ghost's chain contains distilled `memory` text (and journals) derived from real 
 - **Durability by default:** blobs are pinned and retained indefinitely; erasure is an exceptional, on-chain-visible event.
 - Under (b), Arweave/cold snapshots (§9) receive **envelope blocks only**, never text blobs.
 
-Schema/format work for `osp/0.2` is tracked in [#119](https://github.com/fishygeek91/npc-of-the-internet/issues/119) (migration vectors per D7, Self-Composer fetch path, cosign semantics over blob bytes, tombstoned-shard handling in composition). WHITEPAPER §3.1/§3.2 and genesis charter are updated in the same gate. The append-only *identity* claim is unchanged — erasure is itself public and auditable.
+Schema/format work for `osp/0.2` is tracked in [#119](https://github.com/fishygeek91/npc-of-the-internet/issues/119) (migration vectors per D7, Self-Composer fetch path, cosign semantics over blob bytes, tombstoned-shard handling in composition). Record, tombstone, and side-blob shapes are normative in [`records.md`](./records.md) (`osp/0.2`). WHITEPAPER §3.1/§3.2 and genesis charter are updated in the same gate. The append-only *identity* claim is unchanged — erasure is itself public and auditable.
 
 Phases A–C are unaffected (local-only). Until `#119` lands and operators explicitly configure Phase D replication, replication MUST be configured to an **empty target set** — the code path exists, nothing leaves the box.
 

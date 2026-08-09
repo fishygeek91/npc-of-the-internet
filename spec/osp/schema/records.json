@@ -8,7 +8,7 @@
           "properties": {
             "spec": {
               "type": "string",
-              "const": "osp/0.1"
+              "enum": ["osp/0.1", "osp/0.2"]
             },
             "seq": {
               "type": "integer",
@@ -51,10 +51,12 @@
                   "type": "string"
                 },
                 "created_at": {
-                  "type": "string"
+                  "type": "string",
+                  "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,9})?Z$"
                 },
                 "fork_point": {
-                  "type": "string"
+                  "type": "string",
+                  "pattern": "^bagu[a-z2-7]{57}$"
                 },
                 "fork_reason": {
                   "type": "string"
@@ -72,7 +74,7 @@
           "properties": {
             "spec": {
               "type": "string",
-              "const": "osp/0.1"
+              "enum": ["osp/0.1", "osp/0.2"]
             },
             "seq": {
               "type": "integer",
@@ -125,10 +127,44 @@
                       "type": "string"
                     },
                     "distilled_at": {
-                      "type": "string"
+                      "type": "string",
+                      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,9})?Z$"
                     }
                   },
                   "required": ["kind", "text", "distilled_at"],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "const": "shard"
+                    },
+                    "text_cid": {
+                      "type": "string",
+                      "pattern": "^bagu[a-z2-7]{57}$"
+                    },
+                    "text_hash": {
+                      "type": "string"
+                    },
+                    "candidate_cid": {
+                      "type": "string",
+                      "pattern": "^bagu[a-z2-7]{57}$"
+                    },
+                    "journal_cid": {
+                      "type": "string",
+                      "pattern": "^bagu[a-z2-7]{57}$"
+                    },
+                    "journal_hash": {
+                      "type": "string"
+                    },
+                    "distilled_at": {
+                      "type": "string",
+                      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,9})?Z$"
+                    }
+                  },
+                  "required": ["kind", "text_cid", "text_hash", "distilled_at"],
                   "additionalProperties": false
                 },
                 {
@@ -142,10 +178,33 @@
                       "type": "string"
                     },
                     "proposed_at": {
-                      "type": "string"
+                      "type": "string",
+                      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,9})?Z$"
                     }
                   },
                   "required": ["kind", "text", "proposed_at"],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "const": "candidate"
+                    },
+                    "text_cid": {
+                      "type": "string",
+                      "pattern": "^bagu[a-z2-7]{57}$"
+                    },
+                    "text_hash": {
+                      "type": "string"
+                    },
+                    "proposed_at": {
+                      "type": "string",
+                      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,9})?Z$"
+                    }
+                  },
+                  "required": ["kind", "text_cid", "text_hash", "proposed_at"],
                   "additionalProperties": false
                 },
                 {
@@ -163,7 +222,8 @@
                       "pattern": "^bagu[a-z2-7]{57}$"
                     },
                     "rejected_at": {
-                      "type": "string"
+                      "type": "string",
+                      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,9})?Z$"
                     }
                   },
                   "required": ["kind", "category", "rejected_at"],
@@ -180,7 +240,7 @@
           "properties": {
             "spec": {
               "type": "string",
-              "const": "osp/0.1"
+              "enum": ["osp/0.1", "osp/0.2"]
             },
             "seq": {
               "type": "integer",
@@ -228,7 +288,8 @@
                   "minItems": 1
                 },
                 "effective_at": {
-                  "type": "string"
+                  "type": "string",
+                  "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,9})?Z$"
                 }
               },
               "required": ["summary", "evidence", "effective_at"],
@@ -243,7 +304,7 @@
           "properties": {
             "spec": {
               "type": "string",
-              "const": "osp/0.1"
+              "enum": ["osp/0.1", "osp/0.2"]
             },
             "seq": {
               "type": "integer",
@@ -290,7 +351,8 @@
                   "additionalProperties": {}
                 },
                 "decided_at": {
-                  "type": "string"
+                  "type": "string",
+                  "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,9})?Z$"
                 }
               },
               "required": ["decision", "reasoning", "decided_at"],
@@ -305,7 +367,7 @@
           "properties": {
             "spec": {
               "type": "string",
-              "const": "osp/0.1"
+              "enum": ["osp/0.1", "osp/0.2"]
             },
             "seq": {
               "type": "integer",
@@ -361,7 +423,8 @@
                   "type": "string"
                 },
                 "executed_at": {
-                  "type": "string"
+                  "type": "string",
+                  "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,9})?Z$"
                 }
               },
               "required": ["direction", "amount", "currency", "executed_at"],
@@ -376,7 +439,7 @@
           "properties": {
             "spec": {
               "type": "string",
-              "const": "osp/0.1"
+              "enum": ["osp/0.1", "osp/0.2"]
             },
             "seq": {
               "type": "integer",
@@ -433,7 +496,8 @@
                       "type": "string"
                     },
                     "at": {
-                      "type": "string"
+                      "type": "string",
+                      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,9})?Z$"
                     }
                   },
                   "required": ["kind", "pop_version", "door_id", "epoch", "session_pubkey", "at"],
@@ -461,7 +525,8 @@
                       "type": "string"
                     },
                     "at": {
-                      "type": "string"
+                      "type": "string",
+                      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,9})?Z$"
                     }
                   },
                   "required": ["kind", "pop_version", "door_id", "epoch", "session_pubkey", "at"],
@@ -486,7 +551,8 @@
                       "minimum": 0
                     },
                     "at": {
-                      "type": "string"
+                      "type": "string",
+                      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,9})?Z$"
                     }
                   },
                   "required": ["kind", "pop_version", "door_id", "epoch", "at"],
@@ -514,7 +580,8 @@
                       "type": "string"
                     },
                     "at": {
-                      "type": "string"
+                      "type": "string",
+                      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,9})?Z$"
                     }
                   },
                   "required": ["kind", "pop_version", "from_door_id", "from_epoch", "at"],
@@ -555,7 +622,8 @@
                       "type": "string"
                     },
                     "at": {
-                      "type": "string"
+                      "type": "string",
+                      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,9})?Z$"
                     }
                   },
                   "required": [
@@ -580,7 +648,7 @@
           "properties": {
             "spec": {
               "type": "string",
-              "const": "osp/0.1"
+              "enum": ["osp/0.1", "osp/0.2"]
             },
             "seq": {
               "type": "integer",
@@ -626,10 +694,76 @@
                   "type": "string"
                 },
                 "as_of": {
-                  "type": "string"
+                  "type": "string",
+                  "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,9})?Z$"
                 }
               },
               "required": ["reason", "balance", "threshold", "as_of"],
+              "additionalProperties": false
+            }
+          },
+          "required": ["spec", "seq", "prev", "residency", "cosigners", "sig", "type", "body"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "spec": {
+              "type": "string",
+              "enum": ["osp/0.1", "osp/0.2"]
+            },
+            "seq": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "prev": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^bagu[a-z2-7]{57}$"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "residency": {
+              "type": ["string", "null"]
+            },
+            "cosigners": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "sig": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "tombstone"
+            },
+            "body": {
+              "type": "object",
+              "properties": {
+                "target_cid": {
+                  "type": "string",
+                  "pattern": "^bagu[a-z2-7]{57}$"
+                },
+                "blob_cid": {
+                  "type": "string",
+                  "pattern": "^bagu[a-z2-7]{57}$"
+                },
+                "reason": {
+                  "type": "string",
+                  "enum": ["erasure_request", "dmca", "illegal_content", "operator"]
+                },
+                "erased_at": {
+                  "type": "string",
+                  "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,9})?Z$"
+                }
+              },
+              "required": ["target_cid", "blob_cid", "reason", "erased_at"],
               "additionalProperties": false
             }
           },

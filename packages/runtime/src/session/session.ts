@@ -712,7 +712,7 @@ export class Session {
 
       if (record.type === "memory") {
         const body = record.body;
-        if (body.kind === "candidate") {
+        if (body.kind === "candidate" && "text" in body) {
           candidateCidsByText.set(body.text, await computeCid(record));
           continue;
         }

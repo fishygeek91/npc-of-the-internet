@@ -432,6 +432,8 @@ The Wanderer MUST NOT append rejected shards to the soulchain. Quarantine lifecy
 
 For each **approved** shard from Phase 1, the Wanderer builds the unsigned `memory` envelope (`cosigners` empty, no `sig`), computes the OSP **`core`** bytes (canonical JSON with `cosigners` and `sig` omitted — same rules as `POST /door/attest`), and requests a `door_cosig` over those raw bytes.
 
+Under `osp/0.2`, the commit-phase `core` body carries `text_cid` / `text_hash` (and optional `journal_cid` / `journal_hash`) instead of inline prose — see `spec/osp/records.md`. Phase 1 **review** still ships plaintext `CandidateShard.text` for host review; only the commit envelope references side blobs.
+
 #### Request (`phase: "commit"`)
 
 | Field | Type | Required | Description |
