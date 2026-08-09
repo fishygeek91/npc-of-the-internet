@@ -20,6 +20,18 @@ export type FileSoulStoreOpenOptions = {
   doorPublicKeys?: Readonly<Record<string, Uint8Array>>;
 };
 
+/** Options for opening an IPFS blockstore-backed SoulStore (v0.2 L1). */
+export type IpfsSoulStoreOpenOptions = {
+  /**
+   * Door public keys keyed by residency Door id (e.g. `discord:guild123`)
+   * for cosigner verification on open/get/append.
+   */
+  doorPublicKeys?: Readonly<Record<string, Uint8Array>>;
+};
+
+/** Options for opening a dual-write SoulStore (file authoritative + IPFS mirror). */
+export type DualSoulStoreOpenOptions = IpfsSoulStoreOpenOptions;
+
 /**
  * Storage-agnostic append-only soulchain store (FileSoulStore v0.1; IPFS later).
  *

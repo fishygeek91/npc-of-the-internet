@@ -4,7 +4,6 @@ import * as path from "node:path";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 
 import {
-  FileSoulStore,
   createRecord,
   generateKeypair,
   encodePublicKey,
@@ -21,22 +20,13 @@ import {
 const RESIDENCY = "door:discord:g/epoch:1";
 const WRONG_PREV_CID = "bagu" + "a".repeat(57);
 
-const DEFAULT_LAYOUT = {
-  chainFile: "chain.jsonl",
-  blobsDir: "blobs",
-  lockFile: ".append.lock"
-} as const;
+/** On-disk JSONL layout paths (FileSoulStore only). */
+const JSONL_CHAIN_FILE = "chain.jsonl";
+const JSONL_BLOBS_DIR = "blobs";
 
 /** SoulStore plus explicit close for test lifecycle (not on the SoulStore interface). */
 export type ClosableSoulStore = SoulStore & {
   close(): Promise<void>;
-};
-
-/** On-disk layout hints for canonical-bytes and corruption tests (Ipfs/Dual extend in Phase B). */
-export type SoulStoreLayout = {
-  chainFile: string;
-  blobsDir: string;
-  lockFile: string;
 };
 
 /**
@@ -46,12 +36,13 @@ export type SoulStoreLayout = {
 export type SoulStoreFactory = {
   name: string;
   open: (dir: string) => Promise<ClosableSoulStore>;
-  layout?: SoulStoreLayout;
+  /** When true, run JSONL/blobs on-disk canonical + non-canonical tests. FileSoulStore only. */
+  supportsJsonlLayout?: boolean;
+  /** Lock filename relative to store dir (default ".append.lock"). Ipfs uses "LOCK". */
+  lockFile?: string;
+  /** When false, skip the concurrent-append lock test (e.g. DualSoulStore). Default true. */
+  supportsLockTest?: boolean;
 };
-
-function layoutOf(factory: SoulStoreFactory): SoulStoreLayout {
-  return factory.layout ?? DEFAULT_LAYOUT;
-}
 
 /** Create a unique temporary directory for an isolated store. */
 async function makeTempDir(): Promise<string> {
@@ -117,8 +108,6 @@ async function appendGenesis(store: SoulStore, soul: Ed25519Keypair) {
  * Call once per store backend (FileSoulStore in Phase A; Ipfs/Dual in Phase B).
  */
 export function registerStoreConformance(factory: SoulStoreFactory): void {
-  const layout = layoutOf(factory);
-
   describe(`SoulStore conformance (${factory.name})`, () => {
     let dir: string;
     let soul: Ed25519Keypair;
@@ -222,10 +211,14 @@ export function registerStoreConformance(factory: SoulStoreFactory): void {
     });
 
     it("refuses concurrent append when the append lock is held", async () => {
+      if (factory.supportsLockTest === false) {
+        return;
+      }
+
       const store = await factory.open(dir);
       const genesis = await appendGenesis(store, soul);
 
-      const lockPath = path.join(dir, layout.lockFile);
+      const lockPath = path.join(dir, factory.lockFile ?? ".append.lock");
       const lockFd = await fsOpen(lockPath, "wx");
 
       const { record } = await createMemoryCandidateRecord(
@@ -245,88 +238,85 @@ export function registerStoreConformance(factory: SoulStoreFactory): void {
       }
     });
 
-    it("persists canonical bytes on disk and reopens cleanly", async () => {
-      let genesisCid = "";
-      const store = await factory.open(dir);
-      try {
-        const genesis = await appendGenesis(store, soul);
-        genesisCid = genesis.cid;
-        const headAfterGenesis = await store.head();
-        if (headAfterGenesis === null) {
-          throw new Error("expected head after genesis");
+    if (factory.supportsJsonlLayout) {
+      it("persists canonical bytes on disk and reopens cleanly", async () => {
+        let genesisCid = "";
+        const store = await factory.open(dir);
+        try {
+          const genesis = await appendGenesis(store, soul);
+          genesisCid = genesis.cid;
+          const headAfterGenesis = await store.head();
+          if (headAfterGenesis === null) {
+            throw new Error("expected head after genesis");
+          }
+
+          const memory = await createMemoryCandidateRecord(
+            soul,
+            1,
+            headAfterGenesis.cid,
+            "Canonical bytes check."
+          );
+          await store.append(memory.record);
+        } finally {
+          await store.close();
         }
 
-        const memory = await createMemoryCandidateRecord(
-          soul,
-          1,
-          headAfterGenesis.cid,
-          "Canonical bytes check."
-        );
-        await store.append(memory.record);
-      } finally {
-        await store.close();
-      }
+        const chainPath = path.join(dir, JSONL_CHAIN_FILE);
+        const chainBytes = await readFile(chainPath);
+        const lineStrings = chainBytes
+          .toString("utf8")
+          .split("\n")
+          .filter((line) => line.length > 0);
 
-      const chainPath = path.join(dir, layout.chainFile);
-      const chainBytes = await readFile(chainPath);
-      const lineStrings = chainBytes
-        .toString("utf8")
-        .split("\n")
-        .filter((line) => line.length > 0);
+        expect(lineStrings.length).toBeGreaterThan(0);
 
-      expect(lineStrings.length).toBeGreaterThan(0);
+        for (const line of lineStrings) {
+          const lineBytes = new TextEncoder().encode(line);
+          const parsed: unknown = JSON.parse(line);
+          const expected = canonicalize(parsed);
+          expect(Buffer.from(lineBytes).equals(Buffer.from(expected))).toBe(true);
 
-      for (const line of lineStrings) {
-        const lineBytes = new TextEncoder().encode(line);
-        const parsed: unknown = JSON.parse(line);
-        const expected = canonicalize(parsed);
-        expect(Buffer.from(lineBytes).equals(Buffer.from(expected))).toBe(true);
+          const cid = await computeCidFromCanonicalBytes(lineBytes);
+          const blobBytes = await readFile(path.join(dir, JSONL_BLOBS_DIR, cid));
+          expect(blobBytes.equals(Buffer.from(expected))).toBe(true);
+        }
 
+        const reopened = await factory.open(dir);
+        try {
+          const iterated = await collectRecords(reopened);
+          expect(iterated).toHaveLength(2);
+          expect(iterated.map((record) => record.seq)).toEqual([0, 1]);
+          expect((await reopened.head())?.seq).toBe(1);
+          expect((await reopened.get(genesisCid)).type).toBe("genesis");
+        } finally {
+          await reopened.close();
+        }
+      });
+
+      it("rejects a non-canonical chain line on open", async () => {
+        const store = await factory.open(dir);
+        let record: OspRecord;
+        try {
+          const created = await createGenesisRecord(soul);
+          record = created.record;
+          await store.append(record);
+        } finally {
+          await store.close();
+        }
+
+        const compact = JSON.stringify(record);
+        const nonCanonicalJson = `{ ${compact.slice(1)}`;
+        const lineBytes = new TextEncoder().encode(nonCanonicalJson);
         const cid = await computeCidFromCanonicalBytes(lineBytes);
-        const blobBytes = await readFile(path.join(dir, layout.blobsDir, cid));
-        expect(blobBytes.equals(Buffer.from(expected))).toBe(true);
-      }
+        await writeFile(
+          path.join(dir, JSONL_CHAIN_FILE),
+          Buffer.concat([Buffer.from(lineBytes), Buffer.from("\n")])
+        );
+        await writeFile(path.join(dir, JSONL_BLOBS_DIR, cid), Buffer.from(lineBytes));
 
-      const reopened = await factory.open(dir);
-      try {
-        const iterated = await collectRecords(reopened);
-        expect(iterated).toHaveLength(2);
-        expect(iterated.map((record) => record.seq)).toEqual([0, 1]);
-        expect((await reopened.head())?.seq).toBe(1);
-        expect((await reopened.get(genesisCid)).type).toBe("genesis");
-      } finally {
-        await reopened.close();
-      }
-    });
-
-    it("rejects a non-canonical chain line on open", async () => {
-      const store = await factory.open(dir);
-      let record: OspRecord;
-      try {
-        const created = await createGenesisRecord(soul);
-        record = created.record;
-        await store.append(record);
-      } finally {
-        await store.close();
-      }
-
-      const compact = JSON.stringify(record);
-      const nonCanonicalJson = `{ ${compact.slice(1)}`;
-      const lineBytes = new TextEncoder().encode(nonCanonicalJson);
-      const cid = await computeCidFromCanonicalBytes(lineBytes);
-      await writeFile(
-        path.join(dir, layout.chainFile),
-        Buffer.concat([Buffer.from(lineBytes), Buffer.from("\n")])
-      );
-      await writeFile(path.join(dir, layout.blobsDir, cid), Buffer.from(lineBytes));
-
-      await expect(factory.open(dir)).rejects.toThrow(CorruptionError);
-      await expect(factory.open(dir)).rejects.toThrow(/non-canonical chain line/);
-    });
+        await expect(factory.open(dir)).rejects.toThrow(CorruptionError);
+        await expect(factory.open(dir)).rejects.toThrow(/non-canonical chain line/);
+      });
+    }
   });
 }
-
-registerStoreConformance({
-  name: "FileSoulStore",
-  open: (storeDir) => FileSoulStore.open(storeDir)
-});
