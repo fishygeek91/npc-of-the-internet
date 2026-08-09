@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 
 import { pathToFileURL } from "node:url";
+import { createReadStream, existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 
 import cors from "@fastify/cors";
 import Fastify, { type FastifyInstance, type FastifyReply } from "fastify";
@@ -137,6 +139,59 @@ export async function createAtlasServer(config: AtlasConfig): Promise<FastifyIns
           });
     void reply.send(result);
   });
+
+  if (config.publishedCarPath !== undefined) {
+    const carPath = config.publishedCarPath;
+    app.get("/soulchain-latest.car", async (_request, reply) => {
+      if (!existsSync(carPath)) {
+        void reply
+          .status(404)
+          .send(
+            atlasErrorToBody(
+              new AtlasError("car_not_found", "published soulchain CAR file is not available", 404)
+            )
+          );
+        return;
+      }
+
+      // Stream the CAR — avoid buffering the whole file per request as chains grow.
+      // Return the send() promise so inject/light-my-request drains the stream.
+      return reply
+        .header("Content-Type", "application/vnd.ipld.car")
+        .send(createReadStream(carPath));
+    });
+  }
+
+  if (config.manifestCidPath !== undefined) {
+    const manifestPath = config.manifestCidPath;
+    app.get("/soulchain/manifest", async (_request, reply) => {
+      if (!existsSync(manifestPath)) {
+        void reply
+          .status(404)
+          .send(
+            atlasErrorToBody(
+              new AtlasError("manifest_not_found", "published manifest CID is not available", 404)
+            )
+          );
+        return;
+      }
+
+      const raw = await readFile(manifestPath, "utf8");
+      const manifestCid = raw.trim();
+      if (manifestCid === "") {
+        void reply
+          .status(404)
+          .send(
+            atlasErrorToBody(
+              new AtlasError("manifest_not_found", "published manifest CID is not available", 404)
+            )
+          );
+        return;
+      }
+
+      void reply.send({ manifestCid });
+    });
+  }
 
   return app;
 }

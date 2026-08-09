@@ -230,7 +230,8 @@ Each task lists **Deps**, **Deliverables**, and **Acceptance** (how a reviewer v
 
 These are sequenced but intentionally coarser; split them into T-numbered subtasks (same format) when their phase begins.
 
-- **T7.1 ⬜ IPFS SoulStore** (helia impl of SoulStore; pinning strategy) — Deps: T6.2
+- **T7.1 ✅ IPFS SoulStore** (blockstore-fs L1; dual-write; pin manifest/CAR; outbound replication) — Deps: T6.2 — Issue: #55
+  - Notes: Agent: Cursor Grok 4.5 Maestro, 2026-08-09. Phases A–D + Gate E1 + osp/0.2 landed. Replication disabled by default (empty targets). Next: T7.6 anchoring or parallel T7.2; live pin is Gate 2.
   - **T7.1a ✅ Spec + harness** (finalize ipfs-store.md; §0.2 reserved-form; FileSoulStore conformance; doc alignment) — Deps: Bug #67, T7.16 store subset (#112) — Issue: #113
     - Notes: Agent: Cursor Grok 4.5 Maestro, 2026-08-09. `ipfs-store.md` Normative; `schema-dag-json-reserved` vector + RecordSchema deep-walk; `store-conformance.ts` × FileSoulStore; docs point at blockstore-fs (no helia in L1). Next: T7.1b IpfsSoulStore + DualSoulStore.
   - **T7.1b ✅ IpfsSoulStore + DualSoulStore** (blockstore-fs L1; conformance ×3; CID identity) — Deps: T7.1a — Agent: Cursor Grok 4.5 Maestro, 2026-08-09 — Issue: #115
@@ -241,6 +242,8 @@ These are sequenced but intentionally coarser; split them into T-numbered subtas
     - Notes: `spec/osp/privacy.md`; `privacy` label + `privacy-takedown` template; ipfs-store §7 records (b); osp/0.2 schema follow-up #119. G3 for T7.1 Phase D satisfied after merge. Next: #119 then T7.1d.
   - **osp/0.2 schema + tombstones ✅** (text-off-chain blob refs; tombstone type; migration vectors; runtime side-blob write/compose/Atlas) — Deps: Gate E1 — Agent: Cursor Grok 4.5 Maestro, 2026-08-09 — Issue: #119
     - Notes: PR1 schema + PR2 runtime. SoulStore side blobs; `eraseSideBlob` validates blobCid∈{text_cid,journal_cid}; scan skips tombstoned candidate blobs; `assertRuntimeWritableChain` + `osp migrate --to osp/0.2` + RUNBOOK §9. Compose erased marker; Atlas journal markers. Next: T7.1d.
+  - **T7.1d ✅ Replication** (outbound queue drain; Storacha/Filebase CAR upload; DualSoulStore Ghost wiring; Atlas CAR hook; ops docs) — Issue: #123 — Agent: Cursor Grok 4.5 Maestro, 2026-08-09
+    - Notes: `replication.jsonl` + runtime drain; car-upload adapters (mock fetch in tests); compose volumes for ipfs+published CAR; Atlas `/soulchain-latest.car` + `/soulchain/manifest`; #118 carries (manifest invariants, import expected CIDs, verify exit codes, gateway timeout). Default: replication disabled. Live pin = Gate 2.
 - **T7.2 ⬜ door-web** (embeddable widget, client-side signature verification, PRESENT/ELSEWHERE state) — Deps: T6.2
 - **T7.3 ⬜ PoP v0.2** (real session-key rotation, handover ceremony records, conflict-proof format + Atlas violation log) — Deps: T7.2
 - **T7.4 ⬜ Verifier ensemble** (k-model immune screening per ARCHITECTURE.md §5, escalation, public rejection log) — Deps: T7.1 — Note from T3.1 (#40): add measurable corpus fixtures for known static-screen FPs (benign docs URLs with "instructions", casual "system prompt" discussion) before tightening `URL_INSTRUCTION_PATTERN` / instruction heuristics.

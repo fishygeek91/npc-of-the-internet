@@ -41,6 +41,16 @@ Environment variable names and purposes only. **Never commit values.**
 | `DISCORD_COMMUNITY_DESCRIPTION` | Short community description for the Door (public config). |
 | `DOOR_HTTP_HOST` / `DOOR_HTTP_PORT` | Door **listen** address for REST + WebSocket on a single coalesced port. door-discord binds `0.0.0.0:9090` in Ghost compose. runtime **connects** to `door-discord:9090` on the internal Docker network. Not published to the host by default. |
 | `NPC_RUNTIME_READY_FILE` | Path written when the residency WebSocket is live (default `/tmp/npc-runtime.ready`). Used by compose healthcheck; optional override. |
+| `NPC_REPLICATION_ENABLED` | Set to `1` or `true` to enable outbound IPFS replication drain in runtime. Default unset (disabled). Empty target set is safe — no push until targets are configured. Gate 2 before live tokens. |
+| `NPC_REPLICATION_TARGETS` | JSON array of replication targets: `{name, kind: "car-upload", endpoint, tokenEnv}`. Default `[]`. Names match `[a-z0-9_-]+`. |
+| `NPC_REPLICATION_DRAIN_INTERVAL_MS` | Milliseconds between replication drain ticks (default `15000`). |
+| `NPC_SOULCHAIN_IPFS_DIR` | In-container IpfsSoulStore directory for dual-write (`DualSoulStore`). Required when replication is enabled. Compose sets `/data/soulchain-ipfs`. |
+| `NPC_PUBLISHED_CAR_PATH` | Path where runtime writes the latest soulchain CAR for Atlas download (default `/data/published/soulchain-latest.car`). |
+| `NPC_MANIFEST_CID_PATH` | Sidecar text file with the latest published manifest CID (default `/data/published/manifest-cid.txt`). |
+| `STORACHA_TOKEN` | Bearer token for Storacha CAR upload (`tokenEnv` in `NPC_REPLICATION_TARGETS`). Exactly one of this or `STORACHA_TOKEN_FILE`. |
+| `STORACHA_TOKEN_FILE` | In-container path to Storacha token file. |
+| `FILEBASE_TOKEN` | Bearer token for Filebase CAR upload (`tokenEnv` in `NPC_REPLICATION_TARGETS`). Exactly one of this or `FILEBASE_TOKEN_FILE`. |
+| `FILEBASE_TOKEN_FILE` | In-container path to Filebase token file. |
 | `BACKUP_SOURCE_DIR` | In-container soulchain directory watched by the backup sidecar (compose sets `/data/soulchain`). |
 | `BACKUP_RCLONE_REMOTE` | rclone remote path for soulchain backup (e.g. `ghost-remote:npc/soulchain`). Required for backup sidecar. |
 | `BACKUP_DEBOUNCE_SEC` | Seconds to wait after a change before syncing (default `5`). |

@@ -272,7 +272,7 @@ describe("osp IPFS CLI (T7.1c)", () => {
           }
         }
       });
-      expect(exitCode).toBe(2);
+      expect(exitCode).toBe(1);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

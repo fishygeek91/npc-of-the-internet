@@ -21,6 +21,24 @@ export type {
   SoulStore
 } from "./store/index.js";
 export { FileSoulStore, IpfsSoulStore, DualSoulStore } from "./store/index.js";
+export {
+  enqueueReplication,
+  ackReplication,
+  readReplicationJournal,
+  recoverReplicationJournal,
+  listPendingReplication,
+  listUnackedForTarget,
+  replicationJournalPath,
+  ReplicationKindSchema,
+  ReplicationEnqueueEntrySchema,
+  ReplicationAckEntrySchema,
+  type ReplicationKind,
+  type ReplicationEnqueueEntry,
+  type ReplicationAckEntry,
+  type ReplicationJournalEnqueueLine,
+  type ReplicationJournalAckLine,
+  type ReplicationJournalEntry
+} from "./replication/index.js";
 export { canonicalize } from "./canonical.js";
 export {
   encodeBase64Url,

@@ -26,6 +26,16 @@ describe("loadDaemonConfig", () => {
     expect(Object.keys(config.doorPublicKeys)).toEqual(["discord:test-guild"]);
     expect(config.brain.apiKey).toBe("test-api-key");
     expect(config.readyFilePath).toBe("/tmp/npc-runtime.ready");
+    expect(config.replication.enabled).toBe(false);
+    expect(config.replication.targets).toEqual([]);
+  });
+
+  it("loads optional NPC_SOULCHAIN_IPFS_DIR", () => {
+    const config = loadDaemonConfig({
+      ...VALID_ENV,
+      NPC_SOULCHAIN_IPFS_DIR: "/data/soulchain-ipfs"
+    });
+    expect(config.soulchainIpfsDir).toBe("/data/soulchain-ipfs");
   });
 
   it("uses NPC_RUNTIME_READY_FILE when set", () => {

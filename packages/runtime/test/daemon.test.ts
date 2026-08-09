@@ -16,6 +16,7 @@ import type WebSocket from "ws";
 
 import { FakeBrain } from "../src/brain/fake-brain.js";
 import type { DaemonConfig } from "../src/daemon-config.js";
+import { loadReplicationConfig } from "../src/replication/config.js";
 import { startResidencyDaemon } from "../src/daemon.js";
 import { DOOR, SOUL } from "./helpers/fixed-keys.js";
 
@@ -101,7 +102,8 @@ async function createDaemonTestEnv(): Promise<DaemonTestEnv> {
       maxTokens: 1024,
       timeoutMs: 60_000
     },
-    readyFilePath
+    readyFilePath,
+    replication: loadReplicationConfig({})
   };
 
   return {

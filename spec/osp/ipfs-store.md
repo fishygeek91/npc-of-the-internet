@@ -171,6 +171,8 @@ Because records carry no IPLD links (§0), we publish a **pin manifest**: a dag-
 
 `replication.jsonl`: append-only journal of `{"cid": …, "kind": "record" | "manifest" | "car", "enqueued_at": …}` plus ack lines `{"acked": cid, "target": "<service>", "at": …}`. At-least-once delivery; idempotent because everything is content-addressed (re-uploading a block is a no-op server-side). A small replicator loop inside the runtime process (no new container — D8 "three processes, period") drains the queue with exponential backoff. Replication lag is observable (`queue depth` in logs + Atlas `/state` later); it never blocks or fails `append`.
 
+**Scaling note:** the baseline drain re-uploads the full manifest-rooted CAR on each cadence/unacked tick (O(chain) bytes). Fine at early chain sizes; when chains grow, the escape hatch is incremental push (per-record raw block upload for `kind: "record"` entries) while keeping CAR upload for manifest roots.
+
 ### 5.2 Targets
 
 **≥ 2 independent pinning services** (single-service outage or account loss must not orphan the public copy). Selection criteria (evaluate at impl time; the API shapes to support):
@@ -188,15 +190,20 @@ Credentials via env (`ops/SECRETS.md` entries; Zod-validated at boot, per D2). P
 
 ### 5.4 Volunteer pinners
 
-Published on the Atlas ("Pin the soul" page, later task) and in `spec/osp/ipfs-store.md` appendix:
+Published on the Atlas and in this appendix:
 
-```
-# one-time, and again whenever a new manifest is announced
-curl -LO https://<atlas>/soulchain-latest.car
+```bash
+# Fetch the latest CAR and manifest CID from Atlas (SSH tunnel or public URL when Gate 2 approves)
+curl -LO https://<atlas-host>/soulchain-latest.car
+curl -s https://<atlas-host>/soulchain/manifest
+# → {"manifestCid":"bagu..."} — verify this CID matches the CAR root before pinning
+
 ipfs dag import soulchain-latest.car
-ipfs pin add --recursive <manifest-cid>   # printed by the Atlas next to the CAR
+ipfs pin add --recursive <manifest-cid>   # use manifestCid from /soulchain/manifest
 ipfs pin rm <previous-manifest-cid>       # optional; old records are shared, dedup keeps cost ≈ 0
 ```
+
+Re-run when a new manifest is announced (departure or every ~500 appends).
 
 Sybil/abuse surface: none — pinning is permissionless replication of public signed data; volunteers need no registration and get no protocol role (invitation weight is unrelated).
 

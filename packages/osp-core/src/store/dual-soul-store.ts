@@ -47,6 +47,29 @@ export class DualSoulStore implements SoulStore {
     return new DualSoulStore(fileStore, ipfsStore);
   }
 
+  /**
+   * Open both stores after recovering torn writes on each backing directory.
+   *
+   * Returns combined truncated byte count from file and IPFS recovery.
+   */
+  static async openWithRecovery(
+    fileDir: string,
+    ipfsDir: string,
+    options?: DualSoulStoreOpenOptions
+  ): Promise<{ store: DualSoulStore; truncatedBytes: number }> {
+    const { store: fileStore, truncatedBytes: fileTruncated } =
+      await FileSoulStore.openWithRecovery(path.resolve(fileDir), options);
+    const { store: ipfsStore, truncatedBytes: ipfsTruncated } =
+      await IpfsSoulStore.openWithRecovery(path.resolve(ipfsDir), options);
+
+    await DualSoulStore.assertHeadsCompatible(await fileStore.head(), await ipfsStore.head());
+
+    return {
+      store: new DualSoulStore(fileStore, ipfsStore),
+      truncatedBytes: fileTruncated + ipfsTruncated
+    };
+  }
+
   /** Append to file store first, then IPFS store. */
   async append(record: OspRecord): Promise<AppendResult> {
     this.assertOpen();

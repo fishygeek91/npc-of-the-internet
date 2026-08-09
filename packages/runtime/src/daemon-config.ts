@@ -4,12 +4,14 @@ import { z } from "zod";
 import { loadBrainConfig, type BrainConfig } from "./brain/config.js";
 import { BrainError } from "./brain/errors.js";
 import { DaemonError } from "./daemon-errors.js";
+import { loadReplicationConfig, type ReplicationConfig } from "./replication/config.js";
 
 const DEFAULT_READY_FILE = "/tmp/npc-runtime.ready";
 
 const daemonConfigSchema = z.object({
   soulKeyPath: z.string().min(1),
   soulchainDir: z.string().min(1),
+  soulchainIpfsDir: z.string().min(1).optional(),
   doorHttpHost: z.string().min(1),
   doorHttpPort: z.number().int().positive(),
   doorId: z.string().min(1),
@@ -19,7 +21,8 @@ const daemonConfigSchema = z.object({
       message: "doorPublicKeys must contain at least one entry"
     }),
   brain: z.custom<BrainConfig>(),
-  readyFilePath: z.string().min(1)
+  readyFilePath: z.string().min(1),
+  replication: z.custom<ReplicationConfig>()
 });
 
 /** Validated residency daemon configuration loaded from environment variables. */
@@ -104,15 +107,33 @@ export function loadDaemonConfig(env: NodeJS.ProcessEnv = process.env): DaemonCo
       ? DEFAULT_READY_FILE
       : env.NPC_RUNTIME_READY_FILE;
 
+  const soulchainIpfsRaw = env.NPC_SOULCHAIN_IPFS_DIR;
+  const soulchainIpfsDir =
+    soulchainIpfsRaw === undefined || soulchainIpfsRaw.trim() === ""
+      ? undefined
+      : soulchainIpfsRaw.trim();
+
+  const replication = loadReplicationConfig(env);
+
+  if (replication.enabled && soulchainIpfsDir === undefined) {
+    throw new DaemonError(
+      "NPC_SOULCHAIN_IPFS_DIR is required when NPC_REPLICATION_ENABLED is set",
+      "invalid_config",
+      "NPC_SOULCHAIN_IPFS_DIR"
+    );
+  }
+
   const result = daemonConfigSchema.safeParse({
     soulKeyPath,
     soulchainDir,
+    soulchainIpfsDir,
     doorHttpHost,
     doorHttpPort,
     doorId,
     doorPublicKeys,
     brain,
-    readyFilePath
+    readyFilePath,
+    replication
   });
 
   if (!result.success) {

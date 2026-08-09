@@ -32,6 +32,13 @@ export type IpfsSoulStoreOpenOptions = {
    * for cosigner verification on open/get/append.
    */
   doorPublicKeys?: Readonly<Record<string, Uint8Array>>;
+  /**
+   * When enabled, successful appends enqueue the record CID to `replication.jsonl`.
+   * Enqueue failures never fail append.
+   */
+  replication?: { enabled: boolean };
+  /** Injectable clock for replication `enqueued_at` metadata (defaults to ISO wall time). */
+  now?: () => string;
 };
 
 /** Options for opening a dual-write SoulStore (file authoritative + IPFS mirror). */

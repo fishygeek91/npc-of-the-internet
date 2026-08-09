@@ -13,6 +13,8 @@ import {
   CorruptionError,
   ChainMismatchError,
   ConcurrentAppendError,
+  listPendingReplication,
+  replicationJournalPath,
   type OspRecord,
   type Ed25519Keypair
 } from "../src/index.js";
@@ -24,6 +26,7 @@ const RESIDENCY = "door:discord:g/epoch:1";
 const WRONG_PREV_CID = "bagu" + "a".repeat(57);
 const LOCK_FILE = "LOCK";
 const SEQ_INDEX_FILE = "seq-index.jsonl";
+const TEST_REPLICATION_CID = "bagu" + "r".repeat(57);
 
 /** Create a unique temporary directory for an isolated store. */
 async function makeTempDir(): Promise<string> {
@@ -200,6 +203,39 @@ describe("IpfsSoulStore", () => {
       await lockFd.close();
       await rm(lockPath, { force: true });
       await store.close();
+    }
+  });
+
+  it("openWithRecovery truncates a torn replication.jsonl tail", async () => {
+    const store = await IpfsSoulStore.open(dir);
+    try {
+      await appendGenesis(store, soul);
+    } finally {
+      await store.close();
+    }
+
+    const journalPath = replicationJournalPath(dir);
+    const validLine = `${JSON.stringify({
+      cid: TEST_REPLICATION_CID,
+      kind: "record",
+      enqueued_at: "2026-08-09T12:00:00.000Z"
+    })}\n`;
+    const tornTail = '{"cid":"bagu';
+    await writeFile(journalPath, validLine + tornTail, "utf8");
+
+    const { store: recovered, truncatedBytes } = await IpfsSoulStore.openWithRecovery(dir);
+    try {
+      expect(truncatedBytes).toBe(tornTail.length);
+      const pending = await listPendingReplication(dir);
+      expect(pending).toEqual([
+        {
+          cid: TEST_REPLICATION_CID,
+          kind: "record",
+          enqueued_at: "2026-08-09T12:00:00.000Z"
+        }
+      ]);
+    } finally {
+      await recovered.close();
     }
   });
 
