@@ -1,9 +1,12 @@
 import {
+  OSP_SPEC_V02,
   canonicalize,
   computeCidFromCanonicalBytes,
+  contentAddressSideBlob,
   createRecord,
   decodeBase64Url,
   encodePublicKey,
+  encodeShardTextBlob,
   FileSoulStore,
   generateKeypair,
   signCore
@@ -86,13 +89,19 @@ async function appendCosignedShard(
       throw new Error("expected head after init");
     }
 
+    const textBytes = encodeShardTextBlob("E2E cosigned shard.");
+    const { cid: textCid, hash: textHash } = await contentAddressSideBlob(textBytes);
+    await store.putSideBlob(textBytes);
+
     const fields = {
+      spec: OSP_SPEC_V02,
       seq: 1,
       prev: head.cid,
       type: "memory" as const,
       body: {
         kind: "shard" as const,
-        text: "E2E cosigned shard.",
+        text_cid: textCid,
+        text_hash: textHash,
         distilled_at: "2026-07-20T00:00:00.000Z"
       },
       residency: RESIDENCY

@@ -1,10 +1,11 @@
 import { screenText, type ScreenCategory, type ScreenLogger } from "@npc/immune";
 import {
-  OSP_SPEC,
+  OSP_SPEC_V02,
   RecordSchema,
   canonicalize,
   computeCid,
   corePayload,
+  decodeShardTextBlob,
   encodePublicKey,
   encodeSignature,
   soulPayload,
@@ -22,6 +23,7 @@ import type { CandidateShard, TranscriptLine, TranscriptSource } from "../distil
 import { generateJournal } from "../journal/generate-journal.js";
 import { writeJournalFile } from "../journal/write-journal-file.js";
 import type { Keyring, SessionSigner } from "../keyring/types.js";
+import { storeShardTextBlob } from "../memory-side-blobs.js";
 import { SessionError } from "./errors.js";
 import {
   DOOR_PROTOCOL_VERSION,
@@ -483,12 +485,14 @@ export class Session {
         throw new SessionError("depart: store has no head");
       }
 
+      const textBlob = await storeShardTextBlob(this.store, shard.text);
       const { cid } = await this.appendMemoryRecord({
         seq: head.seq + 1,
         prev: head.cid,
         body: {
           kind: "candidate",
-          text: shard.text,
+          text_cid: textBlob.text_cid,
+          text_hash: textBlob.text_hash,
           proposed_at: this.clock.now()
         },
         cosigners: []
@@ -712,8 +716,18 @@ export class Session {
 
       if (record.type === "memory") {
         const body = record.body;
-        if (body.kind === "candidate" && "text" in body) {
-          candidateCidsByText.set(body.text, await computeCid(record));
+        if (body.kind === "candidate") {
+          if ("text" in body) {
+            candidateCidsByText.set(body.text, await computeCid(record));
+          } else if ("text_cid" in body) {
+            // osp/0.2: resolve side-blob text for depart retry dedupe by content.
+            try {
+              const bytes = await this.store.getSideBlob(body.text_cid);
+              candidateCidsByText.set(decodeShardTextBlob(bytes), await computeCid(record));
+            } catch {
+              // Missing blob — skip mapping; depart may re-append if not recoverable.
+            }
+          }
           continue;
         }
         if (body.kind === "rejected") {
@@ -871,7 +885,7 @@ export class Session {
     const core = new TextDecoder().decode(
       canonicalize(
         corePayload({
-          spec: OSP_SPEC,
+          spec: OSP_SPEC_V02,
           seq: params.seq,
           prev: params.prev,
           type: "attestation",
@@ -956,7 +970,7 @@ export class Session {
     const core = new TextDecoder().decode(
       canonicalize(
         corePayload({
-          spec: OSP_SPEC,
+          spec: OSP_SPEC_V02,
           seq: params.seq,
           prev: params.prev,
           type: "attestation",
@@ -1084,7 +1098,7 @@ async function sealRecord(
 
   const soulBytes = canonicalize(
     soulPayload({
-      spec: OSP_SPEC,
+      spec: OSP_SPEC_V02,
       seq: fields.seq,
       prev: fields.prev,
       type: fields.type,
@@ -1096,7 +1110,7 @@ async function sealRecord(
   const soulSignature = encodeSignature(keyring.signWithSoulKey(soulBytes));
 
   const unsignedRecord = {
-    spec: OSP_SPEC,
+    spec: OSP_SPEC_V02,
     seq: fields.seq,
     prev: fields.prev,
     type: fields.type,

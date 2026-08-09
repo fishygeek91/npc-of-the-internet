@@ -14,7 +14,13 @@ import { commitQuarantinedShards } from "../src/quarantine/commit.js";
 import { flagCandidate } from "../src/quarantine/flag.js";
 import { shardIdFromText } from "../src/quarantine/shard-id.js";
 import { Session } from "../src/session/session.js";
-import { createGenesisRecord, DOOR_ID, doorPublicKeyFor } from "./helpers/fixtures.js";
+import {
+  createGenesisRecord,
+  DOOR_ID,
+  doorPublicKeyFor,
+  resolveJournalMarkdown,
+  resolveMemoryText
+} from "./helpers/fixtures.js";
 import { DOOR, SOUL } from "./helpers/fixed-keys.js";
 import { DoorStub } from "./helpers/door-stub.js";
 import { FakeClock, FakeTimer } from "./helpers/fake-timer.js";
@@ -242,9 +248,10 @@ describe("quarantine integration", () => {
     for (const shard of committedShards) {
       if (shard.type === "memory" && shard.body.kind === "shard") {
         expect(shard.body.candidate_cid).toBeDefined();
-        expect(shard.body.text).not.toBe(hostRejectedText);
-        expect(shard.body.text).not.toBe(PII_SHARD_TEXT);
-        expect(approvedCandidateTexts).toContain(shard.body.text);
+        const text = await resolveMemoryText(store, shard);
+        expect(text).not.toBe(hostRejectedText);
+        expect(text).not.toBe(PII_SHARD_TEXT);
+        expect(approvedCandidateTexts).toContain(text);
       }
     }
 
@@ -266,12 +273,15 @@ describe("quarantine integration", () => {
 
     const journalShards = committedShards.filter(
       (record) =>
-        record.type === "memory" && record.body.kind === "shard" && "journal" in record.body
+        record.type === "memory" &&
+        record.body.kind === "shard" &&
+        "journal_cid" in record.body &&
+        record.body.journal_cid !== undefined
     );
     expect(journalShards).toHaveLength(1);
     const journalShard = journalShards[0];
     if (journalShard?.type === "memory" && journalShard.body.kind === "shard") {
-      expect(journalShard.body.journal).toBe(departResult.journalMarkdown);
+      expect(await resolveJournalMarkdown(store, journalShard)).toBe(departResult.journalMarkdown);
     }
 
     // Flagging a candidate that already has a committed shard is rejected.
@@ -315,7 +325,8 @@ describe("quarantine integration", () => {
       (record) =>
         record.type === "memory" &&
         record.body.kind === "shard" &&
-        record.body.journal !== undefined
+        "journal_cid" in record.body &&
+        record.body.journal_cid !== undefined
     );
     expect(journalShardsAfterSecond).toHaveLength(1);
 
@@ -326,7 +337,8 @@ describe("quarantine integration", () => {
 
     for (const candidate of memoryCandidates) {
       if (candidate.type === "memory" && candidate.body.kind === "candidate") {
-        if (candidate.body.text === hostRejectedText || candidate.body.text === PII_SHARD_TEXT) {
+        const text = await resolveMemoryText(store, candidate);
+        if (text === hostRejectedText || text === PII_SHARD_TEXT) {
           throw new Error("unexpected rejected text on candidate record");
         }
       }

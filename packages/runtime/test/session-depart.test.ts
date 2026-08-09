@@ -7,6 +7,7 @@ import {
   type AppendResult,
   type HeadInfo,
   type OspRecord,
+  type PutSideBlobResult,
   type SoulStore
 } from "@npc/osp-core";
 import { afterEach, describe, expect, it } from "vitest";
@@ -28,7 +29,12 @@ import type {
 } from "../src/session/types.js";
 import { DoorStub } from "./helpers/door-stub.js";
 import { FakeClock, FakeTimer } from "./helpers/fake-timer.js";
-import { createGenesisRecord, DOOR_ID, doorPublicKeyFor } from "./helpers/fixtures.js";
+import {
+  createGenesisRecord,
+  DOOR_ID,
+  doorPublicKeyFor,
+  resolveMemoryText
+} from "./helpers/fixtures.js";
 import { DOOR, SOUL } from "./helpers/fixed-keys.js";
 import { MemorySoulStore } from "./helpers/memory-soul-store.js";
 
@@ -98,6 +104,18 @@ class PausingStore implements SoulStore {
 
   async *iterate(): AsyncIterable<OspRecord> {
     yield* this.inner.iterate();
+  }
+
+  async putSideBlob(bytes: Uint8Array): Promise<PutSideBlobResult> {
+    return this.inner.putSideBlob(bytes);
+  }
+
+  async getSideBlob(cid: string): Promise<Uint8Array> {
+    return this.inner.getSideBlob(cid);
+  }
+
+  async deleteSideBlob(cid: string): Promise<void> {
+    return this.inner.deleteSideBlob(cid);
   }
 }
 
@@ -253,9 +271,10 @@ describe("Session.depart", () => {
       const memoryIndex = records.indexOf(candidateRecord);
       expect(memoryIndex).toBeLessThan(departureIndex);
       if (candidateRecord.type === "memory" && candidateRecord.body.kind === "candidate") {
-        expect(candidateRecord.body.text).toBe(shardTexts[index]);
+        expect(await resolveMemoryText(store, candidateRecord)).toBe(shardTexts[index]);
         expect(candidateRecord.cosigners).toEqual([]);
         expect("journal" in candidateRecord.body).toBe(false);
+        expect("journal_cid" in candidateRecord.body).toBe(false);
       }
     }
 
@@ -325,12 +344,12 @@ describe("Session.depart", () => {
     expect(memoryShards).toHaveLength(0);
     expect(hostRejected).toHaveLength(1);
 
-    const chainTexts = memoryCandidates.map((record) => {
+    const chainTexts: string[] = [];
+    for (const record of memoryCandidates) {
       if (record.type === "memory" && record.body.kind === "candidate") {
-        return record.body.text;
+        chainTexts.push(await resolveMemoryText(store, record));
       }
-      return "";
-    });
+    }
     expect(chainTexts).not.toContain(shardTexts[0]);
     expect(chainTexts).toEqual(shardTexts.slice(1));
 

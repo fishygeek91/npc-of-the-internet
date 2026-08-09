@@ -14,6 +14,7 @@ export {
 export type {
   HeadInfo,
   AppendResult,
+  PutSideBlobResult,
   FileSoulStoreOpenOptions,
   IpfsSoulStoreOpenOptions,
   DualSoulStoreOpenOptions,
@@ -58,6 +59,12 @@ export {
   assertCidMatchesHash,
   contentAddressSideBlob
 } from "./memory-blob.js";
+export { eraseSideBlob } from "./erase-side-blob.js";
+export type {
+  TombstoneReason,
+  EraseSideBlobOptions,
+  EraseSideBlobResult
+} from "./erase-side-blob.js";
 export {
   parseDoorPublicKeyBinding,
   parseDoorPublicKeyMap,

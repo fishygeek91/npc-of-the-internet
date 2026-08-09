@@ -11,6 +11,11 @@ export type AppendResult = {
   cid: string;
 };
 
+/** Result of storing an osp/0.2 side blob (CID is content-derived). */
+export type PutSideBlobResult = {
+  cid: string;
+};
+
 /** Options for opening a file-backed SoulStore (v0.1). */
 export type FileSoulStoreOpenOptions = {
   /**
@@ -36,7 +41,8 @@ export type DualSoulStoreOpenOptions = IpfsSoulStoreOpenOptions;
  * Storage-agnostic append-only soulchain store (FileSoulStore v0.1; IPFS later).
  *
  * Implementations must preserve append-only semantics: no mutation or deletion
- * of committed records.
+ * of committed records. Side blobs (osp/0.2 prose) are CID-keyed opaque bytes and
+ * MAY be deleted for erasure (tombstone path).
  */
 export interface SoulStore {
   /** Append a signed record to the chain and return its CID. */
@@ -50,4 +56,20 @@ export interface SoulStore {
 
   /** Iterate all records in chain order from genesis to head. */
   iterate(): AsyncIterable<OspRecord>;
+
+  /**
+   * Store opaque side-blob bytes (osp/0.2 memory text/journal).
+   * Idempotent when the same CID already holds identical bytes.
+   */
+  putSideBlob(bytes: Uint8Array): Promise<PutSideBlobResult>;
+
+  /** Fetch side-blob bytes and verify CID identity. */
+  getSideBlob(cid: string): Promise<Uint8Array>;
+
+  /**
+   * Remove side-blob bytes (erasure). Missing blob is not an error.
+   * Must not delete soulchain record blocks that share the CID namespace —
+   * callers only pass memory text/journal blob CIDs.
+   */
+  deleteSideBlob(cid: string): Promise<void>;
 }

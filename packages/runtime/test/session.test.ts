@@ -3,6 +3,7 @@ import {
   type AppendResult,
   type HeadInfo,
   type OspRecord,
+  type PutSideBlobResult,
   type SoulStore
 } from "@npc/osp-core";
 import { describe, expect, it } from "vitest";
@@ -65,6 +66,18 @@ class PausingStore implements SoulStore {
   async *iterate(): AsyncIterable<OspRecord> {
     yield* this.inner.iterate();
   }
+
+  async putSideBlob(bytes: Uint8Array): Promise<PutSideBlobResult> {
+    return this.inner.putSideBlob(bytes);
+  }
+
+  async getSideBlob(cid: string): Promise<Uint8Array> {
+    return this.inner.getSideBlob(cid);
+  }
+
+  async deleteSideBlob(cid: string): Promise<void> {
+    return this.inner.deleteSideBlob(cid);
+  }
 }
 
 /**
@@ -94,6 +107,18 @@ class FailNthAppendStore implements SoulStore {
 
   async *iterate(): AsyncIterable<OspRecord> {
     yield* this.inner.iterate();
+  }
+
+  async putSideBlob(bytes: Uint8Array): Promise<PutSideBlobResult> {
+    return this.inner.putSideBlob(bytes);
+  }
+
+  async getSideBlob(cid: string): Promise<Uint8Array> {
+    return this.inner.getSideBlob(cid);
+  }
+
+  async deleteSideBlob(cid: string): Promise<void> {
+    return this.inner.deleteSideBlob(cid);
   }
 }
 

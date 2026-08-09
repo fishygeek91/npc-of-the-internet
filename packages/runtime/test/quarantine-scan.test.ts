@@ -57,7 +57,7 @@ describe("scanQuarantineState", () => {
       rejectedHead.seq + 1,
       rejectedHead.cid,
       "Committed from quarantine.",
-      { candidateCid }
+      { store, candidateCid }
     );
     await store.append(shard.record);
 

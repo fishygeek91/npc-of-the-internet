@@ -1,5 +1,4 @@
 import {
-  OSP_SPEC,
   canonicalize,
   corePayload,
   encodePublicKey,
@@ -8,6 +7,8 @@ import {
 } from "@npc/osp-core";
 
 import type { Keyring } from "../keyring/types.js";
+import { storeJournalBlob, storeShardTextBlob } from "../memory-side-blobs.js";
+import { RUNTIME_OSP_SPEC } from "../osp-spec.js";
 import {
   DOOR_PROTOCOL_VERSION,
   cosignCommitSigningPayload,
@@ -52,9 +53,8 @@ export type CommitQuarantineResult = {
  * Promote ripe, unflagged quarantine candidates to committed `memory.shard` records.
  * Idempotent: already-committed or rejected candidates are reported in `skippedCids`.
  *
- * Journal attachment is chain-aware: `journalMarkdown` is embedded on at most one
- * shard per residency (skips if any existing shard for that residency already
- * carries `body.journal`). Pass `journalMarkdown` until a run reports
+ * Journal attachment is chain-aware: journal side-blob refs are attached on at most
+ * one shard per residency. Pass `journalMarkdown` until a run reports
  * `journalAttached: true`, then stop.
  */
 export async function commitQuarantinedShards(
@@ -105,15 +105,19 @@ export async function commitQuarantinedShards(
         throw new QuarantineError("commit: store has no head", "commit_failed");
       }
 
+      const textBlob = await storeShardTextBlob(options.store, candidate.text);
       const memoryBody: {
         kind: "shard";
-        text: string;
+        text_cid: string;
+        text_hash: string;
         candidate_cid: string;
         distilled_at: string;
-        journal?: string;
+        journal_cid?: string;
+        journal_hash?: string;
       } = {
         kind: "shard",
-        text: candidate.text,
+        text_cid: textBlob.text_cid,
+        text_hash: textBlob.text_hash,
         candidate_cid: cid,
         // Commit-time stamp; candidates retain the original `proposed_at`.
         distilled_at: options.clock.now()
@@ -125,7 +129,9 @@ export async function commitQuarantinedShards(
         !journalsAttachedThisCall.has(candidate.residency);
 
       if (canAttachJournal && options.journalMarkdown !== undefined) {
-        memoryBody.journal = options.journalMarkdown;
+        const journalBlob = await storeJournalBlob(options.store, options.journalMarkdown);
+        memoryBody.journal_cid = journalBlob.journal_cid;
+        memoryBody.journal_hash = journalBlob.journal_hash;
       }
 
       const seq = head.seq + 1;
@@ -135,7 +141,7 @@ export async function commitQuarantinedShards(
         const core = new TextDecoder().decode(
           canonicalize(
             corePayload({
-              spec: OSP_SPEC,
+              spec: RUNTIME_OSP_SPEC,
               seq,
               prev,
               type: "memory",

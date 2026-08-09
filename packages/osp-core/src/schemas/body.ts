@@ -12,8 +12,9 @@ export const OSP_SPEC_V01 = "osp/0.1" as const;
 export const OSP_SPEC_V02 = "osp/0.2" as const;
 
 /**
- * Default spec for new Ghost writes until runtime cutover lands (issue #119 PR2).
- * Validators accept both {@link OSP_SPEC_V01} and {@link OSP_SPEC_V02}.
+ * Default for {@link createRecord} when `spec` is omitted.
+ * Ghost runtime cutover (#119 PR2) writes {@link OSP_SPEC_V02} explicitly;
+ * historical vectors/tests pin {@link OSP_SPEC_V01}.
  */
 export const OSP_SPEC = OSP_SPEC_V01;
 

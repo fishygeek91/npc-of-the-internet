@@ -177,6 +177,23 @@ export function registerStoreConformance(factory: SoulStoreFactory): void {
       }
     });
 
+    it("putSideBlob / getSideBlob / deleteSideBlob round-trip", async () => {
+      const store = await factory.open(dir);
+      try {
+        const bytes = new TextEncoder().encode('{"side":"blob"}');
+        const { cid } = await store.putSideBlob(bytes);
+        const fetched = await store.getSideBlob(cid);
+        expect(fetched).toEqual(bytes);
+
+        await store.deleteSideBlob(cid);
+        await expect(store.getSideBlob(cid)).rejects.toThrow(/not found/);
+        // Idempotent delete.
+        await store.deleteSideBlob(cid);
+      } finally {
+        await store.close();
+      }
+    });
+
     it("refuses append when prev does not match head", async () => {
       const store = await factory.open(dir);
       try {

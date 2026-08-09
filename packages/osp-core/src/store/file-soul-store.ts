@@ -23,7 +23,13 @@ import { bytesEqual, fsyncDirectory, fsyncPath, writeAllSync } from "./fsync.js"
 import { isNodeError, nodeErrorMessage } from "./node-fs-error.js";
 
 import type { ChainFailure } from "../chain-types.js";
-import type { AppendResult, FileSoulStoreOpenOptions, HeadInfo, SoulStore } from "./types.js";
+import type {
+  AppendResult,
+  FileSoulStoreOpenOptions,
+  HeadInfo,
+  PutSideBlobResult,
+  SoulStore
+} from "./types.js";
 
 const CHAIN_FILE = "chain.jsonl";
 const BLOBS_DIR = "blobs";
@@ -248,6 +254,36 @@ export class FileSoulStore implements SoulStore {
       return null;
     }
     return { cid: this.headInfo.cid, seq: this.headInfo.seq };
+  }
+
+  /**
+   * Store opaque side-blob bytes (osp/0.2 memory text/journal).
+   * Shares the record blob directory; CID-keyed opaque bytes.
+   */
+  async putSideBlob(bytes: Uint8Array): Promise<PutSideBlobResult> {
+    this.assertOpen();
+    if (this.readOnly) {
+      throw new StorageError("FileSoulStore is read-only");
+    }
+    const cid = await computeCidFromCanonicalBytes(bytes);
+    await this.blobs.putIdempotent(cid, bytes);
+    await fsyncDirectory(this.blobs.dirPath);
+    return { cid };
+  }
+
+  /** Fetch side-blob bytes and verify CID identity. */
+  async getSideBlob(cid: string): Promise<Uint8Array> {
+    this.assertOpen();
+    return this.blobs.readVerified(cid);
+  }
+
+  /** Remove side-blob bytes (idempotent erasure). */
+  async deleteSideBlob(cid: string): Promise<void> {
+    this.assertOpen();
+    if (this.readOnly) {
+      throw new StorageError("FileSoulStore is read-only");
+    }
+    await this.blobs.delete(cid);
   }
 
   /** Fetch a record by CID. */

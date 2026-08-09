@@ -1,11 +1,11 @@
-import { closeSync, fsyncSync, openSync } from "node:fs";
+import { closeSync, fsyncSync, openSync, unlinkSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import * as path from "node:path";
 
 import { computeCidFromCanonicalBytes, isValidCid } from "../crypto/cid.js";
 import { CorruptionError, StorageError } from "../errors.js";
 
-import { bytesEqual, writeAllSync } from "./fsync.js";
+import { bytesEqual, fsyncDirectory, writeAllSync } from "./fsync.js";
 import { isNodeError, nodeErrorMessage } from "./node-fs-error.js";
 
 export type BlobMissingBehavior = "not_found" | "corruption";
@@ -97,5 +97,25 @@ export class BlobDir {
       throw new CorruptionError(`blob CID mismatch for ${cid}: computed ${computedCid}`);
     }
     return canonicalBytes;
+  }
+
+  /**
+   * Delete a blob file. Missing path is a no-op (idempotent erasure).
+   */
+  async delete(cid: string): Promise<void> {
+    if (!isValidCid(cid)) {
+      throw new StorageError(`invalid CID format: ${cid}`);
+    }
+
+    const blobPath = path.join(this.dirPath, cid);
+    try {
+      unlinkSync(blobPath);
+    } catch (error) {
+      if (isNodeError(error) && error.code === "ENOENT") {
+        return;
+      }
+      throw new StorageError(`failed to delete blob ${cid}: ${nodeErrorMessage(error)}`);
+    }
+    await fsyncDirectory(this.dirPath);
   }
 }
