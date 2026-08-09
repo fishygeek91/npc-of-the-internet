@@ -123,7 +123,7 @@ A shared test suite (`packages/osp-core/test/store-conformance.ts`) parameterize
 - append/head/get/iterate happy paths; refuse `prev` ≠ head; refuse seq gaps; refuse concurrent append (second open fails on lock)
 - torn-state recovery per store's documented windows
 - **CID identity:** same fixture records appended to both stores yield byte-identical CIDs and identical `iterate()` output
-- all `spec/osp/vectors/` chains loaded through `IpfsSoulStore` produce identical verify results
+- all **valid** `spec/osp/vectors/` chains loaded through `IpfsSoulStore.append` produce identical `verifyChain` results (append refuses unverifiable records per #67). Invalid-vector rejection via direct block/seq-index injection (bypassing append) is deferred to T7.1c
 - no network access anywhere (enforced: tests run with no listener and no dialer configured)
 
 ---

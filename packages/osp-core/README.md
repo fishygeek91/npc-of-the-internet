@@ -22,7 +22,7 @@ OSP soulchain primitives: Zod record schemas, canonical JSON, Ed25519 signing, C
 - PoP: tracks arrival sessions for `bad_session_continuity` and same-epoch multi-door `presence_conflict`.
 - `verifyChain(store, opts)` — same rules via `store.iterate()`, then cross-checks `store.head()`. A head mismatch uses rule `forked_head` (message: store head ≠ verified head); duplicate-seq forks also use `forked_head` but originate inside `verifyRecords`.
 - After a mid-chain `schema_violation`, later `seq_gap` / `broken_prev_link` entries may appear as cascade noise; check rule presence rather than assuming a minimal `failures` list.
-| SoulStore | `SoulStore`, `FileSoulStore`, `HeadInfo`, `AppendResult`, `FileSoulStoreOpenOptions` |
+| SoulStore | `SoulStore`, `FileSoulStore`, `IpfsSoulStore`, `DualSoulStore`, `HeadInfo`, `AppendResult`, open-option types |
 | Errors | `SchemaError`, `VerificationError`, `EncodingError`, `StorageError`, `CorruptionError`, `ConcurrentAppendError`, `ChainMismatchError` |
 
 ## SoulStore
@@ -42,6 +42,25 @@ OSP soulchain primitives: Zod record schemas, canonical JSON, Ed25519 signing, C
 **Canonical bytes:** only canonical JSON (from `canonicalize`) is written to `chain.jsonl` and blob files; CIDs are computed from those bytes.
 
 **Store errors:** `StorageError` (I/O), `CorruptionError` (torn/invalid chain on open; chain verification failures include optional `failures: ChainFailure[]`), `ConcurrentAppendError` (lock held), `ChainMismatchError` (`prev`/`seq` ≠ head on append).
+
+### IpfsSoulStore (v0.2 L1)
+
+Local blockstore-backed store using `blockstore-fs` (no helia, no network). Same `SoulStore` contract and CIDs as `FileSoulStore`.
+
+**Layout:**
+
+- `blocks/` — FsBlockstore sharded block files (opaque canonical record bytes)
+- `HEAD` — JSON `{"cid":"bagu…","seq":n}` (atomic tmp + rename + fsync)
+- `seq-index.jsonl` — append-only `{"seq":n,"cid":"bagu…"}` journal for ordered `iterate()`
+- `LOCK` — exclusive wx lock during append
+
+**Open:** `IpfsSoulStore.open(dir)` validates on load; torn seq-index tails throw `CorruptionError`. Use `IpfsSoulStore.openWithRecovery(dir)` to clear stale locks, truncate torn index lines, and advance a stale `HEAD` when blocks+index are ahead (block-written / HEAD-not-updated crash window). Returns `{ store, truncatedBytes }`.
+
+**Read-only:** `IpfsSoulStore.openReadOnly(dir)` requires existing layout; throws on corruption (no soft verification in Phase B).
+
+### DualSoulStore (v0.2 dual-write)
+
+`DualSoulStore.open(fileDir, ipfsDir)` opens both stores. When both are non-empty, differing heads are a fatal `CorruptionError`. `append` writes to `FileSoulStore` first (authoritative), then `IpfsSoulStore`; `head`/`get`/`iterate` read from file. If IPFS append fails after file succeeded, the error propagates (dual-write integrity is not auto-repaired).
 
 ## Test
 

@@ -11,8 +11,15 @@ export {
   ConcurrentAppendError,
   ChainMismatchError
 } from "./errors.js";
-export type { HeadInfo, AppendResult, FileSoulStoreOpenOptions, SoulStore } from "./store/index.js";
-export { FileSoulStore } from "./store/index.js";
+export type {
+  HeadInfo,
+  AppendResult,
+  FileSoulStoreOpenOptions,
+  IpfsSoulStoreOpenOptions,
+  DualSoulStoreOpenOptions,
+  SoulStore
+} from "./store/index.js";
+export { FileSoulStore, IpfsSoulStore, DualSoulStore } from "./store/index.js";
 export { canonicalize } from "./canonical.js";
 export {
   encodeBase64Url,

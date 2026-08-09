@@ -233,6 +233,8 @@ These are sequenced but intentionally coarser; split them into T-numbered subtas
 - **T7.1 ⬜ IPFS SoulStore** (helia impl of SoulStore; pinning strategy) — Deps: T6.2
   - **T7.1a ✅ Spec + harness** (finalize ipfs-store.md; §0.2 reserved-form; FileSoulStore conformance; doc alignment) — Deps: Bug #67, T7.16 store subset (#112) — Issue: #113
     - Notes: Agent: Cursor Grok 4.5 Maestro, 2026-08-09. `ipfs-store.md` Normative; `schema-dag-json-reserved` vector + RecordSchema deep-walk; `store-conformance.ts` × FileSoulStore; docs point at blockstore-fs (no helia in L1). Next: T7.1b IpfsSoulStore + DualSoulStore.
+  - **T7.1b ✅ IpfsSoulStore + DualSoulStore** (blockstore-fs L1; conformance ×3; CID identity) — Deps: T7.1a — Agent: Cursor Grok 4.5 Maestro, 2026-08-09 — Issue: #115
+    - Notes: `IpfsSoulStore` (blocks/HEAD/seq-index/LOCK), `DualSoulStore` (file authoritative); shared conformance + CID identity + ipfs vectors tests. Next: T7.1c manifest + CAR.
 - **T7.2 ⬜ door-web** (embeddable widget, client-side signature verification, PRESENT/ELSEWHERE state) — Deps: T6.2
 - **T7.3 ⬜ PoP v0.2** (real session-key rotation, handover ceremony records, conflict-proof format + Atlas violation log) — Deps: T7.2
 - **T7.4 ⬜ Verifier ensemble** (k-model immune screening per ARCHITECTURE.md §5, escalation, public rejection log) — Deps: T7.1 — Note from T3.1 (#40): add measurable corpus fixtures for known static-screen FPs (benign docs URLs with "instructions", casual "system prompt" discussion) before tightening `URL_INSTRUCTION_PATTERN` / instruction heuristics.
