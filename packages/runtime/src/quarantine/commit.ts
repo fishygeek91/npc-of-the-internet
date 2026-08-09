@@ -16,7 +16,7 @@ import {
   type DoorConnection
 } from "../session/types.js";
 import { QuarantineError } from "./errors.js";
-import { isCandidateRipe, scanQuarantineState } from "./scan.js";
+import { isCandidateRipe, scanQuarantineState, scanRejectedCandidateCidsSince } from "./scan.js";
 import { sealQuarantineRecord } from "./seal.js";
 import { shardIdFromText } from "./shard-id.js";
 
@@ -61,6 +61,8 @@ export async function commitQuarantinedShards(
   options: CommitQuarantinedShardsOptions
 ): Promise<CommitQuarantineResult> {
   const scan = await scanQuarantineState(options.store);
+  const scanHead = await options.store.head();
+  const scanHeadSeq = scanHead?.seq ?? -1;
   const committedCids: string[] = [];
   const ripeningCids: string[] = [];
   const skippedCids: string[] = [];
@@ -84,91 +86,135 @@ export async function commitQuarantinedShards(
       continue;
     }
 
-    const head = await options.store.head();
-    if (head === null) {
-      throw new QuarantineError("commit: store has no head", "commit_failed");
-    }
+    // Retry when another append (e.g. mid-loop flag) moves head after Door cosign.
+    const maxHeadRetries = 8;
+    let sealed = false;
+    for (let attempt = 0; attempt < maxHeadRetries; attempt += 1) {
+      // TOCTOU: a flag may land after the pre-loop scan (Door round-trips take time).
+      const rejectedSince = await scanRejectedCandidateCidsSince(options.store, scanHeadSeq);
+      if (rejectedSince.has(cid) || scan.rejectedCandidateCids.has(cid)) {
+        skippedCids.push(cid);
+        sealed = true;
+        break;
+      }
 
-    const memoryBody: {
-      kind: "shard";
-      text: string;
-      candidate_cid: string;
-      distilled_at: string;
-      journal?: string;
-    } = {
-      kind: "shard",
-      text: candidate.text,
-      candidate_cid: cid,
-      // Commit-time stamp; candidates retain the original `proposed_at`.
-      distilled_at: options.clock.now()
-    };
+      const head = await options.store.head();
+      if (head === null) {
+        throw new QuarantineError("commit: store has no head", "commit_failed");
+      }
 
-    const canAttachJournal =
-      options.journalMarkdown !== undefined &&
-      !scan.residenciesWithJournal.has(candidate.residency) &&
-      !journalsAttachedThisCall.has(candidate.residency);
-
-    if (canAttachJournal && options.journalMarkdown !== undefined) {
-      memoryBody.journal = options.journalMarkdown;
-      journalsAttachedThisCall.add(candidate.residency);
-      journalAttached = true;
-    }
-
-    const seq = head.seq + 1;
-    const prev = head.cid;
-
-    try {
-      const core = new TextDecoder().decode(
-        canonicalize(
-          corePayload({
-            spec: OSP_SPEC,
-            seq,
-            prev,
-            type: "memory",
-            body: memoryBody,
-            residency: candidate.residency
-          })
-        )
-      );
-
-      const unsignedCommit: Omit<Extract<CosignRequest, { phase: "commit" }>, "sig"> = {
-        protocol_version: DOOR_PROTOCOL_VERSION,
-        phase: "commit",
-        door_id: options.doorId,
-        epoch: options.epoch,
-        session_pubkey: sessionPubkeyEncoded,
-        shard_id: shardIdFromText(candidate.text),
-        core,
-        issued_at: options.clock.now()
+      const memoryBody: {
+        kind: "shard";
+        text: string;
+        candidate_cid: string;
+        distilled_at: string;
+        journal?: string;
+      } = {
+        kind: "shard",
+        text: candidate.text,
+        candidate_cid: cid,
+        // Commit-time stamp; candidates retain the original `proposed_at`.
+        distilled_at: options.clock.now()
       };
-      const commitSig = encodeSignature(
-        sessionSigner.sign(cosignCommitSigningPayload(unsignedCommit))
+
+      const canAttachJournal =
+        options.journalMarkdown !== undefined &&
+        !scan.residenciesWithJournal.has(candidate.residency) &&
+        !journalsAttachedThisCall.has(candidate.residency);
+
+      if (canAttachJournal && options.journalMarkdown !== undefined) {
+        memoryBody.journal = options.journalMarkdown;
+      }
+
+      const seq = head.seq + 1;
+      const prev = head.cid;
+
+      try {
+        const core = new TextDecoder().decode(
+          canonicalize(
+            corePayload({
+              spec: OSP_SPEC,
+              seq,
+              prev,
+              type: "memory",
+              body: memoryBody,
+              residency: candidate.residency
+            })
+          )
+        );
+
+        const unsignedCommit: Omit<Extract<CosignRequest, { phase: "commit" }>, "sig"> = {
+          protocol_version: DOOR_PROTOCOL_VERSION,
+          phase: "commit",
+          door_id: options.doorId,
+          epoch: options.epoch,
+          session_pubkey: sessionPubkeyEncoded,
+          shard_id: shardIdFromText(candidate.text),
+          core,
+          issued_at: options.clock.now()
+        };
+        const commitSig = encodeSignature(
+          sessionSigner.sign(cosignCommitSigningPayload(unsignedCommit))
+        );
+        const commitResponse = await options.door.cosign({
+          ...unsignedCommit,
+          sig: commitSig
+        });
+
+        if (commitResponse.phase !== "commit") {
+          throw new QuarantineError("unexpected cosign commit response phase", "commit_failed");
+        }
+
+        // Re-check immediately before seal: flag may have landed during Door cosign.
+        const rejectedSinceBeforeSeal = await scanRejectedCandidateCidsSince(
+          options.store,
+          scanHeadSeq
+        );
+        if (rejectedSinceBeforeSeal.has(cid) || scan.rejectedCandidateCids.has(cid)) {
+          skippedCids.push(cid);
+          sealed = true;
+          break;
+        }
+
+        const headAfterCosign = await options.store.head();
+        if (headAfterCosign === null || headAfterCosign.cid !== prev) {
+          // Head moved (e.g. another candidate was flagged); rebind and retry cosign.
+          continue;
+        }
+
+        const { record, cid: sealedCid } = await sealQuarantineRecord(options.keyring, {
+          seq,
+          prev,
+          type: "memory",
+          body: memoryBody,
+          residency: candidate.residency,
+          cosigners: [commitResponse.door_cosig]
+        });
+        await options.store.append(record);
+        committedCids.push(sealedCid);
+        if (canAttachJournal && options.journalMarkdown !== undefined) {
+          journalsAttachedThisCall.add(candidate.residency);
+          journalAttached = true;
+        }
+        sealed = true;
+        break;
+      } catch (error) {
+        if (error instanceof QuarantineError) {
+          throw error;
+        }
+        const message = error instanceof Error ? error.message : "unknown error";
+        throw new QuarantineError(
+          `commit failed for candidate ${cid}: ${message}`,
+          "commit_failed"
+        );
+      }
+    }
+
+    if (!sealed) {
+      throw new QuarantineError(
+        `commit failed for candidate ${cid}: head kept moving during cosign`,
+        "commit_failed"
       );
-      const commitResponse = await options.door.cosign({
-        ...unsignedCommit,
-        sig: commitSig
-      });
-
-      if (commitResponse.phase !== "commit") {
-        throw new QuarantineError("unexpected cosign commit response phase", "commit_failed");
-      }
-
-      const { record, cid: sealedCid } = await sealQuarantineRecord(options.keyring, {
-        seq,
-        prev,
-        type: "memory",
-        body: memoryBody,
-        residency: candidate.residency,
-        cosigners: [commitResponse.door_cosig]
-      });
-      await options.store.append(record);
-      committedCids.push(sealedCid);
-    } catch (error) {
-      if (error instanceof QuarantineError) {
-        throw error;
-      }
-      const message = error instanceof Error ? error.message : "unknown error";
-      throw new QuarantineError(`commit failed for candidate ${cid}: ${message}`, "commit_failed");
     }
   }
 

@@ -17,7 +17,8 @@ import type { Brain } from "../brain/types.js";
 import { BrainError } from "../brain/errors.js";
 import { composeSelf } from "../compose/compose-self.js";
 import { distillTranscripts } from "../distill/distill-transcripts.js";
-import type { TranscriptSource } from "../distill/types.js";
+import { MemoryTranscriptSource } from "../distill/memory-transcript-source.js";
+import type { CandidateShard, TranscriptLine, TranscriptSource } from "../distill/types.js";
 import { generateJournal } from "../journal/generate-journal.js";
 import { writeJournalFile } from "../journal/write-journal-file.js";
 import type { Keyring, SessionSigner } from "../keyring/types.js";
@@ -34,8 +35,12 @@ import {
   type HeartbeatRequest,
   type InboundFrame,
   type OutboundFrame,
+  type ReviewDecision,
   type Timer
 } from "./types.js";
+
+/** Session lifecycle for inbound/heartbeat vs retryable depart. */
+type SessionPhase = "live" | "departing" | "departed";
 
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 600_000;
 const DEFAULT_MAX_HISTORY_MESSAGES = 40;
@@ -115,13 +120,23 @@ export class Session {
   private readonly residency: string;
   private readonly epochValue: number;
   private readonly sessionPublicKeyValue: Uint8Array;
-  private live = true;
+  private phase: SessionPhase = "live";
   private heartbeatTimerId: unknown = null;
   private heartbeatSeq = 0;
   private outboundCounter = 0;
   private readonly history: BrainHistoryMessage[] = [];
   private appendChain: Promise<unknown> = Promise.resolve();
   private lastHeartbeatErrorValue: unknown = null;
+  /** Cached transcript lines after first depart read (file destroyed for privacy). */
+  private departTranscriptLines: readonly TranscriptLine[] | null = null;
+  /** Cached distill output across depart retries. */
+  private departCandidates: CandidateShard[] | null = null;
+  /** Immune screen categories observed during the first successful distill. */
+  private departScreenCategories: readonly ScreenCategory[] | null = null;
+  /** Cached journal across depart retries. */
+  private departJournal: { path: string; markdown: string } | null = null;
+  /** Cached filtered Door review decisions across depart retries. */
+  private departReviewDecisions: ReviewDecision[] | null = null;
 
   private constructor(
     options: SessionOptions,
@@ -225,7 +240,7 @@ export class Session {
    * Brain failures return `{ ok: false }` without stopping the session.
    */
   async handleInbound(frame: InboundFrame): Promise<HandleInboundResult> {
-    if (!this.live) {
+    if (this.phase !== "live") {
       throw new SessionError("session is not live");
     }
 
@@ -310,12 +325,13 @@ export class Session {
    * Stop heartbeat timer and reject future inbound frames. Idempotent.
    * Callers ending a residency (e.g. T2.5 depart) MUST `stop()` then `await drainAppends()`
    * before appending departure records so no heartbeat attestation races departure.
+   * Leaves the session in `departing` so {@link depart} may retry after a mid-pipeline failure.
    */
   stop(): void {
-    if (!this.live) {
+    if (this.phase !== "live") {
       return;
     }
-    this.live = false;
+    this.phase = "departing";
     if (this.heartbeatTimerId !== null) {
       this.timer.clearInterval(this.heartbeatTimerId);
       this.heartbeatTimerId = null;
@@ -331,67 +347,37 @@ export class Session {
    * End a residency: distill transcripts, cosign shard review, append quarantine
    * memory records (`rejected` for immune screen drops and host rejections,
    * `candidate` for host-approved shards), then departure and travel attestations.
-   * Stops the session first; session remains not-live.
+   *
+   * Enters `departing` immediately (stops inbound/heartbeats). Safe to retry after
+   * mid-pipeline failure: transcript lines/candidates/journal/review are cached
+   * in-process, and already-appended chain records for this residency are skipped.
    *
    * The journal file is always written to disk; it is not embedded on chain until
    * a later commit step promotes candidates to `kind: "shard"`. Departure and
    * travel append even when every shard is rejected.
    */
   async depart(options: DepartOptions): Promise<DepartResult> {
-    if (!this.live) {
+    if (this.phase === "departed") {
+      throw new SessionError("session has already departed");
+    }
+    if (this.phase === "live") {
+      this.stop();
+      await this.drainAppends();
+    } else if (this.phase !== "departing") {
       throw new SessionError("session is not live");
     }
 
-    this.stop();
-    await this.drainAppends();
-
     const brain = options.brain ?? this.brain;
+    const candidates = await this.ensureDepartCandidates(options.transcript, brain);
     // One rejected record per unique screen category (v0.1: count of drops is not preserved).
-    const screenCategories = new Set<ScreenCategory>();
-    const candidates = await distillTranscripts(options.transcript, brain, {
-      onScreenReject: (category) => {
-        screenCategories.add(category);
-      }
-    });
-    const shardTexts = candidates.map((shard) => shard.text);
+    const screenCategories = new Set<ScreenCategory>(this.departScreenCategories ?? []);
 
-    const journalMarkdown = await generateJournal(
-      { doorId: this.doorId, epoch: this.epochValue, shardTexts },
-      brain
-    );
-    const journalPath = await writeJournalFile(
-      options.journalDir,
-      this.doorId,
-      this.epochValue,
-      journalMarkdown
-    );
-
-    const sessionPubkeyEncoded = encodePublicKey(this.sessionPublicKeyValue);
-    const unsignedReview: Omit<Extract<CosignRequest, { phase: "review" }>, "sig"> = {
-      protocol_version: DOOR_PROTOCOL_VERSION,
-      phase: "review",
-      door_id: this.doorId,
-      epoch: this.epochValue,
-      session_pubkey: sessionPubkeyEncoded,
-      shards: candidates,
-      issued_at: this.clock.now(),
-      ...(options.farewell !== undefined ? { farewell: options.farewell } : {})
-    };
-    const reviewSig = encodeSignature(
-      this.sessionSigner.sign(cosignReviewSigningPayload(unsignedReview))
-    );
-    const reviewResponse = await this.door.cosign({
-      ...unsignedReview,
-      sig: reviewSig
-    });
-
-    if (reviewResponse.phase !== "review") {
-      throw new SessionError("unexpected cosign response phase");
-    }
+    const journal = await this.ensureDepartJournal(brain, candidates, options.journalDir);
+    const decisions = await this.ensureDepartReviewDecisions(candidates, options);
 
     const approvedSet = new Set<string>();
     const rejectedShardIds: string[] = [];
-    for (const decision of reviewResponse.decisions) {
+    for (const decision of decisions) {
       if (decision.status === "approved") {
         approvedSet.add(decision.shard_id);
       } else {
@@ -399,15 +385,17 @@ export class Session {
       }
     }
 
+    const progress = await this.scanDepartChainProgress();
     const approvedShardIds: string[] = [];
-    const candidateCids: string[] = [];
 
     for (const category of screenCategories) {
+      if (progress.screenCategories.has(category)) {
+        continue;
+      }
       const head = await this.store.head();
       if (head === null) {
         throw new SessionError("depart: store has no head");
       }
-
       await this.appendMemoryRecord({
         seq: head.seq + 1,
         prev: head.cid,
@@ -418,28 +406,32 @@ export class Session {
         },
         cosigners: []
       });
+      progress.screenCategories.add(category);
     }
 
-    for (const decision of reviewResponse.decisions) {
-      if (decision.status !== "rejected") {
-        continue;
+    if (!progress.hasHostRejected) {
+      for (const decision of decisions) {
+        if (decision.status !== "rejected") {
+          continue;
+        }
+        const head = await this.store.head();
+        if (head === null) {
+          throw new SessionError("depart: store has no head");
+        }
+        await this.appendMemoryRecord({
+          seq: head.seq + 1,
+          prev: head.cid,
+          body: {
+            kind: "rejected",
+            category: "host_rejected",
+            rejected_at: this.clock.now()
+          },
+          cosigners: []
+        });
       }
-
-      const head = await this.store.head();
-      if (head === null) {
-        throw new SessionError("depart: store has no head");
+      if (rejectedShardIds.length > 0) {
+        progress.hasHostRejected = true;
       }
-
-      await this.appendMemoryRecord({
-        seq: head.seq + 1,
-        prev: head.cid,
-        body: {
-          kind: "rejected",
-          category: "host_rejected",
-          rejected_at: this.clock.now()
-        },
-        cosigners: []
-      });
     }
 
     for (const shard of candidates) {
@@ -447,6 +439,10 @@ export class Session {
         continue;
       }
       approvedShardIds.push(shard.shard_id);
+
+      if (progress.candidateCidsByText.has(shard.text)) {
+        continue;
+      }
 
       const head = await this.store.head();
       if (head === null) {
@@ -463,74 +459,274 @@ export class Session {
         },
         cosigners: []
       });
-      candidateCids.push(cid);
+      progress.candidateCidsByText.set(shard.text, cid);
     }
 
-    let chainHead = await this.store.head();
-    if (chainHead === null) {
-      throw new SessionError("depart: store has no head before departure");
-    }
-
-    const departureBody = {
-      kind: "departure" as const,
-      pop_version: POP_VERSION,
-      door_id: this.doorId,
-      epoch: this.epochValue,
-      at: this.clock.now()
-    };
-
-    await this.appendAttestation({
-      kind: "departure",
-      body: departureBody,
-      residency: this.residency,
-      seq: chainHead.seq + 1,
-      prev: chainHead.cid,
-      signAttest: (unsigned) => {
-        const bytes = attestSigningPayload(unsigned);
-        return encodeSignature(this.sessionSigner.sign(bytes));
+    const candidateCids: string[] = [];
+    for (const shard of candidates) {
+      if (!approvedSet.has(shard.shard_id)) {
+        continue;
       }
-    });
-
-    chainHead = await this.store.head();
-    if (chainHead === null) {
-      throw new SessionError("depart: store has no head before travel");
+      const cid = progress.candidateCidsByText.get(shard.text);
+      if (cid !== undefined) {
+        candidateCids.push(cid);
+      }
     }
 
-    const travelBody: {
-      kind: "travel";
-      pop_version: typeof POP_VERSION;
-      from_door_id: string;
-      from_epoch: number;
-      at: string;
-      to_door_id?: string;
-    } = {
-      kind: "travel",
-      pop_version: POP_VERSION,
-      from_door_id: this.doorId,
-      from_epoch: this.epochValue,
-      at: this.clock.now()
-    };
-    if (options.toDoorId !== undefined) {
-      travelBody.to_door_id = options.toDoorId;
+    if (!progress.hasDeparture) {
+      const chainHead = await this.store.head();
+      if (chainHead === null) {
+        throw new SessionError("depart: store has no head before departure");
+      }
+
+      const departureBody = {
+        kind: "departure" as const,
+        pop_version: POP_VERSION,
+        door_id: this.doorId,
+        epoch: this.epochValue,
+        at: this.clock.now()
+      };
+
+      await this.appendAttestation({
+        kind: "departure",
+        body: departureBody,
+        residency: this.residency,
+        seq: chainHead.seq + 1,
+        prev: chainHead.cid,
+        signAttest: (unsigned) => {
+          const bytes = attestSigningPayload(unsigned);
+          return encodeSignature(this.sessionSigner.sign(bytes));
+        }
+      });
+      progress.hasDeparture = true;
     }
 
-    const { record: travelRecord } = await sealRecord(this.keyring, {
-      seq: chainHead.seq + 1,
-      prev: chainHead.cid,
-      type: "attestation",
-      body: travelBody,
-      residency: this.residency,
-      cosigners: []
-    });
-    await this.store.append(travelRecord);
+    if (!progress.hasTravel) {
+      const chainHead = await this.store.head();
+      if (chainHead === null) {
+        throw new SessionError("depart: store has no head before travel");
+      }
+
+      const travelBody: {
+        kind: "travel";
+        pop_version: typeof POP_VERSION;
+        from_door_id: string;
+        from_epoch: number;
+        at: string;
+        to_door_id?: string;
+      } = {
+        kind: "travel",
+        pop_version: POP_VERSION,
+        from_door_id: this.doorId,
+        from_epoch: this.epochValue,
+        at: this.clock.now()
+      };
+      if (options.toDoorId !== undefined) {
+        travelBody.to_door_id = options.toDoorId;
+      }
+
+      const { record: travelRecord } = await sealRecord(this.keyring, {
+        seq: chainHead.seq + 1,
+        prev: chainHead.cid,
+        type: "attestation",
+        body: travelBody,
+        residency: this.residency,
+        cosigners: []
+      });
+      await this.store.append(travelRecord);
+    }
+
+    this.phase = "departed";
+    this.clearDepartCaches();
 
     return {
-      journalPath,
-      journalMarkdown,
+      journalPath: journal.path,
+      journalMarkdown: journal.markdown,
       approvedShardIds,
       rejectedShardIds,
       candidateCids
     };
+  }
+
+  /**
+   * Read+destroy transcript once, then distill (or reuse cached candidates).
+   */
+  private async ensureDepartCandidates(
+    transcript: TranscriptSource,
+    brain: Brain
+  ): Promise<CandidateShard[]> {
+    if (this.departCandidates !== null) {
+      return this.departCandidates;
+    }
+
+    if (this.departTranscriptLines === null) {
+      const lines = await transcript.read();
+      await transcript.destroy();
+      this.departTranscriptLines = lines;
+    }
+
+    const screenCategories = new Set<ScreenCategory>();
+    const candidates = await distillTranscripts(
+      new MemoryTranscriptSource(this.departTranscriptLines),
+      brain,
+      {
+        onScreenReject: (category) => {
+          screenCategories.add(category);
+        }
+      }
+    );
+    this.departCandidates = candidates;
+    this.departScreenCategories = [...screenCategories];
+    return candidates;
+  }
+
+  /**
+   * Generate and write the journal once; reuse path/markdown on retry.
+   */
+  private async ensureDepartJournal(
+    brain: Brain,
+    candidates: readonly CandidateShard[],
+    journalDir: string
+  ): Promise<{ path: string; markdown: string }> {
+    if (this.departJournal !== null) {
+      return this.departJournal;
+    }
+
+    const shardTexts = candidates.map((shard) => shard.text);
+    const markdown = await generateJournal(
+      { doorId: this.doorId, epoch: this.epochValue, shardTexts },
+      brain
+    );
+    const path = await writeJournalFile(journalDir, this.doorId, this.epochValue, markdown);
+    this.departJournal = { path, markdown };
+    return this.departJournal;
+  }
+
+  /**
+   * Cosign review once; filter/dedupe Door decisions to the proposed shard set.
+   * After departure is on chain, reconstruct decisions from candidates vs chain
+   * (Door may refuse a second review).
+   */
+  private async ensureDepartReviewDecisions(
+    candidates: readonly CandidateShard[],
+    options: DepartOptions
+  ): Promise<ReviewDecision[]> {
+    if (this.departReviewDecisions !== null) {
+      return this.departReviewDecisions;
+    }
+
+    const progress = await this.scanDepartChainProgress();
+    if (progress.hasDeparture) {
+      const reconstructed: ReviewDecision[] = candidates.map((shard) => ({
+        shard_id: shard.shard_id,
+        status: progress.candidateCidsByText.has(shard.text)
+          ? ("approved" as const)
+          : ("rejected" as const)
+      }));
+      this.departReviewDecisions = reconstructed;
+      return reconstructed;
+    }
+
+    const sessionPubkeyEncoded = encodePublicKey(this.sessionPublicKeyValue);
+    const unsignedReview: Omit<Extract<CosignRequest, { phase: "review" }>, "sig"> = {
+      protocol_version: DOOR_PROTOCOL_VERSION,
+      phase: "review",
+      door_id: this.doorId,
+      epoch: this.epochValue,
+      session_pubkey: sessionPubkeyEncoded,
+      shards: [...candidates],
+      issued_at: this.clock.now(),
+      ...(options.farewell !== undefined ? { farewell: options.farewell } : {})
+    };
+    const reviewSig = encodeSignature(
+      this.sessionSigner.sign(cosignReviewSigningPayload(unsignedReview))
+    );
+    const reviewResponse = await this.door.cosign({
+      ...unsignedReview,
+      sig: reviewSig
+    });
+
+    if (reviewResponse.phase !== "review") {
+      throw new SessionError("unexpected cosign response phase");
+    }
+
+    const filtered = filterReviewDecisions(candidates, reviewResponse.decisions);
+    this.departReviewDecisions = filtered;
+    return filtered;
+  }
+
+  /**
+   * Scan this residency for depart-stage records already on the soulchain.
+   */
+  private async scanDepartChainProgress(): Promise<{
+    screenCategories: Set<ScreenCategory>;
+    hasHostRejected: boolean;
+    candidateCidsByText: Map<string, string>;
+    hasDeparture: boolean;
+    hasTravel: boolean;
+  }> {
+    const screenCategories = new Set<ScreenCategory>();
+    let hasHostRejected = false;
+    const candidateCidsByText = new Map<string, string>();
+    let hasDeparture = false;
+    let hasTravel = false;
+
+    for await (const record of this.store.iterate()) {
+      if (record.residency !== this.residency) {
+        continue;
+      }
+
+      if (record.type === "memory") {
+        const body = record.body;
+        if (body.kind === "candidate") {
+          candidateCidsByText.set(body.text, await computeCid(record));
+          continue;
+        }
+        if (body.kind === "rejected") {
+          if (body.category === "host_rejected") {
+            hasHostRejected = true;
+          } else if (isScreenCategory(body.category)) {
+            screenCategories.add(body.category);
+          }
+        }
+        continue;
+      }
+
+      if (record.type === "attestation") {
+        const body = record.body;
+        if (
+          body.kind === "departure" &&
+          body.door_id === this.doorId &&
+          body.epoch === this.epochValue
+        ) {
+          hasDeparture = true;
+        }
+        if (
+          body.kind === "travel" &&
+          body.from_door_id === this.doorId &&
+          body.from_epoch === this.epochValue
+        ) {
+          hasTravel = true;
+        }
+      }
+    }
+
+    return {
+      screenCategories,
+      hasHostRejected,
+      candidateCidsByText,
+      hasDeparture,
+      hasTravel
+    };
+  }
+
+  /** Drop in-process depart caches after a successful depart. */
+  private clearDepartCaches(): void {
+    this.departTranscriptLines = null;
+    this.departCandidates = null;
+    this.departScreenCategories = null;
+    this.departJournal = null;
+    this.departReviewDecisions = null;
   }
 
   private pushHistory(message: BrainHistoryMessage): void {
@@ -550,7 +746,7 @@ export class Session {
   }
 
   private async onHeartbeatTick(): Promise<void> {
-    if (!this.live) {
+    if (this.phase !== "live") {
       return;
     }
 
@@ -565,7 +761,7 @@ export class Session {
   }
 
   private async runHeartbeat(): Promise<void> {
-    if (!this.live) {
+    if (this.phase !== "live") {
       return;
     }
 
@@ -686,6 +882,47 @@ export class Session {
 
     await this.store.append(record);
   }
+}
+
+const SCREEN_CATEGORY_VALUES: readonly ScreenCategory[] = [
+  "pii.email",
+  "pii.phone",
+  "pii.handle",
+  "injection.instruction",
+  "injection.role_marker",
+  "injection.url_payload"
+];
+
+/**
+ * Narrow a rejection category string to a known immune {@link ScreenCategory}.
+ */
+function isScreenCategory(category: string): category is ScreenCategory {
+  return (SCREEN_CATEGORY_VALUES as readonly string[]).includes(category);
+}
+
+/**
+ * Keep Door review decisions that name a proposed shard_id; first decision wins per id.
+ */
+function filterReviewDecisions(
+  candidates: readonly CandidateShard[],
+  decisions: readonly ReviewDecision[]
+): ReviewDecision[] {
+  const proposedIds = new Set(candidates.map((shard) => shard.shard_id));
+  const seen = new Set<string>();
+  const filtered: ReviewDecision[] = [];
+
+  for (const decision of decisions) {
+    if (!proposedIds.has(decision.shard_id)) {
+      continue;
+    }
+    if (seen.has(decision.shard_id)) {
+      continue;
+    }
+    seen.add(decision.shard_id);
+    filtered.push(decision);
+  }
+
+  return filtered;
 }
 
 /** Scan the chain for the maximum global epoch on attestation records. */

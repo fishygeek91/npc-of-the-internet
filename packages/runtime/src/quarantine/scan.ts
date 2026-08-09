@@ -109,3 +109,34 @@ export async function scanQuarantineState(store: SoulStore): Promise<QuarantineS
     residenciesWithJournal
   };
 }
+
+/**
+ * Collect `candidate_cid` values from `memory.rejected` records with `seq > fromSeqExclusive`.
+ * Used by commit to detect flags appended after the pre-loop quarantine scan.
+ */
+export async function scanRejectedCandidateCidsSince(
+  store: SoulStore,
+  fromSeqExclusive: number
+): Promise<ReadonlySet<string>> {
+  const rejectedCandidateCids = new Set<string>();
+
+  for await (const record of store.iterate()) {
+    if (record.seq <= fromSeqExclusive) {
+      continue;
+    }
+    if (record.type !== "memory") {
+      continue;
+    }
+    const body = record.body;
+    if (body.kind !== "rejected") {
+      continue;
+    }
+    const candidateCid = body.candidate_cid;
+    if (candidateCid !== undefined) {
+      assertValidCandidateCid(candidateCid, `rejected record at seq ${String(record.seq)}`);
+      rejectedCandidateCids.add(candidateCid);
+    }
+  }
+
+  return rejectedCandidateCids;
+}

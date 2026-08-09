@@ -28,6 +28,7 @@ export { distillTranscripts } from "./distill/distill-transcripts.js";
 export { DistillError } from "./distill/errors.js";
 export type { DistillErrorReason } from "./distill/errors.js";
 export { FileTranscriptSource } from "./distill/file-transcript-source.js";
+export { MemoryTranscriptSource } from "./distill/memory-transcript-source.js";
 export type {
   CandidateShard,
   DistillOptions,
@@ -40,7 +41,11 @@ export { loadQuarantineConfig } from "./quarantine/config.js";
 export { QuarantineError } from "./quarantine/errors.js";
 export type { QuarantineErrorReason } from "./quarantine/errors.js";
 export { resolveJournalPath } from "./quarantine/resolve-journal-path.js";
-export { isCandidateRipe, scanQuarantineState } from "./quarantine/scan.js";
+export {
+  isCandidateRipe,
+  scanQuarantineState,
+  scanRejectedCandidateCidsSince
+} from "./quarantine/scan.js";
 export type { QuarantineCandidate, QuarantineScan } from "./quarantine/scan.js";
 export { assignShardIds, shardIdFromText } from "./quarantine/shard-id.js";
 export { commitQuarantinedShards } from "./quarantine/commit.js";

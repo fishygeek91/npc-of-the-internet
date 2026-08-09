@@ -11,6 +11,7 @@ import {
 } from "@npc/osp-core";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { BrainError } from "../src/brain/errors.js";
 import { FakeBrain } from "../src/brain/fake-brain.js";
 import { FileTranscriptSource } from "../src/distill/file-transcript-source.js";
 import type { TranscriptLine } from "../src/distill/types.js";
@@ -18,7 +19,13 @@ import { SingleKeyKeyring } from "../src/keyring/single-key-keyring.js";
 import { shardIdFromText } from "../src/quarantine/shard-id.js";
 import { Session } from "../src/session/session.js";
 import { SessionError } from "../src/session/errors.js";
-import type { InboundFrame } from "../src/session/types.js";
+import type {
+  CosignRequest,
+  CosignResponse,
+  DoorConnection,
+  InboundFrame,
+  ReviewDecision
+} from "../src/session/types.js";
 import { DoorStub } from "./helpers/door-stub.js";
 import { FakeClock, FakeTimer } from "./helpers/fake-timer.js";
 import { createGenesisRecord, DOOR_ID, doorPublicKeyFor } from "./helpers/fixtures.js";
@@ -375,6 +382,143 @@ describe("Session.depart", () => {
       .slice(departureIndex + 1)
       .filter((record) => record.type === "attestation" && record.body.kind === "heartbeat");
     expect(heartbeatsAfterDeparture).toHaveLength(0);
+
+    const chainResult = await verifyChain(store, {
+      doorPublicKeys: doorPublicKeyFor(DOOR_ID, DOOR.publicKey)
+    });
+    expect(chainResult.valid).toBe(true);
+  });
+
+  it("retries depart after a one-shot distill BrainError and yields a verifying chain", async () => {
+    const store = await buildGenesisStore();
+    const transcriptDir = await makeTempDir("depart-retry-transcript-");
+    const journalDir = await makeTempDir("depart-retry-journal-");
+    const source = await writeTranscript(transcriptDir, sampleTranscriptLines());
+    const transcriptPath = source.path;
+
+    const shardTexts = nShards(5);
+    let distillAttempts = 0;
+    const brain = new FakeBrain((messages) => {
+      const isDistill =
+        messages.some((message) => message.role === "system") &&
+        messages.some(
+          (message) => message.role === "user" && message.content.includes("Distill this residency")
+        );
+      if (isDistill) {
+        distillAttempts += 1;
+        if (distillAttempts === 1) {
+          throw new BrainError("transient distill failure");
+        }
+        return shardsJson(shardTexts);
+      }
+      return SAMPLE_JOURNAL;
+    });
+
+    const harness = createSessionHarness(store, brain);
+    const session = await harness.start();
+
+    await expect(
+      session.depart({
+        transcript: source,
+        journalDir,
+        toDoorId: "discord:next"
+      })
+    ).rejects.toBeInstanceOf(BrainError);
+
+    await expect(access(transcriptPath)).rejects.toMatchObject({ code: "ENOENT" });
+
+    const result = await session.depart({
+      transcript: source,
+      journalDir,
+      toDoorId: "discord:next"
+    });
+
+    expect(result.approvedShardIds).toHaveLength(5);
+    expect(result.candidateCids).toHaveLength(5);
+    expect(distillAttempts).toBe(2);
+
+    const chainResult = await verifyChain(store, {
+      doorPublicKeys: doorPublicKeyFor(DOOR_ID, DOOR.publicKey)
+    });
+    expect(chainResult.valid).toBe(true);
+
+    await expect(
+      session.depart({
+        transcript: source,
+        journalDir
+      })
+    ).rejects.toThrow(/already departed/);
+  });
+
+  it("filters unknown and duplicate Door review decisions before host_rejected appends", async () => {
+    const store = await buildGenesisStore();
+    const transcriptDir = await makeTempDir("depart-filter-transcript-");
+    const journalDir = await makeTempDir("depart-filter-journal-");
+    const source = await writeTranscript(transcriptDir, sampleTranscriptLines());
+
+    const shardTexts = nShards(5);
+    const rejectedId = shardIdFromText(shardTexts[0]);
+    const brain = new FakeBrain([shardsJson(shardTexts), SAMPLE_JOURNAL]);
+    const clock = new FakeClock(CLOCK_START);
+    const timer = new FakeTimer();
+    const keyring = new SingleKeyKeyring(SOUL.privateKey);
+    const innerDoor = new DoorStub({
+      doorId: DOOR_ID,
+      doorKeypair: DOOR,
+      soulPublicKey: SOUL.publicKey,
+      clock,
+      rejectShardIds: new Set([rejectedId])
+    });
+
+    const door: DoorConnection = {
+      attest: (request) => innerDoor.attest(request),
+      heartbeat: (request) => innerDoor.heartbeat(request),
+      cosign: async (request: CosignRequest): Promise<CosignResponse> => {
+        const response = await innerDoor.cosign(request);
+        if (response.phase !== "review") {
+          return response;
+        }
+        const junk: ReviewDecision[] = [
+          { shard_id: "never-proposed-shard", status: "rejected" },
+          { shard_id: rejectedId, status: "rejected" },
+          { shard_id: rejectedId, status: "rejected" },
+          { shard_id: "another-unknown", status: "rejected" }
+        ];
+        return {
+          ...response,
+          decisions: [...junk, ...response.decisions]
+        };
+      }
+    };
+
+    const session = await Session.start({
+      store,
+      brain,
+      door,
+      keyring,
+      doorId: DOOR_ID,
+      timer,
+      clock,
+      heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS,
+      doorPublicKeys: doorPublicKeyFor(DOOR_ID, DOOR.publicKey)
+    });
+
+    const result = await session.depart({
+      transcript: source,
+      journalDir
+    });
+
+    expect(result.rejectedShardIds).toEqual([rejectedId]);
+    expect(result.approvedShardIds).toHaveLength(4);
+
+    const records = await collectRecords(store);
+    const hostRejected = records.filter(
+      (record) =>
+        record.type === "memory" &&
+        record.body.kind === "rejected" &&
+        record.body.category === "host_rejected"
+    );
+    expect(hostRejected).toHaveLength(1);
 
     const chainResult = await verifyChain(store, {
       doorPublicKeys: doorPublicKeyFor(DOOR_ID, DOOR.publicKey)

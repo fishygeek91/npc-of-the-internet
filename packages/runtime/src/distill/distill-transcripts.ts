@@ -14,16 +14,25 @@ const MAX_SHARD_CODE_POINTS = 500;
 
 type ParsedShard = { text: string; tags?: string[] };
 
+/**
+ * Format one transcript line for the distiller user prompt.
+ */
 function formatTranscriptLine(line: TranscriptLine): string {
   const authorSuffix = line.author_id !== undefined ? ` (${line.author_id})` : "";
   return `[${line.role}]${authorSuffix}: ${line.text}`;
 }
 
+/**
+ * Build the distiller user-message body from screened transcript lines.
+ */
 function buildUserContent(lines: readonly TranscriptLine[]): string {
   const body = lines.map(formatTranscriptLine).join("\n");
   return `${body}\n\nDistill this residency into memory shards. Respond with JSON only.`;
 }
 
+/**
+ * Build the Brain message list for a distill attempt.
+ */
 function buildMessages(userContent: string): BrainMessage[] {
   return [
     { role: "system", content: DISTILLER_SYSTEM },
@@ -31,6 +40,40 @@ function buildMessages(userContent: string): BrainMessage[] {
   ];
 }
 
+/**
+ * Drop transcript lines that fail {@link screenText}; report categories only.
+ */
+function screenTranscriptLines(
+  lines: readonly TranscriptLine[],
+  opts: DistillOptions | undefined
+): { lines: TranscriptLine[]; droppedCategories: ScreenCategory[] } {
+  const onScreenReject = opts?.onScreenReject;
+  const kept: TranscriptLine[] = [];
+  const droppedCategories: ScreenCategory[] = [];
+
+  for (const line of lines) {
+    const screenResult =
+      opts?.piiAllowlist === undefined
+        ? screenText(line.text)
+        : screenText(line.text, { allowlist: opts.piiAllowlist });
+    if (!screenResult.ok) {
+      for (const category of screenResult.categories) {
+        onScreenReject?.(category);
+        if (!droppedCategories.includes(category)) {
+          droppedCategories.push(category);
+        }
+      }
+      continue;
+    }
+    kept.push(line);
+  }
+
+  return { lines: kept, droppedCategories };
+}
+
+/**
+ * Parse Brain output; one malformed-output retry with the distiller retry prompt.
+ */
 async function completeWithRetry(
   brain: Brain,
   userContent: string,
@@ -66,6 +109,9 @@ async function completeWithRetry(
   }
 }
 
+/**
+ * Drop empty and over-length shards (reject, do not truncate).
+ */
 function filterLengthAndEmpty(shards: readonly ParsedShard[]): ParsedShard[] {
   const usable: ParsedShard[] = [];
   for (const shard of shards) {
@@ -80,6 +126,9 @@ function filterLengthAndEmpty(shards: readonly ParsedShard[]): ParsedShard[] {
   return usable;
 }
 
+/**
+ * Screen output shards; drop failures and collect unique categories.
+ */
 function applyImmuneScreen(
   shards: readonly ParsedShard[],
   opts: DistillOptions | undefined
@@ -108,6 +157,9 @@ function applyImmuneScreen(
   return { shards: kept, droppedCategories };
 }
 
+/**
+ * Assign content-derived shard ids to screened shards.
+ */
 function toCandidateShards(shards: readonly ParsedShard[]): CandidateShard[] {
   const shardIds = assignShardIds(shards.map((shard) => shard.text));
   return shards.map((shard, index) => {
@@ -128,7 +180,8 @@ function toCandidateShards(shards: readonly ParsedShard[]): CandidateShard[] {
 
 /**
  * Distill a residency transcript into 5–20 immune-screened candidate memory shards.
- * Destroys the transcript source after a successful run.
+ * Screens each transcript line before the Brain call; destroys the source after read
+ * (success or failure) so raw transcripts do not linger on disk.
  */
 export async function distillTranscripts(
   source: TranscriptSource,
@@ -136,32 +189,40 @@ export async function distillTranscripts(
   opts?: DistillOptions
 ): Promise<CandidateShard[]> {
   const lines = await source.read();
-  const userContent = buildUserContent(lines);
-  const messages = buildMessages(userContent);
-
-  const raw = await brain.complete(messages);
-  const parsed = await completeWithRetry(brain, userContent, raw);
-
-  const lengthFiltered = filterLengthAndEmpty(parsed);
-  const { shards: screenFiltered, droppedCategories } = applyImmuneScreen(lengthFiltered, opts);
-
-  if (screenFiltered.length < MIN_SHARDS) {
-    const hadScreenDrops = droppedCategories.length > 0;
-    const reason = hadScreenDrops ? "screen_reject" : "too_few_shards";
-    const message = hadScreenDrops
-      ? `distillation produced fewer than ${String(MIN_SHARDS)} shards after immune screening`
-      : `distillation produced fewer than ${String(MIN_SHARDS)} usable shards`;
-    if (hadScreenDrops) {
-      throw new DistillError(message, reason, { categories: droppedCategories });
+  try {
+    const { lines: screenedLines } = screenTranscriptLines(lines, opts);
+    if (screenedLines.length === 0) {
+      throw new DistillError(
+        "transcript has no lines remaining after immune screening",
+        "invalid_transcript"
+      );
     }
-    throw new DistillError(message, reason);
+
+    const userContent = buildUserContent(screenedLines);
+    const messages = buildMessages(userContent);
+
+    const raw = await brain.complete(messages);
+    const parsed = await completeWithRetry(brain, userContent, raw);
+
+    const lengthFiltered = filterLengthAndEmpty(parsed);
+    const { shards: screenFiltered, droppedCategories } = applyImmuneScreen(lengthFiltered, opts);
+
+    if (screenFiltered.length < MIN_SHARDS) {
+      const hadScreenDrops = droppedCategories.length > 0;
+      const reason = hadScreenDrops ? "screen_reject" : "too_few_shards";
+      const message = hadScreenDrops
+        ? `distillation produced fewer than ${String(MIN_SHARDS)} shards after immune screening`
+        : `distillation produced fewer than ${String(MIN_SHARDS)} usable shards`;
+      if (hadScreenDrops) {
+        throw new DistillError(message, reason, { categories: droppedCategories });
+      }
+      throw new DistillError(message, reason);
+    }
+
+    const clamped = screenFiltered.slice(0, MAX_SHARDS);
+    return toCandidateShards(clamped);
+  } finally {
+    // Privacy: always attempt destroy after a successful read (ENOENT-safe for files).
+    await source.destroy();
   }
-
-  const clamped = screenFiltered.slice(0, MAX_SHARDS);
-  const candidates = toCandidateShards(clamped);
-
-  // T2.5: if destroy fails (e.g. EPERM), prefer returning candidates and
-  // surfacing retained-transcript separately — do not force a re-distill.
-  await source.destroy();
-  return candidates;
 }

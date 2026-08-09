@@ -97,11 +97,11 @@ const shards: CandidateShard[] = await distillTranscripts(source, brain, {
 });
 ```
 
-`FileTranscriptSource` reads newline-delimited JSON; each line is `{ role: "user" | "assistant", text: string, author_id?: string }`. The file is deleted only after a successful run (`source.destroy()` on success).
+`FileTranscriptSource` reads newline-delimited JSON; each line is `{ role: "user" | "assistant", text: string, author_id?: string }`. After a successful read, the source is destroyed whether distillation succeeds or fails (privacy). `MemoryTranscriptSource` replays cached in-memory lines when `Session.depart` retries after the on-disk transcript is gone.
 
 Prompt templates live at `src/prompts/distiller/` (TS string constants, strategy a).
 
-**Behavior:** Zod-parse Brain JSON (`{ shards: [{ text, tags? }] }`); one malformed-output retry; empty or over-length shards dropped (≤500 Unicode code points — reject, not truncate); each shard passes through `@npc/immune` `screenText` (PII + injection heuristics) with optional PII allowlist and category-only `onScreenReject` callback; failures use `DistillError` reason `"screen_reject"` with `categories` (never payload text); transcript destroyed only when validation passes and at least five shards remain.
+**Behavior:** each transcript line passes through `@npc/immune` `screenText` before the Brain call — failing lines are dropped and `onScreenReject` is notified (category only, never payload text); Zod-parse Brain JSON (`{ shards: [{ text, tags? }] }`); one malformed-output retry; empty or over-length shards dropped (≤500 Unicode code points — reject, not truncate); output shards are screened again with optional PII allowlist; failures use `DistillError` reason `"screen_reject"` with `categories` (never payload text); the transcript source is destroyed after a successful read (success or failure) so raw transcripts do not linger on disk.
 
 **Out of scope:** soulchain append (callers append `memory.candidate` at depart; see Quarantine T3.2).
 
@@ -166,17 +166,18 @@ import { Session, move, type DepartOptions } from "@npc/runtime";
 
 ### `Session.depart`
 
-Call on a live session to end the residency. Order of operations:
+Call on a live session to end the residency. Enters a `departing` phase immediately (`stop()` + `await drainAppends()` — no further heartbeats or inbound handling). Safe to retry after a mid-pipeline failure until `travel` is appended (`departed`); transcript lines, candidates, journal, and review decisions are cached in-process across retries. The transcript is read once then destroyed; subsequent distill attempts use `MemoryTranscriptSource` over the cached lines.
 
-1. `stop()` + `await drainAppends()` — no further heartbeats or inbound handling
-2. Distill transcripts → candidate shards (`distillTranscripts`)
-3. Generate residency journal markdown (`generateJournal`) and write a journal file (`writeJournalFile`)
-4. Two-phase Door cosign: `review` (approve/reject shards)
-5. Append `memory.rejected` for immune-screen drops and host rejections (category only, no shard text)
-6. Append `memory.candidate` records for host-approved shards (`cosigners: []`; text on chain, not yet composed)
-7. Append `departure` attestation (Door cosigned) and soul-signed `travel` attestation
+Order of operations:
 
-Returns `{ journalPath, journalMarkdown, approvedShardIds, rejectedShardIds, candidateCids }`. The session remains not-live after depart. Candidates are **not** committed shards yet — see Quarantine (T3.2).
+1. Read+destroy transcript; distill → candidate shards (`distillTranscripts`)
+2. Generate residency journal markdown (`generateJournal`) and write a journal file (`writeJournalFile`)
+3. Two-phase Door cosign: `review` (approve/reject shards) — decisions are filtered to the proposed `shard_id` set and deduped (first wins)
+4. Append `memory.rejected` for immune-screen drops and host rejections (category only, no shard text)
+5. Append `memory.candidate` records for host-approved shards (`cosigners: []`; text on chain, not yet composed)
+6. Append `departure` attestation (Door cosigned) and soul-signed `travel` attestation
+
+Returns `{ journalPath, journalMarkdown, approvedShardIds, rejectedShardIds, candidateCids }`. On success the session is `departed` (not live). Candidates are **not** committed shards yet — see Quarantine (T3.2).
 
 ### `move()`
 
@@ -232,8 +233,8 @@ import {
 
 1. **Depart** — `Session.depart` appends `memory.candidate` (approved shards) and `memory.rejected` (drops/rejections). Departure/travel attestations always append, even when every shard is rejected.
 2. **Quarantine window** — candidates ripen for `NPC_QUARANTINE_WINDOW_MS` (default 24h) before they can commit.
-3. **Operator flag** — `flagCandidate({ store, keyring, candidateCid, clock, category? })` appends a `memory.rejected` referencing the candidate CID (category only).
-4. **Commit** — `commitQuarantinedShards({ store, keyring, door, doorId, epoch, clock, quarantineWindowMs, journalMarkdown? })` promotes ripe, unflagged candidates to cosigned `memory.shard` records. Returns `{ committedCids, ripeningCids, skippedCids, journalAttached }`.
+3. **Operator flag** — `flagCandidate({ store, keyring, candidateCid, clock, category? })` appends a `memory.rejected` referencing the candidate CID (category only). Throws `QuarantineError` with reason `"already_rejected"` if that CID was already flagged.
+4. **Commit** — `commitQuarantinedShards({ store, keyring, door, doorId, epoch, clock, quarantineWindowMs, journalMarkdown? })` promotes ripe, unflagged candidates to cosigned `memory.shard` records. Re-checks for rejection records before each Door cosign and again before seal (TOCTOU). Returns `{ committedCids, ripeningCids, skippedCids, journalAttached }`.
 
 `composeSelf` includes only committed `memory.shard` texts — candidates and rejections are excluded (see fixture B goldens and `test/quarantine-integration.test.ts`).
 
