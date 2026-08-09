@@ -389,6 +389,14 @@ Erasing or unpinning the blob from storage **MUST NOT** invalidate existing cosi
 
 ---
 
+## Spec migration (`osp/0.1` → `osp/0.2`)
+
+Because `spec` is inside the signed envelope bytes and chains MUST be spec-homogeneous, migrating an existing soulchain from `osp/0.1` to `osp/0.2` is a **whole-chain rewrite and re-sign**: extract inline `text`/`journal` into side blobs, rebuild each memory body with CID+hash refs, set `spec: "osp/0.2"` on every record, recompute `prev` links and CIDs, and re-sign under the soul key (and Door cosigns where required). Conformance vector `migrate-0.1-to-0.2.json` demonstrates a deterministic rewrite of the valid mini-chain.
+
+**Operational consequence:** cutover (runtime PR that begins writing `osp/0.2`) MUST rewrite the entire local chain **before** any public Phase D push — published record CIDs from the pre-migration chain do not survive migration.
+
+---
+
 ## Cryptography
 
 | Mechanism | Library / format |

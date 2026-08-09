@@ -477,6 +477,25 @@ describe("RecordSchema", () => {
     expect(result.success).toBe(true);
   });
 
+  it("rejects tombstone under osp/0.1", () => {
+    const result = RecordSchema.safeParse({
+      spec: "osp/0.1",
+      seq: 3,
+      prev: PREV_CID,
+      type: "tombstone",
+      body: {
+        target_cid: PREV_CID,
+        blob_cid: "baguqeeralktwflryh65xe6xty6rw2skauw4micuysrjnemcpzfmp6pzvjz5a",
+        reason: "erasure_request",
+        erased_at: "2026-01-04T00:00:00.000Z"
+      },
+      residency: null,
+      cosigners: [],
+      sig: TEST_SOUL_SIG
+    });
+    expect(result.success).toBe(false);
+  });
+
   it("rejects tombstone with free-text reason or erased prose", () => {
     const badReason = RecordSchema.safeParse({
       spec: "osp/0.2",

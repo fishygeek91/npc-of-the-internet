@@ -224,8 +224,8 @@ function validateCosignerRules(
 }
 
 /**
- * Memory shard/candidate body shape must match the record `spec` version.
- * Rejected bodies are identical across versions.
+ * Record body / type constraints that depend on the envelope `spec` version.
+ * Tombstones are osp/0.2-only; memory shard/candidate shapes must match the version.
  */
 function validateSpecBodyCompatibility(
   record: {
@@ -235,6 +235,15 @@ function validateSpecBodyCompatibility(
   },
   ctx: z.RefinementCtx
 ): void {
+  if (record.type === "tombstone" && record.spec !== OSP_SPEC_V02) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "tombstone records require spec osp/0.2",
+      path: ["spec"]
+    });
+    return;
+  }
+
   if (record.type !== "memory") {
     return;
   }

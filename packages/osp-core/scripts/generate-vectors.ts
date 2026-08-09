@@ -1027,6 +1027,21 @@ async function buildVectors(): Promise<VectorCase[]> {
     ]
   };
 
+  // Homogeneous osp/0.1 chain with a tombstone (tombstones are osp/0.2-only).
+  const tombstoneOnV01 = mutateRecord(tombstone.record, (draft) => {
+    draft.spec = "osp/0.1";
+    draft.seq = 2;
+    draft.prev = chain.arrival.cid;
+  });
+  const schemaTombstoneV01: VectorCase = {
+    filename: "schema-tombstone-v01.json",
+    description: "Tombstone record under osp/0.1 is a schema_violation (osp/0.2 only)",
+    expected: "schema_violation",
+    soulPublicKey: soulPub,
+    doorPublicKeys: discordDoorKeys,
+    records: [chain.genesis.record, chain.arrival.record, tombstoneOnV01]
+  };
+
   return [
     validMiniChain,
     badSoulSig,
@@ -1057,7 +1072,8 @@ async function buildVectors(): Promise<VectorCase[]> {
     validOsp02MiniChain,
     validTombstoneAfterShard,
     migrate01to02,
-    schemaTombstoneProse
+    schemaTombstoneProse,
+    schemaTombstoneV01
   ];
 }
 
