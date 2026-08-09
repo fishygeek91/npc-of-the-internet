@@ -162,7 +162,7 @@ On depart, before the `departure` attestation:
 
 On arrive:
 
-- Assign the next **global** epoch: `new_epoch = last_closed_or_current_epoch + 1` (Wanderer-side; never ask the Door for `epoch_next`).
+- Assign the next **global** epoch: `new_epoch = last_closed_or_current_epoch + 1` (Wanderer-side; never ask the Door for `epoch_next`). After a mid-arrival crash (Door accepted the arrival attest but the soulchain append did not land), the Wanderer MUST also satisfy `epoch > hello.active_epoch` when that field is set: `new_epoch = max(chain_derived, active_epoch + 1)` (see [Door API — arrival epoch monotonicity](../door/api.md#arrival-epoch-monotonicity-and-supersession)).
 - Derive the new session key for `(new_door_id, new_epoch)`.
 - Obtain the arriving Door's co-signature over the arrival record `core` via `POST /door/attest` (`kind: "arrival"`).
 - Append the `arrival` attestation containing the session public key.

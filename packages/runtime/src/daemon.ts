@@ -125,6 +125,9 @@ export async function startResidencyDaemon(
   const clock = createRealClock();
   const timer = createRealTimer();
 
+  /** Counts heartbeat Door/append failures for ops visibility. */
+  let heartbeatErrorCount = 0;
+
   const session = await Session.start({
     store,
     door,
@@ -133,7 +136,13 @@ export async function startResidencyDaemon(
     brain,
     clock,
     timer,
-    doorPublicKeys: config.doorPublicKeys
+    doorPublicKeys: config.doorPublicKeys,
+    activeEpoch: hello.active_epoch,
+    onHeartbeatError: (error, stage) => {
+      heartbeatErrorCount += 1;
+      const message = error instanceof Error ? error.message : String(error);
+      logger.warn({ err: message, stage, heartbeatErrorCount }, "heartbeat_failed");
+    }
   });
 
   const sessionSigner = keyring.deriveSessionKey(config.doorId, session.epoch);

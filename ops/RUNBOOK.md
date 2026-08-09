@@ -106,7 +106,7 @@ docker compose --env-file ops/.env -f ops/compose.ghost.yml up -d --build
 
 The runtime healthcheck probes `/tmp/npc-runtime.ready` (override with `NPC_RUNTIME_READY_FILE`). The file is present only while the session WebSocket is connected (cleared on disconnect/reconnect backoff, rewritten on rebind). Compose allows up to 90s start period before marking unhealthy.
 
-**SIGTERM / graceful stop:** `docker compose stop runtime` (or `down`) sends SIGTERM. The daemon removes the ready file, closes the WebSocket, calls `session.stop()`, drains pending soulchain appends, releases the writer lock, and exits (even if shutdown steps throw). It does **not** run ceremonial depart (no distill, cosign, or departure attestation). Use `wanderer move` for a deliberate handover.
+**SIGTERM / graceful stop:** `docker compose stop runtime` (or `down`) sends SIGTERM. The daemon removes the ready file, closes the WebSocket, calls `session.stop()`, drains pending soulchain appends, releases the writer lock, and exits (even if shutdown steps throw). It does **not** run ceremonial depart (no distill, cosign, or departure attestation). On-chain, the chain therefore shows no departure record — the stop looks like an abrupt crash. The next boot assigns a **new epoch** and arrives without distill/shard cosign. Use `wanderer move` for a deliberate handover.
 
 ### 1.4 Soulchain volume writability smoke test
 

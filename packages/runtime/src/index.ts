@@ -66,6 +66,7 @@ export type {
   DepartOptions,
   DepartResult,
   HandleInboundResult,
+  HeartbeatErrorStage,
   SessionOptions
 } from "./session/session.js";
 export {

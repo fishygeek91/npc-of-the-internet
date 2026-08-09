@@ -208,6 +208,12 @@ Each task lists **Deps**, **Deliverables**, and **Acceptance** (how a reviewer v
 - Acceptance: New tests per issue checklist; handover + quarantine integration green; `pnpm check` green; changeset.
 - Notes: Agent: Cursor Grok 4.5 Maestro, 2026-08-08. Session phases `live|departing|departed`; transcript destroyed after first read with in-memory retry cache (in-process only — process crash strands residency). Commit captures `scanHeadSeq` before scan; rebinds/re-cosigns when head moves mid-loop. Follow-up: RejectedBody per-shard `shard_id` — today host_rejected skip is all-or-nothing per residency, so a mid-batch crash permanently under-records remaining rejections.
 
+### Bug #70 ✅ runtime: inbound serialization, heartbeat errors, epoch crash floor (Cursor Grok 4.5 Maestro, 2026-08-08)
+- Deps: Bug #69, T2.4, T6.1-followup
+- Deliverables: Serialize `handleInbound` (in-flight Brain = 1); `onHeartbeatError` door|append stages + daemon warn/counter; `Session.start` epoch = max(chain+1, active_epoch+1); SIGTERM no-depart docs; pop overview crash note.
+- Acceptance: Interleaved inbound history/Brain order; heartbeat stage tests; epoch crash-window test; daemon serialized inbound; `pnpm check` green; changeset.
+- Notes: Agent: Cursor Grok 4.5 Maestro, 2026-08-08. `inboundChain` mirrors `enqueueAppend`; FakeBrain handlers may return `Promise<string>` for concurrency tests. SIGTERM remains document-only (no depart). No pending-inbound drop/overflow policy — sequential Brain under flood still bills.
+
 ## Phase 7 — Post-Ghost (v0.2/0.3 — spec first, then build)
 
 These are sequenced but intentionally coarser; split them into T-numbered subtasks (same format) when their phase begins.

@@ -124,7 +124,7 @@ Post a normal (non-bot) message in the bound channel. The Wanderer should reply 
 docker compose --env-file ops/.env -f ops/compose.ghost.yml stop runtime
 ```
 
-SIGTERM removes the ready file, closes the WS, drains appends, and releases `.append.lock`. It does **not** run ceremonial depart. Restart and confirm `residency_live` again:
+SIGTERM removes the ready file, closes the WS, drains appends, and releases `.append.lock`. It does **not** run ceremonial depart — no departure attestation lands on-chain (same as an abrupt crash). Restart assigns a **new epoch** (no distill/shard cosign) and confirm `residency_live` again:
 
 ```bash
 docker compose --env-file ops/.env -f ops/compose.ghost.yml start runtime
