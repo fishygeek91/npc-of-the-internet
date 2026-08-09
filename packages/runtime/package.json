@@ -18,7 +18,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.112.4",
     "@noble/ed25519": "^2.2.3",
-    "@noble/hashes": "^1.7.1",
+    "@noble/hashes": "^2.3.0",
     "@npc/door-sdk": "workspace:*",
     "@npc/immune": "workspace:*",
     "@npc/osp-core": "workspace:*",
