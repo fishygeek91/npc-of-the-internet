@@ -1,5 +1,14 @@
 # @npc/runtime
 
+## 0.2.2
+
+### Patch Changes
+
+- 65c93f4: Strip unused Node base-image npm from runtime images; pin patched `fast-uri`; aggregate per-package release notes when osp-core section is empty.
+  - @npc/osp-core@0.2.2
+  - @npc/immune@0.2.2
+  - @npc/door-sdk@0.2.2
+
 ## 0.2.1
 
 ### Patch Changes
