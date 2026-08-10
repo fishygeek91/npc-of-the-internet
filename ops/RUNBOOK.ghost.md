@@ -1,5 +1,10 @@
 # Ghost Deployment Runbook — Hetzner VPS
 
+**What this document is:** Hetzner-from-zero provisioning, host hardening, `ghostc`,
+tag-based deploy (§10), optional IPFS replication (§10a), and osp/0.2 cutover (§9).
+**What this is not:** day-two Compose stack ops (start/stop, logs/health, upgrade-with-verify,
+restore, crash recovery) — that lives in [`RUNBOOK.md`](RUNBOOK.md) (referenced by [`LAUNCH.md`](LAUNCH.md)).
+
 This is the complete, start-from-zero guide for deploying the npc-ghost Compose
 stack (`ops/compose.ghost.yml`) to a Hetzner Cloud VPS. It assumes you have
 never set up a server before. Follow it top to bottom; each step tells you
