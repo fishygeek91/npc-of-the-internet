@@ -5,8 +5,7 @@ settings:
   excludeLinksFromLockfile: false
 
 overrides:
-  fast-uri@3: '>=3.1.5'
-  fast-uri@4: '>=4.1.2'
+  fast-uri: 4.1.2
 
 importers:
 
