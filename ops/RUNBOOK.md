@@ -1,19 +1,29 @@
-# Ghost v0.1 — Operations Runbook
+# Ghost v0.2.2 — Operations Runbook
+
+**What this document is:** day-two Compose stack ops for the Ghost deployment — services,
+start/stop, logs/health, upgrade-with-verify, restore, and crash recovery. Referenced by
+[`LAUNCH.md`](LAUNCH.md).
+**What this is not:** VPS provisioning, hardening, or `ghostc` host setup — see
+[`RUNBOOK.ghost.md`](RUNBOOK.ghost.md).
 
 Single-VPS Docker Compose stack for the NPC of the Internet Ghost deployment. All commands assume the repository root as the current working directory unless noted.
 
 ## Architecture
 
-Four services share one named Docker volume (`soulchain`):
+Four services share named Docker volumes from `ops/compose.ghost.yml`:
 
-| Service | Image | Role | Soulchain access |
+| Service | Image | Role | Volume access |
 |---------|-------|------|------------------|
-| **runtime** | `ghcr.io/fishygeek91/npc-runtime` | Residency daemon (`npc-runtime`): soulchain writer, Door HTTP/WS client, live Session loop | read-write |
+| **runtime** | `ghcr.io/fishygeek91/npc-runtime` | Residency daemon (`npc-runtime`): soulchain writer, Door HTTP/WS client, live Session loop | `soulchain` + `soulchain-ipfs` + `published` (read-write) |
 | **door-discord** | `ghcr.io/fishygeek91/npc-door-discord` | Discord Door relay; HTTP REST and WebSocket coalesced on port **9090** | none |
-| **atlas-api** | `ghcr.io/fishygeek91/npc-atlas-api` | Read-only Atlas API on **127.0.0.1:8787** only (Docker published ports bypass ufw — see [RUNBOOK.ghost §6](RUNBOOK.ghost.md#6-keep-atlas-off-the-public-internet)) | read-only |
-| **backup** | `ghcr.io/fishygeek91/npc-backup` | Append-triggered `rclone` backup to remote storage | read-only |
+| **atlas-api** | `ghcr.io/fishygeek91/npc-atlas-api` | Read-only Atlas API on **127.0.0.1:8787** only (Docker published ports bypass ufw — see [RUNBOOK.ghost §6](RUNBOOK.ghost.md#6-keep-atlas-off-the-public-internet)) | `soulchain` + `published` (read-only) |
+| **backup** | `ghcr.io/fishygeek91/npc-backup` | Append-triggered `rclone` backup to remote storage | `soulchain` only (read-only) |
 
-Host-mounted secrets (paths configured in `ops/.env`): soul private key, door private key, and `rclone.conf`. Only **runtime** writes to the soulchain volume. **atlas-api** and **backup** mount it read-only.
+Named volumes: `soulchain` (`/data/soulchain`), `soulchain-ipfs` (`/data/soulchain-ipfs`), and `published` (`/data/published`). Host-mounted secrets (paths configured in `ops/.env`): soul private key, door private key, and `rclone.conf`. Only **runtime** writes the chain; **backup** backs up the file `soulchain` volume only (not the IPFS or published volumes).
+
+Ghost compose always sets `NPC_SOULCHAIN_IPFS_DIR=/data/soulchain-ipfs`, so runtime opens `DualSoulStore` (file store authoritative, IPFS mirror). Compose also sets `NPC_PUBLISHED_CAR_PATH` and `NPC_MANIFEST_CID_PATH` under `/data/published` for Atlas CAR/manifest hooks. **Outbound** IPFS replication stays disabled by default (`NPC_REPLICATION_ENABLED` unset) — enabling is Gate 2; see [RUNBOOK.ghost §10a](RUNBOOK.ghost.md#10a-ipfs-replication-optional-gate-2-for-live-push) and `ops/SECRETS.md` for env names.
+
+Runtime appends **`osp/0.2`** records natively. Fresh `osp init` already writes `osp/0.2` genesis (no migrate). Legacy `osp/0.1` chains need cutover before a writing runtime — see [RUNBOOK.ghost §9](RUNBOOK.ghost.md#9-osp02-cutover-required-before-ghost-runtime-after-119).
 
 ### Backup semantics
 
@@ -51,17 +61,19 @@ Edit `ops/.env` and replace every `replace-me` placeholder. At minimum you need 
 
 ### 1.2 Create host key files and rclone config directory
 
+> **Warning — local smoke tests only for soul keys.** The `openssl rand` soul-key path below is for local smoke tests only. Real genesis uses `osp init` (see [`LAUNCH.md`](LAUNCH.md) §1 and §2). Do not use `openssl rand` to create the production soul private key.
+
 Default paths from `ops/.env.example` (override with `SOUL_KEY_HOST_PATH`, `DOOR_KEY_HOST_PATH`, and `RCLONE_CONFIG_HOST_PATH` if you prefer different locations):
 
 ```bash
 mkdir -p /tmp/npc-ghost/keys /tmp/npc-ghost/rclone
 
 # Soul private key — 32 raw bytes or base64url text (mode 0600)
-# Generate for production; for local smoke tests use any 32-byte file:
+# Local smoke tests only — real genesis uses `osp init` (see LAUNCH.md):
 openssl rand -out /tmp/npc-ghost/keys/soul.key 32
 chmod 600 /tmp/npc-ghost/keys/soul.key
 
-# Door private key — same format
+# Door private key — same format (door keys may use openssl; soul key must not for real launch)
 openssl rand -out /tmp/npc-ghost/keys/door.key 32
 chmod 600 /tmp/npc-ghost/keys/door.key
 
@@ -250,34 +262,21 @@ If you have multiple door keys, repeat `--door-key` for each binding in `ATLAS_D
 
 Exit code `0` means the chain is valid. Exit code `1` means verification failed (printed rule failures). Exit code `2` means corruption or I/O error — see [Crash recovery](#6-crash-recovery) before proceeding.
 
-### 4.4 Stop, pull or build, start
+### 4.4 Bump image tag and deploy
+
+After §4.1–4.3 establish a verifying baseline, deploy the new release:
+
+1. Bump `NPC_IMAGE_TAG` in `ops/.env` to the release tag (for example `v0.2.2`). Pin a tag; avoid `latest` in production.
+2. Pull and restart per [RUNBOOK.ghost §10](RUNBOOK.ghost.md#10-routine-operations):
 
 ```bash
-docker compose --env-file ops/.env -f ops/compose.ghost.yml down
+# On the VPS (ghostc wraps compose + preflight):
+ghostc pull && ghostc up -d
 ```
 
-Pull published images (set `NPC_IMAGE_TAG` in `ops/.env` to match):
+That is the **only** production upgrade path. Do not use a separate `docker compose pull` / `up -d --build` procedure for releases — it diverges from the host runbook.
 
-```bash
-docker compose --env-file ops/.env -f ops/compose.ghost.yml pull
-```
-
-Or build locally:
-
-```bash
-docker build -f ops/Dockerfile.runtime -t ghcr.io/fishygeek91/npc-runtime:local .
-docker build -f ops/Dockerfile.door-discord -t ghcr.io/fishygeek91/npc-door-discord:local .
-docker build -f ops/Dockerfile.atlas-api -t ghcr.io/fishygeek91/npc-atlas-api:local .
-docker build -f ops/Dockerfile.backup -t ghcr.io/fishygeek91/npc-backup:local .
-```
-
-When using local tags, set `NPC_IMAGE_TAG=local` in `ops/.env`.
-
-Start:
-
-```bash
-docker compose --env-file ops/.env -f ops/compose.ghost.yml up -d --build
-```
+**Dev smoke only (not an upgrade path):** when iterating on local images, set `NPC_IMAGE_TAG=local` in `ops/.env` and build/tag images yourself; still run §4.2–4.3 / §4.5 verify around any chain-touching restart.
 
 ### 4.5 Post-upgrade verify
 
