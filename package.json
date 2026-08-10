@@ -7,6 +7,11 @@
     "node": ">=22"
   },
   "packageManager": "pnpm@9.15.9",
+  "pnpm": {
+    "overrides": {
+      "fast-uri": "4.1.2"
+    }
+  },
   "scripts": {
     "changeset": "changeset",
     "build": "pnpm -r build",
