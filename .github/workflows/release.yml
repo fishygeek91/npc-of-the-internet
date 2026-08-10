@@ -52,30 +52,41 @@ jobs:
           SEMVER="${TAG#v}"
           PLACEHOLDER="Changelog for ${TAG} will appear after the first Version Packages PR is merged."
 
-          # Fixed-mode changesets write per-package CHANGELOGs; osp-core is the canonical copy.
-          CHANGELOG_FILE=""
+          # Prefer root/osp-core ## SEMVER when non-empty; else aggregate all
+          # packages/*/CHANGELOG.md sections (fixed-mode often leaves osp-core empty) (#130).
+          extract_section() {
+            awk -v ver="$SEMVER" '
+              $0 ~ "^## " ver "($| )" { found=1; next }
+              found && /^## / { exit }
+              found { print }
+            ' "$1" | sed '/./,$!d'
+          }
+
+          SECTION=""
           for candidate in CHANGELOG.md packages/osp-core/CHANGELOG.md; do
             if [ -f "$candidate" ]; then
-              CHANGELOG_FILE="$candidate"
+              SECTION=$(extract_section "$candidate")
               break
             fi
           done
 
-          if [ -z "$CHANGELOG_FILE" ]; then
-            {
-              echo "body<<CHANGELOG_EOF"
-              echo "$PLACEHOLDER"
-              echo "CHANGELOG_EOF"
-            } >> "$GITHUB_OUTPUT"
-            echo "has_section=false" >> "$GITHUB_OUTPUT"
-            exit 0
+          if [ -z "$SECTION" ]; then
+            AGGREGATED=""
+            shopt -s nullglob
+            for f in packages/*/CHANGELOG.md; do
+              PKG_SECTION=$(extract_section "$f")
+              if [ -n "$PKG_SECTION" ]; then
+                PKG_NAME=$(basename "$(dirname "$f")")
+                PKG_BLOCK=$(printf '### @npc/%s\n\n%s' "$PKG_NAME" "$PKG_SECTION")
+                if [ -n "$AGGREGATED" ]; then
+                  AGGREGATED=$(printf '%s\n\n%s' "$AGGREGATED" "$PKG_BLOCK")
+                else
+                  AGGREGATED="$PKG_BLOCK"
+                fi
+              fi
+            done
+            SECTION="$AGGREGATED"
           fi
-
-          SECTION=$(awk -v ver="$SEMVER" '
-            $0 ~ "^## " ver "($| )" { found=1; next }
-            found && /^## / { exit }
-            found { print }
-          ' "$CHANGELOG_FILE" | sed '/./,$!d')
 
           if [ -n "$SECTION" ]; then
             {

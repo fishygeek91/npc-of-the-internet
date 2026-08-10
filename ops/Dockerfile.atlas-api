@@ -29,6 +29,11 @@ FROM node:22-slim AS runtime
 # Container uid/gid pinned to 10001 so host bind-mounted keys/rclone owned 10001:10001 are readable on Linux VPS (#84). macOS Docker Desktop remaps ownership and hides the bug.
 RUN groupadd --gid 10001 npc && useradd --uid 10001 --gid npc --create-home --home-dir /home/npc npc
 
+# Strip unused Node base-image package managers from the runtime image (#130).
+# Images only execute `node dist/...`; bundled npm/corepack is unused Trivy surface.
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
+  && rm -f /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack
+
 COPY --from=build /out /app
 
 WORKDIR /app
