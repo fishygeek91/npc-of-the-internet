@@ -21,7 +21,7 @@
     "@npc/osp-core": "workspace:*",
     "discord.js": "^14.21.0",
     "pino": "^9.6.0",
-    "zod": "^3.24.2"
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@npc/runtime": "workspace:*",
