@@ -269,7 +269,8 @@ describe("OpenAICompatBrain", () => {
         random: () => 0
       });
       await expect(brain.complete([{ role: "user", content: "hi" }])).rejects.toMatchObject({
-        reason: "auth"
+        reason: "auth",
+        cause: { status: 401, body: '{"error":{"message":"nope"}}' }
       });
       expect(hits).toBe(1);
     } finally {

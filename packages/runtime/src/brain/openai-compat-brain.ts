@@ -30,6 +30,7 @@ const chatCompletionResponseSchema = z.object({
 type ChatCompletionBody = {
   model: string;
   messages: BrainMessage[];
+  /** OpenAI-compat `max_tokens`. First-party OpenAI newer models may require `max_completion_tokens` instead. */
   max_tokens: number;
   temperature?: number;
   stop?: string[];
@@ -217,10 +218,16 @@ export class OpenAICompatBrain implements Brain {
     const bodyText = await response.text();
     if (!response.ok) {
       const reason = reasonFromHttpStatus(response.status, bodyText);
+      const snippet = errorBodySnippet(bodyText);
       throw new BrainError(
         `OpenAI-compatible API request failed (${String(response.status)})`,
         reason,
-        { cause: { status: response.status } }
+        {
+          cause:
+            snippet === ""
+              ? { status: response.status }
+              : { status: response.status, body: snippet }
+        }
       );
     }
 
@@ -261,4 +268,13 @@ function httpStatusFromCause(cause: unknown): number | undefined {
   }
   const status = cause.status;
   return typeof status === "number" ? status : undefined;
+}
+
+/** Truncate a provider error body for `BrainError.cause` — never include request headers or keys. */
+function errorBodySnippet(bodyText: string): string {
+  const collapsed = bodyText.replace(/\s+/g, " ").trim();
+  if (collapsed.length <= 200) {
+    return collapsed;
+  }
+  return `${collapsed.slice(0, 200)}…`;
 }

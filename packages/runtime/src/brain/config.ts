@@ -151,7 +151,7 @@ export function isOpenRouterBaseUrl(baseUrl: string): boolean {
   return hostname === "openrouter.ai" || hostname.endsWith(".openrouter.ai");
 }
 
-function parseHttpsUrl(raw: string | undefined, name: string): string {
+function parseHttpUrl(raw: string | undefined, name: string): string {
   if (raw === undefined || raw === "") {
     throw new BrainError(`${name} is required but not set`, "invalid_config", { envVar: name });
   }
@@ -255,7 +255,7 @@ export function loadBrainConfig(env: NodeJS.ProcessEnv = process.env): BrainConf
     });
   } else {
     const apiKey = resolveSecretFromEnv(env, "NPC_BRAIN_API_KEY", "NPC_BRAIN_API_KEY_FILE");
-    const baseUrl = parseHttpsUrl(env.NPC_BRAIN_BASE_URL, "NPC_BRAIN_BASE_URL");
+    const baseUrl = parseHttpUrl(env.NPC_BRAIN_BASE_URL, "NPC_BRAIN_BASE_URL");
     const model = parseRequiredModel(env.NPC_BRAIN_MODEL);
     const allowlist = parseAllowlist(env.NPC_BRAIN_PROVIDER_ALLOWLIST);
     if (isOpenRouterBaseUrl(baseUrl) && allowlist.length === 0) {
