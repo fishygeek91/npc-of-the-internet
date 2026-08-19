@@ -46,7 +46,7 @@ Internally the script runs: `osp init` → `launch-first-residency.mjs` → `osp
 | Concern | Dry-run | Real launch |
 |---|---|---|
 | Residency transport | In-process Session + door-sdk `Door` (`ops/scripts/launch-first-residency.mjs`) | `npc-runtime` daemon ↔ door-discord over compose HTTP/WS `:9090` |
-| Brain | FakeBrain (no API key) | AnthropicBrain (`ANTHROPIC_API_KEY`) |
+| Brain | FakeBrain (no API key) | `createBrain` from env (`NPC_BRAIN_PROVIDER=openai-compat` / OpenRouter recommended; Anthropic still supported) |
 | Heartbeats | FakeTimer ticks (CI-fast) | Real daemon timer (default 10 minutes) |
 | Discord | None | Real bot + guild/channel ([`MANUAL_TEST.md`](../packages/door-discord/MANUAL_TEST.md)) |
 | Docker Compose | Not started (compose config still validated in CI by T6.1) | `docker compose … up` per [RUNBOOK §1](RUNBOOK.md#1-start) |

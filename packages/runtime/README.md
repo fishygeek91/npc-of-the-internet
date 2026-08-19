@@ -2,36 +2,56 @@
 
 The Wanderer runtime: Self-Composer, Distiller, Navigator, Treasury, session loop.
 
-## Brain (T2.1)
+## Brain (T2.1 / T7.11)
 
-All LLM access goes through the provider-agnostic `Brain` interface:
+All LLM access goes through the provider-agnostic `Brain` interface. `complete` returns `{ text, usage }` (token counts; zeros if the provider omits them).
 
 ```ts
-import { AnthropicBrain, FakeBrain, loadBrainConfig } from "@npc/runtime";
+import { createBrain, FakeBrain, loadBrainConfig } from "@npc/runtime";
 
 const config = loadBrainConfig();
-const brain = new AnthropicBrain({ config });
-const text = await brain.complete([
+const brain = createBrain(config);
+const { text, usage } = await brain.complete([
   { role: "system", content: "You are the Wanderer." },
   { role: "user", content: "Where are you?" },
 ]);
 ```
 
-`FakeBrain` provides deterministic scripted responses for unit tests.
+`FakeBrain` provides deterministic scripted responses for unit tests. `createBrain` refuses `NPC_BRAIN_PROVIDER=fake` (tests construct `FakeBrain` directly).
 
 ### Environment variables
 
+`NPC_BRAIN_PROVIDER` selects the implementation (`anthropic` when unset, `openai-compat`, or `fake`).
+
 | Variable | Required | Default | Purpose |
 |----------|----------|---------|---------|
-| `ANTHROPIC_API_KEY` | yes* | — | Anthropic API key (direct) |
-| `ANTHROPIC_API_KEY_FILE` | yes* | — | Path to file containing the API key (trimmed) |
-| `NPC_BRAIN_MODEL` | no | `claude-sonnet-4-20250514` | Model id |
+| `NPC_BRAIN_PROVIDER` | no | `anthropic` | `anthropic` \| `openai-compat` \| `fake` |
+| `ANTHROPIC_API_KEY` | anthropic* | — | Anthropic API key (direct) |
+| `ANTHROPIC_API_KEY_FILE` | anthropic* | — | Path to file containing the Anthropic API key |
+| `NPC_BRAIN_API_KEY` | openai-compat* | — | OpenAI-compat API key (direct) |
+| `NPC_BRAIN_API_KEY_FILE` | openai-compat* | — | Path to file containing the openai-compat API key |
+| `NPC_BRAIN_BASE_URL` | openai-compat | — | OpenAI-compat API origin (e.g. OpenRouter) |
+| `NPC_BRAIN_PROVIDER_ALLOWLIST` | OpenRouter | — | Comma-separated provider slugs (`provider.only`) |
+| `NPC_BRAIN_MODEL` | openai-compat; optional for anthropic | Anthropic: `claude-sonnet-4-20250514` | Model id (no openai-compat code default) |
 | `NPC_BRAIN_MAX_TOKENS` | no | `1024` | Default max output tokens |
 | `NPC_BRAIN_TIMEOUT_MS` | no | `60000` | Request timeout (ms) |
 
-\* Set exactly one of `ANTHROPIC_API_KEY` or `ANTHROPIC_API_KEY_FILE` (non-empty).
+\* Set exactly one of `NAME` or `NAME_FILE` (non-empty) for the active provider.
 
-See `ops/SECRETS.md` for the canonical secret registry.
+Temperature is omitted from openai-compat requests unless `CompleteOptions.temperature` is set (provider default; OpenAI-compatible APIs typically use 1.0).
+
+See `ops/SECRETS.md` for the canonical secret registry and OpenRouter account hardening.
+
+### Tested openai-compat base URLs
+
+OpenRouter is the **recommended** Ghost path (`https://openrouter.ai/api/v1`). The same `OpenAICompatBrain` also speaks:
+
+- DeepSeek first-party (`https://api.deepseek.com`)
+- Gemini OpenAI-compat (`https://generativelanguage.googleapis.com/v1beta/openai`)
+- Groq (`https://api.groq.com/openai/v1`)
+- DeepInfra (`https://api.deepinfra.com/v1/openai`)
+
+The `provider.only` allowlist is sent only when the base URL host is `openrouter.ai`.
 
 ### Live tests
 
@@ -39,9 +59,13 @@ Real-model smoke tests live under `test/live/` and are **skipped by default**. R
 
 ```bash
 LIVE_TESTS=1 ANTHROPIC_API_KEY=sk-... pnpm --filter @npc/runtime test
+LIVE_TESTS=1 NPC_BRAIN_PROVIDER=openai-compat NPC_BRAIN_BASE_URL=https://openrouter.ai/api/v1 \
+  NPC_BRAIN_API_KEY=sk-... NPC_BRAIN_MODEL=deepseek/deepseek-v4-flash \
+  NPC_BRAIN_PROVIDER_ALLOWLIST=fireworks,together,deepinfra \
+  pnpm --filter @npc/runtime test
 ```
 
-CI never sets `LIVE_TESTS`; only unit tests with `FakeBrain` and injected mock clients run in CI.
+CI never sets `LIVE_TESTS`; only unit tests with `FakeBrain`, injected mock clients, and a stub HTTP server run in CI.
 
 ## Self-Composer (T2.2)
 
@@ -296,13 +320,18 @@ Or after install: `npc-runtime` (bin in `@npc/runtime`). Ghost image `CMD` is `n
 | `DOOR_HTTP_PORT` | yes | — | Door HTTP/WS connect port |
 | `CURRENT_DOOR_ID` | yes | — | Expected Door id (e.g. `discord:123…`); must match Door hello |
 | `ATLAS_DOOR_PUBKEYS` | yes | — | Comma-separated `doorId=base64url` Door public key bindings for chain verify |
-| `ANTHROPIC_API_KEY` | yes* | — | Brain API key (direct; see Brain section) |
-| `ANTHROPIC_API_KEY_FILE` | yes* | — | Path to file containing the Brain API key |
-| `NPC_BRAIN_MODEL` | no | `claude-sonnet-4-20250514` | Model id |
+| `ANTHROPIC_API_KEY` | anthropic* | — | Anthropic API key (direct; see Brain section) |
+| `ANTHROPIC_API_KEY_FILE` | anthropic* | — | Path to file containing the Anthropic API key |
+| `NPC_BRAIN_PROVIDER` | no | `anthropic` | `anthropic` \| `openai-compat` \| `fake` |
+| `NPC_BRAIN_API_KEY` | openai-compat* | — | OpenAI-compat API key (direct) |
+| `NPC_BRAIN_API_KEY_FILE` | openai-compat* | — | Path to file containing the openai-compat API key |
+| `NPC_BRAIN_BASE_URL` | openai-compat | — | OpenAI-compat API origin |
+| `NPC_BRAIN_PROVIDER_ALLOWLIST` | OpenRouter | — | Comma-separated OpenRouter provider slugs |
+| `NPC_BRAIN_MODEL` | openai-compat; optional for anthropic | Anthropic: `claude-sonnet-4-20250514` | Model id |
 | `NPC_BRAIN_MAX_TOKENS` | no | `1024` | Default max output tokens |
 | `NPC_BRAIN_TIMEOUT_MS` | no | `60000` | Request timeout (ms) |
 | `NPC_RUNTIME_READY_FILE` | no | `/tmp/npc-runtime.ready` | Compose healthcheck path (present only while the session WS is connected) |
 
-\* Set exactly one of `ANTHROPIC_API_KEY` or `ANTHROPIC_API_KEY_FILE` (non-empty).
+\* Set exactly one of `NAME` or `NAME_FILE` for the active Brain provider (see Brain section).
 
 Graceful shutdown (SIGTERM/SIGINT): remove ready file → close WS → `session.stop()` → `drainAppends()` → `store.close()` → exit 0.

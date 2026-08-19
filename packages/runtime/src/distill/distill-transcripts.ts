@@ -94,7 +94,7 @@ async function completeWithRetry(
       { role: "user", content: retryUserContent }
     ];
 
-    const retryRaw = await brain.complete(retryMessages);
+    const retryRaw = (await brain.complete(retryMessages)).text;
     try {
       return parseBrainShards(retryRaw);
     } catch (retryError: unknown) {
@@ -201,7 +201,7 @@ export async function distillTranscripts(
     const userContent = buildUserContent(screenedLines);
     const messages = buildMessages(userContent);
 
-    const raw = await brain.complete(messages);
+    const raw = (await brain.complete(messages)).text;
     const parsed = await completeWithRetry(brain, userContent, raw);
 
     const lengthFiltered = filterLengthAndEmpty(parsed);

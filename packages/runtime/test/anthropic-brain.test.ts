@@ -13,6 +13,7 @@ describe("loadBrainConfig", () => {
   it("loads defaults when optional vars are omitted", () => {
     const config = loadBrainConfig({ ANTHROPIC_API_KEY: "sk-test" });
     expect(config).toEqual({
+      provider: "anthropic",
       apiKey: "sk-test",
       model: "claude-sonnet-4-20250514",
       maxTokens: 1024,
@@ -43,7 +44,10 @@ describe("loadBrainConfig", () => {
     writeFileSync(keyPath, "  sk-from-file  \n");
 
     const config = loadBrainConfig({ ANTHROPIC_API_KEY_FILE: keyPath });
-    expect(config.apiKey).toBe("sk-from-file");
+    expect(config.provider).toBe("anthropic");
+    if (config.provider === "anthropic") {
+      expect(config.apiKey).toBe("sk-from-file");
+    }
   });
 
   it("throws when both ANTHROPIC_API_KEY and ANTHROPIC_API_KEY_FILE are set", () => {
@@ -76,7 +80,8 @@ describe("loadBrainConfig", () => {
 describe("AnthropicBrain", () => {
   it("maps a leading system message to the API system parameter", async () => {
     const create = vi.fn().mockResolvedValue({
-      content: [{ type: "text", text: "hello back" }]
+      content: [{ type: "text", text: "hello back" }],
+      usage: { input_tokens: 12, output_tokens: 3 }
     });
 
     const config = loadBrainConfig({ ANTHROPIC_API_KEY: "sk-test" });
@@ -86,7 +91,10 @@ describe("AnthropicBrain", () => {
       { role: "system", content: "Be brief." },
       { role: "user", content: "hi" }
     ];
-    await expect(brain.complete(messages)).resolves.toBe("hello back");
+    await expect(brain.complete(messages)).resolves.toEqual({
+      text: "hello back",
+      usage: { promptTokens: 12, completionTokens: 3 }
+    });
 
     expect(create).toHaveBeenCalledOnce();
     expect(create.mock.calls[0]?.[0]).toMatchObject({
@@ -127,6 +135,22 @@ describe("AnthropicBrain", () => {
     await expect(brain.complete([{ role: "user", content: "hi" }])).rejects.toThrow(
       /Anthropic API request failed/
     );
+    await expect(brain.complete([{ role: "user", content: "hi" }])).rejects.toMatchObject({
+      reason: "provider"
+    });
+  });
+
+  it("maps HTTP 401 from the SDK to BrainError reason auth", async () => {
+    const create = vi
+      .fn()
+      .mockRejectedValue(Object.assign(new Error("unauthorized"), { status: 401 }));
+    const config = loadBrainConfig({ ANTHROPIC_API_KEY: "sk-test" });
+    const brain = new AnthropicBrain({ config, client: { create } });
+
+    await expect(brain.complete([{ role: "user", content: "hi" }])).rejects.toMatchObject({
+      name: "BrainError",
+      reason: "auth"
+    });
   });
 
   it("rejects multiple system messages", async () => {

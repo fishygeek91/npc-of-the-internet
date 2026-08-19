@@ -322,7 +322,8 @@ export class Session {
 
     let assistantText: string;
     try {
-      assistantText = await this.brain.complete(messages);
+      const result = await this.brain.complete(messages);
+      assistantText = result.text;
     } catch (error) {
       if (error instanceof BrainError) {
         return { ok: false, error };

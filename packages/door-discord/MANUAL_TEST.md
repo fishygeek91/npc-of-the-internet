@@ -55,7 +55,7 @@ What you should see:
 
 1. Bot online in the guild.
 2. `/wanderer status` → `presence: absent` before arrival, then `present` after the harness arrives.
-3. Post a normal (non-bot) message in the bound channel → Wanderer replies (FakeBrain or Anthropic if `ANTHROPIC_API_KEY` is set — harness uses FakeBrain by default).
+3. Post a normal (non-bot) message in the bound channel → Wanderer replies (FakeBrain or a real Brain if provider env is set — harness uses FakeBrain by default).
 4. On depart, candidate shards are posted for review. React ✅/❌ as an allowlisted operator, or `/wanderer approve <shard_id>` / `/wanderer reject <shard_id>`.
 5. Ignoring review until timeout **rejects** (documented safe default).
 
@@ -82,7 +82,7 @@ End-to-end check of **runtime ↔ door-discord** over the Ghost compose network 
 ### Prerequisites
 
 1. Soul and door keys on the host (`ops/.env.example` paths or your overrides); `SOUL_PUBLIC_KEY` and `ATLAS_DOOR_PUBKEYS` match those keys.
-2. `ops/.env` filled from `ops/.env.example` with a real `DISCORD_BOT_TOKEN`, guild/channel IDs, and `ANTHROPIC_API_KEY`.
+2. `ops/.env` filled from `ops/.env.example` with a real `DISCORD_BOT_TOKEN`, guild/channel IDs, and a Brain key (`NPC_BRAIN_API_KEY` or `ANTHROPIC_API_KEY`).
 3. Valid soulchain on the `soulchain` volume — run `osp init` into a staging dir and copy into the volume, or restore from backup (see `ops/RUNBOOK.md` §5). An empty volume prevents runtime from arriving.
 
 ### Start the stack

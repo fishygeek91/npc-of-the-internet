@@ -20,7 +20,7 @@ import {
 } from "@npc/osp-core";
 import pino, { type Logger } from "pino";
 
-import { AnthropicBrain } from "./brain/anthropic-brain.js";
+import { createBrain } from "./brain/create-brain.js";
 import type { Brain } from "./brain/types.js";
 import { loadDaemonConfig, type DaemonConfig } from "./daemon-config.js";
 import { DaemonError } from "./daemon-errors.js";
@@ -161,7 +161,7 @@ export async function startResidencyDaemon(
     );
   }
 
-  const brain = deps.brain ?? new AnthropicBrain({ config: config.brain });
+  const brain = deps.brain ?? createBrain(config.brain);
   const clock = createRealClock();
   const timer = createRealTimer();
 
