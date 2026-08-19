@@ -57,7 +57,7 @@ Blobs are uploaded before the chain file so a restore never references blob CIDs
 cp ops/.env.example ops/.env
 ```
 
-Edit `ops/.env` and replace every `replace-me` placeholder. At minimum you need valid `DISCORD_BOT_TOKEN`, `ANTHROPIC_API_KEY`, and production key material. See `ops/SECRETS.md` for variable names and purposes.
+Edit `ops/.env` and replace every `replace-me` placeholder. At minimum you need valid `DISCORD_BOT_TOKEN`, a Brain key (`NPC_BRAIN_API_KEY` for the recommended OpenRouter path, or `ANTHROPIC_API_KEY` if `NPC_BRAIN_PROVIDER=anthropic`), and production key material. See `ops/SECRETS.md` for variable names and purposes.
 
 ### 1.2 Create host key files and rclone config directory
 

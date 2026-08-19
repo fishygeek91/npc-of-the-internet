@@ -121,7 +121,7 @@ Under decision (b):
 
 ## 10. Third-party processors
 
-LLM completions go through the runtime `Brain` interface. Ghost’s **current** default implementation is the **Anthropic** API (`ANTHROPIC_API_KEY` / `ANTHROPIC_API_KEY_FILE`, model via `NPC_BRAIN_MODEL` — see [`ops/SECRETS.md`](../../ops/SECRETS.md)). The interface is provider-agnostic; retention rules above do not depend on which provider is configured. If the default Brain changes (e.g. multi-provider / budget tiering), update the named default in this section in the same PR. Message content and distillation prompts may be sent to the configured provider under their terms.
+LLM completions go through the runtime `Brain` interface. When `NPC_BRAIN_PROVIDER` is unset, the implementation is the **Anthropic** API (`ANTHROPIC_API_KEY` / `ANTHROPIC_API_KEY_FILE`). The recommended Ghost deploy config is **OpenAI-compat via OpenRouter** (`NPC_BRAIN_PROVIDER=openai-compat`, `NPC_BRAIN_BASE_URL`, `NPC_BRAIN_API_KEY`, `NPC_BRAIN_MODEL`, `NPC_BRAIN_PROVIDER_ALLOWLIST` — see [`ops/SECRETS.md`](../../ops/SECRETS.md)). The interface is provider-agnostic; retention rules above do not depend on which provider is configured. Message content and distillation prompts may be sent to the configured provider under their terms.
 
 ---
 

@@ -3,9 +3,11 @@
 #
 # Optional secret-file mounts (set in ops/.env, then add host bind volumes via
 # compose override or extend volumes below):
-#   ANTHROPIC_API_KEY_HOST_PATH → /run/secrets/anthropic_api_key (runtime)
+#   ANTHROPIC_API_KEY_HOST_PATH → /run/secrets/anthropic_api_key (runtime, Anthropic provider)
+#   NPC_BRAIN_API_KEY_HOST_PATH → /run/secrets/brain_api_key (runtime, openai-compat provider)
 #   DISCORD_BOT_TOKEN_HOST_PATH → /run/secrets/discord_bot_token (door-discord)
 # When using files, set ANTHROPIC_API_KEY_FILE=/run/secrets/anthropic_api_key and/or
+# NPC_BRAIN_API_KEY_FILE=/run/secrets/brain_api_key and/or
 # DISCORD_BOT_TOKEN_FILE=/run/secrets/discord_bot_token (exactly one of NAME or NAME_FILE).
 
 name: npc-ghost
@@ -32,7 +34,12 @@ services:
       ATLAS_DOOR_PUBKEYS: ${ATLAS_DOOR_PUBKEYS:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       ANTHROPIC_API_KEY_FILE: ${ANTHROPIC_API_KEY_FILE:-}
-      NPC_BRAIN_MODEL: ${NPC_BRAIN_MODEL:-claude-sonnet-4-20250514}
+      NPC_BRAIN_PROVIDER: ${NPC_BRAIN_PROVIDER:-}
+      NPC_BRAIN_BASE_URL: ${NPC_BRAIN_BASE_URL:-}
+      NPC_BRAIN_API_KEY: ${NPC_BRAIN_API_KEY:-}
+      NPC_BRAIN_API_KEY_FILE: ${NPC_BRAIN_API_KEY_FILE:-}
+      NPC_BRAIN_PROVIDER_ALLOWLIST: ${NPC_BRAIN_PROVIDER_ALLOWLIST:-}
+      NPC_BRAIN_MODEL: ${NPC_BRAIN_MODEL:-}
       NPC_BRAIN_MAX_TOKENS: ${NPC_BRAIN_MAX_TOKENS:-1024}
       NPC_BRAIN_TIMEOUT_MS: ${NPC_BRAIN_TIMEOUT_MS:-60000}
     volumes:

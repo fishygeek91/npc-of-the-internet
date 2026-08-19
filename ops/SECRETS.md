@@ -4,12 +4,18 @@ Environment variable names and purposes only. **Never commit values.**
 
 | Name | Purpose |
 |------|---------|
-| `ANTHROPIC_API_KEY` | Anthropic API key for `AnthropicBrain` (runtime LLM completions). Exactly one of this or `ANTHROPIC_API_KEY_FILE`. |
+| `ANTHROPIC_API_KEY` | Anthropic API key for `AnthropicBrain`. Required when `NPC_BRAIN_PROVIDER` is unset or `anthropic`. Exactly one of this or `ANTHROPIC_API_KEY_FILE`. |
 | `ANTHROPIC_API_KEY_FILE` | In-container path to a file containing the Anthropic API key (trimmed). Prefer over env so the token is not visible in `docker inspect`. |
-| `ANTHROPIC_API_KEY_HOST_PATH` | Host path bind-mounted read-only to `/run/secrets/anthropic_api_key` when using file-based secrets (compose override / documented mount). |
-| `NPC_BRAIN_MODEL` | Claude model id for Brain completions (default: `claude-sonnet-4-20250514`). |
+| `ANTHROPIC_API_KEY_HOST_PATH` | Host path bind-mounted read-only to `/run/secrets/anthropic_api_key` when using file-based Anthropic secrets. |
+| `NPC_BRAIN_PROVIDER` | Brain implementation: `anthropic` (default when unset), `openai-compat`, or `fake` (tests only). |
+| `NPC_BRAIN_BASE_URL` | OpenAI-compatible API origin (no trailing slash required). Required when `NPC_BRAIN_PROVIDER=openai-compat`. Recommended: `https://openrouter.ai/api/v1`. |
+| `NPC_BRAIN_API_KEY` | API key for `OpenAICompatBrain`. Required when `NPC_BRAIN_PROVIDER=openai-compat`. Exactly one of this or `NPC_BRAIN_API_KEY_FILE`. |
+| `NPC_BRAIN_API_KEY_FILE` | In-container path to the openai-compat API key file (trimmed). |
+| `NPC_BRAIN_API_KEY_HOST_PATH` | Host path bind-mounted read-only to `/run/secrets/brain_api_key` when using file-based openai-compat secrets. |
+| `NPC_BRAIN_MODEL` | Model id. Required for openai-compat (no code default). Anthropic default: `claude-sonnet-4-20250514`. |
 | `NPC_BRAIN_MAX_TOKENS` | Default max output tokens per Brain completion (default: `1024`). |
-| `NPC_BRAIN_TIMEOUT_MS` | HTTP timeout in milliseconds for Anthropic API requests (default: `60000`). |
+| `NPC_BRAIN_TIMEOUT_MS` | HTTP timeout in milliseconds for Brain API requests (default: `60000`). |
+| `NPC_BRAIN_PROVIDER_ALLOWLIST` | Comma-separated OpenRouter provider slugs. **Required and non-empty** when `NPC_BRAIN_BASE_URL` host is `openrouter.ai`. Documented Ghost example: `fireworks,together,deepinfra`. |
 | `NPC_QUARANTINE_WINDOW_MS` | Milliseconds a distillation candidate must ripen before commit to `memory.shard` (default: `86400000` — 24 hours). Runtime env; not yet wired in Ghost compose. |
 | `NPC_IMAGE_TAG` | Docker image tag for all Ghost stack services (default: `latest`). Set to `local` when using locally built images. |
 | `NPC_CONTAINER_UID` | Container user id for `npc` in all Ghost images (fixed `10001`). Host `keys/` and `rclone/` bind mounts must be owned by this uid. Not a secret — documented constant. |
@@ -65,3 +71,13 @@ Environment variable names and purposes only. **Never commit values.**
 | `KEY_BACKUP_RCLONE_CONFIG` | Optional path to a separate `rclone.conf` (different B2 app key) for key backup. |
 | `NPC_KEY_DRILL_LIVE` | Set to `1` to force live key-backup drill (decrypt remote `latest/` and cmp host keys). Set to `0` to force offline fixture mode even if `AGE_IDENTITY_PATH` is set. |
 | `NPC_COMPOSE_SECRETS` | When `1`, `ghostc` also loads `ops/compose.secrets.yml` (bind-mounts `*_HOST_PATH` secrets). |
+
+## OpenRouter account hardening
+
+When `NPC_BRAIN_BASE_URL` is OpenRouter, the runtime sends `provider.only` from `NPC_BRAIN_PROVIDER_ALLOWLIST` on every completion so requests cannot fall through to China-hosted first-party endpoints (the allowlist is the auditable guarantee). Back that up in the OpenRouter account:
+
+- Set **data collection** to **deny**.
+- Do **not** enable routing to DeepSeek first-party (or other non-allowlisted hosts).
+- Cap prepaid credits / spend in the OpenRouter dashboard (Treasury-lite sleep-on-broke is a later issue).
+
+The documented allowlist (`fireworks,together,deepinfra`) is US-headquartered. DeepInfra states US data centers. Fireworks' serverless fleet is multi-region — region-suffixed OpenRouter slugs are out of scope for T7.11; file a follow-up if residency requires pinning a US region suffix.

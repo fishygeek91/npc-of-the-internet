@@ -426,7 +426,7 @@ describe("Session.depart", () => {
       if (isDistill) {
         distillAttempts += 1;
         if (distillAttempts === 1) {
-          throw new BrainError("transient distill failure");
+          throw new BrainError("transient distill failure", "unavailable");
         }
         return shardsJson(shardTexts);
       }

@@ -14,7 +14,7 @@ where you're typing (your Mac, or the server) and what you should see.
 Atlas (`:8787`) is NOT open to the internet. You reach it via SSH tunnel from
 your Mac. When Atlas goes public (Gate 2), we add a Cloudflare Tunnel —
 outbound-only, no ports opened. Everything else the Ghost does (Discord,
-Anthropic, rclone backups) is outbound and needs no open ports.
+LLM providers, rclone backups) is outbound and needs no open ports.
 
 ---
 
@@ -87,7 +87,7 @@ Still in the Hetzner console: **Firewalls → Create Firewall**.
 - Name: `wanderer-fw`
 - Inbound rules: **delete everything except** one rule:
   - TCP, port **22**, source `0.0.0.0/0` and `::/0` (SSH from anywhere).
-- Outbound: leave unrestricted (Ghost needs outbound Discord/Anthropic/rclone).
+- Outbound: leave unrestricted (Ghost needs outbound Discord/LLM providers/rclone).
 - Apply to → select `wanderer-1`.
 
 This filters traffic before it even reaches the server. We'll add ufw on the
@@ -391,7 +391,12 @@ Replace every placeholder. The important ones:
 | `SOUL_KEY_HOST_PATH` | `/var/lib/npc-ghost/keys/soul.key` |
 | `DOOR_KEY_HOST_PATH` | `/var/lib/npc-ghost/keys/door.key` |
 | `RCLONE_CONFIG_HOST_PATH` | `/var/lib/npc-ghost/rclone` |
-| `ANTHROPIC_API_KEY` | your real key — and set a **monthly spend limit** in the Anthropic console first |
+| `NPC_BRAIN_PROVIDER` | `openai-compat` (recommended) or `anthropic` |
+| `NPC_BRAIN_BASE_URL` | `https://openrouter.ai/api/v1` when using OpenRouter |
+| `NPC_BRAIN_API_KEY` | your OpenRouter (or other openai-compat) key — set a **credit cap** in the provider console |
+| `NPC_BRAIN_MODEL` | dated example `deepseek/deepseek-v4-flash` (2026-07-28) — confirm the live catalog slug |
+| `NPC_BRAIN_PROVIDER_ALLOWLIST` | `fireworks,together,deepinfra` (required for OpenRouter) |
+| `ANTHROPIC_API_KEY` | only if `NPC_BRAIN_PROVIDER=anthropic` — and set a **monthly spend limit** in the Anthropic console first |
 | `DISCORD_BOT_TOKEN` / guild / channel / operator IDs | your real Discord values |
 | `SOUL_PUBLIC_KEY` | the REAL soul public key — the .env.example value is a test fixture |
 | `ATLAS_DOOR_PUBKEYS` | the REAL door public key(s) — same warning |
@@ -604,7 +609,7 @@ An **empty target list with `NPC_REPLICATION_ENABLED=1`** is valid — the drain
 | `runtime` restart-looping forever | `ghostc logs runtime` — usually bad key path, bad `SOUL_PUBLIC_KEY`, or door-discord failing first |
 | `door-discord` up but bot offline in Discord | bad token, or bot not invited to the guild with the right intents |
 | `backup` erroring | `rclone lsd ghost-remote:` on the host — if that fails, fix rclone.conf and `ghostc restart backup` |
-| Anthropic errors in runtime logs | check API key, and check you haven't hit the spend cap you set (good problem: the cap worked) |
+| Brain / LLM errors in runtime logs | check API key, provider allowlist (OpenRouter), and that you haven't hit the credit/spend cap |
 | `permission denied` on docker | you skipped the re-login after `usermod -aG docker` |
 
 ---
@@ -617,4 +622,4 @@ An **empty target list with `NPC_REPLICATION_ENABLED=1`** is valid — the drain
 - Secrets in `ops/.env` (`0600`), never committed
 - OS patches itself; containers restart themselves
 - Soulchain backed up offsite continuously by the backup sidecar
-- Anthropic spend capped at the account level
+- LLM spend capped at the provider account (OpenRouter credits / Anthropic monthly limit)

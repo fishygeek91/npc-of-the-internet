@@ -12,7 +12,9 @@ describe.skipIf(!process.env.LIVE_TESTS)("AnthropicBrain live", () => {
       { role: "user", content: "Reply with exactly one word: ok" }
     ]);
 
-    expect(typeof result).toBe("string");
-    expect(result.trim().length).toBeGreaterThan(0);
+    expect(typeof result.text).toBe("string");
+    expect(result.text.trim().length).toBeGreaterThan(0);
+    expect(result.usage.promptTokens).toBeGreaterThanOrEqual(0);
+    expect(result.usage.completionTokens).toBeGreaterThanOrEqual(0);
   });
 });

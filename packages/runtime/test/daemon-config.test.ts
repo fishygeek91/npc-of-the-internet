@@ -24,7 +24,10 @@ describe("loadDaemonConfig", () => {
     expect(config.doorHttpPort).toBe(3000);
     expect(config.doorId).toBe("discord:test-guild");
     expect(Object.keys(config.doorPublicKeys)).toEqual(["discord:test-guild"]);
-    expect(config.brain.apiKey).toBe("test-api-key");
+    expect(config.brain.provider).toBe("anthropic");
+    if (config.brain.provider === "anthropic") {
+      expect(config.brain.apiKey).toBe("test-api-key");
+    }
     expect(config.readyFilePath).toBe("/tmp/npc-runtime.ready");
     expect(config.replication.enabled).toBe(false);
     expect(config.replication.targets).toEqual([]);

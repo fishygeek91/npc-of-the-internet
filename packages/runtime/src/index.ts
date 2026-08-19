@@ -7,14 +7,30 @@ export type { DaemonErrorReason } from "./daemon-errors.js";
 export type { ResidencyDaemonDeps, ResidencyDaemonHandle } from "./daemon.js";
 export { startResidencyDaemon } from "./daemon.js";
 
-export type { BrainConfig } from "./brain/config.js";
-export { loadBrainConfig } from "./brain/config.js";
+export type {
+  BrainConfig,
+  AnthropicBrainConfig,
+  OpenAICompatBrainConfig,
+  FakeBrainConfig
+} from "./brain/config.js";
+export { loadBrainConfig, isOpenRouterBaseUrl } from "./brain/config.js";
 export { AnthropicBrain } from "./brain/anthropic-brain.js";
 export type { AnthropicBrainOptions, AnthropicMessagesClient } from "./brain/anthropic-brain.js";
+export { OpenAICompatBrain } from "./brain/openai-compat-brain.js";
+export type { OpenAICompatBrainOptions, SleepFn, RandomFn } from "./brain/openai-compat-brain.js";
+export { createBrain } from "./brain/create-brain.js";
 export { BrainError } from "./brain/errors.js";
+export type { BrainErrorReason } from "./brain/errors.js";
 export { FakeBrain } from "./brain/fake-brain.js";
-export type { FakeBrainCall, FakeBrainHandler } from "./brain/fake-brain.js";
-export type { Brain, BrainMessage, CompleteOptions } from "./brain/types.js";
+export type { FakeBrainCall, FakeBrainHandler, FakeBrainOptions } from "./brain/fake-brain.js";
+export type {
+  Brain,
+  BrainMessage,
+  BrainResult,
+  BrainUsage,
+  CompleteOptions
+} from "./brain/types.js";
+export { ZERO_BRAIN_USAGE } from "./brain/types.js";
 export { ComposeError } from "./compose/errors.js";
 export { composeSelf } from "./compose/compose-self.js";
 export type { ComposedSelf, ComposeSelfOptions, MemoryIndexEntry } from "./compose/compose-self.js";

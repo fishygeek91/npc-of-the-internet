@@ -253,6 +253,8 @@ These are sequenced but intentionally coarser; split them into T-numbered subtas
 - **T7.8 ⬜ Drift + the Vigil** (drift record rules: cite ≥N shards; contest flow) — Deps: T7.4
 - **T7.9 ⬜ Threshold soul key** (t-of-n custody behind Keyring interface) — Deps: T7.3
 - **T7.10 ⬜ Spec freeze → extract OpenSoul as standalone project** (spec/ + osp-core + osp-cli + vectors → `opensoul` repo via git filter-repo; triggers and rules in ENGINEERING.md D1) — Deps: T7.5, T7.8, T7.9
+- **T7.11 ✅ Multi-provider Brain** (OpenAI-compatible impl + env provider config; usage on results; OpenRouter US allowlist) — Deps: T2.1 — Issue: #73
+  - Notes: Agent: Cursor Grok 4.5 Maestro, 2026-08-18. `OpenAICompatBrain` (native fetch, no openai SDK); `NPC_BRAIN_PROVIDER=anthropic|openai-compat|fake`; `complete()` returns `{ text, usage }`; OpenRouter requires non-empty `NPC_BRAIN_PROVIDER_ALLOWLIST` sent as `provider.only`. Ghost example: OpenRouter + `deepseek/deepseek-v4-flash` + `fireworks,together,deepinfra`. Next: T7.12 Treasury-lite (#74) can wrap usage.
 - **T7.16 ✅ Decompose FileSoulStore primitives** (BlobDir/FileLock/fsync; Session/Door deferred) — Deps: Bug #67
   - Notes: Agent: Cursor Grok 4.5 Maestro, 2026-08-08. Extracted `store/blob-dir.ts`, `file-lock.ts`, `fsync.ts`, `node-fs-error.ts`; FileSoulStore composes them with no behavior change. #79 items 1 (Session) and 3 (Door) remain open. G2 gate for T7.1/#55 store reuse now satisfied.
 
