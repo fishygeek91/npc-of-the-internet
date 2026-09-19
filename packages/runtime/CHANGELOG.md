@@ -1,5 +1,17 @@
 # @npc/runtime
 
+## 0.3.0
+
+### Minor Changes
+
+- de57bf0: Add OpenAI-compatible Brain so provider choice (including OpenRouter) is env-only, with usage on every completion.
+
+### Patch Changes
+
+- @npc/osp-core@0.3.0
+- @npc/immune@0.3.0
+- @npc/door-sdk@0.3.0
+
 ## 0.2.2
 
 ### Patch Changes
