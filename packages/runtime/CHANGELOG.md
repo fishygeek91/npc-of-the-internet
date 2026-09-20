@@ -1,5 +1,14 @@
 # @npc/runtime
 
+## 0.3.1
+
+### Patch Changes
+
+- Updated dependencies [3d55b11]
+  - @npc/osp-core@0.3.1
+  - @npc/door-sdk@0.3.1
+  - @npc/immune@0.3.1
+
 ## 0.3.0
 
 ### Minor Changes
