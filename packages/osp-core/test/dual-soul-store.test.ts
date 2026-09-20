@@ -160,7 +160,12 @@ describe("DualSoulStore", () => {
     try {
       const { record: genesisRecord } = await createGenesisRecord(soul);
       genesisCid = (await fileStore.append(genesisRecord)).cid;
-      const memory = await createMemoryCandidateRecord(soul, 1, genesisCid, "Seeded before mirror.");
+      const memory = await createMemoryCandidateRecord(
+        soul,
+        1,
+        genesisCid,
+        "Seeded before mirror."
+      );
       await fileStore.append(memory.record);
       await fileStore.putSideBlob(new TextEncoder().encode("side-blob payload"));
     } finally {
