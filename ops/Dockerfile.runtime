@@ -38,11 +38,15 @@ RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack 
 
 COPY --from=build /out /app
 
-# Pre-create the soulchain mountpoint as npc so a fresh named volume inherits
-# npc:npc ownership (Docker copy-on-first-use). Without this, the volume is
+# Pre-create every volume mountpoint as npc so fresh named volumes inherit
+# npc:npc ownership (Docker copy-on-first-use). Without this, a volume is
 # root:root and USER npc cannot write — breaking RUNBOOK restore one-shots and
-# future residency writes (#53). Upgrading pre-10001 volumes: RUNBOOK §1.4.
-RUN mkdir -p /data/soulchain && chown npc:npc /data/soulchain
+# future residency writes (#53). /data/soulchain-ipfs and /data/published were
+# missed when T7.1 added them, making first boot fail with EACCES on
+# 'mkdir /data/soulchain-ipfs/blocks'. Upgrading pre-10001 volumes: RUNBOOK §1.4
+# (host-side chown of the volume mountpoints applies to all three).
+RUN mkdir -p /data/soulchain /data/soulchain-ipfs /data/published \
+  && chown npc:npc /data/soulchain /data/soulchain-ipfs /data/published
 
 WORKDIR /app
 USER npc
