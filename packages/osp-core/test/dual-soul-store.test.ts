@@ -153,4 +153,105 @@ describe("DualSoulStore", () => {
       await dual.close();
     }
   });
+
+  it("backfills an empty mirror from a genesis-seeded file store (LAUNCH.md seed path)", async () => {
+    const fileStore = await FileSoulStore.open(fileDir);
+    let genesisCid: string;
+    try {
+      const { record: genesisRecord } = await createGenesisRecord(soul);
+      genesisCid = (await fileStore.append(genesisRecord)).cid;
+      const memory = await createMemoryCandidateRecord(
+        soul,
+        1,
+        genesisCid,
+        "Seeded before mirror."
+      );
+      await fileStore.append(memory.record);
+      await fileStore.putSideBlob(new TextEncoder().encode("side-blob payload"));
+    } finally {
+      await fileStore.close();
+    }
+
+    const dual = await DualSoulStore.open(fileDir, ipfsDir);
+    try {
+      expect((await dual.head())?.seq).toBe(1);
+    } finally {
+      await dual.close();
+    }
+
+    const ipfsStore = await IpfsSoulStore.open(ipfsDir);
+    try {
+      const ipfsHead = await ipfsStore.head();
+      expect(ipfsHead?.seq).toBe(1);
+      const genesisFromMirror = await ipfsStore.get(genesisCid);
+      expect(genesisFromMirror.type).toBe("genesis");
+    } finally {
+      await ipfsStore.close();
+    }
+  });
+
+  it("catches a lagging mirror up to the file head (crash between dual writes)", async () => {
+    const dualSetup = await DualSoulStore.open(fileDir, ipfsDir);
+    let genesisCid: string;
+    try {
+      const { record: genesisRecord } = await createGenesisRecord(soul);
+      genesisCid = (await dualSetup.append(genesisRecord)).cid;
+    } finally {
+      await dualSetup.close();
+    }
+
+    // Simulate a crash after the file append but before the IPFS append.
+    const fileStore = await FileSoulStore.open(fileDir);
+    try {
+      const memory = await createMemoryCandidateRecord(soul, 1, genesisCid, "File-only record.");
+      await fileStore.append(memory.record);
+    } finally {
+      await fileStore.close();
+    }
+
+    const dual = await DualSoulStore.open(fileDir, ipfsDir);
+    try {
+      const memoryTwo = await createMemoryCandidateRecord(
+        soul,
+        2,
+        (await dual.head())!.cid,
+        "Appends work after catch-up."
+      );
+      await dual.append(memoryTwo.record);
+      expect((await dual.head())?.seq).toBe(2);
+    } finally {
+      await dual.close();
+    }
+
+    const ipfsStore = await IpfsSoulStore.open(ipfsDir);
+    try {
+      expect((await ipfsStore.head())?.seq).toBe(2);
+    } finally {
+      await ipfsStore.close();
+    }
+  });
+
+  it("open throws when the mirror is ahead of the authoritative file store", async () => {
+    const dualSetup = await DualSoulStore.open(fileDir, ipfsDir);
+    let genesisCid: string;
+    try {
+      const { record: genesisRecord } = await createGenesisRecord(soul);
+      genesisCid = (await dualSetup.append(genesisRecord)).cid;
+    } finally {
+      await dualSetup.close();
+    }
+
+    const ipfsStore = await IpfsSoulStore.open(ipfsDir);
+    try {
+      const memory = await createMemoryCandidateRecord(soul, 1, genesisCid, "Mirror-only record.");
+      await ipfsStore.append(memory.record);
+    } finally {
+      await ipfsStore.close();
+    }
+
+    await expect(DualSoulStore.open(fileDir, ipfsDir)).rejects.toThrow(CorruptionError);
+    await expect(DualSoulStore.open(fileDir, ipfsDir)).rejects.toThrow(
+      /mirror ahead of authoritative store/
+    );
+  });
 });

@@ -257,6 +257,8 @@ These are sequenced but intentionally coarser; split them into T-numbered subtas
   - Notes: Agent: Cursor Grok 4.5 Maestro, 2026-08-18. `OpenAICompatBrain` (native fetch, no openai SDK); `NPC_BRAIN_PROVIDER=anthropic|openai-compat|fake`; `complete()` returns `{ text, usage }`; OpenRouter requires non-empty `NPC_BRAIN_PROVIDER_ALLOWLIST` sent as `provider.only`. Ghost example: OpenRouter + `deepseek/deepseek-v4-flash` + `fireworks,together,deepinfra`. Next: T7.12 Treasury-lite (#74) can wrap usage.
 - **T7.16 ✅ Decompose FileSoulStore primitives** (BlobDir/FileLock/fsync; Session/Door deferred) — Deps: Bug #67
   - Notes: Agent: Cursor Grok 4.5 Maestro, 2026-08-08. Extracted `store/blob-dir.ts`, `file-lock.ts`, `fsync.ts`, `node-fs-error.ts`; FileSoulStore composes them with no behavior change. #79 items 1 (Session) and 3 (Door) remain open. G2 gate for T7.1/#55 store reuse now satisfied.
+- **Hotfix ✅ First-boot launch blockers** (DualSoulStore IPFS-mirror backfill at open; Dockerfile.runtime chowns all three /data mountpoints) — Deps: T7.1, T7.11 — PR: #144, docs follow-up: #145
+  - Notes: Agent: Claude, 2026-09-20 (operator-authorized exception to reviewer-only). Found during the real Ghost genesis ceremony: genesis-seeded boot was impossible (mirror demanded its own genesis first-append; no backfill existed) and fresh soulchain-ipfs/published volumes were root-owned (EACCES). Mirror-ahead is now a fatal CorruptionError; same-seq divergence unchanged. Dry-run gap (doesn't exercise DualSoulStore) noted in #145.
 
 ---
 
