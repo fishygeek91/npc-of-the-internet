@@ -15,7 +15,7 @@
     "@ipld/car": "^5.4.7",
     "@ipld/dag-json": "^11.0.1",
     "@noble/ed25519": "^2.2.3",
-    "@noble/hashes": "^1.7.1",
+    "@noble/hashes": "^2.3.0",
     "blockstore-fs": "^4.0.1",
     "interface-blockstore": "^7.0.1",
     "multiformats": "^14.0.0",

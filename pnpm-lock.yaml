@@ -95,8 +95,8 @@ importers:
         specifier: ^2.2.3
         version: 2.3.0
       '@noble/hashes':
-        specifier: ^1.7.1
-        version: 1.8.0
+        specifier: ^2.3.0
+        version: 2.3.0
       '@npc/door-sdk':
         specifier: workspace:*
         version: link:../door-sdk
@@ -191,8 +191,8 @@ importers:
         specifier: ^2.2.3
         version: 2.3.0
       '@noble/hashes':
-        specifier: ^1.7.1
-        version: 1.8.0
+        specifier: ^2.3.0
+        version: 2.3.0
       blockstore-fs:
         specifier: ^4.0.1
         version: 4.0.1
@@ -231,8 +231,8 @@ importers:
         specifier: ^2.2.3
         version: 2.3.0
       '@noble/hashes':
-        specifier: ^1.7.1
-        version: 1.8.0
+        specifier: ^2.3.0
+        version: 2.3.0
       '@npc/door-sdk':
         specifier: workspace:*
         version: link:../door-sdk
@@ -1122,9 +1122,9 @@ packages:
   '@noble/ed25519@2.3.0':
     resolution: {integrity: sha512-M7dvXL2B92/M7dw9+gzuydL8qn/jiqNHaoR3Q+cb1q1GHV7uwE17WCyFMG+Y+TZb5izcaXk5TdJRrDUxHXL78A==}
 
-  '@noble/hashes@1.8.0':
-    resolution: {integrity: sha512-jCs9ldd7NwzpgXDIf6P3+NrHh9/sD6CQdxHyjQI+h/6rDNo88ypBxxz45UDuZHz9r3tNz7N/VInSVoVdtXEI4A==}
-    engines: {node: ^14.21.3 || >=16}
+  '@noble/hashes@2.3.0':
+    resolution: {integrity: sha512-oN+QwyX7VSHotibwubG3kpzbwKrfnyR6OOO+3Nk/53ADL7FmgHHz4TgrbaYKvvOw09u6QTx0oiH1cNCIOuN0CQ==}
+    engines: {node: '>= 20.19.0'}
 
   '@nodelib/fs.scandir@2.1.5':
     resolution: {integrity: sha512-vq24Bq3ym5HEQm2NKCr3yXDwjc7vTsEThRDnkp2DK9p1uqLR+DHurm/NOTo0KG7HYHU7eppKZj3MyqYuMBf62g==}
@@ -4018,7 +4018,7 @@ snapshots:
 
   '@noble/ed25519@2.3.0': {}
 
-  '@noble/hashes@1.8.0': {}
+  '@noble/hashes@2.3.0': {}
 
   '@nodelib/fs.scandir@2.1.5':
     dependencies:
