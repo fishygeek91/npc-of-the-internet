@@ -263,6 +263,9 @@ export type InboundFrame = z.infer<typeof InboundFrameSchema>;
 
 const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 
+/** U+20E3 COMBINING ENCLOSING KEYCAP: keycap emoji (digit + VS16 + U+20E3) are not Extended_Pictographic. */
+const KEYCAP_COMBINING_MARK = String.fromCodePoint(0x20e3);
+
 function graphemeCount(value: string): number {
   return Array.from(graphemeSegmenter.segment(value)).length;
 }
@@ -279,9 +282,12 @@ export const OutboundReactionSchema = z.object({
     .string()
     .min(1)
     .max(REACTION_EMOJI_MAX_LENGTH)
-    .refine((value) => /\p{Extended_Pictographic}|\p{Regional_Indicator}|\\u20E3/u.test(value), {
-      message: "reaction emoji must be a Unicode emoji"
-    })
+    .refine(
+      (value) =>
+        /\p{Extended_Pictographic}|\p{Regional_Indicator}/u.test(value) ||
+        value.includes(KEYCAP_COMBINING_MARK),
+      { message: "reaction emoji must be a Unicode emoji" }
+    )
     .refine((value) => !/[\s<>:]/u.test(value), {
       message: "reaction emoji must not contain whitespace or custom-emoji syntax"
     })

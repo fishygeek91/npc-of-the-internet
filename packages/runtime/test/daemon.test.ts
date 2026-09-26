@@ -2,7 +2,14 @@ import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { Door, HttpDoorServer, type HostPolicy, WsDoorSessionServer } from "@npc/door-sdk";
+import {
+  Door,
+  HttpDoorServer,
+  OutboundFrameSchema,
+  type HostPolicy,
+  type OutboundFrame,
+  WsDoorSessionServer
+} from "@npc/door-sdk";
 import {
   OSP_SPEC_V02,
   createRecord,
@@ -30,7 +37,7 @@ const defaultPolicy: HostPolicy = {
     platform: "discord",
     invitation_required: false
   },
-  capabilities: ["session.text", "heartbeat", "attest", "cosign.manual"]
+  capabilities: ["session.text", "session.reactions", "heartbeat", "attest", "cosign.manual"]
 };
 
 type DaemonTestEnv = {
@@ -41,6 +48,7 @@ type DaemonTestEnv = {
   wsServer: WsDoorSessionServer;
   httpHost: string;
   httpPort: number;
+  door: Door;
   config: DaemonConfig;
 };
 
@@ -103,7 +111,9 @@ async function createDaemonTestEnv(): Promise<DaemonTestEnv> {
       timeoutMs: 60_000
     },
     readyFilePath,
-    replication: loadReplicationConfig({})
+    replication: loadReplicationConfig({}),
+    // Legacy door/0.1 behaviour for the existing echo tests; selective mode has its own test.
+    attentionMode: "always"
   };
 
   return {
@@ -114,6 +124,7 @@ async function createDaemonTestEnv(): Promise<DaemonTestEnv> {
     wsServer,
     httpHost,
     httpPort,
+    door,
     config
   };
 }
@@ -272,6 +283,66 @@ describe("startResidencyDaemon", () => {
       .filter((message) => message.role === "user")
       .map((message) => message.content);
     expect(secondCallUsers).toEqual(["msg-a", "msg-b"]);
+
+    await handle.shutdown();
+  });
+  it("selective attention: silence, a reaction-only frame, then threaded speech — all Door-verified", async () => {
+    const brain = new FakeBrain([
+      '{"say": null, "reply_to": null, "react": null}',
+      '{"say": null, "reply_to": null, "react": {"emoji": "🔥", "to": "#2"}}',
+      '{"say": "I heard my name.", "reply_to": "#3", "react": null}'
+    ]);
+    const handle = await startResidencyDaemon(
+      { ...env.config, attentionMode: "selective" },
+      { brain, logger: pino({ level: "silent" }), skipSignals: true }
+    );
+    await waitForReadyFile(env.readyFilePath);
+
+    const serverSocket = [...env.wsServer.getActiveClients()][0];
+    if (serverSocket === undefined) {
+      throw new Error("expected one active server socket");
+    }
+    const outbounds: OutboundFrame[] = [];
+    serverSocket.on("message", (data: WebSocket.RawData) => {
+      const text = typeof data === "string" ? data : data.toString("utf8");
+      outbounds.push(OutboundFrameSchema.parse(JSON.parse(text)));
+    });
+
+    const waitFor = async (predicate: () => boolean): Promise<void> => {
+      const started = Date.now();
+      while (!predicate()) {
+        if (Date.now() - started > 5000) {
+          throw new Error("timed out waiting for daemon");
+        }
+        await new Promise<void>((resolve) => {
+          setTimeout(resolve, 10);
+        });
+      }
+    };
+
+    env.wsServer.broadcastInbound({ text: "just us talking", author_id: "u1" }, "in-sel-1");
+    await waitFor(() => brain.calls.length === 1);
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 50);
+    });
+    expect(outbounds).toHaveLength(0);
+
+    env.wsServer.broadcastInbound({ text: "that was great", author_id: "u2" }, "in-sel-2");
+    await waitFor(() => outbounds.length === 1);
+
+    env.wsServer.broadcastInbound(
+      { text: "what do you think?", author_id: "u1", addressed: true },
+      "in-sel-3"
+    );
+    await waitFor(() => outbounds.length === 2);
+
+    expect(outbounds[0]?.body).toEqual({
+      reaction: { emoji: "🔥", target_msg_id: "in-sel-2" }
+    });
+    expect(outbounds[1]?.body).toEqual({ text: "I heard my name.", reply_to: "in-sel-3" });
+    for (const frame of outbounds) {
+      expect(env.door.verifyOutbound(frame)).toBe(true);
+    }
 
     await handle.shutdown();
   });
