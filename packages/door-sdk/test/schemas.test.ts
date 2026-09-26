@@ -265,3 +265,76 @@ describe("door-sdk schemas", () => {
     ).toThrow();
   });
 });
+
+describe("session.reactions / session.addressing (additive door/0.1 fields)", () => {
+  const sig = encodeSignature(sign(new Uint8Array([7]), generateKeypair().privateKey));
+  const outbound = (body: Record<string, unknown>) => ({
+    type: "outbound",
+    door_id: DOOR_ID,
+    epoch: 77,
+    msg_id: "msg_out_r",
+    issued_at: ISSUED_AT,
+    body,
+    sig
+  });
+
+  it("accepts reaction-only, text+reaction, and text-only outbound bodies", () => {
+    expect(
+      OutboundFrameSchema.safeParse(outbound({ reaction: { emoji: "😂", target_msg_id: "m1" } }))
+        .success
+    ).toBe(true);
+    expect(
+      OutboundFrameSchema.safeParse(
+        outbound({ text: "ha", reply_to: "m1", reaction: { emoji: "👍🏽", target_msg_id: "m1" } })
+      ).success
+    ).toBe(true);
+    expect(OutboundFrameSchema.safeParse(outbound({ text: "plain" })).success).toBe(true);
+  });
+
+  it("rejects empty bodies and non-single-emoji reactions", () => {
+    expect(OutboundFrameSchema.safeParse(outbound({})).success).toBe(false);
+    expect(OutboundFrameSchema.safeParse(outbound({ reply_to: "m1" })).success).toBe(false);
+    for (const emoji of ["", "ok", "😂😂", ":smile:", "<:custom:123>", "😂 "]) {
+      expect(
+        OutboundFrameSchema.safeParse(outbound({ reaction: { emoji, target_msg_id: "m1" } }))
+          .success,
+        emoji
+      ).toBe(false);
+    }
+    expect(
+      OutboundFrameSchema.safeParse(outbound({ reaction: { emoji: "😂", target_msg_id: "" } }))
+        .success
+    ).toBe(false);
+  });
+
+  it("accepts the ZWJ family, flags, and keycaps as single emoji", () => {
+    for (const emoji of ["👨‍👩‍👧", "🇺🇸", "1️⃣", "❤️"]) {
+      expect(
+        OutboundFrameSchema.safeParse(outbound({ reaction: { emoji, target_msg_id: "m1" } }))
+          .success,
+        emoji
+      ).toBe(true);
+    }
+  });
+
+  it("inbound frames carry an optional boolean addressed flag", () => {
+    const base = {
+      type: "inbound",
+      door_id: DOOR_ID,
+      epoch: 77,
+      msg_id: "msg_in_a",
+      issued_at: ISSUED_AT
+    };
+    const parsed = InboundFrameSchema.parse({
+      ...base,
+      body: { text: "hey", author_id: "u", addressed: true }
+    });
+    expect(parsed.body.addressed).toBe(true);
+    expect(
+      InboundFrameSchema.safeParse({
+        ...base,
+        body: { text: "hey", author_id: "u", addressed: "yes" }
+      }).success
+    ).toBe(false);
+  });
+});
