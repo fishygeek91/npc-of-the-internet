@@ -42,6 +42,7 @@ services:
       NPC_BRAIN_MODEL: ${NPC_BRAIN_MODEL:-}
       NPC_BRAIN_MAX_TOKENS: ${NPC_BRAIN_MAX_TOKENS:-1024}
       NPC_BRAIN_TIMEOUT_MS: ${NPC_BRAIN_TIMEOUT_MS:-60000}
+      NPC_ATTENTION_MODE: ${NPC_ATTENTION_MODE:-selective}
     volumes:
       - soulchain:/data/soulchain
       - soulchain-ipfs:/data/soulchain-ipfs

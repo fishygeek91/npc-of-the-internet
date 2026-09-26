@@ -14,17 +14,32 @@ import {
   type SoulStore
 } from "@npc/osp-core";
 
-import type { Brain } from "../brain/types.js";
+import {
+  DEFAULT_ATTENTION_POLICY,
+  isAddressed,
+  resolveAttention,
+  type AttentionNote,
+  type AttentionPolicy
+} from "../attention/decision.js";
+import { RoomLog, type RoomEntry } from "../attention/room-log.js";
+import type { Brain, BrainMessage } from "../brain/types.js";
 import { BrainError } from "../brain/errors.js";
 import { composeSelf } from "../compose/compose-self.js";
 import { assertRuntimeWritableChain } from "../osp-spec.js";
 import { distillTranscripts } from "../distill/distill-transcripts.js";
 import { MemoryTranscriptSource } from "../distill/memory-transcript-source.js";
+import type { ResidencyTranscript } from "../distill/residency-transcript.js";
 import type { CandidateShard, TranscriptLine, TranscriptSource } from "../distill/types.js";
 import { generateJournal } from "../journal/generate-journal.js";
 import { writeJournalFile } from "../journal/write-journal-file.js";
 import type { Keyring, SessionSigner } from "../keyring/types.js";
 import { storeShardTextBlob } from "../memory-side-blobs.js";
+import {
+  ATTENTION_REACTIONS_OFF,
+  ATTENTION_REACTIONS_ON,
+  ATTENTION_SYSTEM,
+  ATTENTION_USER_TEMPLATE
+} from "../prompts/attention/system.js";
 import { SessionError } from "./errors.js";
 import {
   DOOR_PROTOCOL_VERSION,
@@ -82,6 +97,14 @@ export type SessionOptions = {
   onHeartbeatError?: (error: unknown, stage: HeartbeatErrorStage) => void;
   /** Optional callback after a successful depart (e.g. replication manifest cadence). */
   onDeparted?: () => void;
+  /**
+   * Live in-memory residency transcript (WHITEPAPER §3.2). When set, every screened
+   * inbound message and every spoken reply is recorded, and {@link Session.depart}
+   * distills from it when `DepartOptions.transcript` is omitted. Never persisted.
+   */
+  transcript?: ResidencyTranscript;
+  /** Selective-attention tuning for {@link Session.observe}; defaults apply per field. */
+  attention?: Partial<AttentionPolicy>;
 };
 
 /** Result of {@link Session.handleInbound}. */
@@ -90,9 +113,33 @@ export type HandleInboundResult =
   | { ok: false; error: BrainError }
   | { ok: false; screened: true; categories: readonly ScreenCategory[] };
 
+/**
+ * Result of {@link Session.observe} (selective attention).
+ *
+ * - `acted`: the Wanderer spoke and/or reacted; deliver `outbound`.
+ * - `silent`: it read the batch and chose (or was guarded into) silence.
+ * - `coalesced`: this message was folded into another in-flight decision.
+ * - `screened`: the immune screen dropped the message (never enters the room log).
+ * - `error`: the Brain failed; the batch is treated as read.
+ */
+export type ObserveResult =
+  | {
+      kind: "acted";
+      outbound: OutboundFrame;
+      spoke: boolean;
+      reacted: boolean;
+      batchSize: number;
+      notes: readonly AttentionNote[];
+    }
+  | { kind: "silent"; batchSize: number; notes: readonly AttentionNote[] }
+  | { kind: "coalesced" }
+  | { kind: "screened"; categories: readonly ScreenCategory[] }
+  | { kind: "error"; error: BrainError };
+
 /** Options for {@link Session.depart}. */
 export type DepartOptions = {
-  transcript: TranscriptSource;
+  /** Defaults to the Session's live {@link SessionOptions.transcript} when omitted. */
+  transcript?: TranscriptSource;
   journalDir: string;
   /** Brain for distill + journal; defaults to session brain if omitted */
   brain?: Brain;
@@ -132,6 +179,11 @@ export class Session {
   private readonly onScreenReject?: ScreenLogger;
   private readonly onHeartbeatError?: (error: unknown, stage: HeartbeatErrorStage) => void;
   private readonly onDeparted?: () => void;
+  private readonly liveTranscript?: ResidencyTranscript;
+  private readonly attentionPolicy: AttentionPolicy;
+  private readonly roomLog: RoomLog;
+  /** Room refs observed but not yet covered by an attention decision. */
+  private pendingRefs: number[] = [];
   private readonly sessionSigner: SessionSigner;
   private readonly systemPromptValue: string;
   private readonly residency: string;
@@ -180,6 +232,11 @@ export class Session {
     if (options.onDeparted !== undefined) {
       this.onDeparted = options.onDeparted;
     }
+    if (options.transcript !== undefined) {
+      this.liveTranscript = options.transcript;
+    }
+    this.attentionPolicy = { ...DEFAULT_ATTENTION_POLICY, ...options.attention };
+    this.roomLog = new RoomLog(this.maxHistoryMessages);
     this.systemPromptValue = composed.systemPrompt;
     this.epochValue = epoch;
     this.sessionSigner = sessionSigner;
@@ -288,22 +345,7 @@ export class Session {
       throw new SessionError("session is not live");
     }
 
-    const parsed = InboundFrameSchema.safeParse(frame);
-    if (!parsed.success) {
-      throw new SessionError(`invalid inbound frame: ${parsed.error.message}`);
-    }
-    const validatedFrame = parsed.data;
-
-    if (validatedFrame.door_id !== this.doorId) {
-      throw new SessionError(
-        `inbound door_id mismatch: expected ${this.doorId}, got ${validatedFrame.door_id}`
-      );
-    }
-    if (validatedFrame.epoch !== this.epochValue) {
-      throw new SessionError(
-        `inbound epoch mismatch: expected ${String(this.epochValue)}, got ${String(validatedFrame.epoch)}`
-      );
-    }
+    const validatedFrame = this.validateInbound(frame);
 
     const text = validatedFrame.body.text;
     const screenResult = screenText(text);
@@ -333,6 +375,12 @@ export class Session {
 
     this.pushHistory({ role: "user", content: text });
     this.pushHistory({ role: "assistant", content: assistantText });
+    this.liveTranscript?.record({
+      role: "user",
+      text,
+      author_id: validatedFrame.body.author_id
+    });
+    this.liveTranscript?.record({ role: "assistant", text: assistantText });
 
     this.outboundCounter += 1;
     const msgId = `out-${String(this.outboundCounter)}`;
@@ -364,6 +412,172 @@ export class Session {
         sig: outboundSig
       }
     };
+  }
+
+  /**
+   * Selective attention: observe one inbound frame and let the Wanderer decide whether to
+   * speak, react, both, or stay quiet.
+   *
+   * Every screened message enters the room log (and the live transcript) immediately, even
+   * while a decision is in flight. Decisions are serialized with {@link handleInbound}; a
+   * decision covers **all** messages observed since the last one, so a burst of chatter
+   * costs one Brain call and yields at most one outbound frame. Later calls whose message
+   * was already covered resolve `coalesced`.
+   */
+  async observe(frame: InboundFrame): Promise<ObserveResult> {
+    if (this.phase !== "live") {
+      throw new SessionError("session is not live");
+    }
+    const validatedFrame = this.validateInbound(frame);
+    const body = validatedFrame.body;
+
+    const screenResult = screenText(body.text);
+    if (!screenResult.ok) {
+      for (const category of screenResult.categories) {
+        this.onScreenReject?.(category, "session.inbound");
+      }
+      return { kind: "screened", categories: screenResult.categories };
+    }
+
+    const entry = this.roomLog.addHuman({
+      msgId: validatedFrame.msg_id,
+      authorId: body.author_id,
+      text: body.text,
+      addressed: isAddressed({
+        doorAddressed: body.addressed,
+        repliesToSelf: this.roomLog.isSelfMessage(body.reply_to),
+        text: body.text
+      }),
+      ...(body.author_display === undefined ? {} : { authorDisplay: body.author_display }),
+      ...(body.reply_to === undefined ? {} : { replyToMsgId: body.reply_to }),
+      ...(body.channel_id === undefined ? {} : { channelId: body.channel_id })
+    });
+    this.liveTranscript?.record({ role: "user", text: body.text, author_id: body.author_id });
+    this.pendingRefs.push(entry.ref);
+
+    return this.enqueueInbound(async () => this.decideAttention(entry.ref));
+  }
+
+  /** One attention decision over every pending room entry (runs on inboundChain). */
+  private async decideAttention(ref: number): Promise<ObserveResult> {
+    if (!this.pendingRefs.includes(ref)) {
+      return { kind: "coalesced" };
+    }
+    if (this.phase !== "live") {
+      throw new SessionError("session is not live");
+    }
+
+    const batchRefs = this.pendingRefs;
+    this.pendingRefs = [];
+    const batch = batchRefs
+      .map((batchRef) => this.roomLog.resolveRef(String(batchRef)))
+      .filter((entry): entry is RoomEntry => entry !== undefined);
+    const addressed = batch.some((entry) => entry.addressed);
+    const selfShare = this.roomLog.selfShare(this.attentionPolicy.shareWindow);
+
+    const system = `${this.systemPrompt}\n\n${ATTENTION_SYSTEM.replaceAll(
+      "{{reactions}}",
+      this.attentionPolicy.reactions ? ATTENTION_REACTIONS_ON : ATTENTION_REACTIONS_OFF
+    )}`;
+    const user = ATTENTION_USER_TEMPLATE.replaceAll("{{log}}", this.roomLog.render()).replaceAll(
+      "{{new_refs}}",
+      batchRefs.map((batchRef) => `#${String(batchRef)}`).join(", ")
+    );
+    const messages: BrainMessage[] = [
+      { role: "system", content: system },
+      { role: "user", content: user }
+    ];
+
+    let raw: string;
+    try {
+      const maxTokens = this.attentionPolicy.maxTokens;
+      raw = (
+        await this.brain.complete(messages, maxTokens === undefined ? undefined : { maxTokens })
+      ).text;
+    } catch (error) {
+      if (error instanceof BrainError) {
+        return { kind: "error", error };
+      }
+      throw error;
+    }
+
+    const resolved = resolveAttention({
+      raw,
+      log: this.roomLog,
+      policy: this.attentionPolicy,
+      addressed,
+      selfShare
+    });
+
+    if (resolved.say === null && resolved.react === undefined) {
+      return { kind: "silent", batchSize: batch.length, notes: resolved.notes };
+    }
+
+    this.outboundCounter += 1;
+    const msgId = `out-${String(this.outboundCounter)}`;
+    const channelSource = resolved.replyTo ?? batch[batch.length - 1];
+    const channelId = channelSource?.channelId;
+
+    const unsignedOutbound: Omit<OutboundFrame, "sig"> = {
+      type: "outbound",
+      door_id: this.doorId,
+      epoch: this.epochValue,
+      msg_id: msgId,
+      issued_at: this.clock.now(),
+      body: {
+        ...(resolved.say === null ? {} : { text: resolved.say }),
+        ...(resolved.replyTo === undefined ? {} : { reply_to: resolved.replyTo.msgId }),
+        ...(channelId === undefined ? {} : { channel_id: channelId }),
+        ...(resolved.react === undefined
+          ? {}
+          : {
+              reaction: {
+                emoji: resolved.react.emoji,
+                target_msg_id: resolved.react.target.msgId
+              }
+            })
+      }
+    };
+    const outboundSig = encodeSignature(this.sessionSigner.sign(canonicalize(unsignedOutbound)));
+
+    if (resolved.say !== null) {
+      this.roomLog.addSelf({
+        msgId,
+        text: resolved.say,
+        ...(resolved.replyTo === undefined ? {} : { replyToRef: resolved.replyTo.ref })
+      });
+      this.liveTranscript?.record({ role: "assistant", text: resolved.say });
+    }
+
+    return {
+      kind: "acted",
+      outbound: { ...unsignedOutbound, sig: outboundSig },
+      spoke: resolved.say !== null,
+      reacted: resolved.react !== undefined,
+      batchSize: batch.length,
+      notes: resolved.notes
+    };
+  }
+
+  /** Schema + binding checks shared by {@link handleInbound} and {@link observe}. */
+  private validateInbound(frame: InboundFrame): InboundFrame {
+    const parsed = InboundFrameSchema.safeParse(frame);
+    if (!parsed.success) {
+      throw new SessionError(`invalid inbound frame: ${parsed.error.message}`);
+    }
+    const validatedFrame = parsed.data;
+
+    if (validatedFrame.door_id !== this.doorId) {
+      throw new SessionError(
+        `inbound door_id mismatch: expected ${this.doorId}, got ${validatedFrame.door_id}`
+      );
+    }
+    if (validatedFrame.epoch !== this.epochValue) {
+      throw new SessionError(
+        `inbound epoch mismatch: expected ${String(this.epochValue)}, got ${String(validatedFrame.epoch)}`
+      );
+    }
+    return validatedFrame;
   }
 
   /**
@@ -412,7 +626,18 @@ export class Session {
     // Remaining phase is `departing` (retry after mid-pipeline failure).
 
     const brain = options.brain ?? this.brain;
-    const candidates = await this.ensureDepartCandidates(options.transcript, brain);
+    const transcript = options.transcript ?? this.liveTranscript;
+    if (
+      transcript === undefined &&
+      this.departCandidates === null &&
+      this.departTranscriptLines === null
+    ) {
+      throw new SessionError("depart requires a transcript (none passed and no live transcript)");
+    }
+    const candidates = await this.ensureDepartCandidates(
+      transcript ?? new MemoryTranscriptSource([]),
+      brain
+    );
     // One rejected record per unique screen category (v0.1: count of drops is not preserved).
     const screenCategories = new Set<ScreenCategory>(this.departScreenCategories ?? []);
 

@@ -30,6 +30,14 @@ Discord Door adapter: one guild channel becomes a Door. Wraps `@npc/door-sdk` `D
 
 See `ops/SECRETS.md` for secret names only.
 
+## Attention & actions (`session.addressing`, `session.reactions`)
+
+- **Addressing:** inbound frames carry `addressed: true` when the message @mentions the bot (or reply-pings it) or is a Discord reply to one of the Wanderer's messages. The relay shows a best-effort "typing…" indicator for addressed messages.
+- **Mentions:** `<@id>` / `<@&id>` / `<#id>` tokens are rendered as plain names (bot → `Wanderer`, users → display name, `#channel`), and `@everyone`/`@here` lose the `@`. `@name` text would trip the runtime immune `pii.handle` screen and drop the whole message.
+- **Ids:** the relay keeps a bounded (1000) msg_id ↔ Discord id map, so outbound `reply_to` becomes a real Discord reply and `reaction.target_msg_id` resolves to the right message. Inbound `reply_to` is the parent's protocol msg_id when known.
+- **Reactions:** outbound `reaction: { emoji, target_msg_id }` → `message.react(emoji)` (needs the **Add Reactions** permission). A failed reaction logs `reaction_failed` and never posts an operator notice.
+- **Silence:** the runtime (selective mode) may not answer at all — that is the design.
+
 ## Run
 
 ```bash
