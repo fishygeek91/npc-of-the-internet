@@ -162,10 +162,27 @@ import {
 | `onScreenReject` | no | — | Category-only callback when inbound text fails `@npc/immune` `screenText` (never receives payload text) |
 | `activeEpoch` | no | — | Optional floor from Door `hello.active_epoch`; after a mid-arrival crash, epoch allocation uses `max(chain_derived, activeEpoch + 1)` |
 | `onHeartbeatError` | no | — | Optional callback when heartbeat attestation fails at `door` or `append` stage |
+| `transcript` | no | — | Live in-memory `ResidencyTranscript` (WHITEPAPER §3.2): records screened inbound + spoken replies; `depart()` distills it when no `transcript` is passed |
+| `attention` | no | see below | `Partial<AttentionPolicy>` for `observe()` — `reactions` (Door has `session.reactions`), `maxSelfShare` (`0.3`), `shareWindow` (`9`), optional `maxTokens` |
 
 `Session.start` composes self from the verified chain, derives a session key via HKDF-SHA-512 (`deriveSessionKey(doorId, epoch)`), appends an arrival attestation, and arms the heartbeat timer. Inbound frames are handled with `handleInbound` (serialized per session — one in-flight Brain call); call `drainAppends()` in tests to await async chain writes. Call `stop()` to end the residency. Before departure (T2.5), call `stop()` then `await drainAppends()` so no heartbeat attestation races the departure record — `Session.depart` does this automatically.
 
 Inbound Door text is screened through `@npc/immune` `screenText` before any Brain call. On failure, `handleInbound` returns `{ ok: false, screened: true, categories }` — no outbound reply, no history update, no chain write; the session stays live. Optional `onScreenReject(category, "session.inbound")` logs category hits only.
+
+### Selective attention — `Session.observe`
+
+`handleInbound` is the legacy door/0.1 loop: one Brain call and one reply per inbound message. `observe(frame)` lets the Wanderer **read the room** instead:
+
+- Every screened message enters a bounded room log (`RoomLog`, never persisted) with a local `#n` ref, speaker label (`YOU` for its own lines), `↩ #n` reply arrows, and an `[ADDRESSED]` marker (Door `addressed` flag, a reply to one of its messages, or its name in the text).
+- The Brain gets the composed self + `prompts/attention/system.ts` and the rendered log, and answers `{"say", "reply_to", "react"}` JSON. Speak, react (`session.reactions`), both, or stay silent.
+- **Coalescing:** messages that arrive while a decision is in flight are folded into the next one — a burst of chatter costs one Brain call and yields at most one frame (`kind: "coalesced"` for the folded calls).
+- **Floor guard (code, not prompt):** if not addressed and the Wanderer already said ≥ `maxSelfShare` of the last `shareWindow` messages, speech is dropped (reactions still allowed).
+- Unparseable Brain output → silence, unless the batch addressed the Wanderer and the output is plain prose (spoken as-is).
+- Results: `acted` (signed `outbound`, may be text-less with a `reaction`), `silent`, `coalesced`, `screened`, `error`. `reply_to` / `reaction.target_msg_id` are protocol `msg_id`s; the Door maps them to platform ids.
+
+### Live residency transcript
+
+`ResidencyTranscript` (bounded: 1500 lines / 120k chars, oldest dropped) is the in-memory transcript the daemon passes to `Session.start`. Both `observe` and `handleInbound` record screened inbound lines (`role: "user"`, `author_id`) and spoken replies (`role: "assistant"`); reactions are not recorded. `depart()` without a `transcript` option distills from it, then destroys it. It is never written to disk; a process restart loses it (privacy over durability).
 
 ### Keyring boundary
 
@@ -331,7 +348,10 @@ Or after install: `npc-runtime` (bin in `@npc/runtime`). Ghost image `CMD` is `n
 | `NPC_BRAIN_MAX_TOKENS` | no | `1024` | Default max output tokens |
 | `NPC_BRAIN_TIMEOUT_MS` | no | `60000` | Request timeout (ms) |
 | `NPC_RUNTIME_READY_FILE` | no | `/tmp/npc-runtime.ready` | Compose healthcheck path (present only while the session WS is connected) |
+| `NPC_ATTENTION_MODE` | no | `selective` | `selective`: `Session.observe` (speak / react / stay quiet); `always`: legacy reply-to-every-message |
 
 \* Set exactly one of `NAME` or `NAME_FILE` for the active Brain provider (see Brain section).
+
+Selective-mode logs (info): `attention_config` at boot (mode, whether the Door supports reactions), then `attention_acted` (`spoke`, `reacted`, `batchSize`, `notes`) or `attention_silent` (`batchSize`, `notes` e.g. `floor_guard`) per decision. Silence is expected and is not an error.
 
 Graceful shutdown (SIGTERM/SIGINT): remove ready file → close WS → `session.stop()` → `drainAppends()` → `store.close()` → exit 0.
