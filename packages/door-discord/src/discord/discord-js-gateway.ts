@@ -22,6 +22,56 @@ export type DiscordJsGatewayOptions = {
   guildId: string;
 };
 
+/** Name the Wanderer answers to; bot mentions are rendered as this plain word. */
+export const WANDERER_MENTION_NAME = "Wanderer";
+
+/**
+ * Replace Discord mention tokens with readable plain names (no leading `@`).
+ *
+ * The runtime immune screen treats `@handle` tokens as PII and drops the whole message, so
+ * `cleanContent`'s `@name` rendering would silently swallow every mention. Raw `<@id>`
+ * tokens are unreadable to the Wanderer. Plain names are both readable and screen-safe;
+ * a bot mention becomes `Wanderer`, which the runtime also treats as addressing.
+ */
+export function renderMentionTokens(
+  content: string,
+  lookup: {
+    botId: string | null;
+    userName: (id: string) => string | undefined;
+    channelName: (id: string) => string | undefined;
+    roleName: (id: string) => string | undefined;
+  }
+): string {
+  return content
+    .replace(/(^|\s)@(everyone|here)\b/gu, "$1$2")
+    .replace(/<@!?(\d+)>/gu, (_token, id: string) => {
+      if (id === lookup.botId) {
+        return WANDERER_MENTION_NAME;
+      }
+      return lookup.userName(id) ?? "someone";
+    })
+    .replace(/<@&(\d+)>/gu, (_token, id: string) => lookup.roleName(id) ?? "a role")
+    .replace(/<#(\d+)>/gu, (_token, id: string) => {
+      const name = lookup.channelName(id);
+      return name === undefined ? "a channel" : `#${name}`;
+    });
+}
+
+function renderMentions(message: Message, botId: string | null): string {
+  return renderMentionTokens(message.content, {
+    botId,
+    userName: (id) =>
+      message.mentions.members?.get(id)?.displayName ?? message.mentions.users.get(id)?.username,
+    channelName: (id) => {
+      const channel = message.mentions.channels.get(id);
+      return channel !== undefined && "name" in channel && typeof channel.name === "string"
+        ? channel.name
+        : undefined;
+    },
+    roleName: (id) => message.mentions.roles.get(id)?.name
+  });
+}
+
 /**
  * Real discord.js binding for {@link DiscordGateway}.
  * Exercised via MANUAL_TEST.md — not mocked class-by-class in CI.
@@ -127,6 +177,14 @@ export class DiscordJsGateway implements DiscordGateway {
     return { id: sent.id };
   }
 
+  async sendTyping(channelId: string): Promise<void> {
+    const channel = await this.client.channels.fetch(channelId);
+    if (channel === null || !channel.isTextBased() || channel.isDMBased()) {
+      return;
+    }
+    await channel.sendTyping();
+  }
+
   async addReaction(channelId: string, messageId: string, emoji: string): Promise<void> {
     const channel = await this.client.channels.fetch(channelId);
     if (channel === null || !channel.isTextBased() || channel.isDMBased()) {
@@ -193,15 +251,20 @@ export class DiscordJsGateway implements DiscordGateway {
     if (handler === null) {
       return;
     }
+    const botId = this.readyBotId;
+    const mentionsBot =
+      botId !== null &&
+      (message.mentions.users.has(botId) || message.mentions.repliedUser?.id === botId);
     const mapped: GatewayMessage = {
       id: message.id,
       guildId: message.guildId,
       channelId: message.channelId,
       authorId: message.author.id,
       authorDisplay: message.member?.displayName ?? message.author.username,
-      content: message.content,
+      content: renderMentions(message, botId),
       isBot: message.author.bot,
-      replyToId: message.reference?.messageId ?? undefined
+      replyToId: message.reference?.messageId ?? undefined,
+      mentionsBot
     };
     await handler(mapped);
   }
