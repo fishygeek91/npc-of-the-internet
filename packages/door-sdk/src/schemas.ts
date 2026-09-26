@@ -279,7 +279,7 @@ export const OutboundReactionSchema = z.object({
     .string()
     .min(1)
     .max(REACTION_EMOJI_MAX_LENGTH)
-    .refine((value) => /\p{Extended_Pictographic}|\p{Regional_Indicator}|⃣/u.test(value), {
+    .refine((value) => /\p{Extended_Pictographic}|\p{Regional_Indicator}|\\u20E3/u.test(value), {
       message: "reaction emoji must be a Unicode emoji"
     })
     .refine((value) => !/[\s<>:]/u.test(value), {
