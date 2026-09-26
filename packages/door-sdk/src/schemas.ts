@@ -60,7 +60,9 @@ export const CapabilitySchema = z.enum([
   "heartbeat",
   "attest",
   "cosign.manual",
-  "cosign.auto"
+  "cosign.auto",
+  "session.reactions",
+  "session.addressing"
 ]);
 
 export type Capability = z.infer<typeof CapabilitySchema>;
@@ -239,7 +241,12 @@ const InboundFrameBodySchema = z.object({
   author_id: z.string().min(1),
   author_display: z.string().optional(),
   reply_to: z.string().optional(),
-  channel_id: z.string().optional()
+  channel_id: z.string().optional(),
+  /**
+   * `session.addressing`: Door-observed platform signal that the message is aimed at
+   * the Wanderer (e.g. @mention or a reply to one of its messages). Advisory, untrusted.
+   */
+  addressed: z.boolean().optional()
 });
 
 /** WebSocket `inbound` frame (Door → Wanderer). */
@@ -254,11 +261,50 @@ export const InboundFrameSchema = z.object({
 
 export type InboundFrame = z.infer<typeof InboundFrameSchema>;
 
-const OutboundFrameBodySchema = z.object({
-  text: z.string().min(1).max(4000),
-  reply_to: z.string().optional(),
-  channel_id: z.string().optional()
+const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
+function graphemeCount(value: string): number {
+  return Array.from(graphemeSegmenter.segment(value)).length;
+}
+
+/**
+ * Max length of an outbound reaction emoji string (a single Unicode emoji,
+ * including ZWJ sequences and skin-tone / variation modifiers).
+ */
+export const REACTION_EMOJI_MAX_LENGTH = 32;
+
+/** `session.reactions`: Wanderer reacts to a prior message with a single Unicode emoji. */
+export const OutboundReactionSchema = z.object({
+  emoji: z
+    .string()
+    .min(1)
+    .max(REACTION_EMOJI_MAX_LENGTH)
+    .refine((value) => /\p{Extended_Pictographic}|\p{Regional_Indicator}|⃣/u.test(value), {
+      message: "reaction emoji must be a Unicode emoji"
+    })
+    .refine((value) => !/[\s<>:]/u.test(value), {
+      message: "reaction emoji must not contain whitespace or custom-emoji syntax"
+    })
+    .refine((value) => graphemeCount(value) === 1, {
+      message: "reaction must be exactly one emoji"
+    }),
+  /** `msg_id` of the inbound (or prior outbound) message being reacted to. */
+  target_msg_id: z.string().min(1)
 });
+
+export type OutboundReaction = z.infer<typeof OutboundReactionSchema>;
+
+const OutboundFrameBodySchema = z
+  .object({
+    /** Spoken text. Optional only when `reaction` is present (`session.reactions`). */
+    text: z.string().min(1).max(4000).optional(),
+    reply_to: z.string().optional(),
+    channel_id: z.string().optional(),
+    reaction: OutboundReactionSchema.optional()
+  })
+  .refine((body) => body.text !== undefined || body.reaction !== undefined, {
+    message: "outbound body must carry text, reaction, or both"
+  });
 
 /** WebSocket `outbound` frame (Wanderer → Door), session-key signed. */
 export const OutboundFrameSchema = z.object({
