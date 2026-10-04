@@ -21,6 +21,8 @@ export {
   CosignResponseSchema,
   InboundFrameSchema,
   OutboundFrameSchema,
+  OutboundReactionSchema,
+  REACTION_EMOJI_MAX_LENGTH,
   ControlFrameSchema,
   ErrorFrameSchema,
   SessionBindParamsSchema
@@ -43,6 +45,7 @@ export type {
   ReviewDecision,
   InboundFrame,
   OutboundFrame,
+  OutboundReaction,
   ControlFrame,
   ErrorFrame,
   SessionBindParams,

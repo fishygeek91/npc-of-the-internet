@@ -31,6 +31,23 @@ describe("loadDaemonConfig", () => {
     expect(config.readyFilePath).toBe("/tmp/npc-runtime.ready");
     expect(config.replication.enabled).toBe(false);
     expect(config.replication.targets).toEqual([]);
+    expect(config.attentionMode).toBe("selective");
+  });
+
+  it("parses NPC_ATTENTION_MODE and rejects unknown values", () => {
+    expect(loadDaemonConfig({ ...VALID_ENV, NPC_ATTENTION_MODE: "always" }).attentionMode).toBe(
+      "always"
+    );
+    expect(
+      loadDaemonConfig({ ...VALID_ENV, NPC_ATTENTION_MODE: " selective " }).attentionMode
+    ).toBe("selective");
+    try {
+      loadDaemonConfig({ ...VALID_ENV, NPC_ATTENTION_MODE: "chatty" });
+      expect.unreachable();
+    } catch (error) {
+      expect(error).toBeInstanceOf(DaemonError);
+      expect((error as DaemonError).envVar).toBe("NPC_ATTENTION_MODE");
+    }
   });
 
   it("loads optional NPC_SOULCHAIN_IPFS_DIR", () => {

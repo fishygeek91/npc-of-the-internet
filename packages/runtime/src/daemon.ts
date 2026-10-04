@@ -24,6 +24,7 @@ import { createBrain } from "./brain/create-brain.js";
 import type { Brain } from "./brain/types.js";
 import { loadDaemonConfig, type DaemonConfig } from "./daemon-config.js";
 import { DaemonError } from "./daemon-errors.js";
+import { ResidencyTranscript } from "./distill/residency-transcript.js";
 import { loadSoulPrivateKeyFromPath } from "./keyring/load-soul-key.js";
 import { SingleKeyKeyring } from "./keyring/single-key-keyring.js";
 import {
@@ -33,7 +34,7 @@ import {
   type ReplicationDrainHandle
 } from "./replication/index.js";
 import { Session } from "./session/session.js";
-import type { Clock, Timer } from "./session/types.js";
+import type { Clock, InboundFrame, OutboundFrame, Timer } from "./session/types.js";
 
 /** SoulStore with lifecycle close (all runtime store implementations). */
 export type ClosableSoulStore = SoulStore & {
@@ -202,8 +203,19 @@ export async function startResidencyDaemon(
         }
       : undefined;
 
+  // WHITEPAPER §3.2: raw conversation lives only in memory for the residency; depart
+  // distills it into shards and destroys it. Never written to disk.
+  const transcript = new ResidencyTranscript();
+  const reactionsSupported = hello.capabilities.includes("session.reactions");
+  logger.info(
+    { attentionMode: config.attentionMode, reactions: reactionsSupported },
+    "attention_config"
+  );
+
   const session = await Session.start({
     store,
+    transcript,
+    attention: { reactions: reactionsSupported },
     door,
     doorId: config.doorId,
     keyring,
@@ -277,26 +289,10 @@ export async function startResidencyDaemon(
     onInbound: (frame) => {
       void (async () => {
         try {
-          const result = await session.handleInbound(frame);
-          if (result.ok) {
-            try {
-              wsClient.sendOutbound(result.outbound);
-            } catch (error: unknown) {
-              // Ghost contract: replies are not queued across reconnect gaps.
-              if (error instanceof DoorError && error.code === "door_unavailable") {
-                logger.warn({ err: error.message }, "outbound_dropped_ws_down");
-                return;
-              }
-              throw error;
-            }
-            return;
-          }
-          if ("screened" in result && result.screened) {
-            logger.warn({ categories: result.categories }, "inbound_screened");
-            return;
-          }
-          if ("error" in result) {
-            logger.warn({ err: result.error.message }, "inbound_brain_error");
+          if (config.attentionMode === "selective") {
+            await handleObserved(frame);
+          } else {
+            await handleAlways(frame);
           }
         } catch (error: unknown) {
           const message = error instanceof Error ? error.message : String(error);
@@ -305,6 +301,66 @@ export async function startResidencyDaemon(
       })();
     }
   });
+
+  /** Send a signed outbound frame; replies are not queued across reconnect gaps (Ghost contract). */
+  const sendOutbound = (outbound: OutboundFrame): void => {
+    try {
+      wsClient.sendOutbound(outbound);
+    } catch (error: unknown) {
+      if (error instanceof DoorError && error.code === "door_unavailable") {
+        logger.warn({ err: error.message }, "outbound_dropped_ws_down");
+        return;
+      }
+      throw error;
+    }
+  };
+
+  /** Selective attention: the Wanderer decides to speak, react, or stay quiet. */
+  const handleObserved = async (frame: InboundFrame): Promise<void> => {
+    const result = await session.observe(frame);
+    switch (result.kind) {
+      case "acted":
+        logger.info(
+          {
+            spoke: result.spoke,
+            reacted: result.reacted,
+            batchSize: result.batchSize,
+            notes: result.notes
+          },
+          "attention_acted"
+        );
+        sendOutbound(result.outbound);
+        return;
+      case "silent":
+        logger.info({ batchSize: result.batchSize, notes: result.notes }, "attention_silent");
+        return;
+      case "coalesced":
+        logger.debug("attention_coalesced");
+        return;
+      case "screened":
+        logger.warn({ categories: result.categories }, "inbound_screened");
+        return;
+      case "error":
+        logger.warn({ err: result.error.message }, "inbound_brain_error");
+        return;
+    }
+  };
+
+  /** Legacy door/0.1 behaviour: answer every inbound message. */
+  const handleAlways = async (frame: InboundFrame): Promise<void> => {
+    const result = await session.handleInbound(frame);
+    if (result.ok) {
+      sendOutbound(result.outbound);
+      return;
+    }
+    if ("screened" in result && result.screened) {
+      logger.warn({ categories: result.categories }, "inbound_screened");
+      return;
+    }
+    if ("error" in result) {
+      logger.warn({ err: result.error.message }, "inbound_brain_error");
+    }
+  };
 
   await wsClient.connect();
 

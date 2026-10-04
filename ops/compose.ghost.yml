@@ -42,6 +42,7 @@ services:
       NPC_BRAIN_MODEL: ${NPC_BRAIN_MODEL:-}
       NPC_BRAIN_MAX_TOKENS: ${NPC_BRAIN_MAX_TOKENS:-1024}
       NPC_BRAIN_TIMEOUT_MS: ${NPC_BRAIN_TIMEOUT_MS:-60000}
+      NPC_ATTENTION_MODE: ${NPC_ATTENTION_MODE:-selective}
     volumes:
       - soulchain:/data/soulchain
       - soulchain-ipfs:/data/soulchain-ipfs
@@ -180,8 +181,10 @@ services:
       RCLONE_CONFIG: /config/rclone/rclone.conf
       RCLONE_CACHE_DIR: /tmp/rclone-cache
       BACKUP_OK_PATH: /tmp/backup.ok
-      BACKUP_DEBOUNCE_SEC: ${BACKUP_DEBOUNCE_SEC:-5}
+      BACKUP_DEBOUNCE_SEC: ${BACKUP_DEBOUNCE_SEC:-30}
       BACKUP_INTERVAL_SEC: ${BACKUP_INTERVAL_SEC:-300}
+      BACKUP_VERIFY_SEC: ${BACKUP_VERIFY_SEC:-86400}
+      BACKUP_RETRY_SEC: ${BACKUP_RETRY_SEC:-900}
     volumes:
       - soulchain:/data/soulchain:ro
       - ${RCLONE_CONFIG_HOST_PATH}:/config/rclone:ro

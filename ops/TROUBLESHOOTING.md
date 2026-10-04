@@ -134,3 +134,20 @@ with a shorter (clean) one.
 Dual-append is file-first: every crash-retry cycle that gets past signing appends a real
 signed arrival to the file chain. After any crash-loop session, inspect `chain.jsonl`
 before assuming it is clean.
+
+## Backups (B2)
+
+### "Daily Class C Transactions Cap" alert at 75% / 100% (2026-10-04)
+
+Before the fix, the backup sidecar re-authorized and listed B2 on every 5-minute
+tick even when nothing had changed (3 rclone invocations ≈ 9 Class C calls per tick ≈
+2,500/day idle) — exactly the free-account default cap. Once the cap trips, B2 refuses
+calls until 00:00 GMT, so `lsjson` fails, the shrink guard refuses uploads, and the
+backup container goes unhealthy; `key-backup.sh` shares the same account-wide cap.
+
+- Confirm: B2 web UI → **Caps & Alerts** (Class C count) / **Reports** (per-API breakdown);
+  `sudo docker logs <backup-container> 2>&1 | grep -iE "cap|403|refusing"`.
+- Fix: upgrade the backup image (idle ticks are local-only). If `ops/.env` still carries
+  the old `BACKUP_DEBOUNCE_SEC=5`, raise it to `30` (or delete the line to take the default).
+- Raising the Class C cap in **Edit Caps** is a safe stopgap; Backblaze currently lists
+  Class C calls as free — check the dialog's price before relying on that.

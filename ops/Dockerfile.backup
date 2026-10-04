@@ -13,8 +13,10 @@ COPY ops/scripts/backup-watch.sh /usr/local/bin/backup-watch.sh
 RUN chmod +x /usr/local/bin/backup-watch.sh
 
 ENV BACKUP_SOURCE_DIR=/data/soulchain \
-    BACKUP_DEBOUNCE_SEC=5 \
-    BACKUP_INTERVAL_SEC=300
+    BACKUP_DEBOUNCE_SEC=30 \
+    BACKUP_INTERVAL_SEC=300 \
+    BACKUP_VERIFY_SEC=86400 \
+    BACKUP_RETRY_SEC=900
 
 USER npc
 

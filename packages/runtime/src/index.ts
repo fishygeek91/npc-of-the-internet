@@ -84,8 +84,29 @@ export type {
   DepartResult,
   HandleInboundResult,
   HeartbeatErrorStage,
+  ObserveResult,
   SessionOptions
 } from "./session/session.js";
+export {
+  DEFAULT_ATTENTION_POLICY,
+  isAddressed,
+  parseAttentionDecision,
+  resolveAttention
+} from "./attention/decision.js";
+export type {
+  AttentionNote,
+  AttentionPolicy,
+  RawAttentionDecision,
+  ResolvedAttention
+} from "./attention/decision.js";
+export { RoomLog, sanitizeDisplay } from "./attention/room-log.js";
+export type { RoomEntry, RoomSpeaker } from "./attention/room-log.js";
+export {
+  ResidencyTranscript,
+  DEFAULT_TRANSCRIPT_MAX_CHARS,
+  DEFAULT_TRANSCRIPT_MAX_LINES
+} from "./distill/residency-transcript.js";
+export type { ResidencyTranscriptOptions } from "./distill/residency-transcript.js";
 export {
   AttestRequestSchema,
   AttestResponseSchema,

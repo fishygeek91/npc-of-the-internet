@@ -115,7 +115,15 @@ export async function startDiscordDoor(
       platform: "discord",
       invitation_required: false
     },
-    capabilities: ["session.text", "session.threads", "heartbeat", "attest", "cosign.manual"],
+    capabilities: [
+      "session.text",
+      "session.threads",
+      "session.reactions",
+      "session.addressing",
+      "heartbeat",
+      "attest",
+      "cosign.manual"
+    ],
     decideShard: (shard) => reviewGate.decideShard(shard)
   };
 

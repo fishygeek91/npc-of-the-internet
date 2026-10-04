@@ -59,8 +59,11 @@ Environment variable names and purposes only. **Never commit values.**
 | `FILEBASE_TOKEN_FILE` | In-container path to Filebase token file. |
 | `BACKUP_SOURCE_DIR` | In-container soulchain directory watched by the backup sidecar (compose sets `/data/soulchain`). |
 | `BACKUP_RCLONE_REMOTE` | rclone remote path for soulchain backup (e.g. `ghost-remote:npc/soulchain`). Required for backup sidecar. |
-| `BACKUP_DEBOUNCE_SEC` | Seconds to wait after a change before syncing (default `5`). |
-| `BACKUP_INTERVAL_SEC` | Periodic safety sync interval in seconds (default `300`). |
+| `BACKUP_DEBOUNCE_SEC` | Seconds of quiet after a change before syncing; coalesces conversation bursts into one upload (default `30`). |
+| `BACKUP_INTERVAL_SEC` | Periodic safety check interval in seconds (default `300`). Compares a local fingerprint of `blobs/` + `chain.jsonl` with the last successful upload — **no remote calls unless something changed**. Keep below the 900s healthcheck window. |
+| `BACKUP_VERIFY_SEC` | Force a real remote round-trip at least this often when idle, so a revoked key or deleted bucket surfaces (default `86400`). |
+| `BACKUP_RETRY_SEC` | After a failed cycle (shrink refusal, rclone error, provider cap), retry an unchanged chain at most this often; new appends still retry immediately (default `900`). |
+| `BACKUP_STATE_DIR` | Where the sidecar keeps its last-upload fingerprints (default `/tmp/backup-watch-state/<hash of source+remote>`). |
 | `ALLOW_CHAIN_SHRINK` | Ops override: set to `1` only intentionally to allow uploading a smaller `chain.jsonl` than the remote tip. Default unset (refuse size regression). |
 | `BACKUP_OK_PATH` | Filesystem path touched after a successful backup cycle (default `/tmp/backup.ok`). Ghost compose healthcheck requires the marker to be newer than 900s. |
 | `RCLONE_CONFIG` | In-container path to rclone config file (compose sets `/config/rclone/rclone.conf`). |

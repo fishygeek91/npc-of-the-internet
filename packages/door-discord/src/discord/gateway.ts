@@ -10,6 +10,8 @@ export type GatewayMessage = {
   content: string;
   isBot: boolean;
   replyToId: string | undefined;
+  /** True when the message @mentions the bot (or reply-pings it). */
+  mentionsBot?: boolean;
 };
 
 /**
@@ -54,6 +56,8 @@ export interface DiscordGateway {
   ): Promise<{ id: string }>;
   /** Add a unicode reaction to a message. */
   addReaction(channelId: string, messageId: string, emoji: string): Promise<void>;
+  /** Show the bot's "typing…" indicator in a channel (best-effort, optional). */
+  sendTyping?(channelId: string): Promise<void>;
   /** Reply ephemerally to a slash-command interaction. */
   replyEphemeral(interactionId: string, content: string): Promise<void>;
   onMessage(handler: (message: GatewayMessage) => void | Promise<void>): void;

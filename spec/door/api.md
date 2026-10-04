@@ -90,6 +90,10 @@ Machine-readable feature flags the Door supports. v0.1 registered values:
 | `attest` | Door accepts `/door/attest` soulchain co-signatures. |
 | `cosign.manual` | Host manually approves shards on `/door/cosign` (v0.1 default). |
 | `cosign.auto` | Door may auto-approve shards matching host policy (not required in v0.1). |
+| `session.reactions` | Door delivers outbound `reaction` bodies (single-emoji reaction to a prior message) and accepts text-less outbound frames that carry only a `reaction`. |
+| `session.addressing` | Door sets inbound `addressed` when the platform shows the message is aimed at the Wanderer (e.g. @mention, reply to one of its messages). |
+
+**Additive capabilities (`session.reactions`, `session.addressing`).** These extend `door/0.1` without changing any previously required field: every new field is optional, and a Wanderer MUST NOT send a text-less or `reaction`-bearing outbound frame unless the Door advertised `session.reactions` in `hello`. Doors and runtimes from the same release ship together; a runtime that predates these values rejects a `hello` that lists them, so upgrade the Door and runtime in lockstep.
 
 ### Error shape (all endpoints)
 
@@ -206,14 +210,20 @@ Every text frame is a JSON object:
 | `author_display` | string | no | Display name for logging/UI only; untrusted. |
 | `reply_to` | string | no | `msg_id` of parent message when `session.threads` capability present. |
 | `channel_id` | string | no | Opaque sub-channel/thread id within the community. |
+| `addressed` | boolean | no | `session.addressing`: Door-observed signal that the message is aimed at the Wanderer (platform @mention, or a reply to one of the Wanderer's messages). Advisory and untrusted; the Wanderer decides whether to answer. |
 
 ### `body` for `type: "outbound"` (Wanderer → Door)
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `text` | string | yes | Wanderer response text. Max 4000 chars in v0.1. |
-| `reply_to` | string | no | `msg_id` of inbound message being answered. |
+| `text` | string | cond. | Wanderer response text. Max 4000 chars in v0.1. Required unless `reaction` is present. |
+| `reply_to` | string | no | `msg_id` of the message being answered. The Door maps it to a platform reply reference (e.g. a Discord message reply). Doors that cannot resolve it post the text without a reference. |
 | `channel_id` | string | no | Route reply to the same channel as inbound. |
+| `reaction` | object | no | `session.reactions` only: `{ emoji, target_msg_id }`. `emoji` is exactly one Unicode emoji grapheme (≤ 32 UTF-16 units; no custom-emoji syntax). `target_msg_id` is the `msg_id` of the message to react to. A frame MAY carry both `text` and `reaction`. |
+
+At least one of `text` or `reaction` MUST be present. The session-key `sig` covers the whole body, including `reaction`, so reactions carry the same Proof-of-Presence guarantee as speech.
+
+**Silence is valid.** The Wanderer is not obliged to emit an outbound frame for every inbound frame. Reading without answering, answering several inbound messages with one frame, or reacting instead of speaking are all conforming behaviours; Doors MUST NOT treat a missing reply as an error.
 
 **Signing:** `sig` MUST be a session-key signature over the full frame excluding `sig`, with `type` = `outbound`. Door MUST verify before delivering to the community.
 

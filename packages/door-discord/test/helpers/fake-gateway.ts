@@ -18,6 +18,7 @@ export class FakeGateway implements DiscordGateway {
   readonly sent: Array<{ channelId: string; content: string; replyToId?: string; id: string }> = [];
   readonly reactions: Array<{ channelId: string; messageId: string; emoji: string }> = [];
   readonly ephemerals: Array<{ interactionId: string; content: string }> = [];
+  readonly typing: string[] = [];
 
   constructor(private readonly configuredBotId = "bot-1") {}
 
@@ -66,6 +67,10 @@ export class FakeGateway implements DiscordGateway {
 
   async addReaction(channelId: string, messageId: string, emoji: string): Promise<void> {
     this.reactions.push({ channelId, messageId, emoji });
+  }
+
+  async sendTyping(channelId: string): Promise<void> {
+    this.typing.push(channelId);
   }
 
   async replyEphemeral(interactionId: string, content: string): Promise<void> {

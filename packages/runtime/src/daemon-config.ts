@@ -22,8 +22,27 @@ const daemonConfigSchema = z.object({
     }),
   brain: z.custom<BrainConfig>(),
   readyFilePath: z.string().min(1),
-  replication: z.custom<ReplicationConfig>()
+  replication: z.custom<ReplicationConfig>(),
+  attentionMode: z.enum(["selective", "always"])
 });
+
+/** `NPC_ATTENTION_MODE`: `selective` (default) reads the room; `always` answers every message. */
+export type AttentionMode = "selective" | "always";
+
+function parseAttentionMode(value: string | undefined): AttentionMode {
+  const trimmed = value?.trim() ?? "";
+  if (trimmed === "") {
+    return "selective";
+  }
+  if (trimmed === "selective" || trimmed === "always") {
+    return trimmed;
+  }
+  throw new DaemonError(
+    `NPC_ATTENTION_MODE must be "selective" or "always" (got ${trimmed})`,
+    "invalid_config",
+    "NPC_ATTENTION_MODE"
+  );
+}
 
 /** Validated residency daemon configuration loaded from environment variables. */
 export type DaemonConfig = z.infer<typeof daemonConfigSchema>;
@@ -76,7 +95,8 @@ function parseDoorPublicKeys(value: string): Readonly<Record<string, Uint8Array>
  *
  * Required: `SOUL_KEY_PATH`, `SOULCHAIN_DIR`, `DOOR_HTTP_HOST`, `DOOR_HTTP_PORT`,
  * `CURRENT_DOOR_ID`, `ATLAS_DOOR_PUBKEYS`, and Brain vars via {@link loadBrainConfig}.
- * Optional: `NPC_RUNTIME_READY_FILE` (defaults to `/tmp/npc-runtime.ready`).
+ * Optional: `NPC_RUNTIME_READY_FILE` (defaults to `/tmp/npc-runtime.ready`),
+ * `NPC_ATTENTION_MODE` (`selective` default | `always`).
  */
 export function loadDaemonConfig(env: NodeJS.ProcessEnv = process.env): DaemonConfig {
   const soulKeyPath = requireEnv(env, "SOUL_KEY_PATH");
@@ -109,6 +129,7 @@ export function loadDaemonConfig(env: NodeJS.ProcessEnv = process.env): DaemonCo
       : soulchainIpfsRaw.trim();
 
   const replication = loadReplicationConfig(env);
+  const attentionMode = parseAttentionMode(env.NPC_ATTENTION_MODE);
 
   if (replication.enabled && soulchainIpfsDir === undefined) {
     throw new DaemonError(
@@ -128,7 +149,8 @@ export function loadDaemonConfig(env: NodeJS.ProcessEnv = process.env): DaemonCo
     doorPublicKeys,
     brain,
     readyFilePath,
-    replication
+    replication,
+    attentionMode
   });
 
   if (!result.success) {
