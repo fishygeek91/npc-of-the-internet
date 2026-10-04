@@ -36,6 +36,8 @@ The backup sidecar (`ops/scripts/backup-watch.sh`) uploads in this order on each
 
 Set `BACKUP_ONCE=1` to run one upload cycle and exit (used by restore drills).
 
+**Remote-call budget.** Every rclone invocation authorizes and lists (B2 **Class C** calls; free accounts cap these at 2,500/day account-wide — the key-backup bucket shares the cap). The sidecar therefore fingerprints `blobs/` and `chain.jsonl` locally *before* each cycle and skips all remote calls when both match the last successful upload (it still refreshes `BACKUP_OK_PATH`, since the remote is current). Blobs and chain are skipped independently (a chain-only append does not re-list `blobs/`). Startup and `BACKUP_ONCE` always do a full round-trip; an idle sidecar forces one every `BACKUP_VERIFY_SEC` (default 1 day); a failing unchanged cycle backs off to `BACKUP_RETRY_SEC` (default 15 min). The chain is snapshotted *before* `blobs/` is copied and the snapshot is what gets uploaded, so an append landing mid-cycle can never put a tip on the remote that references a blob the cycle did not copy; a failed blob copy aborts the cycle before the chain step. Expect a handful of Class C calls per conversation burst and ~10/day idle. Regression test: `ops/scripts/backup-watch-budget-test.sh` (CI).
+
 Remote layout:
 
 ```
@@ -213,7 +215,7 @@ You should see `door_http_listening` and `door_ws_listening` both reporting port
 docker compose --env-file ops/.env -f ops/compose.ghost.yml logs backup 2>&1 | tail -20
 ```
 
-Look for `Copying blobs/` followed by `Copying chain.jsonl` and `Sync complete (marker`.
+After a change, look for `Copying blobs/` (only when new blobs exist) and/or `Copying chain.jsonl`, then `Sync complete (marker`. Idle periods log nothing — an unchanged soulchain makes no remote calls (see [Backup semantics](#backup-semantics)).
 
 ---
 
