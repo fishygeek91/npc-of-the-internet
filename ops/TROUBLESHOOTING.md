@@ -158,8 +158,10 @@ Since the 2026-10 hardening the append lock records the holder's hostname and pr
 time. A same-host, same-PID lock from a previous process (container restart) is cleared
 automatically; a lock from **another hostname** (e.g. a container that was recreated —
 new container id — after crashing mid-append, or another container sharing the volume)
-cannot be probed and is treated as live for up to an hour. If no other container uses the
-volume, stop the stack, delete `/data/soulchain/.append.lock` and/or
+cannot be probed and is treated as live for up to an hour. Ghost compose pins the runtime's
+`hostname: ghost-runtime`, so a plain recreate (image upgrade) is recognised as the same host;
+this case only arises if that line was removed or another container mounts the volume.
+If no other container uses the volume, stop the stack, delete `/data/soulchain/.append.lock` and/or
 `/data/soulchain-ipfs/LOCK` (whichever the error names), and start again.
 
 ### Crash loops append junk arrivals
