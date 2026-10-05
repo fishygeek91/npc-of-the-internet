@@ -6,19 +6,59 @@ assume the VPS checkout at `~/npc` and the `ghostc` wrapper run via `sudo bash o
 
 ## Releases
 
-### Merging the version-packages PR does NOT release (2026-09-20, v0.3.1 + v0.3.2)
+### How a release happens (automatic since #150; manual tagging bit v0.3.1 + v0.3.2)
 
-`release.yml`'s `version` job only maintains the changesets "Version Packages" PR. The
-`github-release` and `docker` jobs trigger on `v*` **tag push**, and nothing in the workflow
-creates tags. After merging a version-packages PR, the operator must tag manually:
+Merging the changesets "chore: version packages" PR **is** the release. On that push to
+`main`, `release.yml` runs:
+
+1. `version` — maintains the Version Packages PR (no-op when no changesets are pending).
+2. `tag` — reads the fixed-group version from `packages/osp-core/package.json`. If `vX.Y.Z`
+   is not on origin and is newer than the highest plain `v*` tag, it pushes `vX.Y.Z` at the
+   first-parent commit that introduced that version (the version-PR merge).
+3. `github-release` + `docker` (Trivy-gated per image) — run **in the same workflow run**
+   using the tag/sha from `tag`. A tag pushed with `GITHUB_TOKEN` never triggers a new run,
+   so do not wait for a separate tag-push run; there will not be one.
+
+Verify: Actions → Release → the run for the merge commit shows `version`, `tag` →
+`github-release` + 4× `docker`, all green; the `tag` log has
+`::notice::Tagged vX.Y.Z at <sha>`. Then gate the VPS upgrade on the image check below.
+
+The workflow never cancels an in-progress run (`cancel-in-progress: false`), so a later
+push to `main` cannot kill `docker` after the tag exists. If a run was dropped before it
+started, the next push to `main` catches up and tags the original bump commit, not HEAD.
+
+**Recovery / manual fallback** (still supported, same as before #150):
+
+- Tag pushed but a leg failed (e.g. Trivy red): fix forward if needed, then Actions →
+  that run → **Re-run failed jobs** (reuses the tag job's outputs).
+- No tag at all (e.g. `tag` job failed, or repo rules block `GITHUB_TOKEN` from creating
+  `v*` tags): push it yourself; a tag pushed with your credentials triggers its own run
+  with `github-release` + `docker`:
+
+  ```bash
+  git checkout main && git pull
+  git tag vX.Y.Z <version-pr-merge-sha>
+  git push origin vX.Y.Z
+  ```
+
+- Re-publishing an existing tag is idempotent-ish: the GitHub Release body is updated in
+  place and `:vX.Y.Z` / `:latest` are overwritten by a fresh Trivy-gated build of the same
+  commit. Never move a tag to a different commit after images shipped.
+
+### Version Packages PR shows no CI / Governance checks
+
+The PR is opened and updated by `changesets/action` with `GITHUB_TOKEN`, and GitHub does
+not start workflow runs for events created by that token, so `ci.yml` / `governance.yml`
+never run on it (required checks then sit at "Expected — Waiting"). Workaround before
+merging: **close and reopen the PR** in the UI (the `reopened` event is yours, so CI runs),
+or push an empty commit to its branch with your own credentials:
 
 ```bash
-git checkout main && git pull
-git tag vX.Y.Z <version-pr-merge-sha>
-git push origin vX.Y.Z
+git fetch origin changeset-release/main && git checkout changeset-release/main
+git commit --allow-empty -m "ci: trigger checks" && git push origin HEAD
 ```
 
-Automation tracked in #150; until then this manual step is load-bearing.
+The next push to `main` regenerates the branch, so repeat after any further merge.
 
 ### One docker leg red, others green → Trivy gate (2026-09-20, v0.3.1 atlas-api)
 

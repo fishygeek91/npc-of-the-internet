@@ -3,6 +3,9 @@ name: Governance
 on:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   docs-sync:
     runs-on: ubuntu-latest

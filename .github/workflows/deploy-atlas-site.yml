@@ -9,10 +9,9 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# Least privilege: build only reads the repo; Pages/OIDC write is scoped to the deploy job.
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
   group: deploy-atlas-site
@@ -49,6 +48,9 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     continue-on-error: ${{ vars.PAGES_ENABLED != 'true' }}
+    permissions:
+      pages: write
+      id-token: write
     steps:
       - name: Deploy to GitHub Pages
         id: deployment

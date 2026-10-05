@@ -61,7 +61,7 @@ Test framework: **Vitest**. Rules:
 
 - **`ci.yml`** on every PR: `pnpm install` → `pnpm -r build` → `pnpm -r lint` (ESLint + Prettier check) → `pnpm -r test` → `osp verify` on the committed example chain. All must pass to merge. Node 22, single OS (ubuntu-latest).
 - **`deploy-atlas.yml`** on main: build Atlas static site → deploy to GitHub Pages.
-- **`release.yml`** on tag: build Docker images (`runtime`, `door-discord`, `atlas-api`) → push to GHCR.
+- **`release.yml`** on main: maintain the Version Packages PR; after it merges, auto-tag `vX.Y.Z` and in the same run publish the GitHub Release + Trivy-gated Docker images to GHCR. A manual `v*` tag push runs the same release jobs (fallback).
 - Branch protection: PRs only, CI green, no force-push to main. AI agents commit via PRs like everyone else.
 
 ## D5. Deployment
@@ -84,7 +84,7 @@ Test framework: **Vitest**. Rules:
 
 - **Changesets drive everything.** Any PR that changes behavior includes a changeset file (`pnpm changeset`: bump type + one-sentence summary written for humans). Docs-only and test-only PRs skip it.
 - **CHANGELOG.md is generated** by changesets from those summaries at release time — never edited by hand. Agents: do not write to CHANGELOG.md directly.
-- **Versioning:** all packages share one version (fixed mode). Releasing = merging the changesets "Version Packages" PR — this is a **human gate 2 action** (LIFECYCLE.md §8). The resulting tag `vX.Y.Z` triggers `release.yml` (Docker images to GHCR + GitHub Release with the changelog section).
+- **Versioning:** all packages share one version (fixed mode). Releasing = merging the changesets "Version Packages" PR — this is a **human gate 2 action** (LIFECYCLE.md §8). `release.yml` then tags `vX.Y.Z` automatically and publishes Docker images to GHCR + a GitHub Release with the changelog section in the same run (#150; manual fallback in `ops/TROUBLESHOOTING.md` "Releases").
 - **Milestones** (Ghost, Body, Society, Standard) are GitHub milestones mapped to the roadmap; a milestone ships as a normal semver release that completes its phase (Ghost = v0.1.0).
 - **Spec versions** (`osp/0.1`, `pop/0.1`) are independent of package versions, recorded in every soulchain record; bumping one is its own task with migration vectors, never a release side effect.
 

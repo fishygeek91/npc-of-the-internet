@@ -5,10 +5,16 @@ on:
     branches: [main]
     tags: ["v*"]
 
-# Serialize Version Packages updates on main; tags use distinct refs so they do not collide.
+permissions:
+  contents: read
+
+# Never cancel an in-progress run (#150): a run cancelled after `tag` pushed vX.Y.Z but before
+# `docker` finished would leave a tag with no images, and later runs skip existing tags.
+# Main pushes queue instead. GitHub may still drop a *pending* (not yet started) main run when
+# a newer one queues; that is safe because `tag` catches up from whatever HEAD it sees.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   version:
@@ -27,6 +33,8 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # Opened with GITHUB_TOKEN, so the PR gets no CI/Governance runs on its own; see
+      # ops/TROUBLESHOOTING.md "Releases" for the close/reopen workaround.
       - name: Create Version Packages PR
         uses: changesets/action@a45c4d594aa4e2c509dc14a9f2b3b67ba3780d0d # v1
         with:
@@ -36,18 +44,104 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  github-release:
-    if: startsWith(github.ref, 'refs/tags/v')
+  # Auto-tag after a Version Packages merge (#150). Separate from `version` so a changesets
+  # failure cannot block a release and vice versa.
+  #
+  # Rule: if the fixed-group version at HEAD (packages/osp-core) has no vX.Y.Z tag on origin
+  # and its X.Y.Z core is newer than the highest plain vX.Y.Z tag, tag the first-parent commit
+  # that *introduced* that version (the version-packages merge), not HEAD, so a catch-up run
+  # never ships unreleased commits merged after the bump.
+  #
+  # Tags pushed with GITHUB_TOKEN do not trigger workflow runs, so `github-release` and `docker`
+  # run in this same run via `needs.tag.outputs` instead of the tag-push trigger.
+  tag:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    outputs:
+      released: ${{ steps.tag.outputs.released }}
+      tag: ${{ steps.tag.outputs.tag }}
+      sha: ${{ steps.tag.outputs.sha }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Tag released version if untagged
+        id: tag
+        env:
+          HEAD_SHA: ${{ github.sha }}
+          PKG: packages/osp-core/package.json
+        run: |
+          set -euo pipefail
+          # Outputs are written only on a successful tag push; unset `released` reads as ''.
+
+          ver_at() { git show "$1:$PKG" 2>/dev/null | jq -r '.version // empty' || true; }
+
+          VER=$(ver_at "$HEAD_SHA")
+          if [ -z "$VER" ]; then
+            echo "::error::could not read version from $PKG at $HEAD_SHA"
+            exit 1
+          fi
+          TAG="v${VER}"
+
+          REMOTE_TAGS=$(git ls-remote --tags --refs origin 'v*' | awk '{print $2}' | sed 's#^refs/tags/##')
+          if grep -qxF "$TAG" <<< "$REMOTE_TAGS"; then
+            echo "$TAG already exists on origin; nothing to release."
+            exit 0
+          fi
+
+          # Compare the X.Y.Z core against the highest *plain* semver tag so prerelease tags
+          # (v0.5.0-rc.1) never block the final v0.5.0, and a stale prerelease is never re-cut.
+          CORE="${VER%%-*}"
+          MAX=$(grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' <<< "$REMOTE_TAGS" | sed 's/^v//' | sort -V | tail -n1 || true)
+          if [ -n "$MAX" ]; then
+            TOP=$(printf '%s\n%s\n' "$MAX" "$CORE" | sort -V | tail -n1)
+            if [ "$CORE" = "$MAX" ] || [ "$TOP" != "$CORE" ]; then
+              echo "::warning::$TAG is not newer than v$MAX; not tagging."
+              exit 0
+            fi
+          fi
+
+          # Walk first-parent history back to the commit that introduced $VER.
+          BUMP_SHA="$HEAD_SHA"
+          for _ in $(seq 1 1000); do
+            PARENT=$(git rev-parse -q --verify "${BUMP_SHA}^1" || true)
+            [ -n "$PARENT" ] || break
+            [ "$(ver_at "$PARENT")" = "$VER" ] || break
+            BUMP_SHA="$PARENT"
+          done
+
+          git tag "$TAG" "$BUMP_SHA"
+          git push origin "refs/tags/$TAG"
+          echo "::notice::Tagged $TAG at $BUMP_SHA (run HEAD $HEAD_SHA)"
+          {
+            echo "released=true"
+            echo "tag=$TAG"
+            echo "sha=$BUMP_SHA"
+          } >> "$GITHUB_OUTPUT"
+
+  # Runs on a manual `v*` tag push (tag job skipped) OR after `tag` released in this run.
+  # `!cancelled()` is required so a skipped `tag` (tag-push runs) does not skip this job.
+  # Idempotent: re-running for an existing tag updates the existing GitHub Release.
+  github-release:
+    needs: tag
+    if: ${{ !cancelled() && (startsWith(github.ref, 'refs/tags/v') || needs.tag.outputs.released == 'true') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ needs.tag.outputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.tag.outputs.sha || github.sha }}
 
       - name: Extract changelog section
         id: changelog
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ env.RELEASE_TAG }}
         run: |
           SEMVER="${TAG#v}"
           PLACEHOLDER="Changelog for ${TAG} will appear after the first Version Packages PR is merged."
@@ -107,16 +201,21 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
-          tag_name: ${{ github.ref_name }}
+          tag_name: ${{ env.RELEASE_TAG }}
           body: ${{ steps.changelog.outputs.body }}
           generate_release_notes: ${{ steps.changelog.outputs.has_section != 'true' }}
 
+  # Same trigger rule as github-release. Re-publishing an existing tag overwrites
+  # :vX.Y.Z (and :latest for plain semver) with a fresh Trivy-gated build of the same commit.
   docker:
-    if: startsWith(github.ref, 'refs/tags/v')
+    needs: tag
+    if: ${{ !cancelled() && (startsWith(github.ref, 'refs/tags/v') || needs.tag.outputs.released == 'true') }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
+    env:
+      RELEASE_TAG: ${{ needs.tag.outputs.tag || github.ref_name }}
     strategy:
       fail-fast: false
       matrix:
@@ -131,6 +230,8 @@ jobs:
             file: ops/Dockerfile.backup
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.tag.outputs.sha || github.sha }}
 
       - name: Check Dockerfile exists
         id: dockerfile
@@ -154,7 +255,7 @@ jobs:
         if: steps.dockerfile.outputs.exists == 'true'
         id: tags
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ env.RELEASE_TAG }}
         run: |
           OWNER=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')
           {
