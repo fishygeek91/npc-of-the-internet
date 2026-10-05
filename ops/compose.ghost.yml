@@ -21,6 +21,10 @@ services:
       dockerfile: ops/Dockerfile.runtime
     image: ghcr.io/fishygeek91/npc-runtime:${NPC_IMAGE_TAG:-latest}
     restart: unless-stopped
+    # Stable hostname: osp-core's append lock records host + process start time,
+    # so a recreated container (new id) still recognises its predecessor's lock
+    # as stale instead of waiting out LOCK_MAX_AGE_MS.
+    hostname: ghost-runtime
     # Docker's tini as PID 1: forwards SIGTERM/SIGINT and reaps zombie children.
     init: true
     depends_on:
