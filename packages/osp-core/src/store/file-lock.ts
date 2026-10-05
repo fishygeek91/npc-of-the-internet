@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { closeSync, existsSync, fsyncSync, openSync, unlinkSync } from "node:fs";
 import { readFile, unlink } from "node:fs/promises";
 
@@ -13,13 +14,27 @@ import { isNodeError, nodeErrorMessage } from "./node-fs-error.js";
  */
 export const LOCK_MAX_AGE_MS = 3_600_000;
 
-/** On-disk lock metadata written after exclusive create. */
+/**
+ * On-disk lock metadata written after exclusive create.
+ *
+ * `nonce` identifies the acquiring {@link FileLock} instance. PIDs are not unique across
+ * restarts — in a container, node is PID 1 on every boot — so a lock whose `pid` equals our
+ * own PID is only live when its nonce is one this process currently holds.
+ * Legacy locks (pre-nonce) carry only `pid` + `acquiredAt`.
+ */
 type LockMeta = {
   pid: number;
   acquiredAt: string;
+  nonce?: string;
 };
 
-/** True when `process.kill(pid, 0)` succeeds (process exists and is signalable). */
+/**
+ * Nonces of locks currently held by FileLock instances in THIS process.
+ * Module-level so any instance can recognise another in-process holder.
+ */
+const heldNonces = new Set<string>();
+
+/** Default liveness probe: true when `process.kill(pid, 0)` succeeds (process exists). */
 function isProcessAlive(pid: number): boolean {
   if (!Number.isInteger(pid) || pid <= 0) {
     return false;
@@ -58,7 +73,26 @@ function parseLockMeta(raw: string): LockMeta | null {
   if (typeof acquiredAt !== "string" || acquiredAt.length === 0) {
     return null;
   }
+  const nonce = "nonce" in parsed ? parsed.nonce : undefined;
+  if (typeof nonce === "string" && nonce.length > 0) {
+    return { pid, acquiredAt, nonce };
+  }
   return { pid, acquiredAt };
+}
+
+/**
+ * True when the lock described by `meta` may still be held by a live appender.
+ *
+ * - Same PID as this process: live only if the nonce is registered in this process
+ *   ({@link heldNonces}). A same-PID lock with an unknown or missing nonce was left by a
+ *   previous incarnation that reused our PID (e.g. container PID 1 after SIGKILL) — stale.
+ * - Other PID: live while that process exists (unchanged pre-nonce behaviour).
+ */
+function isHolderLive(meta: LockMeta, isAlive: (pid: number) => boolean): boolean {
+  if (meta.pid === process.pid) {
+    return meta.nonce !== undefined && heldNonces.has(meta.nonce);
+  }
+  return isAlive(meta.pid);
 }
 
 /**
@@ -67,12 +101,24 @@ function parseLockMeta(raw: string): LockMeta | null {
 export class FileLock {
   private readonly lockPath: string;
   private readonly maxAgeMs: number;
+  private readonly isAlive: (pid: number) => boolean;
   private lockFd: number | null;
+  private nonce: string | null;
 
-  constructor(lockPath: string, options?: { maxAgeMs?: number }) {
+  /**
+   * @param options.maxAgeMs - lock age beyond which recovery may steal a live holder's lock
+   * @param options.isProcessAlive - liveness probe for OTHER PIDs (tests inject; defaults to
+   *   `process.kill(pid, 0)`)
+   */
+  constructor(
+    lockPath: string,
+    options?: { maxAgeMs?: number; isProcessAlive?: (pid: number) => boolean }
+  ) {
     this.lockPath = lockPath;
     this.maxAgeMs = options?.maxAgeMs ?? LOCK_MAX_AGE_MS;
+    this.isAlive = options?.isProcessAlive ?? isProcessAlive;
     this.lockFd = null;
+    this.nonce = null;
   }
 
   /** Acquire the exclusive lock. */
@@ -90,10 +136,14 @@ export class FileLock {
     }
 
     this.lockFd = lockFd;
+    const nonce = randomBytes(16).toString("hex");
+    this.nonce = nonce;
+    heldNonces.add(nonce);
 
     const meta: LockMeta = {
       pid: process.pid,
-      acquiredAt: new Date().toISOString()
+      acquiredAt: new Date().toISOString(),
+      nonce
     };
     const metaBytes = new TextEncoder().encode(`${JSON.stringify(meta)}\n`);
     try {
@@ -124,6 +174,10 @@ export class FileLock {
       // Ignore close errors during lock cleanup.
     }
     this.lockFd = null;
+    if (this.nonce !== null) {
+      heldNonces.delete(this.nonce);
+      this.nonce = null;
+    }
 
     try {
       unlinkSync(this.lockPath);
@@ -135,7 +189,8 @@ export class FileLock {
   }
 
   /**
-   * Remove the lock file only when safe: dead PID, over max age, or legacy/unparseable.
+   * Remove the lock file only when safe: dead PID, over max age, legacy/unparseable, or
+   * carrying our own PID without a nonce this process holds (PID reuse across restarts).
    * Refuses while a live holder owns a fresh lock.
    */
   async clearStale(): Promise<void> {
@@ -160,7 +215,7 @@ export class FileLock {
         ? Date.now() - acquiredMs
         : Number.POSITIVE_INFINITY;
       const fresh = ageMs < this.maxAgeMs;
-      if (isProcessAlive(meta.pid) && fresh) {
+      if (fresh && isHolderLive(meta, this.isAlive)) {
         throw new ConcurrentAppendError(
           "another append is in progress (live .append.lock — refuse openWithRecovery)"
         );

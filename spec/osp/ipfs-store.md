@@ -94,19 +94,19 @@ Implements the existing `SoulStore` interface (`append`, `head`, `get(cid)`, `it
   blocks/…            # blockstore-fs sharded layout, key = CID, value = canonical record bytes
   HEAD                # JSON {"cid": "bagu…", "seq": n} — atomic write (tmp + rename + fsync)
   seq-index.jsonl     # append-only: {"seq": n, "cid": "bagu…"} per record (see 3.3)
-  LOCK                # wx-mode lockfile (same primitive as FileSoulStore)
+  LOCK                # wx-mode lockfile (same primitive as FileSoulStore): {pid, acquiredAt, nonce}
   replication.jsonl   # L2 queue (§5); absent when replication disabled
 ```
 
 ### 3.2 Append (same contract as FileSoulStore post-#67)
 
 1. Hold the `LOCK` (wx; refuse concurrent open-for-append).
-2. Verify the record fully (schema, sigs, cosigners where required, `prev` equals current `HEAD.cid`, `seq` equals `HEAD.seq + 1`) — append-time verification per #67.
+2. Verify the record fully (schema, sigs, cosigners where required, `prev` equals current `HEAD.cid`, `seq` equals `HEAD.seq + 1`) — append-time verification per #67 — **and** the chain-level rules of `records.md` Verification (homogeneous `spec`, drift evidence, tombstone references, PoP continuity/conflicts) against the stored prefix, before any durable write.
 3. Serialize to canonical bytes; compute CID; **verify the caller-supplied record round-trips to those exact bytes** (canonical-bytes enforcement per #67 — never store bytes whose CID wouldn't re-derive).
 4. `blockstore.put` (fsync), append to `seq-index.jsonl` (fsync), then atomically replace `HEAD`.
 5. If replication is enabled, append the CID to `replication.jsonl` (§5). Failures here MUST NOT fail the append.
 
-Crash windows: block written but `HEAD` not updated → on open, recovery walks `seq-index.jsonl` tail vs `HEAD` and truncates/repairs exactly as `openWithRecovery` does for torn JSONL lines today. Document each window and its recovery in the impl PR; test the block-written/HEAD-stale case explicitly.
+Crash windows: block written but `HEAD` not updated → on open, recovery walks `seq-index.jsonl` tail vs `HEAD` and truncates/repairs exactly as `openWithRecovery` does for torn JSONL lines today. `HEAD` MUST name exactly the last seq-index entry (seq **and** CID) on a normal open; recovery advances a lagging or missing `HEAD` **only after** the full indexed chain verifies, and treats a `HEAD` that is ahead of or diverges from the index as corruption. A block whose bytes do not hash to its CID (torn) is replaced atomically on the next put; an existing identical block is fsynced before the put returns. Block deletion (erasure) fsyncs the shard directory. Document each window and its recovery in the impl PR; test the block-written/HEAD-stale case explicitly.
 
 ### 3.3 Why a seq index
 
@@ -114,7 +114,7 @@ Crash windows: block written but `HEAD` not updated → on open, recovery walks 
 
 ### 3.4 Dual-write mode (Ghost default for v0.2)
 
-`FileSoulStore` remains the system of record until IPFS has run in production for a full residency cycle. v0.2 ships a `DualSoulStore` wrapper: append → `FileSoulStore` first (authoritative, feeds existing B2 backup per #63 hardening), then `IpfsSoulStore`; divergence between the two (differing head CID at any point) is a fatal boot error. Cutover to IPFS-primary is a separate, later decision — not part of T7.1.
+`FileSoulStore` remains the system of record until IPFS has run in production for a full residency cycle. v0.2 ships a `DualSoulStore` wrapper: append → `FileSoulStore` first (authoritative, feeds existing B2 backup per #63 hardening), then `IpfsSoulStore`; divergence between the two (differing head CID at any point) is a fatal boot error, as is a populated mirror behind an empty authoritative `FileSoulStore`. At open, every blob tombstoned on the authoritative chain is removed from the mirror (a crash between the file and mirror deletes must not leave erased prose mirrored). Cutover to IPFS-primary is a separate, later decision — not part of T7.1.
 
 ### 3.5 Conformance suite
 
@@ -150,7 +150,7 @@ Because records carry no IPLD links (§0), we publish a **pin manifest**: a dag-
 - `records` lists **every** record CID genesis→head, in seq order, as dag-json links. Recursive-pinning the manifest CID pins the full chain plus the manifest itself.
 - `prev_manifest` links the previous manifest (null-omitted on the first), giving pinners of the latest manifest the manifest history too at negligible cost.
 - `sig`: soul-key Ed25519 over the manifest's canonical bytes with `sig` omitted (same signing-payload convention as records). This makes "the official pinset" spoof-proof: integrity comes from content addressing, *authenticity* from the signature.
-- Encoding: strict dag-json (links as `{"/": …}`), canonical key order, no whitespace — the manifest, unlike records, IS a native IPLD block and follows dag-json rules.
+- Encoding: strict dag-json (links as `{"/": …}`), canonical key order, no whitespace — the manifest, unlike records, IS a native IPLD block and follows dag-json rules. Decoders MUST reject manifest bytes that do not re-encode byte-identically (unknown keys, non-canonical form): otherwise such bytes verify (verification re-encodes) under a CID different from the signed manifest's.
 - Manifests are **distribution artifacts, not chain records**: no `seq`, no envelope, never appended to the soulchain, and losing them loses nothing (regenerable from the chain at any time).
 - Cadence: regenerate on every `departure` attestation and at least every 500 appends, whichever first. Size stays trivial (10k records ≈ a few hundred KB of links).
 - Scaling note (future, non-normative): past ~100k records, shard `records` into linked segment blocks; not needed for years.

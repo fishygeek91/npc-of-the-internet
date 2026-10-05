@@ -12,17 +12,24 @@ import { decodePublicKey } from "../encoding/base64url.js";
 import {
   ChainMismatchError,
   CorruptionError,
+  EncodingError,
   SchemaError,
   StorageError,
   VerificationError
 } from "../errors.js";
 import { verifyRecord } from "../record.js";
 import { RecordSchema, type OspRecord } from "../schemas/index.js";
-import { verifyRecords } from "../verify-chain.js";
+import {
+  appendRejectionError,
+  ChainVerifier,
+  chainVerificationCorruption,
+  verifyRecordsWithState
+} from "../verify-chain.js";
 
 import { FileLock } from "./file-lock.js";
 import { readHead, writeHeadAtomic } from "./head-file.js";
-import { bytesEqual, fsyncDirectory, fsyncPath } from "./fsync.js";
+import { assertBytesHashToCid } from "./blob-dir.js";
+import { bytesEqual, fsyncDirectory, fsyncPath, writeFileAtomic } from "./fsync.js";
 import { isNodeError, nodeErrorMessage } from "./node-fs-error.js";
 import { enqueueReplication, recoverReplicationJournal } from "../replication/queue.js";
 import {
@@ -90,6 +97,8 @@ export class IpfsSoulStore implements SoulStore {
   private readonly readOnly: boolean;
   private headInfo: HeadInfo | null;
   private soulPublicKey: Uint8Array | null;
+  /** Incremental chain-rule state for the on-disk prefix (append-time verification). */
+  private chainVerifier: ChainVerifier;
   private closed: boolean;
 
   private constructor(
@@ -115,6 +124,7 @@ export class IpfsSoulStore implements SoulStore {
     this.readOnly = readOnly;
     this.headInfo = head;
     this.soulPublicKey = soulPublicKey;
+    this.chainVerifier = new ChainVerifier(this.verifyOptions());
     this.closed = false;
   }
 
@@ -147,9 +157,10 @@ export class IpfsSoulStore implements SoulStore {
   /**
    * Open after recovering from torn writes or stale locks.
    *
-   * Clears stale LOCK, truncates torn seq-index and `replication.jsonl` tails, and advances HEAD
-   * when blocks+seq-index are ahead of a stale/missing HEAD (block-written / HEAD-not-updated
-   * crash window).
+   * Clears stale LOCK, truncates torn seq-index and `replication.jsonl` tails, and — once the
+   * seq-index chain has fully verified — advances HEAD when blocks+seq-index are ahead of a
+   * stale/missing HEAD (block-written / HEAD-not-updated crash window). A HEAD that is not a
+   * prefix of the verified seq-index chain is corruption, never silently rewritten.
    */
   static async openWithRecovery(
     dir: string,
@@ -166,8 +177,8 @@ export class IpfsSoulStore implements SoulStore {
 
     const truncatedSeqIndex = await recoverTornSeqIndex(store.seqIndexPath);
     const truncatedReplication = await recoverReplicationJournal(absoluteDir);
-    await store.reconcileHeadWithSeqIndex();
-    await store.loadChain();
+    // HEAD is repaired only AFTER the seq-index chain fully verifies (never before).
+    await store.loadChain({ repairHead: true });
 
     return { store, truncatedBytes: truncatedSeqIndex + truncatedReplication };
   }
@@ -260,19 +271,25 @@ export class IpfsSoulStore implements SoulStore {
         );
       }
 
-      let soulPublicKey: Uint8Array;
-      if (validatedRecord.type === "genesis" && validatedRecord.seq === 0) {
-        soulPublicKey = decodePublicKey(validatedRecord.body.soul_pubkey);
-      } else if (this.soulPublicKey === null) {
+      if (validatedRecord.type !== "genesis" && this.soulPublicKey === null) {
         throw new StorageError("soul public key missing for non-empty store");
-      } else {
-        soulPublicKey = this.soulPublicKey;
       }
 
-      await verifyRecord(validatedRecord, {
-        soulPublicKey,
-        ...(this.doorPublicKeys !== undefined ? { doorPublicKeys: this.doorPublicKeys } : {})
-      });
+      // Another store instance may have appended since our load: re-walk the on-disk chain so
+      // the incremental verifier describes exactly the prefix this record extends.
+      if (this.chainVerifier.head?.cid !== this.headInfo?.cid) {
+        await this.rebuildChainVerifier();
+      }
+
+      // Full chain rules (records.md Verification) for the candidate BEFORE any durable write,
+      // so an append can never persist a record that makes the store unopenable.
+      const step = await this.chainVerifier.evaluate(validatedRecord);
+      if (step.recordError !== undefined) {
+        throw step.recordError;
+      }
+      if (step.failures.length > 0) {
+        throw appendRejectionError(step.failures);
+      }
 
       const bytes = canonicalize(validatedRecord);
       const cid = await computeCidFromCanonicalBytes(bytes);
@@ -282,6 +299,7 @@ export class IpfsSoulStore implements SoulStore {
       await writeHeadAtomic(this.dir, { cid, seq: validatedRecord.seq });
 
       this.headInfo = { cid, seq: validatedRecord.seq };
+      step.commit();
 
       if (validatedRecord.seq === 0 && validatedRecord.type === "genesis") {
         this.soulPublicKey = decodePublicKey(validatedRecord.body.soul_pubkey);
@@ -355,6 +373,9 @@ export class IpfsSoulStore implements SoulStore {
       return;
     }
     await this.blockstore.delete(parsedCid);
+    // FsBlockstore unlinks without fsync; make the erasure durable like BlobDir.delete.
+    const blockPath = resolveBlockPath(this.blocksPath, cid, this.shard);
+    await fsyncDirectory(path.dirname(blockPath));
   }
 
   /** Fetch a record by CID. */
@@ -472,105 +493,104 @@ export class IpfsSoulStore implements SoulStore {
   }
 
   /**
-   * Advance HEAD when seq-index has entries beyond HEAD (block+index written, HEAD stale).
+   * Read and validate the on-disk chain via seq-index + blocks, then cross-check HEAD.
+   *
+   * Strict (default): HEAD must name exactly the last seq-index entry (same seq **and** CID).
+   * `repairHead` (openWithRecovery): HEAD may lag the seq-index (crash after index append,
+   * before HEAD replace) or be missing; after the whole indexed chain verifies, HEAD is
+   * atomically advanced to the verified head. HEAD ahead of, or diverging from, the index is
+   * corruption in both modes.
    */
-  private async reconcileHeadWithSeqIndex(): Promise<void> {
-    const head = await readHead(this.dir);
-    const entries = await readSeqIndex(this.seqIndexPath).catch((error: unknown) => {
-      if (error instanceof CorruptionError) {
-        return null;
-      }
-      throw error;
-    });
-
-    if (entries === null) {
-      return;
-    }
-
-    if (entries.length === 0) {
-      return;
-    }
-
-    const expectedCount = head === null ? 0 : head.seq + 1;
-
-    if (entries.length < expectedCount) {
-      throw new CorruptionError(
-        `HEAD ahead of seq-index: head seq ${head?.seq ?? "null"} but index has ${entries.length} entries`
-      );
-    }
-
-    if (entries.length === expectedCount) {
-      return;
-    }
-
-    const extraEntries = entries.slice(expectedCount);
-    for (const entry of extraEntries) {
-      await this.readBlockVerified(entry.cid);
-    }
-
-    const lastEntry = entries[entries.length - 1];
-    if (lastEntry === undefined) {
-      return;
-    }
-
-    if (lastEntry.seq !== entries.length - 1) {
-      throw new CorruptionError(
-        `seq-index seq ${lastEntry.seq} does not match position ${entries.length - 1}`
-      );
-    }
-
-    await writeHeadAtomic(this.dir, { cid: lastEntry.cid, seq: lastEntry.seq });
-  }
-
-  /** Read and validate the on-disk chain via seq-index + blocks. */
-  private async loadChain(): Promise<void> {
+  private async loadChain(options?: { repairHead?: boolean }): Promise<void> {
+    const repairHead = options?.repairHead === true;
     const head = await readHead(this.dir);
     const entries = await this.readSeqIndexForLoad();
 
     if (head === null && entries.length === 0) {
       this.headInfo = null;
       this.soulPublicKey = null;
+      this.chainVerifier = new ChainVerifier(this.verifyOptions());
       return;
     }
 
-    if (head === null && entries.length > 0) {
-      throw new CorruptionError("seq-index has entries but HEAD is missing");
-    }
-
-    if (head !== null && entries.length !== head.seq + 1) {
+    if (!repairHead) {
+      if (head === null) {
+        throw new CorruptionError("seq-index has entries but HEAD is missing");
+      }
+      if (entries.length !== head.seq + 1) {
+        throw new CorruptionError(
+          `HEAD/seq-index mismatch: head seq ${head.seq} but index has ${entries.length} entries`
+        );
+      }
+    } else if (head !== null && entries.length < head.seq + 1) {
       throw new CorruptionError(
-        `HEAD/seq-index mismatch: head seq ${head.seq} but index has ${entries.length} entries`
+        `HEAD ahead of seq-index: head seq ${head.seq} but index has ${entries.length} entries`
       );
     }
 
-    if (entries.length === 0) {
-      this.headInfo = null;
-      this.soulPublicKey = null;
-      return;
+    if (head !== null) {
+      const entryAtHead = entries[head.seq];
+      if (entryAtHead === undefined || entryAtHead.cid !== head.cid) {
+        throw new CorruptionError(
+          `HEAD ${head.cid} seq ${head.seq} does not match seq-index entry ${entryAtHead?.cid ?? "(missing)"}`
+        );
+      }
     }
 
     const records = await this.loadRecordsFromIndex(entries);
-
-    const verifyOptions: { doorPublicKeys?: Readonly<Record<string, Uint8Array>> } = {};
-    if (this.doorPublicKeys !== undefined) {
-      verifyOptions.doorPublicKeys = this.doorPublicKeys;
+    const { result: verifyResult, verifier } = await verifyRecordsWithState(
+      records,
+      this.verifyOptions()
+    );
+    if (!verifyResult.valid) {
+      throw chainVerificationCorruption(verifyResult.failures);
     }
 
-    const verifyResult = await verifyRecords(records, verifyOptions);
-    if (!verifyResult.valid) {
-      const firstFailure = verifyResult.failures[0];
-      if (firstFailure !== undefined) {
-        const cidPart = firstFailure.cid === undefined ? "" : ` (cid ${firstFailure.cid})`;
+    const verifiedHead = verifyResult.head;
+    if (verifiedHead === null) {
+      throw new CorruptionError("seq-index chain verified empty but entries are present");
+    }
+
+    if (head === null || head.cid !== verifiedHead.cid || head.seq !== verifiedHead.seq) {
+      if (!repairHead || this.readOnly) {
         throw new CorruptionError(
-          `chain verification failed: ${firstFailure.rule} at seq ${firstFailure.seq}${cidPart}: ${firstFailure.message}`,
-          { failures: verifyResult.failures }
+          `HEAD does not match verified chain head ${verifiedHead.cid} seq ${verifiedHead.seq}`
         );
       }
-      throw new CorruptionError("chain verification failed", { failures: verifyResult.failures });
+      await writeHeadAtomic(this.dir, verifiedHead);
     }
 
-    this.headInfo = verifyResult.head;
+    this.headInfo = verifiedHead;
+    this.chainVerifier = verifier;
     this.setSoulPublicKeyFromRecords(records);
+  }
+
+  /**
+   * Re-walk the on-disk chain (seq-index prefix up to HEAD) into a fresh incremental verifier,
+   * under the append lock, after another store instance advanced HEAD.
+   */
+  private async rebuildChainVerifier(): Promise<void> {
+    const head = this.headInfo;
+    if (head === null) {
+      this.chainVerifier = new ChainVerifier(this.verifyOptions());
+      return;
+    }
+    const entries = (await this.readSeqIndexSafe()).slice(0, head.seq + 1);
+    const last = entries[entries.length - 1];
+    if (entries.length !== head.seq + 1 || last === undefined || last.cid !== head.cid) {
+      throw new CorruptionError(`HEAD ${head.cid} seq ${head.seq} does not match seq-index`);
+    }
+    const records = await this.loadRecordsFromIndex(entries);
+    const { result, verifier } = await verifyRecordsWithState(records, this.verifyOptions());
+    if (!result.valid) {
+      throw chainVerificationCorruption(result.failures);
+    }
+    this.chainVerifier = verifier;
+  }
+
+  /** Chain verification options derived from the store's Door keys. */
+  private verifyOptions(): { doorPublicKeys?: Readonly<Record<string, Uint8Array>> } {
+    return this.doorPublicKeys === undefined ? {} : { doorPublicKeys: this.doorPublicKeys };
   }
 
   /** Load raw record JSON from seq-index entries, verifying block bytes and canonical form. */
@@ -589,7 +609,17 @@ export class IpfsSoulStore implements SoulStore {
         );
       }
 
-      const reCanonical = canonicalize(parsed);
+      let reCanonical: Uint8Array;
+      try {
+        reCanonical = canonicalize(parsed);
+      } catch (error) {
+        if (error instanceof EncodingError) {
+          throw new CorruptionError(
+            `non-canonical block bytes for CID ${entry.cid}: ${error.message}`
+          );
+        }
+        throw error;
+      }
       if (!bytesEqual(canonicalBytes, reCanonical)) {
         throw new CorruptionError(`non-canonical block bytes for CID ${entry.cid}`);
       }
@@ -657,23 +687,44 @@ export class IpfsSoulStore implements SoulStore {
     return readSeqIndex(this.seqIndexPath);
   }
 
-  /** Idempotent block put with byte-identity check on collision and durable fsync. */
+  /**
+   * Idempotent block put with byte-identity check on collision and durable fsync.
+   *
+   * An existing identical block is fsynced (file + shard dir + blocks dir) before returning —
+   * a crashed writer may never have made it durable. An existing block whose bytes do not hash
+   * to `cid` (torn / bit rot) is replaced atomically (temp → fsync → rename → dir fsync).
+   */
   private async putBlockIdempotent(cid: string, bytes: Uint8Array): Promise<void> {
     const parsedCid = CID.parse(cid);
+    const blockPath = resolveBlockPath(this.blocksPath, cid, this.shard);
 
     if (await this.blockstore.has(parsedCid)) {
       const existing = await collectBytes(this.blockstore.get(parsedCid));
-      if (!bytesEqual(existing, bytes)) {
+      if (bytesEqual(existing, bytes)) {
+        await this.fsyncBlock(blockPath);
+        return;
+      }
+      if ((await computeCidFromCanonicalBytes(existing)) === cid) {
+        // Unreachable without a sha2-256 collision; never overwrite bytes that verify.
         throw new CorruptionError(`block already exists for CID ${cid} with different bytes`);
       }
+      // Torn/corrupt block: replace atomically, then make both directories durable.
+      await assertBytesHashToCid(cid, bytes, "block");
+      await writeFileAtomic(blockPath, bytes);
+      await fsyncDirectory(this.blocksPath);
       return;
     }
 
+    await assertBytesHashToCid(cid, bytes, "block");
     await this.blockstore.put(parsedCid, bytes);
 
     // FsBlockstore/steno does temp+rename with no fsync. Spec §3.2 requires the block
     // durable before seq-index/HEAD; sync the sharded .data file and both directories.
-    const blockPath = resolveBlockPath(this.blocksPath, cid, this.shard);
+    await this.fsyncBlock(blockPath);
+  }
+
+  /** Fsync a block file, its shard directory, and the blocks root. */
+  private async fsyncBlock(blockPath: string): Promise<void> {
     await fsyncPath(blockPath);
     await fsyncDirectory(path.dirname(blockPath));
     await fsyncDirectory(this.blocksPath);

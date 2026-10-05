@@ -33,7 +33,11 @@ export function sign(message: Uint8Array, privateKey: Uint8Array): Uint8Array {
 
 /**
  * Verify an Ed25519 signature over a message.
+ *
+ * Strict RFC 8032 verification (`zip215: false`): rejects non-canonical point encodings and
+ * small-order public keys. noble's ZIP-215 default accepts e.g. the identity public key with
+ * `R = identity, S = 0`, which "verifies" every message.
  */
 export function verify(message: Uint8Array, signature: Uint8Array, publicKey: Uint8Array): boolean {
-  return ed.verify(signature, message, publicKey);
+  return ed.verify(signature, message, publicKey, { zip215: false });
 }

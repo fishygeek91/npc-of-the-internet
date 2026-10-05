@@ -1,8 +1,10 @@
 import type { z } from "zod";
 
+import { computeCid } from "./crypto/cid.js";
 import { StorageError } from "./errors.js";
 import { createRecord } from "./record.js";
 import { OSP_SPEC_V02, TombstoneReasonSchema } from "./schemas/body.js";
+import type { OspRecord } from "./schemas/index.js";
 import type { SoulStore } from "./store/types.js";
 
 /** Closed tombstone reason enum value. */
@@ -31,7 +33,7 @@ export type EraseSideBlobResult = {
  *
  * @throws StorageError when the target is not an erasable memory record
  */
-function referencedProseBlobCids(target: Awaited<ReturnType<SoulStore["get"]>>): Set<string> {
+function referencedProseBlobCids(target: OspRecord): Set<string> {
   if (target.type !== "memory") {
     throw new StorageError(
       `eraseSideBlob: targetCid must reference a memory record, got type ${target.type}`
@@ -63,11 +65,27 @@ function referencedProseBlobCids(target: Awaited<ReturnType<SoulStore["get"]>>):
 }
 
 /**
+ * Find the record with CID `targetCid` on the store's chain (genesis → head).
+ *
+ * `store.get` is not enough: it returns any CID-verified record block in the blob namespace,
+ * including orphans that were never appended (records.md Verification rule 12 requires the
+ * tombstone target to be on the chain prefix).
+ */
+async function findChainRecord(store: SoulStore, targetCid: string): Promise<OspRecord | null> {
+  for await (const record of store.iterate()) {
+    if ((await computeCid(record)) === targetCid) {
+      return record;
+    }
+  }
+  return null;
+}
+
+/**
  * Erase an osp/0.2 side blob and append a verifiable tombstone.
  *
- * Validates that `blobCid` is the target memory record's `text_cid` or
- * `journal_cid` before deleting — side blobs share the store's record block
- * namespace, so deleting an arbitrary CID could unlink chain record bytes.
+ * Validates that `targetCid` is a record ON THE CHAIN and that `blobCid` is that memory
+ * record's `text_cid` or `journal_cid` before deleting — side blobs share the store's record
+ * block namespace, so deleting an arbitrary CID could unlink chain record bytes.
  *
  * Order: validate → delete/unpin the blob → append the tombstone so a crash
  * between delete and append leaves either (blob gone, no tombstone) or
@@ -75,7 +93,12 @@ function referencedProseBlobCids(target: Awaited<ReturnType<SoulStore["get"]>>):
  * tombstone for the same blob is allowed by schema (ops should avoid duplicates).
  */
 export async function eraseSideBlob(options: EraseSideBlobOptions): Promise<EraseSideBlobResult> {
-  const target = await options.store.get(options.targetCid);
+  const target = await findChainRecord(options.store, options.targetCid);
+  if (target === null) {
+    throw new StorageError(
+      `eraseSideBlob: targetCid ${options.targetCid} is not a record on this soulchain`
+    );
+  }
   const allowedBlobCids = referencedProseBlobCids(target);
   if (!allowedBlobCids.has(options.blobCid)) {
     throw new StorageError(

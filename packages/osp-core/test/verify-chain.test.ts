@@ -4,7 +4,12 @@ import * as path from "node:path";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 
 import {
+  canonicalize,
+  computeCid,
+  contentAddressSideBlob,
   createRecord,
+  encodeShardTextBlob,
+  OSP_SPEC_V02,
   signCore,
   generateKeypair,
   encodePublicKey,
@@ -533,5 +538,201 @@ describe("verifyChain", () => {
     }
     expect(result.failures[0]?.rule).toBe("forked_head");
     expect(result.failures[0]?.message).toMatch(/verified chain is empty/);
+  });
+});
+
+describe("verifyRecords tombstone rule 12 (bad_tombstone)", () => {
+  let soul: Ed25519Keypair;
+  let door: Ed25519Keypair;
+  let session: Ed25519Keypair;
+
+  beforeEach(() => {
+    soul = generateKeypair();
+    door = generateKeypair();
+    session = generateKeypair();
+  });
+
+  /** osp/0.2 genesis → arrival → shard (text blob) prefix. */
+  async function v02Prefix() {
+    const genesis = await createRecord({
+      spec: OSP_SPEC_V02,
+      seq: 0,
+      prev: null,
+      type: "genesis",
+      body: {
+        charter: "# Wanderer",
+        soul_pubkey: encodePublicKey(soul.publicKey),
+        created_at: "2026-01-01T00:00:00.000Z"
+      },
+      residency: null,
+      cosigners: [],
+      soulPrivateKey: soul.privateKey
+    });
+    const arrivalFields = {
+      spec: OSP_SPEC_V02,
+      seq: 1,
+      prev: genesis.cid,
+      type: "attestation" as const,
+      body: {
+        kind: "arrival" as const,
+        pop_version: "pop/0.1" as const,
+        door_id: DOOR_ID,
+        epoch: 1,
+        session_pubkey: encodePublicKey(session.publicKey),
+        at: "2026-01-02T00:00:00.000Z"
+      },
+      residency: RESIDENCY
+    };
+    const arrival = await createRecord({
+      ...arrivalFields,
+      cosigners: [signCore(arrivalFields, door.privateKey)],
+      soulPrivateKey: soul.privateKey
+    });
+    const blob = await contentAddressSideBlob(encodeShardTextBlob("to be erased"));
+    const shardFields = {
+      spec: OSP_SPEC_V02,
+      seq: 2,
+      prev: arrival.cid,
+      type: "memory" as const,
+      body: {
+        kind: "shard" as const,
+        text_cid: blob.cid,
+        text_hash: blob.hash,
+        distilled_at: "2026-01-02T00:30:00.000Z"
+      },
+      residency: RESIDENCY
+    };
+    const shard = await createRecord({
+      ...shardFields,
+      cosigners: [signCore(shardFields, door.privateKey)],
+      soulPrivateKey: soul.privateKey
+    });
+    return { genesis, arrival, shard, blob };
+  }
+
+  async function tombstone(seq: number, prev: string, targetCid: string, blobCid: string) {
+    return createRecord({
+      spec: OSP_SPEC_V02,
+      seq,
+      prev,
+      type: "tombstone",
+      body: {
+        target_cid: targetCid,
+        blob_cid: blobCid,
+        reason: "operator",
+        erased_at: "2026-01-03T00:00:00.000Z"
+      },
+      residency: null,
+      cosigners: [],
+      soulPrivateKey: soul.privateKey
+    });
+  }
+
+  it("rejects a tombstone whose target and blob do not exist on the chain (review F3)", async () => {
+    const { genesis } = await v02Prefix();
+    const bogus = await computeCid({ nope: 1 });
+    const t = await tombstone(1, genesis.cid, bogus, bogus);
+    const result = await verifyRecords([genesis.record, t.record]);
+    expect(result.valid).toBe(false);
+    if (result.valid) {
+      return;
+    }
+    expect(result.failures.map((failure) => failure.rule)).toEqual(["bad_tombstone"]);
+    expect(result.failures[0]?.message).toMatch(/not an earlier record/);
+  });
+
+  it("rejects a tombstone targeting a later record (target must be on the prefix)", async () => {
+    const { genesis, arrival, shard, blob } = await v02Prefix();
+    // Tombstone at seq 2 references the shard that only appears afterwards — impossible to
+    // build with a valid prev link, so check prefix ordering via a forward reference instead.
+    const t = await tombstone(2, arrival.cid, shard.cid, blob.cid);
+    const result = await verifyRecords([genesis.record, arrival.record, t.record], {
+      doorPublicKeys: doorPublicKeysMap(door)
+    });
+    expect(result.valid).toBe(false);
+    if (!result.valid) {
+      expect(result.failures.some((failure) => failure.rule === "bad_tombstone")).toBe(true);
+    }
+  });
+
+  it("rejects a blob_cid that is not the target's text_cid/journal_cid", async () => {
+    const { genesis, arrival, shard } = await v02Prefix();
+    const unrelated = await contentAddressSideBlob(encodeShardTextBlob("unrelated"));
+    const t = await tombstone(3, shard.cid, shard.cid, unrelated.cid);
+    const result = await verifyRecords([genesis.record, arrival.record, shard.record, t.record], {
+      doorPublicKeys: doorPublicKeysMap(door)
+    });
+    expect(result.valid).toBe(false);
+    if (!result.valid) {
+      expect(result.failures.map((failure) => failure.rule)).toEqual(["bad_tombstone"]);
+      expect(result.failures[0]?.message).toMatch(/not a text_cid\/journal_cid/);
+    }
+  });
+
+  it("accepts a tombstone of the target's text blob and a later re-tombstone of it", async () => {
+    const { genesis, arrival, shard, blob } = await v02Prefix();
+    const first = await tombstone(3, shard.cid, shard.cid, blob.cid);
+    // Re-tombstone of an already-tombstoned blob (records.md rule 12 "or a prior tombstoned
+    // blob"), here cited against the first tombstone record as target.
+    const second = await tombstone(4, first.cid, first.cid, blob.cid);
+    const result = await verifyRecords(
+      [genesis.record, arrival.record, shard.record, first.record, second.record],
+      { doorPublicKeys: doorPublicKeysMap(door) }
+    );
+    expect(result.valid).toBe(true);
+  });
+});
+
+describe('verifyRecords rejects own "__proto__" keys (schema_violation)', () => {
+  it("does not let an extra __proto__ key ride along on otherwise valid bytes (review F5)", async () => {
+    const soul = generateKeypair();
+    const genesis = await createGenesisRecord(soul);
+    const decision = await createRecord({
+      seq: 1,
+      prev: genesis.cid,
+      type: "decision",
+      body: { decision: "x", reasoning: "y", inputs: { a: 1 }, decided_at: "2026-01-01T00:00:00Z" },
+      residency: RESIDENCY,
+      cosigners: [],
+      soulPrivateKey: soul.privateKey
+    });
+    const wire = new TextDecoder()
+      .decode(canonicalize(decision.record))
+      .replace('"inputs":{"a":1}', '"inputs":{"__proto__":{"evil":1},"a":1}');
+    const mutated: unknown = JSON.parse(wire);
+
+    const result = await verifyRecords([genesis.record, mutated]);
+    expect(result.valid).toBe(false);
+    if (!result.valid) {
+      expect(result.failures.map((failure) => failure.rule)).toContain("schema_violation");
+      expect(result.failures[0]?.message).toMatch(/__proto__/);
+    }
+
+    // Untouched record still verifies.
+    expect((await verifyRecords([genesis.record, decision.record])).valid).toBe(true);
+  });
+
+  it("rejects a nested own __proto__ inside free-form inputs values", async () => {
+    const soul = generateKeypair();
+    const genesis = await createGenesisRecord(soul);
+    const decision = await createRecord({
+      seq: 1,
+      prev: genesis.cid,
+      type: "decision",
+      body: {
+        decision: "x",
+        reasoning: "y",
+        inputs: { a: { b: 1 } },
+        decided_at: "2026-01-01T00:00:00Z"
+      },
+      residency: RESIDENCY,
+      cosigners: [],
+      soulPrivateKey: soul.privateKey
+    });
+    const wire = new TextDecoder()
+      .decode(canonicalize(decision.record))
+      .replace('"a":{"b":1}', '"a":{"__proto__":null,"b":1}');
+    const result = await verifyRecords([genesis.record, JSON.parse(wire) as unknown]);
+    expect(result.valid).toBe(false);
   });
 });

@@ -35,6 +35,8 @@ const SKIP_VECTORS = new Set([
   "schema-bad-prev.json",
   "schema-bad-residency.json",
   "schema-dag-json-reserved.json",
+  // Own "__proto__" key cannot be canonicalized for block injection (rejected at parse).
+  "schema-proto-key.json",
   "schema-door-id-mismatch.json",
   "schema-epoch-mismatch.json",
   "schema-genesis-cosigners.json",

@@ -1,4 +1,6 @@
-import { closeSync, fsyncSync, openSync, writeSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { closeSync, fsyncSync, openSync, renameSync, unlinkSync, writeSync } from "node:fs";
+import * as path from "node:path";
 
 import { StorageError } from "../errors.js";
 
@@ -62,4 +64,50 @@ export async function fsyncDirectory(dirPath: string): Promise<void> {
   } finally {
     closeSync(fd);
   }
+}
+
+/** Prefix of temp files written by {@link writeFileAtomic}; never a valid CID. */
+export const ATOMIC_TEMP_PREFIX = ".tmp-";
+
+/**
+ * Durably and atomically (re)place `finalPath` with `data`: write a temp file in the same
+ * directory → fsync → rename over `finalPath` → fsync the directory. A crash leaves either the
+ * old file, the complete new file, or an orphan temp file (prefixed {@link ATOMIC_TEMP_PREFIX})
+ * — never a torn `finalPath`.
+ */
+export async function writeFileAtomic(finalPath: string, data: Uint8Array): Promise<void> {
+  const dirPath = path.dirname(finalPath);
+  const tempPath = path.join(
+    dirPath,
+    `${ATOMIC_TEMP_PREFIX}${path.basename(finalPath)}-${process.pid}-${randomBytes(6).toString("hex")}`
+  );
+
+  let fd: number;
+  try {
+    fd = openSync(tempPath, "wx");
+  } catch (error) {
+    throw new StorageError(`failed to create temp file: ${nodeErrorMessage(error)}`);
+  }
+
+  try {
+    try {
+      writeAllSync(fd, data);
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    renameSync(tempPath, finalPath);
+  } catch (error) {
+    try {
+      unlinkSync(tempPath);
+    } catch {
+      // Best-effort temp cleanup; the original error is what matters.
+    }
+    if (error instanceof StorageError) {
+      throw error;
+    }
+    throw new StorageError(`failed to write ${finalPath} atomically: ${nodeErrorMessage(error)}`);
+  }
+
+  await fsyncDirectory(dirPath);
 }

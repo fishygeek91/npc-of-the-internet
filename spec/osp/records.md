@@ -413,7 +413,7 @@ Because `spec` is inside the signed envelope bytes and chains MUST be spec-homog
 ### Signature encoding
 
 - Ed25519 signatures and public keys on the wire: **base64url** encoding of raw bytes (no padding).
-- Signature verification: reject wrong length, wrong encoding, or invalid signatures.
+- Signature verification: reject wrong length, wrong encoding, or invalid signatures. Verification is **strict RFC 8032** (not ZIP-215): non-canonical point encodings and small-order public keys are rejected (otherwise e.g. the identity public key with `R = identity, S = 0` verifies every message).
 
 ---
 
@@ -429,6 +429,7 @@ Canonical form is critical for interoperable signing and CID computation (T1.1).
 4. **Arrays preserve element order** (only object keys are sorted).
 5. Numbers: JSON number rules; `seq` and integer body fields must serialize without fractional part (e.g. `42`, not `42.0`).
 6. `null` serializes as JSON `null`.
+7. **No `"__proto__"` keys.** No object at any depth may carry the key `"__proto__"`. Common JSON parsers create it as an own property, but assignment-based copies (schema parsers, naive canonicalizers) silently drop it, so two byte strings would share one canonical form. Create and verify MUST reject it (`schema_violation`).
 
 ### Signing payloads
 
@@ -485,11 +486,11 @@ High-level rules for `verifyChain` (full vector suite deferred to **T1.3**). A c
 
 ### Schema
 
-8. **`spec`:** every record has `spec: "osp/0.1"` or `spec: "osp/0.2"`. All records in a chain **MUST** share the same `spec` value; mixed versions are a `schema_violation`.
+8. **`spec`:** every record has `spec: "osp/0.1"` or `spec: "osp/0.2"`. All records in a chain **MUST** share the same `spec` value; mixed versions are a `schema_violation`. Records containing an own `"__proto__"` key at any depth are a `schema_violation` (see [Canonical serialization](#canonical-serialization) rule 7).
 9. **Type validity:** `type` is one of the eight defined types; `body` conforms to the table for that type (and `body.kind` where applicable). `osp/0.1` and `osp/0.2` memory bodies are mutually exclusive per record (`inline text` vs `text_cid`/`text_hash`).
 10. **Memory rules (`osp/0.1`):** `rejected` records contain only `category` (and metadata fields above) — never rejected payload text. Committed shards respect length and PII constraints on inline `text`.
 11. **Memory rules (`osp/0.2`):** shard/candidate bodies use `text_cid` + `text_hash` (not inline `text`). `text_hash` / `journal_hash` digests must match their CID multihash. `journal_cid` and `journal_hash` are both present or both absent. Decoded shard text respects ≤500 code points. `rejected` rules unchanged.
-12. **Tombstone rules:** `type: "tombstone"` only on `osp/0.2` chains. `residency` must be `null`; `cosigners` must be `[]`. Body must not contain erased prose or free-text `reason`. `reason` must be one of the four enum values. `target_cid` must reference an existing record on the chain prefix; `blob_cid` must match a `text_cid` or `journal_cid` on that target (or a prior tombstoned blob).
+12. **Tombstone rules:** `type: "tombstone"` only on `osp/0.2` chains. `residency` must be `null`; `cosigners` must be `[]`. Body must not contain erased prose or free-text `reason`. `reason` must be one of the four enum values. `target_cid` must reference an existing record on the chain prefix (an earlier record — not merely a CID-verifiable block); `blob_cid` must match a `text_cid` or `journal_cid` on that target (or the `blob_cid` of an earlier tombstone on the chain). Reference violations are reported as **`bad_tombstone`**; shape violations remain `schema_violation`.
 13. **Drift evidence:** `evidence` CIDs must reference existing `memory` records with `kind: "shard"` on the same chain prefix.
 14. **Attestation residency cross-checks:** for `arrival` / `heartbeat` / `departure`, `body.door_id` MUST equal the Door portion of `residency`, and `body.epoch` MUST equal the epoch portion of `residency`.
 
@@ -528,7 +529,8 @@ Implementations of `SoulStore.append` MUST:
 1. Validate the record schema.
 2. Enforce chain linkage (`prev` / `seq`), and require `type: "genesis"` when the store is empty.
 3. Cryptographically verify the record (`verifyRecord`: soul signature against the genesis soul public key, and cosigners against configured Door keys when present) **before** any durable write.
-4. Persist **canonical** record bytes only (sorted keys, no insignificant whitespace — see [Canonical serialization](#canonical-serialization)).
+4. Evaluate the full chain-level [Verification](#verification) rules (homogeneous `spec`, drift evidence, tombstone references, PoP continuity and presence conflicts) for the candidate against the stored prefix **before** any durable write — a store MUST NOT persist a record that would make its own chain fail verification on the next load.
+5. Persist **canonical** record bytes only (sorted keys, no insignificant whitespace — see [Canonical serialization](#canonical-serialization)). Content-addressed bytes are written atomically (temp file → fsync → rename → directory fsync); an existing file at a CID path whose bytes do not hash to that CID is torn and is replaced, never treated as a conflicting write.
 
 On load, chain line bytes MUST round-trip: `bytesEqual(lineBytes, canonicalize(JSON.parse(lineBytes)))`. Non-canonical lines are corruption. CIDs are computed over those exact canonical bytes so a second implementation (or IPFS store) cannot silently fork CID space by re-encoding.
 
