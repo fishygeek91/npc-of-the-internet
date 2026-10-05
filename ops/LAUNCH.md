@@ -296,10 +296,10 @@ docker compose --env-file ops/.env -f ops/compose.ghost.yml run --rm --no-deps \
 |---|--------|------------------|
 | 1 | Runtime live | `docker compose --env-file ops/.env -f ops/compose.ghost.yml logs runtime 2>&1 \| grep residency_live` |
 | 2 | Runtime healthy | `docker compose --env-file ops/.env -f ops/compose.ghost.yml ps runtime` → `healthy` |
-| 3 | Arrival on chain | `node packages/osp-cli/dist/cli.js log ./_soulchain-snapshot` — contains an `attestation` with kind `arrival` |
+| 3 | Arrival on chain | `node packages/osp-cli/dist/cli.js log ./_soulchain-snapshot --door-key "$(grep '^ATLAS_DOOR_PUBKEYS=' ops/.env \| cut -d= -f2- \| cut -d, -f1)"` — contains an `attestation` with kind `arrival` (without `--door-key` the listing still prints but warns that verification failed) |
 | 4 | Discord presence | In the bound guild channel, `/wanderer status` → `presence: present` |
 | 5 | Human round-trip | Post a normal (non-bot) message in the channel; Wanderer replies via runtime → door-discord → Discord ([§7 reconnect note](../packages/door-discord/MANUAL_TEST.md#7-cross-container-session-compose) if WS was down) |
-| 6 | Heartbeats | `node packages/osp-cli/dist/cli.js log ./_soulchain-snapshot` — at least one `attestation` with kind `heartbeat` (daemon default interval ~10 minutes; allow time) |
+| 6 | Heartbeats | `node packages/osp-cli/dist/cli.js log ./_soulchain-snapshot --door-key "$(grep '^ATLAS_DOOR_PUBKEYS=' ops/.env \| cut -d= -f2- \| cut -d, -f1)"` — at least one `attestation` with kind `heartbeat` (daemon default interval ~10 minutes; allow time) |
 | 7 | Atlas API state | `curl -sS http://127.0.0.1:8787/state` — JSON `status` is `present` |
 | 8 | Chain verifies | `node packages/osp-cli/dist/cli.js verify ./_soulchain-snapshot --door-key "$(grep '^ATLAS_DOOR_PUBKEYS=' ops/.env \| cut -d= -f2- \| cut -d, -f1)"` → exit 0 |
 | 9 | Atlas site banner (local) | Build static site against the live snapshot (Gate 2 for public Pages deploy): |
@@ -379,7 +379,7 @@ Delegate to [RUNBOOK §5](RUNBOOK.md#5-restore-from-backup).
 
    | Placeholder | Source |
    |-------------|--------|
-   | `{{GENESIS_CID}}` | Section 2 `osp init` stdout (`Genesis CID: …`), or first genesis record from `node packages/osp-cli/dist/cli.js log ./_soulchain-snapshot` |
+   | `{{GENESIS_CID}}` | Section 2 `osp init` stdout (`Genesis CID: …`), or first genesis record from `node packages/osp-cli/dist/cli.js log ./_soulchain-snapshot --door-key …` |
    | `{{HEAD_CID}}` | `curl -sS http://127.0.0.1:8787/chain/head` → JSON `cid`, or Atlas site head on `/` after build |
    | `{{ATLAS_URL}}` | Public URL of Atlas (GitHub Pages or your host). Local API during rehearsal: `http://127.0.0.1:8787` — production Pages deploy is **Gate 2** |
    | `{{REPO_URL}}` | Repository URL (default in template: `https://github.com/fishygeek91/npc-of-the-internet`) |

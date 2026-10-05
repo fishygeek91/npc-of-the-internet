@@ -11,7 +11,7 @@ import {
   generateKeypair,
   signCore
 } from "@npc/osp-core";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import * as path from "node:path";
@@ -62,6 +62,19 @@ function runCliAllowFail(
       status: execError.status ?? 1
     };
   }
+}
+
+/** Run the built CLI capturing stdout, stderr and status regardless of exit code. */
+function runCliCapture(
+  args: string[],
+  cwd?: string
+): { stdout: string; stderr: string; status: number } {
+  const result = spawnSync(process.execPath, [cliPath, ...args], {
+    cwd,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  return { stdout: result.stdout, stderr: result.stderr, status: result.status ?? 1 };
 }
 
 /** Parse `Genesis CID: …` from init stdout. */
@@ -298,6 +311,102 @@ describe("osp CLI e2e", () => {
       const verifyBadCli = runCliAllowFail(["verify", soulDir, "--door-key", wrongKey], repoRoot);
       expect(verifyBadCli.status).toBe(1);
       expect(verifyBadCli.stdout).toMatch(/\[missing_cosigner\]/);
+    } finally {
+      await rm(soulDir, { recursive: true, force: true });
+    }
+  });
+
+  it("log/show exit 2 on a missing directory and never create it", () => {
+    const missingDir = path.join(tmpdir(), `osp-log-typo-${Date.now()}`);
+
+    const log = runCliCapture(["log", missingDir], repoRoot);
+    expect(log.status).toBe(2);
+    expect(log.stderr).toMatch(/Soulchain directory not found/);
+    expect(existsSync(missingDir)).toBe(false);
+
+    const show = runCliCapture(
+      [
+        "show",
+        "baguqeerazakgpoiwocntbcl2vpqcywzrslh3lvcbuaypdtkv5k7sjqey545a",
+        "--dir",
+        missingDir
+      ],
+      repoRoot
+    );
+    expect(show.status).toBe(2);
+    expect(show.stderr).toMatch(/Soulchain directory not found/);
+    expect(existsSync(missingDir)).toBe(false);
+  });
+
+  it("log exits 2 on an existing directory without a soulchain layout (no files created)", async () => {
+    const emptyDir = await mkdtemp(path.join(tmpdir(), "osp-log-empty-"));
+    try {
+      const log = runCliCapture(["log", emptyDir], repoRoot);
+      expect(log.status).toBe(2);
+      expect(log.stderr).toMatch(/chain file does not exist/);
+      expect(existsSync(path.join(emptyDir, "blobs"))).toBe(false);
+      expect(existsSync(path.join(emptyDir, "chain.jsonl"))).toBe(false);
+    } finally {
+      await rm(emptyDir, { recursive: true, force: true });
+    }
+  });
+
+  it("log/show accept repeatable --door-key (equals form) on a cosigned chain", async () => {
+    const soulDir = await mkdtemp(path.join(tmpdir(), "osp-cli-log-door-key-"));
+    const door = generateKeypair();
+    const otherDoor = generateKeypair();
+
+    try {
+      const init = runCli(["init", soulDir, "--charter", charterPath], repoRoot);
+      expect(init.status).toBe(0);
+      await appendCosignedShard(soulDir, door.publicKey, door.privateKey);
+
+      const doorKey = `${DOOR_ID}=${encodePublicKey(door.publicKey)}`;
+      const otherKey = `discord:other=${encodePublicKey(otherDoor.publicKey)}`;
+      const chainBefore = await readFile(path.join(soulDir, "chain.jsonl"));
+
+      const log = runCliCapture(
+        ["log", soulDir, `--door-key=${doorKey}`, `--door-key=${otherKey}`],
+        repoRoot
+      );
+      expect(log.status).toBe(0);
+      expect(log.stderr).toBe("");
+      const lines = log.stdout.split("\n").filter((line) => line.length > 0);
+      expect(lines).toHaveLength(2);
+      expect(lines[0]).toMatch(/^0 genesis /);
+      expect(lines[1]).toMatch(/^1 memory/);
+
+      // Without the binding the listing still works but warns that verification failed.
+      const unbound = runCliCapture(["log", soulDir], repoRoot);
+      expect(unbound.status).toBe(0);
+      expect(unbound.stdout.split("\n").filter((line) => line.length > 0)).toHaveLength(2);
+      expect(unbound.stderr).toMatch(/chain verification failed/);
+
+      const readOnly = await FileSoulStore.openReadOnly(soulDir, {
+        doorPublicKeys: { [DOOR_ID]: door.publicKey }
+      });
+      const head = await readOnly.head();
+      await readOnly.close();
+      if (head === null) {
+        throw new Error("expected head");
+      }
+
+      const show = runCliCapture(
+        ["show", head.cid, "--dir", soulDir, `--door-key=${doorKey}`],
+        repoRoot
+      );
+      expect(show.status).toBe(0);
+      expect(show.stdout).toContain('"kind": "shard"');
+
+      const showUnbound = runCliCapture(["show", head.cid, "--dir", soulDir], repoRoot);
+      expect(showUnbound.status).toBe(2);
+
+      const badKey = runCliCapture(["log", soulDir, "--door-key=not-a-binding"], repoRoot);
+      expect(badKey.status).toBe(2);
+
+      // Read-only: no lock file, no chain mutation.
+      expect(existsSync(path.join(soulDir, ".append.lock"))).toBe(false);
+      expect((await readFile(path.join(soulDir, "chain.jsonl"))).equals(chainBefore)).toBe(true);
     } finally {
       await rm(soulDir, { recursive: true, force: true });
     }

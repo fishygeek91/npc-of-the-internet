@@ -17,8 +17,8 @@ The `osp` command-line tool for initializing and inspecting a local soulchain.
 | `osp verify --from-ipfs <head-cid> [--gateway <url>]` | Fetch head→genesis via trustless gateway raw blocks, then verify (no CI network) |
 | `osp manifest <dir>` | Build/sign a pin manifest for an `IpfsSoulStore` directory; print manifest CID |
 | `osp export-car <dir> --out <path>` | Build/sign manifest and write a CARv1 rooted at the manifest CID |
-| `osp log <dir>` | Stream a human-readable listing of chain records |
-| `osp show <cid> --dir <dir>` | Pretty-print one record by CID |
+| `osp log <dir> [--door-key …]` | Human-readable listing of chain records (read-only; warns on stderr if verification fails) |
+| `osp show <cid> --dir <dir> [--door-key …]` | Pretty-print one verified record by CID (read-only) |
 
 ### Pin manifest / CAR (`IpfsSoulStore` layout)
 
@@ -28,13 +28,13 @@ The `osp` command-line tool for initializing and inspecting a local soulchain.
 
 `osp init` loads the Wanderer's charter from `spec/osp/genesis.md` when run inside this repository. Override with `--charter <path>`. Init fails clearly if the charter file is missing or empty.
 
-### Verify is read-only
+### Verify, log and show are read-only
 
-`osp verify` opens the store with `FileSoulStore.openReadOnly`. It never creates `blobs/` or `chain.jsonl`, so it works on read-only mounts and restored backups. An empty or uninitialized directory exits `2` instead of silently laying out a store.
+`osp verify`, `osp log` and `osp show` open the store with `FileSoulStore.openReadOnly`. They never create `blobs/`, `chain.jsonl` or a lock file, so they work on read-only mounts and restored backups. A missing (e.g. typo'd), empty or uninitialized directory exits `2` instead of silently laying out a store.
 
-### Door keys for verify
+### Door keys
 
-Pass repeatable `--door-key <doorId=base64url>` flags to supply Door public keys for cosignature verification.
+Pass repeatable `--door-key <doorId=base64url>` (or `--door-key=<doorId=base64url>`) flags to `verify`, `log` and `show` to supply Door public keys for cosignature verification. Without the binding, `log` still lists a cosigned chain but warns that verification failed; `show` of a cosigned record exits `2`.
 
 ## Walkthrough
 
