@@ -217,8 +217,8 @@ Call on a live session to end the residency. Enters a `departing` phase immediat
 Order of operations:
 
 1. Read+destroy transcript; distill → candidate shards (`distillTranscripts`)
-2. Generate residency journal markdown (`generateJournal`) and write a journal file (`writeJournalFile`)
-3. Two-phase Door cosign: `review` (approve/reject shards) — decisions are filtered to the proposed `shard_id` set and deduped (first wins)
+2. Two-phase Door cosign: `review` (approve/reject shards) — decisions are filtered to the proposed `shard_id` set and deduped (first wins)
+3. Generate residency journal markdown (`generateJournal`) from the **host-approved** shards only (rejected prose never reaches the journal, which is later published on chain) and write a journal file (`writeJournalFile`)
 4. Append `memory.rejected` for immune-screen drops and host rejections (category only, no shard text)
 5. Append `memory.candidate` records for host-approved shards (`cosigners: []`; text on chain, not yet composed)
 6. Append `departure` attestation (Door cosigned) and soul-signed `travel` attestation
@@ -247,16 +247,19 @@ No Door session traffic is accepted on the departed session during the travel ga
 ### Operator CLI
 
 ```bash
+wanderer depart [--control-dir <dir>] [--timeout-ms <ms>]
 wanderer move <door-id>
 wanderer quarantine commit
 wanderer quarantine flag <candidate-cid> [--category <cat>]
 ```
 
+`wanderer depart` is production-wired: it asks the running daemon for one residency cycle (see [Residency lifecycle](#residency-lifecycle)) by dropping a request into `NPC_CONTROL_DIR` (default `/tmp/npc-control`) and waiting for pick-up — exit `0` accepted, `1` not picked up (request withdrawn), `2` usage. In Ghost: `ghostc exec runtime node dist/cli.js depart`.
+
 Bin at `packages/runtime/src/cli.ts` (`wanderer` in package `bin`). Production wiring is env-based (`SOUL_KEY_PATH`, `SOULCHAIN_DIR`, `TRANSCRIPT_PATH`, `JOURNAL_DIR`, `CURRENT_DOOR_ID`, `NPC_QUARANTINE_WINDOW_MS`); tests inject `runMove`, `runQuarantineCommit`, and `runQuarantineFlag` via `runWandererCli` deps.
 
 ### Journal
 
-Markdown residency summary generated via Brain at depart time. Written to `journalDir` as a file; the same markdown is attached to the first committed `memory.shard` record's `body.journal` field when `commitQuarantinedShards` runs (see Quarantine).
+Markdown residency summary generated via Brain at depart time, after host review, from the approved shards only. Written to `journalDir` as a file; the same markdown is attached to the first committed `memory.shard` record's `body.journal` field when `commitQuarantinedShards` runs (see Quarantine).
 
 ### Integration test
 
@@ -318,7 +321,7 @@ pnpm --filter @npc/runtime test
 
 ## Residency daemon (`npc-runtime`)
 
-Long-running process that opens the soulchain, arrives at a Door via HTTP, binds the session WebSocket, and maintains inbound → outbound handling until SIGTERM/SIGINT. Does not auto-depart (`cosign.manual` requires a host).
+Long-running process that opens the soulchain, arrives at a Door via HTTP, binds the session WebSocket, and maintains inbound → outbound handling until SIGTERM/SIGINT. It departs only when a residency-lifecycle trigger is enabled (all off by default — see [Residency lifecycle](#residency-lifecycle)); `cosign.manual` review needs a host.
 
 ```bash
 pnpm --filter @npc/runtime build
@@ -349,9 +352,41 @@ Or after install: `npc-runtime` (bin in `@npc/runtime`). Ghost image `CMD` is `n
 | `NPC_BRAIN_TIMEOUT_MS` | no | `60000` | Request timeout (ms) |
 | `NPC_RUNTIME_READY_FILE` | no | `/tmp/npc-runtime.ready` | Compose healthcheck path (present only while the session WS is connected) |
 | `NPC_ATTENTION_MODE` | no | `selective` | `selective`: `Session.observe` (speak / react / stay quiet); `always`: legacy reply-to-every-message |
+| `NPC_RESIDENCY_OPERATOR_TRIGGER` | no | `0` (off) | `1`/`true`: SIGUSR2 and `wanderer depart` requests start a residency cycle |
+| `NPC_RESIDENCY_MAX_MS` | no | `0` (off) | Cycle once the residency is older than this (≥ `3600000`; checked every minute) |
+| `NPC_RESIDENCY_MIN_LINES` | no | `10` | Timer trigger waits for this many transcript lines |
+| `NPC_QUARANTINE_COMMIT_INTERVAL_MS` | no | `0` (off) | Post-departure commit-sweep poll interval (≥ `10000`) |
+| `NPC_QUARANTINE_WINDOW_MS` | no | `86400000` | Candidate ripening window; ≤ `3600000` while the commit sweep is on |
+| `NPC_CONTROL_DIR` | no | `/tmp/npc-control` | Polled for `wanderer depart` requests (only with the operator trigger) |
+| `NPC_JOURNAL_DIR` | no | `/data/published/journals` | Where depart writes journal markdown |
 
 \* Set exactly one of `NAME` or `NAME_FILE` for the active Brain provider (see Brain section).
 
 Selective-mode logs (info): `attention_config` at boot (mode, whether the Door supports reactions), then `attention_acted` (`spoke`, `reacted`, `batchSize`, `notes`) or `attention_silent` (`batchSize`, `notes` e.g. `floor_guard`) per decision. Silence is expected and is not an error.
 
-Graceful shutdown (SIGTERM/SIGINT): remove ready file → close WS → `session.stop()` → `drainAppends()` → stop replication drain → `store.close()` → exit 0. Each step runs even if an earlier one throws (the first error is rethrown after all steps). A boot failure after the store is opened (Door hello, session start, WS connect) releases what was acquired — WS client, session timer, replication drain, store — before rethrowing.
+Graceful shutdown (SIGTERM/SIGINT): remove ready file → stop control-dir polling → `ResidencyController.shutdown()` (abort any cycle wait, give an in-flight cycle step ≤ 5 s, then close WS → `session.stop()` → `drainAppends()`; never departs) → stop replication drain → `store.close()` → exit 0. Each step runs even if an earlier one throws (the first error is rethrown after all steps). A boot failure after the store is opened (Door hello, session start, WS connect) releases what was acquired — WS client, session timer, replication drain, store — before rethrowing.
+
+## Residency lifecycle
+
+The daemon runs the core loop **reside → distill → publish → move** through a `ResidencyController` (`src/residency/controller.ts`) that owns the live residency (Session + its session WebSocket). Ops guide: [`ops/RUNBOOK.md` §7](../../ops/RUNBOOK.md#7-residency-lifecycle).
+
+```ts
+import { ResidencyController, type LiveResidency, type CycleOutcome } from "@npc/runtime";
+```
+
+**One cycle** (`requestCycle("operator" | "timer")`, single-flight — a second request resolves `busy`):
+
+1. `detach()` — close the session socket. Inbound frames in the travel gap are **dropped, not queued** (they are bound to the old epoch and belong to neither residency's transcript); a frame already in flight is discarded by `Session`'s phase check.
+2. `Session.depart` (reused as-is — no duplicate depart logic): distill the live `ResidencyTranscript`, host cosign review, rejected/candidate records, journal file, departure + travel (`to_door_id` = same Door). Failures retry with backoff (default 30 s, 120 s); after the last attempt the residency is **abandoned** (no departure records — the chain shape of a crash) so the Wanderer is never stranded between Doors.
+3. Optional commit sweep (`commit` hook; daemon: `NPC_QUARANTINE_COMMIT_INTERVAL_MS`) **in the travel gap**: `commitQuarantinedShards({ residency })` scoped to the departed epoch, polled until nothing is ripening, journal attached once. The Door only holds the review of the epoch it last hosted and resets it on arrival, so this is the only window in which those commits can be co-signed.
+4. Re-arrive: Door `hello` (door id check; `active_epoch` crash floor) → `Session.start` at `epoch + 1` (the Door retired the old epoch at departure; `epoch > lastKnownEpoch` passes its replay check) → bind a new `WsDoorSessionClient` for the new `(door_id, epoch)`. Retries with backoff (5 s → 5 min) until success or shutdown.
+
+`move()` is not used by the daemon because the controller needs stage-level retry (depart vs arrive) and the commit sweep between them; both stages call the same `Session.depart` / `Session.start`.
+
+**Triggers** (all off by default): operator — SIGUSR2 or a `wanderer depart` request file in `NPC_CONTROL_DIR` (polled every second); timer — `NPC_RESIDENCY_MAX_MS`, checked every minute, waits for `NPC_RESIDENCY_MIN_LINES`. SIGUSR2 is always handled (ignored with a warning when the trigger is off) so a stray signal cannot terminate the daemon. An empty transcript skips the cycle.
+
+**Shutdown during a cycle** aborts backoff / sweep / re-arrival waits, never re-arrives, and leaves the chain valid; the next boot arrives at a fresh epoch exactly as after any restart. Depart retry stays in-process (Bug #69): a restart mid-depart loses that residency's memories by design (the transcript is never on disk).
+
+Library change for the sweep: `commitQuarantinedShards` accepts `residency?: string` — only candidates of that residency are considered (others are neither committed nor reported), so one stranded older candidate cannot fail every later sweep.
+
+Tests: `test/residency-controller.test.ts` (triggers, single-flight, retries/abandon, shutdown, sweep), `test/residency-config.test.ts`, `test/residency-control-dir.test.ts` (request protocol + `wanderer depart`), `test/daemon-residency.test.ts` (real daemon ↔ door-sdk Door over HTTP/WS: control-dir and SIGUSR2 cycles, travel-gap drop, epoch + 1, heartbeats, commit sweep, `verifyChain`), `test/quarantine-commit-scope.test.ts`; door-discord `test/runtime-daemon-cycle-e2e.test.ts` (daemon ↔ real `startDiscordDoor` with Discord review reactions).

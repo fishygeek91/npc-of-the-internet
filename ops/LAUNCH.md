@@ -321,6 +321,13 @@ curl -sS http://127.0.0.1:8787/chain/head
 
 Note the `cid` field as **Head CID**. Genesis CID came from section 2 init stdout (or the first record in `osp log`).
 
+**Residency cycles stay off at launch.** The daemon never departs unless
+`NPC_RESIDENCY_OPERATOR_TRIGGER`, `NPC_RESIDENCY_MAX_MS` or `NPC_QUARANTINE_COMMIT_INTERVAL_MS`
+is set (all default off in `ops/.env.example`). The first manual cycle — `ghostc exec runtime
+node dist/cli.js depart`, with an operator approving the Discord review posts — is its own
+Gate 2 step after this checklist passes; procedure and chain checks in
+[RUNBOOK §7](RUNBOOK.md#7-residency-lifecycle).
+
 ---
 
 ## 6. Backup verification

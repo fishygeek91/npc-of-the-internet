@@ -3,19 +3,34 @@
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 
+import { DEFAULT_CONTROL_DIR } from "./residency/config.js";
+import { requestDaemonDepart } from "./residency/control-dir.js";
+
 /** Exit code for usage or configuration errors. */
 export const EXIT_USAGE = 2;
+
+/** Exit code when the running daemon did not pick up an operator request. */
+export const EXIT_NOT_ACCEPTED = 1;
 
 const USAGE = `wanderer — NPC of the Internet operator CLI
 
 Usage:
+  wanderer depart [--control-dir <dir>] [--timeout-ms <ms>]
   wanderer move <door-id>
   wanderer quarantine commit
   wanderer quarantine flag <candidate-cid> [--category <cat>]
 
-v0.1 shell: without injected runMove / runQuarantineCommit / runQuarantineFlag (tests) these commands exit 2.
-Production env → Door transport wiring is T4.1 (door-sdk / ws).
-Documented env names (not read by this binary yet):
+depart: ask the running residency daemon (same container / host) to run one residency
+  cycle — distill → host cosign review → journal → departure + travel → re-arrival at the
+  next epoch. Requires NPC_RESIDENCY_OPERATOR_TRIGGER=1 on the daemon. Writes a request
+  into the control dir (NPC_CONTROL_DIR, default /tmp/npc-control) and waits for the
+  daemon to pick it up (exit 0) or times out (exit 1, request withdrawn). The cycle itself
+  runs in the daemon: follow its logs for residency_cycle_outcome.
+
+move / quarantine: v0.1 shell — without injected runMove / runQuarantineCommit /
+runQuarantineFlag (tests) these commands exit 2 (the daemon runs commits itself when
+NPC_QUARANTINE_COMMIT_INTERVAL_MS is set). Documented env names for those (not read
+by this binary yet):
   SOUL_KEY_PATH              path to soul private key file
   SOULCHAIN_DIR              soulchain directory
   TRANSCRIPT_PATH            residency transcript JSONL
@@ -25,6 +40,7 @@ Documented env names (not read by this binary yet):
 
 Exit codes:
   0  success
+  1  depart request not picked up by a running daemon
   2  usage or missing configuration
 `;
 
@@ -43,6 +59,10 @@ export type CommitCliResult = {
 
 /** Injectable dependencies for {@link runWandererCli} (tests inject handlers). */
 export type WandererCliDeps = {
+  /** Defaults to {@link requestDaemonDepart} (control-dir request to the running daemon). */
+  runDepart?: (options: { controlDir: string; timeoutMs: number }) => Promise<boolean>;
+  /** Environment for defaults such as `NPC_CONTROL_DIR` (defaults to `process.env`). */
+  env?: NodeJS.ProcessEnv;
   runMove?: (doorId: string) => Promise<MoveCliResult>;
   runQuarantineCommit?: () => Promise<CommitCliResult>;
   runQuarantineFlag?: (candidateCid: string, category?: string) => Promise<void>;
@@ -92,6 +112,42 @@ export async function runWandererCli(
 
   try {
     switch (subcommand) {
+      case "depart": {
+        const { values, positionals } = parseArgs({
+          args: argv.slice(3),
+          options: {
+            "control-dir": { type: "string" },
+            "timeout-ms": { type: "string" }
+          },
+          allowPositionals: true
+        });
+        if (positionals.length > 0) {
+          usageError(writeStderr, "depart takes no positional arguments");
+        }
+        const env = deps.env ?? process.env;
+        const envDir = env.NPC_CONTROL_DIR?.trim() ?? "";
+        const controlDir = values["control-dir"] ?? (envDir === "" ? DEFAULT_CONTROL_DIR : envDir);
+        const timeoutRaw = values["timeout-ms"] ?? "15000";
+        if (!/^\d+$/u.test(timeoutRaw) || Number.parseInt(timeoutRaw, 10) <= 0) {
+          usageError(writeStderr, `--timeout-ms must be a positive integer (got ${timeoutRaw})`);
+        }
+        const timeoutMs = Number.parseInt(timeoutRaw, 10);
+        const runDepart = deps.runDepart ?? requestDaemonDepart;
+        const accepted = await runDepart({ controlDir, timeoutMs });
+        if (!accepted) {
+          writeStderr(
+            `No running daemon picked up the depart request in ${controlDir} within ${String(timeoutMs)} ms ` +
+              "(is NPC_RESIDENCY_OPERATOR_TRIGGER=1 set on the runtime?). Request withdrawn."
+          );
+          return EXIT_NOT_ACCEPTED;
+        }
+        writeStdout("Depart requested: the daemon accepted the request.");
+        writeStdout(
+          "Watch the host review in Discord and the runtime logs for residency_cycle_outcome."
+        );
+        return 0;
+      }
+
       case "move": {
         const { positionals } = parseArgs({
           args: argv.slice(3),

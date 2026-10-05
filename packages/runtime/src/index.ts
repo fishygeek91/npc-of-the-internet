@@ -6,6 +6,35 @@ export { DaemonError } from "./daemon-errors.js";
 export type { DaemonErrorReason } from "./daemon-errors.js";
 export type { ResidencyDaemonDeps, ResidencyDaemonHandle } from "./daemon.js";
 export { startResidencyDaemon } from "./daemon.js";
+export type { ResidencyConfig } from "./residency/config.js";
+export {
+  DEFAULT_CONTROL_DIR,
+  DEFAULT_JOURNAL_DIR,
+  loadResidencyConfig,
+  MAX_COMMIT_WINDOW_MS,
+  MIN_RESIDENCY_MAX_MS
+} from "./residency/config.js";
+export type {
+  AbortableSleep,
+  CommitDepartedEpoch,
+  CycleOutcome,
+  CycleTrigger,
+  LiveResidency,
+  ResidencyControllerOptions
+} from "./residency/controller.js";
+export { abortableSleep, ResidencyController } from "./residency/controller.js";
+export type {
+  ControlDirWatcher,
+  RequestDaemonDepartOptions,
+  WatchControlDirOptions
+} from "./residency/control-dir.js";
+export {
+  consumeDepartRequest,
+  DEPART_REQUEST_FILE,
+  requestDaemonDepart,
+  watchControlDir,
+  writeDepartRequest
+} from "./residency/control-dir.js";
 
 export type {
   BrainConfig,

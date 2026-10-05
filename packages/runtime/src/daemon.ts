@@ -4,27 +4,14 @@ import { mkdir, unlink, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import {
-  DoorError,
-  DOOR_PROTOCOL_VERSION,
-  HttpDoorConnection,
-  sessionBindSigningPayload,
-  WsDoorSessionClient
-} from "@npc/door-sdk";
-import {
-  DualSoulStore,
-  encodePublicKey,
-  encodeSignature,
-  FileSoulStore,
-  type SoulStore
-} from "@npc/osp-core";
+import { HttpDoorConnection } from "@npc/door-sdk";
+import { DualSoulStore, FileSoulStore, type SoulStore } from "@npc/osp-core";
 import pino, { type Logger } from "pino";
 
 import { createBrain } from "./brain/create-brain.js";
 import type { Brain } from "./brain/types.js";
 import { loadDaemonConfig, type DaemonConfig } from "./daemon-config.js";
 import { DaemonError } from "./daemon-errors.js";
-import { ResidencyTranscript } from "./distill/residency-transcript.js";
 import { loadSoulPrivateKeyFromPath } from "./keyring/load-soul-key.js";
 import { SingleKeyKeyring } from "./keyring/single-key-keyring.js";
 import {
@@ -33,8 +20,21 @@ import {
   startReplicationDrain,
   type ReplicationDrainHandle
 } from "./replication/index.js";
-import { Session } from "./session/session.js";
-import type { Clock, InboundFrame, OutboundFrame, Timer } from "./session/types.js";
+import { commitQuarantinedShards } from "./quarantine/commit.js";
+import { watchControlDir, type ControlDirWatcher } from "./residency/control-dir.js";
+import {
+  abortableSleep,
+  ResidencyController,
+  type AbortableSleep,
+  type CommitDepartedEpoch,
+  type CycleOutcome,
+  type CycleTrigger
+} from "./residency/controller.js";
+import {
+  arriveDaemonResidency,
+  type DaemonResidencyContext
+} from "./residency/daemon-residency.js";
+import type { Clock, Timer } from "./session/types.js";
 
 /** SoulStore with lifecycle close (all runtime store implementations). */
 export type ClosableSoulStore = SoulStore & {
@@ -54,15 +54,29 @@ export type ResidencyDaemonDeps = {
       replicationEnabled: boolean;
     }
   ) => Promise<{ store: ClosableSoulStore; truncatedBytes: number }>;
-  /** When true, do not register SIGTERM/SIGINT handlers. */
+  /** When true, do not register SIGTERM/SIGINT (and SIGUSR2) handlers. */
   skipSignals?: boolean;
-  /** Called after the ready file is written and residency is live. */
+  /** Called once the first residency is live (session socket connected). */
   onReady?: () => void;
+  /** Heartbeat / control-dir / residency-age timer (tests inject a fake). */
+  timer?: Timer;
+  /** Session heartbeat interval override (default 10 min). */
+  heartbeatIntervalMs?: number;
+  /** Abortable sleep for cycle backoff and commit-sweep polling (tests). */
+  sleep?: AbortableSleep;
 };
 
-/** Handle returned by {@link startResidencyDaemon} for graceful shutdown. */
+/** Handle returned by {@link startResidencyDaemon}. */
 export type ResidencyDaemonHandle = {
+  /** Graceful shutdown (no departure): abort cycle waits, close session + store. */
   shutdown: () => Promise<void>;
+  /**
+   * Run one residency cycle now (depart → re-arrive at the next epoch), regardless of
+   * whether the operator trigger env is enabled — this is the programmatic API.
+   */
+  requestCycle: (trigger?: CycleTrigger) => Promise<CycleOutcome>;
+  /** Epoch of the live residency, or `null` while traveling / after shutdown. */
+  currentEpoch: () => number | null;
 };
 
 function createRealClock(): Clock {
@@ -100,6 +114,8 @@ function createRealTimer(): Timer {
 /**
  * Boot the long-running residency daemon: open soulchain, arrive at Door via HTTP,
  * bind the session WebSocket, and maintain inbound → outbound handling until shutdown.
+ * Residency cycles (depart → re-arrive) run only when a trigger is enabled in
+ * `config.residency` or {@link ResidencyDaemonHandle.requestCycle} is called.
  */
 export async function startResidencyDaemon(
   config: DaemonConfig,
@@ -157,13 +173,14 @@ export async function startResidencyDaemon(
 type BootResources = {
   store: ClosableSoulStore;
   replicationDrain?: ReplicationDrainHandle;
-  session?: Session;
-  wsClient?: WsDoorSessionClient;
+  controller?: ResidencyController;
+  controlWatcher?: ControlDirWatcher;
 };
 
 /**
- * Release boot resources (WS client → session → replication drain → store). Every step
- * runs even when an earlier one throws, so a failing `wsClient.close()` still closes the
+ * Release boot resources (control watcher → residency controller [aborts any cycle wait,
+ * closes the live residency: WS client + session] → replication drain → store). Every
+ * step runs even when an earlier one throws, so a failing socket close still closes the
  * store. Returns the errors thrown, in order.
  */
 async function releaseResources(resources: BootResources): Promise<unknown[]> {
@@ -176,11 +193,8 @@ async function releaseResources(resources: BootResources): Promise<unknown[]> {
     }
   };
   await step(async () => {
-    await resources.wsClient?.close();
-  });
-  await step(async () => {
-    resources.session?.stop();
-    await resources.session?.drainAppends();
+    resources.controlWatcher?.stop();
+    await resources.controller?.shutdown();
   });
   await step(async () => {
     await resources.replicationDrain?.stop();
@@ -191,7 +205,10 @@ async function releaseResources(resources: BootResources): Promise<unknown[]> {
   return errors;
 }
 
-/** Door hello → session start → WS bind; records each acquired resource in `resources`. */
+/**
+ * Door hello → session start → WS bind (via the {@link ResidencyController}), plus the
+ * optional residency-cycle triggers; records each acquired resource in `resources`.
+ */
 async function bootResidency(ctx: {
   config: DaemonConfig;
   deps: ResidencyDaemonDeps;
@@ -206,28 +223,9 @@ async function bootResidency(ctx: {
   const wsBaseUrl = `ws://${config.doorHttpHost}:${String(config.doorHttpPort)}`;
   const door = new HttpDoorConnection({ baseUrl });
 
-  const hello = await door.hello({
-    protocol_version: DOOR_PROTOCOL_VERSION,
-    soul_pubkey: encodePublicKey(keyring.getSoulPublicKey())
-  });
-  logger.info(
-    {
-      door_id: hello.door_id,
-      active_epoch: hello.active_epoch,
-      capabilities: hello.capabilities
-    },
-    "door_hello"
-  );
-  if (hello.door_id !== config.doorId) {
-    throw new DaemonError(
-      `CURRENT_DOOR_ID mismatch: config has ${config.doorId}, door reports ${hello.door_id}`,
-      "door_mismatch"
-    );
-  }
-
   const brain = deps.brain ?? createBrain(config.brain);
   const clock = createRealClock();
-  const timer = createRealTimer();
+  const timer = deps.timer ?? createRealTimer();
 
   /** Counts heartbeat Door/append failures for ops visibility. */
   let heartbeatErrorCount = 0;
@@ -267,50 +265,6 @@ async function bootResidency(ctx: {
         }
       : undefined;
 
-  // WHITEPAPER §3.2: raw conversation lives only in memory for the residency; depart
-  // distills it into shards and destroys it. Never written to disk.
-  const transcript = new ResidencyTranscript();
-  const reactionsSupported = hello.capabilities.includes("session.reactions");
-  logger.info(
-    { attentionMode: config.attentionMode, reactions: reactionsSupported },
-    "attention_config"
-  );
-
-  const session = await Session.start({
-    store,
-    transcript,
-    attention: { reactions: reactionsSupported },
-    door,
-    doorId: config.doorId,
-    keyring,
-    brain,
-    clock,
-    timer,
-    doorPublicKeys: config.doorPublicKeys,
-    activeEpoch: hello.active_epoch,
-    onHeartbeatError: (error, stage) => {
-      heartbeatErrorCount += 1;
-      const message = error instanceof Error ? error.message : String(error);
-      logger.warn({ err: message, stage, heartbeatErrorCount }, "heartbeat_failed");
-    },
-    ...(onDeparted !== undefined ? { onDeparted } : {})
-  });
-  resources.session = session;
-
-  const sessionSigner = keyring.deriveSessionKey(config.doorId, session.epoch);
-  const sessionPubkey = encodePublicKey(sessionSigner.publicKey);
-  const bindPayload = sessionBindSigningPayload({
-    door_id: config.doorId,
-    epoch: session.epoch,
-    session_pubkey: sessionPubkey
-  });
-  const bind = {
-    door_id: config.doorId,
-    epoch: session.epoch,
-    session_pubkey: sessionPubkey,
-    session_sig: encodeSignature(sessionSigner.sign(bindPayload))
-  };
-
   let shuttingDown = false;
 
   /** Compose healthcheck target: present only while the session WebSocket is connected. */
@@ -330,115 +284,134 @@ async function bootResidency(ctx: {
     }
   };
 
-  // onInbound runs after construction, so `const` is safe for the closed-over client.
-  const wsClient = new WsDoorSessionClient({
-    wsBaseUrl,
-    bind,
-    onConnectionChange: (connected) => {
-      if (shuttingDown) {
-        return;
-      }
-      void setReadyFile(connected)
-        .then(() => {
-          if (connected) {
-            logger.info({ readyFilePath: config.readyFilePath }, "ws_session_ready");
-          } else {
-            logger.warn("ws_session_disconnected");
-          }
-        })
-        .catch((error: unknown) => {
-          const message = error instanceof Error ? error.message : String(error);
-          logger.error({ err: message }, "ready_file_update_failed");
-        });
-    },
-    onInbound: (frame) => {
-      void (async () => {
-        try {
-          if (config.attentionMode === "selective") {
-            await handleObserved(frame);
-          } else {
-            await handleAlways(frame);
-          }
-        } catch (error: unknown) {
-          const message = error instanceof Error ? error.message : String(error);
-          logger.error({ err: message }, "inbound_handler_error");
+  // Serialize ready-file updates so a quick disconnect → connect cannot reorder them.
+  let readyFileChain: Promise<void> = Promise.resolve();
+  const onConnectionChange = (connected: boolean): void => {
+    if (shuttingDown) {
+      return;
+    }
+    readyFileChain = readyFileChain
+      .then(() => setReadyFile(connected))
+      .then(() => {
+        if (connected) {
+          logger.info({ readyFilePath: config.readyFilePath }, "ws_session_ready");
+        } else {
+          logger.warn("ws_session_disconnected");
         }
-      })();
-    }
+      })
+      .catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        logger.error({ err: message }, "ready_file_update_failed");
+      });
+  };
+
+  const residencyCtx: DaemonResidencyContext = {
+    store,
+    door,
+    wsBaseUrl,
+    doorId: config.doorId,
+    doorPublicKeys: config.doorPublicKeys,
+    keyring,
+    brain,
+    clock,
+    timer,
+    logger,
+    attentionMode: config.attentionMode,
+    journalDir: config.residency.journalDir,
+    onHeartbeatError: (error, stage) => {
+      heartbeatErrorCount += 1;
+      const message = error instanceof Error ? error.message : String(error);
+      logger.warn({ err: message, stage, heartbeatErrorCount }, "heartbeat_failed");
+    },
+    onConnectionChange,
+    ...(deps.heartbeatIntervalMs !== undefined
+      ? { heartbeatIntervalMs: deps.heartbeatIntervalMs }
+      : {}),
+    ...(onDeparted !== undefined ? { onDeparted } : {})
+  };
+
+  const residencyConfig = config.residency;
+  const commit: CommitDepartedEpoch | undefined =
+    residencyConfig.commitIntervalMs > 0
+      ? ({ epoch, journalMarkdown }) =>
+          commitQuarantinedShards({
+            store,
+            keyring,
+            door,
+            doorId: config.doorId,
+            epoch,
+            clock,
+            quarantineWindowMs: residencyConfig.quarantineWindowMs,
+            residency: `door:${config.doorId}/epoch:${String(epoch)}`,
+            ...(journalMarkdown !== undefined ? { journalMarkdown } : {})
+          })
+      : undefined;
+
+  const controller = new ResidencyController({
+    arrive: () => arriveDaemonResidency(residencyCtx),
+    ...(commit !== undefined
+      ? {
+          commit,
+          commitIntervalMs: residencyConfig.commitIntervalMs,
+          quarantineWindowMs: residencyConfig.quarantineWindowMs
+        }
+      : {}),
+    maxResidencyMs: residencyConfig.maxResidencyMs,
+    timerMinTranscriptLines: residencyConfig.timerMinTranscriptLines,
+    nowMs: () => Date.parse(clock.now()),
+    timer,
+    sleep: deps.sleep ?? abortableSleep,
+    logger
   });
+  resources.controller = controller;
+  await controller.begin();
 
-  /** Send a signed outbound frame; replies are not queued across reconnect gaps (Ghost contract). */
-  const sendOutbound = (outbound: OutboundFrame): void => {
-    try {
-      wsClient.sendOutbound(outbound);
-    } catch (error: unknown) {
-      if (error instanceof DoorError && error.code === "door_unavailable") {
-        logger.warn({ err: error.message }, "outbound_dropped_ws_down");
-        return;
+  logger.info(
+    {
+      operatorTrigger: residencyConfig.operatorTrigger,
+      maxResidencyMs: residencyConfig.maxResidencyMs,
+      commitIntervalMs: residencyConfig.commitIntervalMs,
+      journalDir: residencyConfig.journalDir
+    },
+    "residency_lifecycle_config"
+  );
+
+  /** Operator trigger (SIGUSR2 / `wanderer depart`): run one cycle and log the outcome. */
+  const requestOperatorCycle = (source: "signal" | "control_dir"): void => {
+    logger.info({ source }, "residency_cycle_requested");
+    void controller.requestCycle("operator").then((outcome) => {
+      logger.info({ source, ...outcome }, "residency_cycle_outcome");
+    });
+  };
+
+  if (residencyConfig.operatorTrigger) {
+    resources.controlWatcher = await watchControlDir({
+      controlDir: residencyConfig.controlDir,
+      timer,
+      onDepartRequest: () => {
+        requestOperatorCycle("control_dir");
+      },
+      onError: (error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        logger.warn({ err: message }, "control_dir_poll_failed");
       }
-      throw error;
-    }
-  };
+    });
+  }
 
-  /** Selective attention: the Wanderer decides to speak, react, or stay quiet. */
-  const handleObserved = async (frame: InboundFrame): Promise<void> => {
-    const result = await session.observe(frame);
-    switch (result.kind) {
-      case "acted":
-        logger.info(
-          {
-            spoke: result.spoke,
-            reacted: result.reacted,
-            batchSize: result.batchSize,
-            notes: result.notes
-          },
-          "attention_acted"
-        );
-        sendOutbound(result.outbound);
-        return;
-      case "silent":
-        logger.info({ batchSize: result.batchSize, notes: result.notes }, "attention_silent");
-        return;
-      case "coalesced":
-        logger.debug("attention_coalesced");
-        return;
-      case "screened":
-        logger.warn({ categories: result.categories }, "inbound_screened");
-        return;
-      case "error":
-        logger.warn({ err: result.error.message }, "inbound_brain_error");
-        return;
-    }
-  };
-
-  /** Legacy door/0.1 behaviour: answer every inbound message. */
-  const handleAlways = async (frame: InboundFrame): Promise<void> => {
-    const result = await session.handleInbound(frame);
-    if (result.ok) {
-      sendOutbound(result.outbound);
-      return;
-    }
-    if ("screened" in result && result.screened) {
-      logger.warn({ categories: result.categories }, "inbound_screened");
-      return;
-    }
-    if ("error" in result) {
-      logger.warn({ err: result.error.message }, "inbound_brain_error");
-    }
-  };
-
-  resources.wsClient = wsClient;
-  await wsClient.connect();
-
-  logger.info({ doorId: config.doorId, epoch: session.epoch }, "residency_live");
   deps.onReady?.();
+
+  const signalHandlers: Array<[NodeJS.Signals, () => void]> = [];
 
   const shutdown = async (): Promise<void> => {
     if (shuttingDown) {
       return;
     }
     shuttingDown = true;
+    for (const [signal, handler] of signalHandlers) {
+      process.removeListener(signal, handler);
+    }
 
+    await readyFileChain;
     await setReadyFile(false);
     const errors = await releaseResources(resources);
     if (errors.length > 0) {
@@ -457,11 +430,34 @@ async function bootResidency(ctx: {
           process.exit(0);
         });
     };
-    process.once("SIGTERM", onSignal);
-    process.once("SIGINT", onSignal);
+    signalHandlers.push(["SIGTERM", onSignal], ["SIGINT", onSignal]);
+    // Always handle SIGUSR2: Node's default action would terminate the daemon (and the
+    // restart would end the residency crash-style) if an operator signals it while the
+    // trigger is off.
+    signalHandlers.push([
+      "SIGUSR2",
+      () => {
+        if (residencyConfig.operatorTrigger) {
+          requestOperatorCycle("signal");
+        } else {
+          logger.warn("residency_cycle_signal_ignored_trigger_disabled");
+        }
+      }
+    ]);
+    for (const [signal, handler] of signalHandlers) {
+      if (signal === "SIGUSR2") {
+        process.on(signal, handler);
+      } else {
+        process.once(signal, handler);
+      }
+    }
   }
 
-  return { shutdown };
+  return {
+    shutdown,
+    requestCycle: (trigger = "operator") => controller.requestCycle(trigger),
+    currentEpoch: () => controller.current?.epoch ?? null
+  };
 }
 
 /**

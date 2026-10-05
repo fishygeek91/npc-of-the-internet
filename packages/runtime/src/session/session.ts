@@ -635,9 +635,10 @@ export class Session {
    * mid-pipeline failure: transcript lines/candidates/journal/review are cached
    * in-process, and already-appended chain records for this residency are skipped.
    *
-   * The journal file is always written to disk; it is not embedded on chain until
-   * a later commit step promotes candidates to `kind: "shard"`. Departure and
-   * travel append even when every shard is rejected.
+   * The journal is generated after host review from the **approved** shards only and
+   * is always written to disk; it is not embedded on chain until a later commit step
+   * promotes candidates to `kind: "shard"`. Departure and travel append even when
+   * every shard is rejected.
    */
   async depart(options: DepartOptions): Promise<DepartResult> {
     if (this.phase === "departed") {
@@ -669,7 +670,6 @@ export class Session {
     // One rejected record per unique screen category (v0.1: count of drops is not preserved).
     const screenCategories = new Set<ScreenCategory>(this.departScreenCategories ?? []);
 
-    const journal = await this.ensureDepartJournal(brain, candidates, options.journalDir);
     const decisions = await this.ensureDepartReviewDecisions(candidates, options);
 
     const approvedSet = new Set<string>();
@@ -681,6 +681,15 @@ export class Session {
         rejectedShardIds.push(decision.shard_id);
       }
     }
+
+    // Privacy: the journal is written from host-approved shards only. It is published
+    // on chain with the first committed shard, so prose the host rejected must never
+    // reach it (it would otherwise leak through the journal's paraphrase).
+    const journal = await this.ensureDepartJournal(
+      brain,
+      candidates.filter((shard) => approvedSet.has(shard.shard_id)),
+      options.journalDir
+    );
 
     const progress = await this.scanDepartChainProgress();
     const approvedShardIds: string[] = [];
