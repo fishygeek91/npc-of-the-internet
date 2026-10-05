@@ -1,5 +1,11 @@
 # @npc/osp-cli
 
+## 0.4.2
+
+### Patch Changes
+
+- @npc/osp-core@0.4.2
+
 ## 0.4.1
 
 ### Patch Changes

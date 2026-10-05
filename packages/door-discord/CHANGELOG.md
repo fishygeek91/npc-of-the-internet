@@ -1,5 +1,13 @@
 # @npc/door-discord
 
+## 0.4.2
+
+### Patch Changes
+
+- 703d8d3: Dependency security floors so the release images pass the Trivy gate: `fastify` ^5.12.2 in atlas-api (CVE-2026-76169, CVE-2026-84428, CVE-2026-84469, CVE-2026-84504; was 5.10.0) and a root `undici@6` override ^6.28.1 for door-discord's discord.js tree (CVE-2026-19534; was 6.27.0). v0.4.1 published only the runtime and backup images.
+  - @npc/osp-core@0.4.2
+  - @npc/door-sdk@0.4.2
+
 ## 0.4.1
 
 ### Patch Changes
