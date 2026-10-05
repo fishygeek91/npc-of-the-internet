@@ -5,6 +5,7 @@ import { loadBrainConfig, type BrainConfig } from "./brain/config.js";
 import { BrainError } from "./brain/errors.js";
 import { DaemonError } from "./daemon-errors.js";
 import { loadReplicationConfig, type ReplicationConfig } from "./replication/config.js";
+import { loadResidencyConfig, type ResidencyConfig } from "./residency/config.js";
 
 const DEFAULT_READY_FILE = "/tmp/npc-runtime.ready";
 
@@ -23,7 +24,8 @@ const daemonConfigSchema = z.object({
   brain: z.custom<BrainConfig>(),
   readyFilePath: z.string().min(1),
   replication: z.custom<ReplicationConfig>(),
-  attentionMode: z.enum(["selective", "always"])
+  attentionMode: z.enum(["selective", "always"]),
+  residency: z.custom<ResidencyConfig>()
 });
 
 /** `NPC_ATTENTION_MODE`: `selective` (default) reads the room; `always` answers every message. */
@@ -96,7 +98,8 @@ function parseDoorPublicKeys(value: string): Readonly<Record<string, Uint8Array>
  * Required: `SOUL_KEY_PATH`, `SOULCHAIN_DIR`, `DOOR_HTTP_HOST`, `DOOR_HTTP_PORT`,
  * `CURRENT_DOOR_ID`, `ATLAS_DOOR_PUBKEYS`, and Brain vars via {@link loadBrainConfig}.
  * Optional: `NPC_RUNTIME_READY_FILE` (defaults to `/tmp/npc-runtime.ready`),
- * `NPC_ATTENTION_MODE` (`selective` default | `always`).
+ * `NPC_ATTENTION_MODE` (`selective` default | `always`), and the residency lifecycle
+ * vars of {@link loadResidencyConfig} (every trigger defaults off).
  */
 export function loadDaemonConfig(env: NodeJS.ProcessEnv = process.env): DaemonConfig {
   const soulKeyPath = requireEnv(env, "SOUL_KEY_PATH");
@@ -130,6 +133,7 @@ export function loadDaemonConfig(env: NodeJS.ProcessEnv = process.env): DaemonCo
 
   const replication = loadReplicationConfig(env);
   const attentionMode = parseAttentionMode(env.NPC_ATTENTION_MODE);
+  const residency = loadResidencyConfig(env);
 
   if (replication.enabled && soulchainIpfsDir === undefined) {
     throw new DaemonError(
@@ -150,7 +154,8 @@ export function loadDaemonConfig(env: NodeJS.ProcessEnv = process.env): DaemonCo
     brain,
     readyFilePath,
     replication,
-    attentionMode
+    attentionMode,
+    residency
   });
 
   if (!result.success) {

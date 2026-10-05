@@ -366,6 +366,29 @@ describe("Session.depart", () => {
     expect(chainResult.valid).toBe(true);
   });
 
+  it("journal is written after review from host-approved shards only (rejected prose never reaches it)", async () => {
+    const store = await buildGenesisStore();
+    const transcriptDir = await makeTempDir("depart-journal-privacy-transcript-");
+    const journalDir = await makeTempDir("depart-journal-privacy-journal-");
+    const source = await writeTranscript(transcriptDir, sampleTranscriptLines());
+
+    const shardTexts = nShards(5);
+    const rejectedText = shardTexts[2] ?? "";
+    const brain = new FakeBrain([shardsJson(shardTexts), SAMPLE_JOURNAL]);
+    const harness = createSessionHarness(store, brain, {
+      rejectShardIds: new Set([shardIdFromText(rejectedText)])
+    });
+    const session = await harness.start();
+    await session.depart({ transcript: source, journalDir });
+
+    const journalCall = brain.calls[1];
+    const journalPrompt = journalCall?.messages.map((message) => message.content).join("\n") ?? "";
+    expect(journalPrompt).not.toContain(rejectedText);
+    for (const text of shardTexts.filter((t) => t !== rejectedText)) {
+      expect(journalPrompt).toContain(text);
+    }
+  });
+
   it("heartbeat in flight during depart does not append after departure", async () => {
     const store = new PausingStore();
     const genesis = await createGenesisRecord(SOUL);

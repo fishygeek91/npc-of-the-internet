@@ -579,6 +579,17 @@ wait a minute, `ssh ghost`, `ghostc ps`.
 behavior, or (post-Gate 2) at the tunnel URL. Until then,
 `ghostc ps` when you think of it.
 
+**Residency cycles** (distill → Discord review → journal → depart → re-arrive) are off
+until you enable them. Manual cycle, after setting `NPC_RESIDENCY_OPERATOR_TRIGGER=1` in
+`ops/.env` and `ghostc up -d runtime`:
+
+```bash
+ghostc exec runtime node dist/cli.js depart
+```
+
+Approve or reject the `Cosign review` posts in Discord within 4 minutes. Details, timers and
+chain verification: [RUNBOOK §7](RUNBOOK.md#7-residency-lifecycle).
+
 ---
 
 ## 10a. IPFS replication (optional, Gate 2 for live push)
@@ -611,6 +622,8 @@ An **empty target list with `NPC_REPLICATION_ENABLED=1`** is valid — the drain
 | `backup` erroring | `rclone lsd ghost-remote:` on the host — if that fails, fix rclone.conf and `ghostc restart backup` |
 | Brain / LLM errors in runtime logs | check API key, provider allowlist (OpenRouter), and that you haven't hit the credit/spend cap |
 | `permission denied` on docker | you skipped the re-login after `usermod -aG docker` |
+| `runtime` `unhealthy` for a few minutes after `depart` | expected travel gap (review + Brain); watch `ghostc logs runtime \| grep residency_` for `residency_cycle_outcome` |
+| `depart` says no daemon picked up the request | `NPC_RESIDENCY_OPERATOR_TRIGGER` not `1` in `ops/.env`, or runtime not running — `ghostc up -d runtime` |
 
 ---
 

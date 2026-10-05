@@ -59,6 +59,14 @@ export type CommitQuarantinedShardsOptions = {
   clock: Clock;
   quarantineWindowMs: number;
   journalMarkdown?: string;
+  /**
+   * When set, only candidates whose record `residency` equals this string
+   * (`door:<door_id>/epoch:<n>`) are considered; candidates from other residencies are
+   * neither committed nor reported. The Door co-signs commits only for the epoch whose
+   * review it holds, so the residency daemon scopes each sweep to the departed epoch —
+   * otherwise one stranded older candidate would fail the whole sweep.
+   */
+  residency?: string;
 };
 
 /** Result of {@link commitQuarantinedShards}. */
@@ -114,6 +122,9 @@ export async function commitQuarantinedShards(
 
   for (const candidate of scan.candidates) {
     const { cid } = candidate;
+    if (options.residency !== undefined && candidate.residency !== options.residency) {
+      continue;
+    }
 
     if (scan.rejectedCandidateCids.has(cid) || scan.committedCandidateCids.has(cid)) {
       skippedCids.push(cid);

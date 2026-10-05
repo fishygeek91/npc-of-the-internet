@@ -24,6 +24,7 @@ import type WebSocket from "ws";
 import { FakeBrain } from "../src/brain/fake-brain.js";
 import type { DaemonConfig } from "../src/daemon-config.js";
 import { loadReplicationConfig } from "../src/replication/config.js";
+import { loadResidencyConfig } from "../src/residency/config.js";
 import { startResidencyDaemon, type ResidencyDaemonDeps } from "../src/daemon.js";
 import { DOOR, SOUL } from "./helpers/fixed-keys.js";
 
@@ -113,7 +114,9 @@ async function createDaemonTestEnv(): Promise<DaemonTestEnv> {
     readyFilePath,
     replication: loadReplicationConfig({}),
     // Legacy door/0.1 behaviour for the existing echo tests; selective mode has its own test.
-    attentionMode: "always"
+    attentionMode: "always",
+    // Residency lifecycle defaults: every trigger off.
+    residency: loadResidencyConfig({})
   };
 
   return {
