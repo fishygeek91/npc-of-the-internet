@@ -1,5 +1,36 @@
 # @npc/door-discord
 
+## 0.5.0
+
+### Minor Changes
+
+- 9af61b4: Per-epoch cosign review state: quarantined shards of a past epoch can now be committed while a later residency is live, so the commit sweep runs on a timer during normal residency with the default 24 h quarantine window.
+
+  **door-sdk** — `Door` no longer clears its cosign review state on arrival. Completed reviews are retained per epoch (bounded by the new `cosignRetention` option: last 16 epochs / 7 days by default) and a commit for a retained past epoch is accepted while a newer residency is live, authenticated by that epoch's review session key; all binding rules (residency `door:<id>/epoch:<reviewed epoch>`, approved text, single-use per `seq`, idempotent identical-core retry) are unchanged. Reviews for a past epoch are `epoch_closed`. A commit for an unretained past epoch returns the new `review_not_retained` (410). New optional `cosignStateStore` (`FileCosignStateStore`: atomic write + fsync; approved text only) persists retained reviews across restarts; a failed save returns `internal_error` and no co-signature. New capability `cosign.past_epochs` (additive door/0.1, lockstep upgrade). `isCosignReviewCompleted` (protected) now takes the epoch. New exports: `FileCosignStateStore`, `CosignStateStore`, `PersistedCosignStateSchema`, `COSIGN_STATE_FILE`, `CosignRetention`, `DEFAULT_COSIGN_RETAIN_EPOCHS`, `DEFAULT_COSIGN_RETAIN_MS`, `CosignCommitResponseSchema`; `Door.getRetainedReviewEpochs()`.
+
+  **door-discord** — advertises `cosign.past_epochs`; new env `DOOR_STATE_DIR` (persist review state; Ghost compose mounts a `door-state` volume at `/data/door-state`), `DOOR_COSIGN_RETAIN_EPOCHS`, `DOOR_COSIGN_RETAIN_MS`.
+
+  **runtime** — `commitQuarantinedShards` signs each commit for the candidate's own epoch (session key re-derived from the soul key) instead of one `epoch` option (removed), ignores candidates of other Doors, adds `journalFor` / `skipCids` options and reports `strandedCids` (`review_not_retained`). With a Door advertising `cosign.past_epochs`, the daemon re-arrives right after departure and commits ripe past-epoch candidates on `NPC_QUARANTINE_COMMIT_INTERVAL_MS` while live (serialized with heartbeat appends; journals read back from `NPC_JOURNAL_DIR`). The config-time `NPC_QUARANTINE_WINDOW_MS ≤ 1 h` refusal is gone; against a legacy Door the daemon keeps the travel-gap sweep and refuses to boot (after `hello`, before any append) with a window over 1 h. New: `Session.withAppendLock`, `LiveResidency.pastEpochCommits` / `withAppendLock`, `ResidencyControllerOptions.commitPending`, `ResidencyDaemonDeps.clock`.
+
+### Patch Changes
+
+- b36d936: Door review fixes (2026-10): WS session server no longer crashes on long close reasons, unmasked/oversized frames (short fixed close reasons, per-socket error listeners, 256 KiB `maxPayload`); attest/commit co-signatures are bound to the request (attestation kind + residency; reviewed shard text via `text_hash`, single-use per chain position); outbound frames are replay- and freshness-checked (`msg_replay`); keycap reactions restricted to `[0-9#*]`. Discord: no mention pings (`allowedMentions` everywhere), 2000-char chunking, `failIfNotExists: false` replies, per-epoch bounded msg-id map, cosign review freshness checked before posting and duplicate reviews joined/rejected, gateway dispatch errors caught and logged.
+- 2d0d30f: Round-2 runtime/Door review fixes (2026-10):
+
+  - Door cosign: `issued_at` freshness is checked once, on receipt; `ReviewGatedDoor` finishes a review via `cosignReceivedFresh` (session/epoch/signature re-verified, clock not), so a host review longer than the 5-minute skew window no longer fails `timestamp_stale` after the shards were posted.
+  - Review retries are matched by `(epoch, session_pubkey, {shard_id, text} set)` instead of the request signature: a re-signed retry joins the in-flight review, and after completion gets the stored signed response instead of `epoch_closed`. A different shard set is still `review_pending` / `epoch_closed`.
+  - Commit: a retry at the same `seq` with a byte-identical `core` returns the stored co-signature (idempotent) instead of `shard_not_approved`; the runtime reuses the core it prepared for a chain position (same `distilled_at`/journal refs) when retrying.
+  - `HttpDoorConnection`: explicit cosign-review timeout (`DEFAULT_COSIGN_REVIEW_TIMEOUT_MS`, 290 s, option `cosignReviewTimeoutMs`); door-discord `DISCORD_REVIEW_TIMEOUT_MS` default lowered to 240 s.
+  - Attention: reasoning tags inside the decision's JSON object (`{"say":"try <think> tags"}`) are content, not reasoning, and no longer erase the answer.
+  - Room log: display names keep their real text (NFKC + invisible/control stripping, grapheme-safe truncation, ZWJ kept inside emoji/complex-script sequences); the immune screen's lossy normalizer is used only for the `YOU` impersonation check.
+
+- Updated dependencies [9af61b4]
+- Updated dependencies [b36d936]
+- Updated dependencies [e9b9e45]
+- Updated dependencies [2d0d30f]
+  - @npc/door-sdk@0.5.0
+  - @npc/osp-core@0.5.0
+
 ## 0.4.3
 
 ### Patch Changes
