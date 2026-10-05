@@ -1,6 +1,7 @@
 import { readdir, readFile } from "node:fs/promises";
 import * as path from "node:path";
 
+import { isValidCid } from "../crypto/cid.js";
 import { CorruptionError, StorageError } from "../errors.js";
 
 import { FileSoulStore } from "./file-soul-store.js";
@@ -20,7 +21,9 @@ import type { OspRecord } from "../schemas/index.js";
  *
  * At open, an empty or lagging mirror is backfilled from the authoritative file store
  * (genesis-seeded volumes and crash-torn dual writes both self-heal). Divergent heads at
- * the same seq remain a fatal error, as does a mirror ahead of the file store. If an IPFS
+ * the same seq remain a fatal error, as does a mirror ahead of the file store (including a
+ * populated mirror behind an empty file store). Blobs tombstoned on the chain are removed
+ * from the mirror at open (erasure reconciliation). If an IPFS
  * append fails after a successful file append at runtime, the error still propagates; the
  * next open repairs the lag.
  */
@@ -48,6 +51,7 @@ export class DualSoulStore implements SoulStore {
 
     await DualSoulStore.backfillMirror(path.resolve(fileDir), fileStore, ipfsStore);
     await DualSoulStore.assertHeadsCompatible(await fileStore.head(), await ipfsStore.head());
+    await DualSoulStore.reconcileErasures(fileStore, ipfsStore);
 
     return new DualSoulStore(fileStore, ipfsStore);
   }
@@ -69,6 +73,7 @@ export class DualSoulStore implements SoulStore {
 
     await DualSoulStore.backfillMirror(path.resolve(fileDir), fileStore, ipfsStore);
     await DualSoulStore.assertHeadsCompatible(await fileStore.head(), await ipfsStore.head());
+    await DualSoulStore.reconcileErasures(fileStore, ipfsStore);
 
     return {
       store: new DualSoulStore(fileStore, ipfsStore),
@@ -165,11 +170,19 @@ export class DualSoulStore implements SoulStore {
     ipfsStore: IpfsSoulStore
   ): Promise<void> {
     const fileHead = await fileStore.head();
+    const ipfsHead = await ipfsStore.head();
     if (fileHead === null) {
+      if (ipfsHead !== null) {
+        // Empty authoritative store with a populated mirror (e.g. file volume lost or
+        // restored empty) is the same authority inversion as mirror-ahead — never open
+        // silently as an empty soul.
+        throw new CorruptionError(
+          `dual-write mirror ahead of authoritative store: ipfs seq ${ipfsHead.seq} vs empty file store`
+        );
+      }
       return;
     }
 
-    const ipfsHead = await ipfsStore.head();
     if (ipfsHead !== null && ipfsHead.seq > fileHead.seq) {
       throw new CorruptionError(
         `dual-write mirror ahead of authoritative store: ipfs seq ${ipfsHead.seq} vs file seq ${fileHead.seq}`
@@ -196,6 +209,10 @@ export class DualSoulStore implements SoulStore {
       return;
     }
     for (const name of blobNames) {
+      // Only CID-named files are blobs (skip e.g. orphan temp files from atomic writes).
+      if (!isValidCid(name)) {
+        continue;
+      }
       let bytes: Uint8Array;
       try {
         bytes = new Uint8Array(await readFile(path.join(fileDir, "blobs", name)));
@@ -203,6 +220,23 @@ export class DualSoulStore implements SoulStore {
         continue;
       }
       await ipfsStore.putSideBlob(bytes);
+    }
+  }
+
+  /**
+   * Erasure reconciliation: every blob tombstoned on the authoritative chain must be absent
+   * from the mirror. `deleteSideBlob` removes the file copy before the mirror copy, so a crash
+   * in between (or a backfill that re-copied the blob) would otherwise leave erased prose in
+   * the IPFS mirror indefinitely.
+   */
+  private static async reconcileErasures(
+    fileStore: FileSoulStore,
+    ipfsStore: IpfsSoulStore
+  ): Promise<void> {
+    for await (const record of fileStore.iterate()) {
+      if (record.type === "tombstone") {
+        await ipfsStore.deleteSideBlob(record.body.blob_cid);
+      }
     }
   }
 

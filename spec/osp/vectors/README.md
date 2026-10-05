@@ -19,7 +19,7 @@ Each `*.json` file contains:
 | Field | Description |
 |-------|-------------|
 | `description` | Human-readable case summary |
-| `expected` | `"valid"` or a `ChainRule` identifier (e.g. `bad_soul_sig`) |
+| `expected` | `"valid"` or a `ChainRule` identifier: `bad_soul_sig`, `broken_prev_link`, `seq_gap`, `schema_violation`, `missing_cosigner`, `forked_head`, `bad_genesis`, `bad_drift_evidence`, `bad_tombstone` (records.md rule 12), `bad_session_continuity`, `presence_conflict` |
 | `soulPublicKey` | Base64url-encoded soul public key (from genesis) |
 | `doorPublicKeys` | Door public keys keyed by residency Door id (e.g. `"discord:g": "<base64url>"`) passed to verification |
 | `records` | Ordered signed OSP records |

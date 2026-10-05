@@ -172,4 +172,49 @@ describe("pin manifest", () => {
       /head must equal the last records entry/
     );
   });
+
+  it("rejects manifest bytes with an unknown key (would verify under a different CID)", async () => {
+    // Review F8.
+    const soul = generateKeypair();
+    const genesisCid = await testCid(0, null, "genesis");
+    const signed = signPinManifest(
+      buildUnsignedPinManifest({
+        headCid: genesisCid,
+        genesisCid,
+        recordCids: [genesisCid],
+        seq: 0,
+        generatedAt: "2026-01-01T00:00:00Z"
+      }),
+      soul.privateKey
+    );
+    const text = new TextDecoder().decode(encodePinManifest(signed));
+    const withExtraKey = new TextEncoder().encode(`${text.slice(0, -1)},"zzz":"x"}`);
+
+    expect(() => decodePinManifest(withExtraKey)).toThrow(SchemaError);
+    expect(() => decodePinManifest(withExtraKey)).toThrow(/not canonical/);
+    // The canonical bytes still decode and verify.
+    const decoded = decodePinManifest(encodePinManifest(signed));
+    await expect(verifyPinManifest(decoded, soul.publicKey)).resolves.toEqual({
+      cid: await computeManifestCid(signed)
+    });
+  });
+
+  it("rejects non-canonical (whitespace) manifest encodings", async () => {
+    const soul = generateKeypair();
+    const genesisCid = await testCid(0, null, "genesis");
+    const signed = signPinManifest(
+      buildUnsignedPinManifest({
+        headCid: genesisCid,
+        genesisCid,
+        recordCids: [genesisCid],
+        seq: 0,
+        generatedAt: "2026-01-01T00:00:00Z"
+      }),
+      soul.privateKey
+    );
+    const text = new TextDecoder().decode(encodePinManifest(signed));
+    const spaced = new TextEncoder().encode(text.replace(',"seq":', ', "seq":'));
+    expect(spaced).not.toEqual(encodePinManifest(signed));
+    expect(() => decodePinManifest(spaced)).toThrow(/not canonical/);
+  });
 });

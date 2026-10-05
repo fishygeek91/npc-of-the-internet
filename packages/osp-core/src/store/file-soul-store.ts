@@ -9,13 +9,21 @@ import { decodePublicKey } from "../encoding/base64url.js";
 import {
   ChainMismatchError,
   CorruptionError,
+  EncodingError,
   SchemaError,
   StorageError,
   VerificationError
 } from "../errors.js";
 import { verifyRecord } from "../record.js";
 import { RecordSchema, type OspRecord } from "../schemas/index.js";
-import { verifyRecords, type VerifyChainResult } from "../verify-chain.js";
+import {
+  appendRejectionError,
+  ChainVerifier,
+  chainVerificationCorruption,
+  verifyRecords,
+  verifyRecordsWithState,
+  type VerifyChainResult
+} from "../verify-chain.js";
 
 import { BlobDir } from "./blob-dir.js";
 import { FileLock } from "./file-lock.js";
@@ -57,6 +65,18 @@ function splitChainLines(buffer: Buffer): Uint8Array[] {
   return lines;
 }
 
+/** Canonicalize parsed on-disk JSON; unrepresentable values (e.g. `__proto__` keys) are corruption. */
+function canonicalizeOrCorrupt(parsed: unknown, cid: string): Uint8Array {
+  try {
+    return canonicalize(parsed);
+  } catch (error) {
+    if (error instanceof EncodingError) {
+      throw new CorruptionError(`non-canonical chain line for CID ${cid}: ${error.message}`);
+    }
+    throw error;
+  }
+}
+
 /**
  * Append-only file-backed soulchain store (JSONL chain + CID-addressed blobs).
  */
@@ -70,6 +90,8 @@ export class FileSoulStore implements SoulStore {
   private headInfo: HeadInfo | null;
   private soulPublicKey: Uint8Array | null;
   private verificationResult: VerifyChainResult;
+  /** Incremental chain-rule state for the on-disk prefix (append-time verification). */
+  private chainVerifier: ChainVerifier;
   private closed: boolean;
 
   private constructor(
@@ -88,6 +110,7 @@ export class FileSoulStore implements SoulStore {
     this.headInfo = head;
     this.soulPublicKey = soulPublicKey;
     this.verificationResult = { valid: true, head };
+    this.chainVerifier = new ChainVerifier(this.verifyOptions());
     this.closed = false;
   }
 
@@ -201,19 +224,25 @@ export class FileSoulStore implements SoulStore {
         );
       }
 
-      let soulPublicKey: Uint8Array;
-      if (validatedRecord.type === "genesis" && validatedRecord.seq === 0) {
-        soulPublicKey = decodePublicKey(validatedRecord.body.soul_pubkey);
-      } else if (this.soulPublicKey === null) {
+      if (validatedRecord.type !== "genesis" && this.soulPublicKey === null) {
         throw new StorageError("soul public key missing for non-empty store");
-      } else {
-        soulPublicKey = this.soulPublicKey;
       }
 
-      await verifyRecord(validatedRecord, {
-        soulPublicKey,
-        ...(this.doorPublicKeys !== undefined ? { doorPublicKeys: this.doorPublicKeys } : {})
-      });
+      // Another store instance may have appended since our load: re-walk the on-disk chain so
+      // the incremental verifier describes exactly the prefix this record extends.
+      if (this.chainVerifier.head?.cid !== this.headInfo?.cid) {
+        await this.rebuildChainVerifier();
+      }
+
+      // Full chain rules (records.md Verification) for the candidate BEFORE any durable write,
+      // so an append can never persist a record that makes the store unopenable.
+      const step = await this.chainVerifier.evaluate(validatedRecord);
+      if (step.recordError !== undefined) {
+        throw step.recordError;
+      }
+      if (step.failures.length > 0) {
+        throw appendRejectionError(step.failures);
+      }
 
       const bytes = canonicalize(validatedRecord);
       const cid = await computeCidFromCanonicalBytes(bytes);
@@ -236,6 +265,7 @@ export class FileSoulStore implements SoulStore {
       }
 
       this.headInfo = { cid, seq: validatedRecord.seq };
+      step.commit();
 
       if (validatedRecord.seq === 0 && validatedRecord.type === "genesis") {
         this.soulPublicKey = decodePublicKey(validatedRecord.body.soul_pubkey);
@@ -544,6 +574,7 @@ export class FileSoulStore implements SoulStore {
       this.headInfo = null;
       this.soulPublicKey = null;
       this.verificationResult = { valid: true, head: null };
+      this.chainVerifier = new ChainVerifier(this.verifyOptions());
       return;
     }
 
@@ -569,28 +600,52 @@ export class FileSoulStore implements SoulStore {
     }
 
     const records = await this.parseChainLineBytes(lineBytesList);
-
-    const verifyOptions: { doorPublicKeys?: Readonly<Record<string, Uint8Array>> } = {};
-    if (this.doorPublicKeys !== undefined) {
-      verifyOptions.doorPublicKeys = this.doorPublicKeys;
-    }
-
-    const verifyResult = await verifyRecords(records, verifyOptions);
+    const { result: verifyResult, verifier } = await verifyRecordsWithState(
+      records,
+      this.verifyOptions()
+    );
     if (!verifyResult.valid) {
-      const firstFailure = verifyResult.failures[0];
-      if (firstFailure !== undefined) {
-        const cidPart = firstFailure.cid === undefined ? "" : ` (cid ${firstFailure.cid})`;
-        throw new CorruptionError(
-          `chain verification failed: ${firstFailure.rule} at seq ${firstFailure.seq}${cidPart}: ${firstFailure.message}`,
-          { failures: verifyResult.failures }
-        );
-      }
-      throw new CorruptionError("chain verification failed", { failures: verifyResult.failures });
+      throw chainVerificationCorruption(verifyResult.failures);
     }
 
     this.headInfo = verifyResult.head;
     this.verificationResult = { valid: true, head: verifyResult.head };
+    this.chainVerifier = verifier;
     this.setSoulPublicKeyFromRecords(records);
+  }
+
+  /**
+   * Re-walk the on-disk chain into a fresh incremental verifier (under the append lock),
+   * after another store instance advanced the head.
+   */
+  private async rebuildChainVerifier(): Promise<void> {
+    let buffer: Buffer;
+    try {
+      buffer = await readFile(this.chainPath);
+    } catch (error) {
+      if (isNodeError(error) && error.code === "ENOENT") {
+        this.chainVerifier = new ChainVerifier(this.verifyOptions());
+        return;
+      }
+      throw new StorageError(`failed to read chain for verification: ${nodeErrorMessage(error)}`);
+    }
+    if (buffer.length > 0 && buffer[buffer.length - 1] !== 0x0a) {
+      throw new CorruptionError("truncated trailing line");
+    }
+    const records = await this.parseChainLineBytes(splitChainLines(buffer));
+    const { result, verifier } = await verifyRecordsWithState(records, this.verifyOptions());
+    if (!result.valid) {
+      throw chainVerificationCorruption(result.failures);
+    }
+    if (result.head?.cid !== this.headInfo?.cid) {
+      throw new CorruptionError("chain head changed while rebuilding append verifier");
+    }
+    this.chainVerifier = verifier;
+  }
+
+  /** Chain verification options derived from the store's Door keys. */
+  private verifyOptions(): { doorPublicKeys?: Readonly<Record<string, Uint8Array>> } {
+    return this.doorPublicKeys === undefined ? {} : { doorPublicKeys: this.doorPublicKeys };
   }
 
   /**
@@ -689,7 +744,7 @@ export class FileSoulStore implements SoulStore {
         );
       }
 
-      const reCanonical = canonicalize(parsed);
+      const reCanonical = canonicalizeOrCorrupt(parsed, cid);
       if (!bytesEqual(lineBytes, reCanonical)) {
         throw new CorruptionError(`non-canonical chain line for CID ${cid}`);
       }
@@ -710,7 +765,7 @@ export class FileSoulStore implements SoulStore {
       throw new CorruptionError(`invalid JSON in chain head: ${nodeErrorMessage(error)}`);
     }
 
-    const reCanonical = canonicalize(parsed);
+    const reCanonical = canonicalizeOrCorrupt(parsed, cid);
     if (!bytesEqual(lineBytes, reCanonical)) {
       throw new CorruptionError(`non-canonical chain line for CID ${cid}`);
     }

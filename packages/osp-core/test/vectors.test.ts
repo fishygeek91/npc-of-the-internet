@@ -21,6 +21,7 @@ const CHAIN_RULES: readonly ChainRule[] = [
   "forked_head",
   "bad_genesis",
   "bad_drift_evidence",
+  "bad_tombstone",
   "bad_session_continuity",
   "presence_conflict"
 ];

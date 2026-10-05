@@ -1,7 +1,7 @@
 import type { ChainFailure } from "./chain-types.js";
 import { computeCid } from "./crypto/cid.js";
 import { decodePublicKey } from "./encoding/base64url.js";
-import { SchemaError, VerificationError } from "./errors.js";
+import { ChainMismatchError, CorruptionError, SchemaError, VerificationError } from "./errors.js";
 import { verifyRecord } from "./record.js";
 import { RecordSchema, type OspRecord } from "./schemas/index.js";
 import type { HeadInfo, SoulStore } from "./store/types.js";
@@ -26,7 +26,7 @@ type ActiveSession = {
   sessionPubkey: string;
 };
 
-/** Mutable PoP presence state walked by {@link collectPresenceFailures}. */
+/** Mutable PoP presence state walked by {@link evaluatePresence}. */
 type PresenceState = {
   /** Open sessions only — departure / travel / newer arrival may close these. */
   activeSessions: Map<number, ActiveSession>;
@@ -155,26 +155,43 @@ async function materializeRecords(
   return [...records];
 }
 
+/** No-op state mutation (evaluation produced nothing to commit). */
+function noop(): void {
+  // intentionally empty
+}
+
+/** Failures for one record plus the deferred state mutation that admits it. */
+type PresenceEvaluation = {
+  failures: ChainFailure[];
+  apply: () => void;
+};
+
 /**
- * Collect PoP continuity and presence-conflict failures for an attestation.
- * Mutates `state.activeSessions` and `state.epochDoors` as the chain advances.
+ * Evaluate PoP continuity and presence-conflict rules for an attestation without mutating
+ * `state`. The returned `apply` advances `activeSessions` / `epochDoors` exactly as the chain
+ * walk requires once the record is admitted.
  */
-function collectPresenceFailures(
+function evaluatePresence(
   record: OspRecord,
   cid: string,
   state: PresenceState
-): ChainFailure[] {
+): PresenceEvaluation {
   if (record.type !== "attestation") {
-    return [];
+    return { failures: [], apply: noop };
   }
 
   const kind = record.body.kind;
   if (kind !== "arrival" && kind !== "heartbeat" && kind !== "departure") {
     if (kind === "travel") {
       // Travel means no live session; clear open epochs only (epoch history is permanent).
-      state.activeSessions.clear();
+      return {
+        failures: [],
+        apply: () => {
+          state.activeSessions.clear();
+        }
+      };
     }
-    return [];
+    return { failures: [], apply: noop };
   }
 
   const failures: ChainFailure[] = [];
@@ -201,7 +218,7 @@ function collectPresenceFailures(
         rule: "presence_conflict",
         message: `second arrival for epoch ${epoch} (epoch already claimed by Door "${recordedDoor}")`
       });
-      return failures;
+      return { failures, apply: noop };
     }
 
     if (openSession !== undefined) {
@@ -211,29 +228,32 @@ function collectPresenceFailures(
         rule: "presence_conflict",
         message: `second arrival for epoch ${epoch} without a prior departure`
       });
-      return failures;
+      return { failures, apply: noop };
     }
 
-    // New epoch retires prior open session keys (pop/0.1 global monotonic epoch).
-    for (const openEpoch of [...state.activeSessions.keys()]) {
-      if (openEpoch < epoch) {
-        state.activeSessions.delete(openEpoch);
+    const sessionPubkey = record.body.session_pubkey;
+    return {
+      failures,
+      apply: () => {
+        // New epoch retires prior open session keys (pop/0.1 global monotonic epoch).
+        for (const openEpoch of [...state.activeSessions.keys()]) {
+          if (openEpoch < epoch) {
+            state.activeSessions.delete(openEpoch);
+          }
+        }
+        state.epochDoors.set(epoch, doorId);
+        state.activeSessions.set(epoch, { doorId, sessionPubkey });
       }
-    }
-
-    state.epochDoors.set(epoch, doorId);
-    state.activeSessions.set(epoch, {
-      doorId,
-      sessionPubkey: record.body.session_pubkey
-    });
-    return failures;
+    };
   }
 
   // Record first door_id for this epoch from heartbeat/departure if somehow first
   // (normally arrival records it). Still useful for conflict detection.
-  if (recordedDoor === undefined) {
-    state.epochDoors.set(epoch, doorId);
-  }
+  const recordDoor = (): void => {
+    if (recordedDoor === undefined) {
+      state.epochDoors.set(epoch, doorId);
+    }
+  };
 
   if (openSession === undefined) {
     failures.push({
@@ -242,7 +262,7 @@ function collectPresenceFailures(
       rule: "bad_session_continuity",
       message: `${kind} for epoch ${epoch} has no matching open arrival attestation`
     });
-    return failures;
+    return { failures, apply: recordDoor };
   }
 
   if (kind === "heartbeat") {
@@ -254,93 +274,149 @@ function collectPresenceFailures(
         message: `heartbeat session_pubkey must match the arrival attestation for epoch ${epoch}`
       });
     }
-    return failures;
+    return { failures, apply: recordDoor };
   }
 
   // departure — close the open session; keep epochDoors for conflict history
-  state.activeSessions.delete(epoch);
-  return failures;
+  return {
+    failures,
+    apply: () => {
+      recordDoor();
+      state.activeSessions.delete(epoch);
+    }
+  };
+}
+
+/** Side-blob CIDs (`text_cid` / `journal_cid`) referenced by an osp/0.2 memory body. */
+function proseBlobRefs(record: OspRecord): readonly string[] {
+  if (record.type !== "memory") {
+    return [];
+  }
+  const body = record.body;
+  const refs: string[] = [];
+  if ("text_cid" in body && typeof body.text_cid === "string") {
+    refs.push(body.text_cid);
+  }
+  if ("journal_cid" in body && typeof body.journal_cid === "string") {
+    refs.push(body.journal_cid);
+  }
+  return refs;
 }
 
 /**
- * Verify an ordered soulchain from an array or async iterable.
- *
- * Structural, cryptographic, and schema rules follow `spec/osp/records.md` Verification.
- * Accepts unknown JSON-shaped records (e.g. from disk) and validates each with {@link RecordSchema}.
- *
- * On `schema_violation`, the walker `continue`s without advancing `previousSeq`/`previousCid`,
- * so later records may also report derived `seq_gap` / `broken_prev_link` noise after the first
- * real failure. Callers that only need a labeled outcome should check rule presence, not assume
- * `failures` is a minimal set.
+ * Result of evaluating one candidate record against the chain prefix held by a
+ * {@link ChainVerifier}. Evaluation never mutates verifier state; call {@link commit}
+ * to admit the record (advance the prefix).
  */
-export async function verifyRecords(
-  records: AsyncIterable<unknown> | readonly unknown[],
-  options?: VerifyChainOptions
-): Promise<VerifyChainResult> {
-  const ordered = await materializeRecords(records);
+export type ChainStep = {
+  /** Chain-rule failures for this record (empty when the record may extend the prefix). */
+  failures: ChainFailure[];
+  /** Schema-parsed record, or null on schema_violation. */
+  record: OspRecord | null;
+  /** CID of the parsed record, or null on schema_violation. */
+  cid: string | null;
+  /**
+   * Original error thrown by {@link verifyRecord} (signature/cosigner/schema), when any.
+   * Stores rethrow it so append keeps its historical error types and messages.
+   */
+  recordError?: unknown;
+  /** Admit the record into the verifier state. */
+  commit: () => void;
+};
 
-  if (ordered.length === 0) {
-    return { valid: true, head: null };
-  }
-
-  const failures: ChainFailure[] = [];
-  const seenSeq = new Set<number>();
-
-  let previousSeq: number | null = null;
-  let previousCid: string | null = null;
-  let soulPublicKey: Uint8Array | null = null;
+/**
+ * Incremental soulchain verifier: the single implementation of `spec/osp/records.md`
+ * Verification rules 1–16 (structural, cryptographic, chain-level schema, drift evidence,
+ * tombstone references, PoP continuity and presence conflicts).
+ *
+ * {@link verifyRecords} walks a whole chain with it; `SoulStore.append` evaluates the
+ * candidate record against the loaded prefix **before** any durable write, so a store can
+ * never persist a record that would make its own chain fail verification on the next open.
+ */
+export class ChainVerifier {
+  private readonly options: VerifyChainOptions | undefined;
+  private index = 0;
+  private previousSeq: number | null = null;
+  private previousCid: string | null = null;
+  private soulPublicKey: Uint8Array | null = null;
   /** Homogeneous chain `spec` from the first successfully parsed record. */
-  let chainSpec: OspRecord["spec"] | null = null;
-  const shardCids = new Set<string>();
-  const presenceState: PresenceState = {
+  private chainSpec: OspRecord["spec"] | null = null;
+  private readonly seenSeq = new Set<number>();
+  private readonly shardCids = new Set<string>();
+  /** Every record CID on the prefix → prose blob CIDs it references (rule 12). */
+  private readonly recordBlobRefs = new Map<string, readonly string[]>();
+  /** Blob CIDs already tombstoned on the prefix (rule 12 re-tombstone allowance). */
+  private readonly tombstonedBlobs = new Set<string>();
+  private readonly presenceState: PresenceState = {
     activeSessions: new Map<number, ActiveSession>(),
     epochDoors: new Map<number, string>()
   };
-  let lastHead: HeadInfo | null = null;
+  private lastHead: HeadInfo | null = null;
 
-  for (let index = 0; index < ordered.length; index += 1) {
-    const raw = ordered[index];
+  constructor(options?: VerifyChainOptions) {
+    this.options = options;
+  }
 
+  /** Head of the admitted prefix, or null when nothing has been admitted. */
+  get head(): HeadInfo | null {
+    return this.lastHead === null ? null : { cid: this.lastHead.cid, seq: this.lastHead.seq };
+  }
+
+  /** Blob CIDs tombstoned on the admitted prefix. */
+  tombstonedBlobCids(): ReadonlySet<string> {
+    return new Set(this.tombstonedBlobs);
+  }
+
+  /**
+   * Evaluate the next record (raw JSON or a parsed record) against the admitted prefix.
+   * Pure with respect to verifier state until the returned step is committed.
+   *
+   * @throws non-chain errors from {@link verifyRecord} (e.g. EncodingError), as before
+   */
+  async evaluate(raw: unknown): Promise<ChainStep> {
+    const index = this.index;
     const parsed = RecordSchema.safeParse(raw);
     if (!parsed.success) {
       const seq =
         typeof raw === "object" && raw !== null && "seq" in raw && typeof raw.seq === "number"
           ? raw.seq
           : index;
-      failures.push({
-        seq,
-        rule: "schema_violation",
-        message: parsed.error.message
-      });
-      continue;
+      return {
+        failures: [{ seq, rule: "schema_violation", message: parsed.error.message }],
+        record: null,
+        cid: null,
+        commit: () => {
+          this.index = index + 1;
+        }
+      };
     }
 
+    const failures: ChainFailure[] = [];
     const record = parsed.data;
-    if (chainSpec === null) {
-      chainSpec = record.spec;
-    } else if (record.spec !== chainSpec) {
+    if (this.chainSpec !== null && record.spec !== this.chainSpec) {
       failures.push({
         seq: record.seq,
         rule: "schema_violation",
-        message: `mixed osp spec versions on one chain (expected ${chainSpec}, found ${record.spec})`
+        message: `mixed osp spec versions on one chain (expected ${this.chainSpec}, found ${record.spec})`
       });
     }
     const cid = await computeCid(record);
 
-    if (seenSeq.has(record.seq)) {
+    const duplicateSeq = this.seenSeq.has(record.seq);
+    if (duplicateSeq) {
       failures.push({
         seq: record.seq,
         cid,
         rule: "forked_head",
         message: `duplicate seq ${record.seq}`
       });
-    } else {
-      seenSeq.add(record.seq);
     }
 
-    failures.push(...collectGenesisFailures(record, index === 0));
+    const isFirstRecord = index === 0;
+    failures.push(...collectGenesisFailures(record, isFirstRecord));
 
-    if (index === 0 && record.type === "genesis" && record.seq === 0) {
+    let soulPublicKey = this.soulPublicKey;
+    if (isFirstRecord && record.type === "genesis" && record.seq === 0) {
       try {
         soulPublicKey = decodePublicKey(record.body.soul_pubkey);
       } catch {
@@ -349,31 +425,31 @@ export async function verifyRecords(
       }
     }
 
-    if (previousSeq !== null && record.seq !== previousSeq + 1) {
+    if (this.previousSeq !== null && record.seq !== this.previousSeq + 1) {
       failures.push({
         seq: record.seq,
         cid,
         rule: "seq_gap",
-        message: `expected seq ${previousSeq + 1}, found ${record.seq}`
+        message: `expected seq ${this.previousSeq + 1}, found ${record.seq}`
       });
     }
 
-    if (previousSeq !== null && previousCid !== null && record.prev !== previousCid) {
+    if (
+      this.previousSeq !== null &&
+      this.previousCid !== null &&
+      record.prev !== this.previousCid
+    ) {
       failures.push({
         seq: record.seq,
         cid,
         rule: "broken_prev_link",
-        message: `prev must equal CID of record at seq ${previousSeq}`
+        message: `prev must equal CID of record at seq ${this.previousSeq}`
       });
-    }
-
-    if (record.type === "memory" && record.body.kind === "shard") {
-      shardCids.add(cid);
     }
 
     if (record.type === "drift") {
       for (const evidenceCid of record.body.evidence) {
-        if (!shardCids.has(evidenceCid)) {
+        if (!this.shardCids.has(evidenceCid)) {
           failures.push({
             seq: record.seq,
             cid,
@@ -384,10 +460,34 @@ export async function verifyRecords(
       }
     }
 
-    failures.push(...collectPresenceFailures(record, cid, presenceState));
+    if (record.type === "tombstone") {
+      const targetRefs = this.recordBlobRefs.get(record.body.target_cid);
+      if (targetRefs === undefined) {
+        failures.push({
+          seq: record.seq,
+          cid,
+          rule: "bad_tombstone",
+          message: `target_cid ${record.body.target_cid} is not an earlier record on this chain`
+        });
+      } else if (
+        !targetRefs.includes(record.body.blob_cid) &&
+        !this.tombstonedBlobs.has(record.body.blob_cid)
+      ) {
+        failures.push({
+          seq: record.seq,
+          cid,
+          rule: "bad_tombstone",
+          message: `blob_cid ${record.body.blob_cid} is not a text_cid/journal_cid of target ${record.body.target_cid} nor a previously tombstoned blob`
+        });
+      }
+    }
 
+    const presence = evaluatePresence(record, cid, this.presenceState);
+    failures.push(...presence.failures);
+
+    let recordError: unknown;
     // Belt-and-suspenders: RecordSchema already rejects empty cosigners for these kinds
-    // (schema_violation + continue), so this branch is unreachable for schema-valid records.
+    // (schema_violation), so this branch is unreachable for schema-valid records.
     if (requiresCosigner(record) && record.cosigners.length === 0) {
       failures.push({
         seq: record.seq,
@@ -404,28 +504,135 @@ export async function verifyRecords(
         soulPublicKey,
         expectedCid: cid
       };
-      if (options?.doorPublicKeys !== undefined) {
-        verifyOptions.doorPublicKeys = options.doorPublicKeys;
+      if (this.options?.doorPublicKeys !== undefined) {
+        verifyOptions.doorPublicKeys = this.options.doorPublicKeys;
       }
 
       try {
         await verifyRecord(record, verifyOptions);
       } catch (error) {
+        recordError = error;
         const mapped = mapVerifyRecordError(record, error);
         failures.push({ ...mapped, cid });
       }
     }
 
-    previousSeq = record.seq;
-    previousCid = cid;
-    lastHead = { cid, seq: record.seq };
+    const step: ChainStep = {
+      failures,
+      record,
+      cid,
+      commit: () => {
+        this.index = index + 1;
+        if (this.chainSpec === null) {
+          this.chainSpec = record.spec;
+        }
+        if (!duplicateSeq) {
+          this.seenSeq.add(record.seq);
+        }
+        if (isFirstRecord) {
+          this.soulPublicKey = soulPublicKey;
+        }
+        if (record.type === "memory" && record.body.kind === "shard") {
+          this.shardCids.add(cid);
+        }
+        this.recordBlobRefs.set(cid, proseBlobRefs(record));
+        if (record.type === "tombstone") {
+          this.tombstonedBlobs.add(record.body.blob_cid);
+        }
+        presence.apply();
+        this.previousSeq = record.seq;
+        this.previousCid = cid;
+        this.lastHead = { cid, seq: record.seq };
+      }
+    };
+    if (recordError !== undefined) {
+      step.recordError = recordError;
+    }
+    return step;
+  }
+}
+
+/**
+ * Walk an ordered chain through a fresh {@link ChainVerifier}, admitting every record
+ * (including failing ones, so later failures are still reported). Returns the result and the
+ * verifier holding the walked prefix — stores keep it for incremental append verification.
+ */
+export async function verifyRecordsWithState(
+  records: AsyncIterable<unknown> | readonly unknown[],
+  options?: VerifyChainOptions
+): Promise<{ result: VerifyChainResult; verifier: ChainVerifier }> {
+  const ordered = await materializeRecords(records);
+  const verifier = new ChainVerifier(options);
+
+  if (ordered.length === 0) {
+    return { result: { valid: true, head: null }, verifier };
+  }
+
+  const failures: ChainFailure[] = [];
+  for (const raw of ordered) {
+    const step = await verifier.evaluate(raw);
+    failures.push(...step.failures);
+    step.commit();
   }
 
   if (failures.length > 0) {
-    return { valid: false, failures };
+    return { result: { valid: false, failures }, verifier };
   }
 
-  return { valid: true, head: lastHead };
+  return { result: { valid: true, head: verifier.head }, verifier };
+}
+
+/**
+ * Convert chain-rule failures for an append candidate into the typed error `append` throws.
+ * Structural rules map to {@link ChainMismatchError}; all other rules to {@link VerificationError}.
+ */
+export function appendRejectionError(failures: readonly ChainFailure[]): Error {
+  const first = failures[0];
+  if (first === undefined) {
+    return new VerificationError("append rejected by chain verification");
+  }
+  const message = `append rejected: ${first.rule} at seq ${first.seq}: ${first.message}`;
+  switch (first.rule) {
+    case "seq_gap":
+    case "broken_prev_link":
+    case "forked_head":
+    case "bad_genesis":
+      return new ChainMismatchError(message);
+    default:
+      return new VerificationError(message);
+  }
+}
+
+/** CorruptionError describing the first chain-verification failure found when a store opens. */
+export function chainVerificationCorruption(failures: readonly ChainFailure[]): CorruptionError {
+  const firstFailure = failures[0];
+  if (firstFailure !== undefined) {
+    const cidPart = firstFailure.cid === undefined ? "" : ` (cid ${firstFailure.cid})`;
+    return new CorruptionError(
+      `chain verification failed: ${firstFailure.rule} at seq ${firstFailure.seq}${cidPart}: ${firstFailure.message}`,
+      { failures }
+    );
+  }
+  return new CorruptionError("chain verification failed", { failures });
+}
+
+/**
+ * Verify an ordered soulchain from an array or async iterable.
+ *
+ * Structural, cryptographic, and schema rules follow `spec/osp/records.md` Verification.
+ * Accepts unknown JSON-shaped records (e.g. from disk) and validates each with {@link RecordSchema}.
+ *
+ * On `schema_violation`, the walker skips the record without advancing `previousSeq`/`previousCid`,
+ * so later records may also report derived `seq_gap` / `broken_prev_link` noise after the first
+ * real failure. Callers that only need a labeled outcome should check rule presence, not assume
+ * `failures` is a minimal set.
+ */
+export async function verifyRecords(
+  records: AsyncIterable<unknown> | readonly unknown[],
+  options?: VerifyChainOptions
+): Promise<VerifyChainResult> {
+  const { result } = await verifyRecordsWithState(records, options);
+  return result;
 }
 
 /**

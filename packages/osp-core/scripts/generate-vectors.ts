@@ -1051,7 +1051,103 @@ async function buildVectors(): Promise<VectorCase[]> {
     records: [chain.genesis.record, chain.arrival.record, tombstoneOnV01]
   };
 
+  // records.md rule 12: tombstone target must be an earlier record on the chain.
+  const orphanShard = await createShardRecordV02(
+    SOUL,
+    DOOR,
+    2,
+    v02Arrival.cid,
+    "A shard that was never appended to this chain."
+  );
+  const orphanBlobCid = Object.keys(orphanShard.blobs)[0];
+  if (orphanBlobCid === undefined) {
+    throw new Error("expected text blob CID for orphan tombstone vector");
+  }
+  const tombstoneMissingTarget = await createTombstoneRecord(
+    SOUL,
+    3,
+    tombstoneShard.result.cid,
+    orphanShard.result.cid,
+    orphanBlobCid,
+    "operator"
+  );
+  const badTombstoneMissingTarget: VectorCase = {
+    filename: "bad-tombstone-missing-target.json",
+    description:
+      "Tombstone target_cid is not an earlier record on the chain (records.md rule 12) — bad_tombstone",
+    expected: "bad_tombstone",
+    soulPublicKey: soulPub,
+    doorPublicKeys: discordDoorKeys,
+    records: [
+      v02Genesis.record,
+      v02Arrival.record,
+      tombstoneShard.result.record,
+      tombstoneMissingTarget.record
+    ]
+  };
+
+  // records.md rule 12: blob_cid must be the target's text_cid/journal_cid (or already tombstoned).
+  const tombstoneWrongBlob = await createTombstoneRecord(
+    SOUL,
+    3,
+    tombstoneShard.result.cid,
+    tombstoneShard.result.cid,
+    orphanBlobCid,
+    "operator"
+  );
+  const badTombstoneBlobMismatch: VectorCase = {
+    filename: "bad-tombstone-blob-mismatch.json",
+    description:
+      "Tombstone blob_cid is not a text_cid/journal_cid of its on-chain target (records.md rule 12) — bad_tombstone",
+    expected: "bad_tombstone",
+    soulPublicKey: soulPub,
+    doorPublicKeys: discordDoorKeys,
+    records: [
+      v02Genesis.record,
+      v02Arrival.record,
+      tombstoneShard.result.record,
+      tombstoneWrongBlob.record
+    ]
+  };
+
+  // Own "__proto__" keys are dropped by assignment-based copies; reject them (schema_violation).
+  const decisionFields = {
+    spec: OSP_SPEC_V01,
+    seq: 2,
+    prev: chain.arrival.cid,
+    type: "decision" as const,
+    body: {
+      decision: "extend_residency",
+      reasoning: "The conversation is still unfolding.",
+      inputs: { a: 1 },
+      decided_at: "2026-01-02T12:00:00.000Z"
+    },
+    residency: RESIDENCY,
+    cosigners: [],
+    soulPrivateKey: SOUL.privateKey
+  };
+  const decision = await createRecord(decisionFields);
+  const decisionWire = JSON.stringify(decision.record);
+  if (!decisionWire.includes('"inputs":{"a":1}')) {
+    throw new Error("unexpected decision wire form for proto-key vector");
+  }
+  const protoKeyDecision = JSON.parse(
+    decisionWire.replace('"inputs":{"a":1}', '"inputs":{"__proto__":{"evil":1},"a":1}')
+  ) as OspRecord;
+  const schemaProtoKey: VectorCase = {
+    filename: "schema-proto-key.json",
+    description:
+      'Decision body.inputs carries an own "__proto__" key (dropped by naive parsing, so record bytes would be malleable) — schema_violation',
+    expected: "schema_violation",
+    soulPublicKey: soulPub,
+    doorPublicKeys: discordDoorKeys,
+    records: [chain.genesis.record, chain.arrival.record, protoKeyDecision]
+  };
+
   return [
+    badTombstoneMissingTarget,
+    badTombstoneBlobMismatch,
+    schemaProtoKey,
     validMiniChain,
     badSoulSig,
     brokenPrevLink,

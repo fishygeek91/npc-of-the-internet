@@ -354,4 +354,111 @@ describe("IpfsSoulStore", () => {
 
     await expect(IpfsSoulStore.open(dir)).rejects.toThrow(CorruptionError);
   });
+
+  it("openWithRecovery clears a LOCK left by a previous incarnation with OUR pid (container PID 1)", async () => {
+    const store = await IpfsSoulStore.open(dir);
+    try {
+      await appendGenesis(store, soul);
+    } finally {
+      await store.close();
+    }
+
+    await writeFile(
+      path.join(dir, LOCK_FILE),
+      `${JSON.stringify({ pid: process.pid, acquiredAt: new Date().toISOString(), nonce: "ab" })}\n`,
+      { flag: "wx" }
+    );
+    const { store: recovered } = await IpfsSoulStore.openWithRecovery(dir);
+    try {
+      expect((await recovered.head())?.seq).toBe(0);
+    } finally {
+      await recovered.close();
+    }
+  });
+
+  it("open rejects a HEAD whose CID disagrees with the seq-index at the same seq", async () => {
+    let genesisCid = "";
+    const store = await IpfsSoulStore.open(dir);
+    try {
+      genesisCid = (await appendGenesis(store, soul)).cid;
+      const memory = await createMemoryCandidateRecord(soul, 1, genesisCid, "head check");
+      await store.append(memory.record);
+    } finally {
+      await store.close();
+    }
+
+    // Same seq as the index tail, wrong CID (points at genesis).
+    const headPath = path.join(dir, "HEAD");
+    await writeFile(headPath, `${JSON.stringify({ cid: genesisCid, seq: 1 })}\n`);
+
+    await expect(IpfsSoulStore.open(dir)).rejects.toThrow(CorruptionError);
+    await expect(IpfsSoulStore.open(dir)).rejects.toThrow(/does not match seq-index/);
+    await expect(IpfsSoulStore.openReadOnly(dir)).rejects.toThrow(CorruptionError);
+    // Recovery never rewrites a HEAD that diverges from the index.
+    await expect(IpfsSoulStore.openWithRecovery(dir)).rejects.toThrow(CorruptionError);
+    expect(JSON.parse(await readFile(headPath, "utf8"))).toEqual({ cid: genesisCid, seq: 1 });
+  });
+
+  it("openWithRecovery verifies the indexed chain BEFORE advancing a stale HEAD", async () => {
+    let genesisCid = "";
+    const store = await IpfsSoulStore.open(dir);
+    try {
+      genesisCid = (await appendGenesis(store, soul)).cid;
+    } finally {
+      await store.close();
+    }
+
+    // Crash-window shape (block + index written, HEAD stale) but the extra record is signed by
+    // a different key: it must not be promoted to HEAD.
+    const intruder = generateKeypair();
+    const forged = await createMemoryCandidateRecord(intruder, 1, genesisCid, "forged");
+    const { FsBlockstore } = await import("blockstore-fs");
+    const { CID } = await import("multiformats/cid");
+    const blockstore = new FsBlockstore(path.join(dir, "blocks"));
+    await blockstore.open();
+    await blockstore.put(CID.parse(forged.cid), canonicalize(forged.record));
+    await blockstore.close();
+    await appendSeqIndex(path.join(dir, SEQ_INDEX_FILE), { seq: 1, cid: forged.cid });
+
+    const headPath = path.join(dir, "HEAD");
+    const headBefore = await readFile(headPath, "utf8");
+    await expect(IpfsSoulStore.openWithRecovery(dir)).rejects.toThrow(/bad_soul_sig/);
+    expect(await readFile(headPath, "utf8")).toBe(headBefore);
+  });
+
+  it("putSideBlob replaces a torn block instead of wedging retries", async () => {
+    const store = await IpfsSoulStore.open(dir);
+    try {
+      await appendGenesis(store, soul);
+      const bytes = new TextEncoder().encode(JSON.stringify("hello world"));
+      const { computeCidFromCanonicalBytes } = await import("../src/crypto/cid.js");
+      const cid = await computeCidFromCanonicalBytes(bytes);
+      const blockPath = resolveBlockPath(path.join(dir, "blocks"), cid);
+      const { mkdir } = await import("node:fs/promises");
+      await mkdir(path.dirname(blockPath), { recursive: true });
+      await writeFile(blockPath, bytes.subarray(0, 3));
+
+      await expect(store.putSideBlob(bytes)).resolves.toEqual({ cid });
+      expect(await store.getSideBlob(cid)).toEqual(bytes);
+      await expect(store.putSideBlob(bytes)).resolves.toEqual({ cid });
+    } finally {
+      await store.close();
+    }
+  });
+
+  it("deleteSideBlob removes the block file and is idempotent", async () => {
+    const store = await IpfsSoulStore.open(dir);
+    try {
+      await appendGenesis(store, soul);
+      const bytes = new TextEncoder().encode(JSON.stringify("erase me"));
+      const { cid } = await store.putSideBlob(bytes);
+      const blockPath = resolveBlockPath(path.join(dir, "blocks"), cid);
+      expect(existsSync(blockPath)).toBe(true);
+      await store.deleteSideBlob(cid);
+      expect(existsSync(blockPath)).toBe(false);
+      await expect(store.deleteSideBlob(cid)).resolves.toBeUndefined();
+    } finally {
+      await store.close();
+    }
+  });
 });
