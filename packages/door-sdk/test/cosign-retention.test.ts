@@ -298,7 +298,7 @@ describe("cosign review retention (cosign.past_epochs)", () => {
   });
 
   it("evicts the lowest epochs beyond maxEpochs and reviews older than maxAgeMs", async () => {
-    expect(DEFAULT_COSIGN_RETAIN_EPOCHS).toBe(16);
+    expect(DEFAULT_COSIGN_RETAIN_EPOCHS).toBe(64);
     const world = newWorld({ retention: { maxEpochs: 2, maxAgeMs: 3_600_000 } });
     for (const epoch of [1, 2, 3]) {
       await residency(world, epoch);
@@ -343,6 +343,10 @@ describe("cosign review retention (cosign.past_epochs)", () => {
     // Restart: new Door process, same state dir, no arrival yet (lastKnownEpoch lost).
     const second = newWorld({ store: new FileCosignStateStore(dir), base: first });
     expect(second.door.getRetainedReviewEpochs()).toEqual([1]);
+    // The arrival replay guard is restored from the retained reviews: a departed epoch
+    // cannot arrive again at the restarted Door.
+    expect(second.door.getLastKnownEpoch()).toBe(1);
+    await expect(attest(second, 1, "arrival")).rejects.toMatchObject({ code: "epoch_replay" });
     await expect(
       second.door.cosign(commitRequest(second, { epoch: 1, index: 2, seq: 11 }))
     ).resolves.toMatchObject({ phase: "commit", shard_id: "shard_02" });
@@ -365,6 +369,14 @@ describe("cosign review retention (cosign.past_epochs)", () => {
     await expect(
       second.door.cosign(commitRequest(second, { epoch: 1, index: 3, seq: 12 }))
     ).resolves.toMatchObject({ phase: "commit", shard_id: "shard_03" });
+  });
+
+  it("assertWritable fails fast on an unwritable state dir and passes on a fresh one", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "door-state-probe-"));
+    expect(() => new FileCosignStateStore(join(dir, "fresh")).assertWritable()).not.toThrow();
+    const blocker = join(dir, "not-a-dir");
+    await writeFile(blocker, "x");
+    expect(() => new FileCosignStateStore(blocker).assertWritable()).toThrow(/not writable/);
   });
 
   it("refuses persisted state of another door or a corrupt file", async () => {

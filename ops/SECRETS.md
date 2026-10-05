@@ -52,7 +52,7 @@ Environment variable names and purposes only. **Never commit values.**
 | `DISCORD_COMMUNITY_NAME` | Human-readable community name advertised by the Door (public config). |
 | `DISCORD_COMMUNITY_DESCRIPTION` | Short community description for the Door (public config). |
 | `DOOR_STATE_DIR` | Directory where door-discord persists per-epoch cosign review state (`cosign-state.json`: approved shard texts, review session public keys, issued commit co-signatures — no secrets). Unset = in memory only (lost on restart). Ghost compose pins `/data/door-state` on the `door-state` volume. Public config. |
-| `DOOR_COSIGN_RETAIN_EPOCHS` | Reviewed epochs whose cosign review door-discord retains for past-epoch commits (default `16`). |
+| `DOOR_COSIGN_RETAIN_EPOCHS` | Reviewed epochs whose cosign review door-discord retains for past-epoch commits (default `64`). Must exceed `NPC_QUARANTINE_WINDOW_MS / NPC_RESIDENCY_MAX_MS` with margin, or ripening candidates are evicted before they can commit. |
 | `DOOR_COSIGN_RETAIN_MS` | Max age of a retained cosign review in ms (default `604800000` — 7 days). Keep well above `NPC_QUARANTINE_WINDOW_MS`. |
 | `DOOR_HTTP_HOST` / `DOOR_HTTP_PORT` | Door **listen** address for REST + WebSocket on a single coalesced port. door-discord binds `0.0.0.0:9090` in Ghost compose. runtime **connects** to `door-discord:9090` on the internal Docker network. Not published to the host by default. |
 | `NPC_RUNTIME_READY_FILE` | Path written when the residency WebSocket is live (default `/tmp/npc-runtime.ready`). Used by compose healthcheck; optional override. |

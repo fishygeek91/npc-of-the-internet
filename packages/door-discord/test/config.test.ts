@@ -31,7 +31,7 @@ describe("loadDiscordDoorConfig", () => {
   it("cosign review retention: in-memory by default, DOOR_STATE_DIR enables persistence", () => {
     const defaults = loadDiscordDoorConfig(baseEnv());
     expect(defaults.stateDir).toBeUndefined();
-    expect(defaults.cosignRetainEpochs).toBe(16);
+    expect(defaults.cosignRetainEpochs).toBe(64);
     expect(defaults.cosignRetainMs).toBe(604_800_000);
 
     const configured = loadDiscordDoorConfig({

@@ -174,7 +174,7 @@ function parseSoulPublicKey(raw: string): Uint8Array {
  * review must not silently endorse memories).
  *
  * Cosign review retention: `DOOR_STATE_DIR` (optional; when set, completed reviews are
- * persisted there and survive a restart), `DOOR_COSIGN_RETAIN_EPOCHS` (default 16),
+ * persisted there and survive a restart), `DOOR_COSIGN_RETAIN_EPOCHS` (default 64),
  * `DOOR_COSIGN_RETAIN_MS` (default 7 days).
  *
  * @param env - Environment map; defaults to `process.env`. Inject a plain object in tests.

@@ -609,7 +609,7 @@ returns `present` with the new epoch.
 Promoting a candidate needs a Door co-signature over the commit envelope, and the Door only
 co-signs for an epoch whose review it still holds. door-discord advertises `cosign.past_epochs`:
 it keeps every completed review **per epoch** — not reset on arrival — for the last
-`DOOR_COSIGN_RETAIN_EPOCHS` (default 16) reviewed epochs and at most `DOOR_COSIGN_RETAIN_MS`
+`DOOR_COSIGN_RETAIN_EPOCHS` (default 64; keep it above `NPC_QUARANTINE_WINDOW_MS / NPC_RESIDENCY_MAX_MS` with margin) reviewed epochs and at most `DOOR_COSIGN_RETAIN_MS`
 (default 7 days), and persists it in `DOOR_STATE_DIR` (`/data/door-state`, named volume
 `door-state` in Ghost compose) so a door-discord restart or upgrade keeps it. So the runtime
 commits past epochs **while the next residency is live**:

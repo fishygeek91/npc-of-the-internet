@@ -181,6 +181,16 @@ describe("FileLock", () => {
     expect(existsSync(lockPath)).toBe(false);
   });
 
+  it("treats a legacy PID-1 lock as stale when this process is not PID 1 (compose init)", async () => {
+    // v0.4.3 ran node as container PID 1; under `init: true` PID 1 is tini, which is alive
+    // but never holds a store lock.
+    const meta = JSON.stringify({ pid: 1, acquiredAt: new Date().toISOString() });
+    await writeFile(lockPath, `${meta}\n`, { flag: "wx" });
+
+    await new FileLock(lockPath, { isProcessAlive: () => true }).clearStale();
+    expect(existsSync(lockPath)).toBe(false);
+  });
+
   it("uses an injected liveness probe for other PIDs", async () => {
     const meta = JSON.stringify({
       pid: 424_242,

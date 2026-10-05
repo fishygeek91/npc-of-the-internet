@@ -289,7 +289,7 @@ import {
 
 ### v0.1 constraints
 
-- **Door review retention:** the Door co-signs only while it retains the epoch's review: door-sdk keeps it per epoch (default 16 epochs / 7 days; durable with a `cosignStateStore`, e.g. door-discord `DOOR_STATE_DIR`). Candidates whose review is gone come back in `strandedCids`.
+- **Door review retention:** the Door co-signs only while it retains the epoch's review: door-sdk keeps it per epoch (default 64 epochs / 7 days; durable with a `cosignStateStore`, e.g. door-discord `DOOR_STATE_DIR`). Candidates whose review is gone come back in `strandedCids`.
 - **All-rejected gap:** if every candidate is rejected or flagged, no shard ever commits and the residency journal never reaches the chain — it remains on disk only until a future task wires journal-only persistence.
 - **Journal attach:** pass `journalMarkdown` (one residency) until a commit run reports `journalAttached: true`, then stop — or `journalFor(residency)` for runs spanning several residencies. Attachment is chain-aware (at most one journal-bearing shard per residency).
 - **Screen drop dedup:** depart emits one `memory.rejected` per unique immune-screen category; the *count* of drops sharing a category is not preserved.

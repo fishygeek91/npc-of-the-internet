@@ -56,7 +56,7 @@ export const DEFAULT_MAX_ISSUED_AT_SKEW_MS = 300_000;
 export const OUTBOUND_MSG_ID_MEMORY = 10_000;
 
 /** Default number of reviewed epochs whose cosign review state a Door retains (16). */
-export const DEFAULT_COSIGN_RETAIN_EPOCHS = 16;
+export const DEFAULT_COSIGN_RETAIN_EPOCHS = 64;
 
 /** Default maximum age of a retained cosign review (7 days, by review completion time). */
 export const DEFAULT_COSIGN_RETAIN_MS = 7 * 24 * 60 * 60 * 1000;
@@ -1271,6 +1271,13 @@ export class Door {
         reviewKey: null,
         reviewResponse: null
       });
+    }
+    // Arrival replay guard survives a restart: no epoch at or below a reviewed (hence
+    // departed) epoch may arrive again, and past-epoch commits keep their 410 semantics.
+    for (const entry of parsed.data.epochs) {
+      if (this.lastKnownEpoch === null || entry.epoch > this.lastKnownEpoch) {
+        this.lastKnownEpoch = entry.epoch;
+      }
     }
   }
 
