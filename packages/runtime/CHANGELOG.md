@@ -1,5 +1,54 @@
 # @npc/runtime
 
+## 0.5.0
+
+### Minor Changes
+
+- 9af61b4: Per-epoch cosign review state: quarantined shards of a past epoch can now be committed while a later residency is live, so the commit sweep runs on a timer during normal residency with the default 24 h quarantine window.
+
+  **door-sdk** — `Door` no longer clears its cosign review state on arrival. Completed reviews are retained per epoch (bounded by the new `cosignRetention` option: last 16 epochs / 7 days by default) and a commit for a retained past epoch is accepted while a newer residency is live, authenticated by that epoch's review session key; all binding rules (residency `door:<id>/epoch:<reviewed epoch>`, approved text, single-use per `seq`, idempotent identical-core retry) are unchanged. Reviews for a past epoch are `epoch_closed`. A commit for an unretained past epoch returns the new `review_not_retained` (410). New optional `cosignStateStore` (`FileCosignStateStore`: atomic write + fsync; approved text only) persists retained reviews across restarts; a failed save returns `internal_error` and no co-signature. New capability `cosign.past_epochs` (additive door/0.1, lockstep upgrade). `isCosignReviewCompleted` (protected) now takes the epoch. New exports: `FileCosignStateStore`, `CosignStateStore`, `PersistedCosignStateSchema`, `COSIGN_STATE_FILE`, `CosignRetention`, `DEFAULT_COSIGN_RETAIN_EPOCHS`, `DEFAULT_COSIGN_RETAIN_MS`, `CosignCommitResponseSchema`; `Door.getRetainedReviewEpochs()`.
+
+  **door-discord** — advertises `cosign.past_epochs`; new env `DOOR_STATE_DIR` (persist review state; Ghost compose mounts a `door-state` volume at `/data/door-state`), `DOOR_COSIGN_RETAIN_EPOCHS`, `DOOR_COSIGN_RETAIN_MS`.
+
+  **runtime** — `commitQuarantinedShards` signs each commit for the candidate's own epoch (session key re-derived from the soul key) instead of one `epoch` option (removed), ignores candidates of other Doors, adds `journalFor` / `skipCids` options and reports `strandedCids` (`review_not_retained`). With a Door advertising `cosign.past_epochs`, the daemon re-arrives right after departure and commits ripe past-epoch candidates on `NPC_QUARANTINE_COMMIT_INTERVAL_MS` while live (serialized with heartbeat appends; journals read back from `NPC_JOURNAL_DIR`). The config-time `NPC_QUARANTINE_WINDOW_MS ≤ 1 h` refusal is gone; against a legacy Door the daemon keeps the travel-gap sweep and refuses to boot (after `hello`, before any append) with a window over 1 h. New: `Session.withAppendLock`, `LiveResidency.pastEpochCommits` / `withAppendLock`, `ResidencyControllerOptions.commitPending`, `ResidencyDaemonDeps.clock`.
+
+- b0f5c3f: Residency lifecycle in the production daemon (reside → distill → publish → move). A new `ResidencyController` owns the live residency and runs a cycle: close the session socket (travel-gap inbound is dropped, never queued) → `Session.depart` (distill the live transcript, host cosign review, candidate/rejected records, journal to `NPC_JOURNAL_DIR`, departure + travel) → optional commit sweep of the departed epoch → re-arrival at the same Door under `epoch + 1` with a new session socket. Depart failures retry, then abandon crash-style so the Wanderer is never stranded; re-arrival retries with backoff; single-flight; SIGTERM aborts cleanly.
+
+  All triggers default **off**: `NPC_RESIDENCY_OPERATOR_TRIGGER` (SIGUSR2 or the new `wanderer depart` command, which drops a request into `NPC_CONTROL_DIR`), `NPC_RESIDENCY_MAX_MS` timer (≥ 1 h, waits for `NPC_RESIDENCY_MIN_LINES`), and `NPC_QUARANTINE_COMMIT_INTERVAL_MS` commit sweep (runs in the travel gap because the Door forgets an epoch's review on the next arrival; requires `NPC_QUARANTINE_WINDOW_MS` ≤ 1 h). SIGUSR2 is now always handled, so a stray signal no longer terminates the daemon.
+
+  `Session.depart` now writes the journal after host review from approved shards only, so rejected prose cannot reach the published journal. `commitQuarantinedShards` accepts a `residency` scope. New exports: `ResidencyController`, `loadResidencyConfig`, control-dir helpers; `ResidencyDaemonHandle` gains `requestCycle()` / `currentEpoch()`.
+
+### Patch Changes
+
+- 2d0d30f: Round-2 runtime/Door review fixes (2026-10):
+
+  - Door cosign: `issued_at` freshness is checked once, on receipt; `ReviewGatedDoor` finishes a review via `cosignReceivedFresh` (session/epoch/signature re-verified, clock not), so a host review longer than the 5-minute skew window no longer fails `timestamp_stale` after the shards were posted.
+  - Review retries are matched by `(epoch, session_pubkey, {shard_id, text} set)` instead of the request signature: a re-signed retry joins the in-flight review, and after completion gets the stored signed response instead of `epoch_closed`. A different shard set is still `review_pending` / `epoch_closed`.
+  - Commit: a retry at the same `seq` with a byte-identical `core` returns the stored co-signature (idempotent) instead of `shard_not_approved`; the runtime reuses the core it prepared for a chain position (same `distilled_at`/journal refs) when retrying.
+  - `HttpDoorConnection`: explicit cosign-review timeout (`DEFAULT_COSIGN_REVIEW_TIMEOUT_MS`, 290 s, option `cosignReviewTimeoutMs`); door-discord `DISCORD_REVIEW_TIMEOUT_MS` default lowered to 240 s.
+  - Attention: reasoning tags inside the decision's JSON object (`{"say":"try <think> tags"}`) are content, not reasoning, and no longer erase the answer.
+  - Room log: display names keep their real text (NFKC + invisible/control stripping, grapheme-safe truncation, ZWJ kept inside emoji/complex-script sequences); the immune screen's lossy normalizer is used only for the `YOU` impersonation check.
+
+- e2023c8: Runtime review fixes (2026-10):
+
+  - Attention prompt: untrusted room text is substituted with a single-pass replacer function, so `` $` ``, `$'`, `$&` and `$$` in a message can no longer expand into a forged left-edge room-log entry. The distiller retry prompt uses a replacer function too.
+  - Attention decisions: `<think>…</think>` (and similar) reasoning is stripped before parsing; the last balanced top-level JSON object that matches the decision shape wins; unparseable output is only spoken when it is plain prose with no `{` and no reasoning marker, so reasoning or broken JSON is never sent to the room.
+  - Depart waits for an in-flight inbound decision, and `observe` / `handleInbound` drop a Brain result that lands after `stop()` (no transcript record, no signed outbound).
+  - Replication drain: `stop()` awaits the tick that is actually running (concurrent ticks join it); CAR uploads abort after a configurable timeout (`DEFAULT_CAR_UPLOAD_TIMEOUT_MS`, 120 s).
+  - Room log: display names are NFKC-normalized, stripped of control/format/line-separator characters, and can never render as `YOU` (`YOU.`, `ＹＯＵ`, `Y O U`, …); continuation lines are indented after every Unicode line break.
+  - Selective attention keeps observed entries (and their `addressed` flag) in the pending batch even when a burst evicts them from the bounded room log mid-decision.
+  - Distill measures shard length in UTF-16 units (what the Door's `CandidateShardSchema` enforces), so emoji-heavy shards no longer abort departure.
+  - Daemon: a boot failure after the store opens releases the WS client, session timer, replication drain and store; shutdown runs every step even if one throws.
+
+- Updated dependencies [9af61b4]
+- Updated dependencies [b36d936]
+- Updated dependencies [17be3cb]
+- Updated dependencies [e9b9e45]
+- Updated dependencies [2d0d30f]
+  - @npc/door-sdk@0.5.0
+  - @npc/immune@0.5.0
+  - @npc/osp-core@0.5.0
+
 ## 0.4.3
 
 ### Patch Changes

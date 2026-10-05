@@ -1,5 +1,14 @@
 # @npc/atlas-site
 
+## 0.5.0
+
+### Patch Changes
+
+- Updated dependencies [17be3cb]
+- Updated dependencies [e9b9e45]
+  - @npc/atlas@0.5.0
+  - @npc/osp-core@0.5.0
+
 ## 0.4.3
 
 ### Patch Changes

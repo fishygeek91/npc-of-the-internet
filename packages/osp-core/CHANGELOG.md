@@ -1,5 +1,13 @@
 # @npc/osp-core
 
+## 0.5.0
+
+### Patch Changes
+
+- e9b9e45: Harden the soulchain stores and verifier from the October osp-core review: a stale append lock left by a restarted container (same PID 1) no longer blocks recovery; `append` now enforces the full chain rules before writing, so it can never persist a record that makes the store unopenable; tombstones must reference an on-chain record and its blob (new `bad_tombstone` rule + vectors); torn blob/block files are replaced atomically; erased blobs are reconciled out of the IPFS mirror; `"__proto__"` keys are rejected; Ed25519 verification is strict RFC 8032; pin manifests must be canonical; an empty authoritative store with a populated mirror is refused; and IPFS `HEAD` is checked against (and repaired only after verifying) the seq-index.
+
+  Round 2: the append lock now records the holder's hostname and process start time, so a live lock held by a worker thread, a second module instance, or another container sharing the volume is no longer stolen (a same-host, same-PID lock from a previous process is still cleared; a lock from another hostname cannot be probed and counts as live until it is an hour old; v0.4.3 locks keep the old behaviour); the IPFS mirror keeps an erased blob that a later live record re-put (it follows the file store); orphaned temp files older than an hour are removed from `blobs/` and the IPFS blockstore on writable open; new strict RFC 8032 vector `bad-soul-sig-small-order-key`. **Upgrade gate:** strict tombstone rule 12, `"__proto__"` rejection and strict RFC 8032 apply retroactively — run the new release's `osp verify` against a snapshot before switching `NPC_IMAGE_TAG` and do not deploy if it fails (RUNBOOK §4.3.1).
+
 ## 0.4.3
 
 ## 0.4.2
