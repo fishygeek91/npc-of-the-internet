@@ -128,7 +128,7 @@ const shards: CandidateShard[] = await distillTranscripts(source, brain, {
 
 Prompt templates live at `src/prompts/distiller/` (TS string constants, strategy a).
 
-**Behavior:** each transcript line passes through `@npc/immune` `screenText` before the Brain call — failing lines are dropped and `onScreenReject` is notified (category only, never payload text); Zod-parse Brain JSON (`{ shards: [{ text, tags? }] }`); one malformed-output retry; empty or over-length shards dropped (≤500 Unicode code points — reject, not truncate); output shards are screened again with optional PII allowlist; failures use `DistillError` reason `"screen_reject"` with `categories` (never payload text); the transcript source is destroyed after a successful read (success or failure) so raw transcripts do not linger on disk.
+**Behavior:** each transcript line passes through `@npc/immune` `screenText` before the Brain call — failing lines are dropped and `onScreenReject` is notified (category only, never payload text); Zod-parse Brain JSON (`{ shards: [{ text, tags? }] }`); one malformed-output retry; empty or over-length shards dropped (≤500 UTF-16 code units, i.e. `String.length` — what the Door's `CandidateShardSchema` enforces, and never more than the spec's 500 code points; reject, not truncate); output shards are screened again with optional PII allowlist; failures use `DistillError` reason `"screen_reject"` with `categories` (never payload text); the transcript source is destroyed after a successful read (success or failure) so raw transcripts do not linger on disk.
 
 **Out of scope:** soulchain append (callers append `memory.candidate` at depart; see Quarantine T3.2).
 
@@ -212,7 +212,7 @@ import { Session, move, type DepartOptions } from "@npc/runtime";
 
 ### `Session.depart`
 
-Call on a live session to end the residency. Enters a `departing` phase immediately (`stop()` + `await drainAppends()` — no further heartbeats or inbound handling). Safe to retry after a mid-pipeline failure until `travel` is appended (`departed`); transcript lines, candidates, journal, and review decisions are cached in-process across retries. The transcript is read once then destroyed; subsequent distill attempts use `MemoryTranscriptSource` over the cached lines. Retry is **in-process only** — a process crash mid-depart cannot re-read the destroyed transcript (privacy deliberately wins over durability).
+Call on a live session to end the residency. Enters a `departing` phase immediately (`stop()` + `await drainAppends()` — no further heartbeats or inbound handling — then it waits for any in-flight inbound decision to settle; a Brain reply that lands after `stop()` is dropped, never recorded or signed). Safe to retry after a mid-pipeline failure until `travel` is appended (`departed`); transcript lines, candidates, journal, and review decisions are cached in-process across retries. The transcript is read once then destroyed; subsequent distill attempts use `MemoryTranscriptSource` over the cached lines. Retry is **in-process only** — a process crash mid-depart cannot re-read the destroyed transcript (privacy deliberately wins over durability).
 
 Order of operations:
 
@@ -354,4 +354,4 @@ Or after install: `npc-runtime` (bin in `@npc/runtime`). Ghost image `CMD` is `n
 
 Selective-mode logs (info): `attention_config` at boot (mode, whether the Door supports reactions), then `attention_acted` (`spoke`, `reacted`, `batchSize`, `notes`) or `attention_silent` (`batchSize`, `notes` e.g. `floor_guard`) per decision. Silence is expected and is not an error.
 
-Graceful shutdown (SIGTERM/SIGINT): remove ready file → close WS → `session.stop()` → `drainAppends()` → `store.close()` → exit 0.
+Graceful shutdown (SIGTERM/SIGINT): remove ready file → close WS → `session.stop()` → `drainAppends()` → stop replication drain → `store.close()` → exit 0. Each step runs even if an earlier one throws (the first error is rethrown after all steps). A boot failure after the store is opened (Door hello, session start, WS connect) releases what was acquired — WS client, session timer, replication drain, store — before rethrowing.

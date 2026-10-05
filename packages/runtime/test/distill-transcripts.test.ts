@@ -2,6 +2,7 @@ import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { CandidateShardSchema } from "@npc/door-sdk";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { FakeBrain } from "../src/brain/fake-brain.js";
@@ -133,6 +134,23 @@ describe("distillTranscripts", () => {
     expect(result).toHaveLength(5);
     expect(result.map((shard) => shard.text)).toEqual(texts.slice(0, 5));
     await expectFileDestroyed(source.path);
+  });
+
+  it("measures shard length in UTF-16 units like the Door schema (emoji-heavy shards)", async () => {
+    const dir = await makeTempDir();
+    const source = await writeTranscript(dir, sampleLines);
+    // 2 ASCII + 249 astral emoji = 251 code points but 500 UTF-16 units: exactly at the limit.
+    const atLimit = Array.from({ length: 5 }, (_, index) => `${String(index)}a${"🌄".repeat(249)}`);
+    // 251 emoji = 251 code points (passes a code-point count) but 502 units (Door rejects).
+    const overLimit = "🌄".repeat(251);
+    const brain = new FakeBrain([shardsJson([...atLimit, overLimit])]);
+
+    const result = await distillTranscripts(source, brain);
+
+    expect(result.map((shard) => shard.text)).toEqual(atLimit);
+    for (const shard of result) {
+      expect(CandidateShardSchema.safeParse(shard).success).toBe(true);
+    }
   });
 
   it("throws too_few_shards when length filtering leaves fewer than five shards", async () => {

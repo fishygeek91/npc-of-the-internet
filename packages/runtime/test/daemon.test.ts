@@ -24,7 +24,7 @@ import type WebSocket from "ws";
 import { FakeBrain } from "../src/brain/fake-brain.js";
 import type { DaemonConfig } from "../src/daemon-config.js";
 import { loadReplicationConfig } from "../src/replication/config.js";
-import { startResidencyDaemon } from "../src/daemon.js";
+import { startResidencyDaemon, type ResidencyDaemonDeps } from "../src/daemon.js";
 import { DOOR, SOUL } from "./helpers/fixed-keys.js";
 
 const DOOR_ID = "discord:daemon-test";
@@ -145,6 +145,24 @@ function waitForReadyFile(path: string, timeoutMs = 5000): Promise<void> {
     };
     check();
   });
+}
+
+/** File-store opener that counts `close()` calls (boot-failure leak checks). */
+function countingOpenStore(closed: {
+  count: number;
+}): NonNullable<ResidencyDaemonDeps["openStore"]> {
+  return async (dir, options) => {
+    const opened = await FileSoulStore.openWithRecovery(dir, {
+      doorPublicKeys: options.doorPublicKeys
+    });
+    const store = opened.store;
+    const originalClose = store.close.bind(store);
+    store.close = async (): Promise<void> => {
+      closed.count += 1;
+      await originalClose();
+    };
+    return opened;
+  };
 }
 
 describe("startResidencyDaemon", () => {
@@ -345,5 +363,35 @@ describe("startResidencyDaemon", () => {
     }
 
     await handle.shutdown();
+  });
+  it("closes the store when boot fails at Door hello (door id mismatch)", async () => {
+    const closed = { count: 0 };
+    await expect(
+      startResidencyDaemon(
+        { ...env.config, doorId: "discord:someone-else" },
+        {
+          brain: new FakeBrain([]),
+          logger: pino({ level: "silent" }),
+          skipSignals: true,
+          openStore: countingOpenStore(closed)
+        }
+      )
+    ).rejects.toThrow(/mismatch/);
+    expect(closed.count).toBe(1);
+  });
+
+  it("stops the session and closes the store when the session WebSocket cannot connect", async () => {
+    await env.wsServer.stop();
+    const closed = { count: 0 };
+    await expect(
+      startResidencyDaemon(env.config, {
+        brain: new FakeBrain([]),
+        logger: pino({ level: "silent" }),
+        skipSignals: true,
+        openStore: countingOpenStore(closed)
+      })
+    ).rejects.toThrow();
+    expect(closed.count).toBe(1);
+    await expect(readFile(env.readyFilePath, "utf8")).rejects.toThrow();
   });
 });

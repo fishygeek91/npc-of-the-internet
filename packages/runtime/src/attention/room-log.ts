@@ -1,3 +1,5 @@
+import { normalizeScreenText } from "@npc/immune";
+
 /** Who said a room-log line. */
 export type RoomSpeaker = { kind: "human"; authorId: string; display: string } | { kind: "self" };
 
@@ -20,28 +22,46 @@ const DISPLAY_MAX = 32;
 const SELF_LABEL = "YOU";
 
 /**
+ * True when a (normalized) display name reads as the self marker: its letters alone spell
+ * "you" (`YOU.`, `Y-O-U`) or its first word is "you" (`YOU (real)`). Case-insensitive.
+ */
+function impersonatesSelf(display: string): boolean {
+  const words = display
+    .toLowerCase()
+    .split(/[^\p{L}]+/u)
+    .filter((word) => word.length > 0);
+  const marker = SELF_LABEL.toLowerCase();
+  return words[0] === marker || words.join("") === marker;
+}
+
+/**
  * Sanitize an untrusted display name for a single-line log label.
- * Strips separators the log format relies on and refuses names that impersonate `YOU`.
+ * NFKC-normalizes and drops format characters (as the immune screen does, so fullwidth
+ * `ＹＯＵ` folds to `YOU`), turns control/line-separator characters and the separators the
+ * log format relies on into spaces, and refuses names that impersonate `YOU`.
  */
 export function sanitizeDisplay(raw: string | undefined): string {
   if (raw === undefined) {
     return "someone";
   }
-  const cleaned = raw
-    .replace(/[\r\n\t#:[\]]/gu, " ")
+  const cleaned = normalizeScreenText(raw)
+    .replace(/[\p{Cc}\p{Zl}\p{Zp}#:[\]]/gu, " ")
     .replace(/\s+/gu, " ")
     .trim()
     .slice(0, DISPLAY_MAX)
     .trim();
-  if (cleaned.length === 0 || cleaned.toUpperCase() === SELF_LABEL) {
+  if (cleaned.length === 0 || impersonatesSelf(cleaned)) {
     return "someone";
   }
   return cleaned;
 }
 
-/** Indent continuation lines so a message can never forge a `#n` log entry. */
+/**
+ * Indent continuation lines so a message can never forge a `#n` log entry. Every Unicode
+ * line break (incl. VT/FF/NEL/LS/PS, which some tokenizers render as newlines) counts.
+ */
 function indentContinuations(text: string): string {
-  return text.replace(/\r\n?|\n/gu, "\n    ");
+  return text.replace(/\r\n?|[\n\v\f\u0085\u2028\u2029]/gu, "\n    ");
 }
 
 /**

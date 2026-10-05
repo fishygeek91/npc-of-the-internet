@@ -5,12 +5,17 @@ import { DISTILLER_RETRY } from "../prompts/distiller/retry.js";
 import { DISTILLER_SYSTEM } from "../prompts/distiller/system.js";
 import { assignShardIds } from "../quarantine/shard-id.js";
 import { DistillError } from "./errors.js";
-import { countCodePoints, parseBrainShards } from "./parse.js";
+import { parseBrainShards } from "./parse.js";
 import type { CandidateShard, DistillOptions, TranscriptLine, TranscriptSource } from "./types.js";
 
 const MIN_SHARDS = 5;
 const MAX_SHARDS = 20;
-const MAX_SHARD_CODE_POINTS = 500;
+/**
+ * Max shard length in UTF-16 code units — the unit `String.length` and the Door's
+ * `CandidateShardSchema.text.max(500)` measure. Counting code points instead would let an
+ * emoji-heavy shard pass here and then fail the Door's review schema, aborting departure.
+ */
+const MAX_SHARD_UTF16_UNITS = 500;
 
 type ParsedShard = { text: string; tags?: string[] };
 
@@ -86,7 +91,7 @@ async function completeWithRetry(
       throw error;
     }
 
-    const retryUserContent = DISTILLER_RETRY.replaceAll("{{error}}", error.message);
+    const retryUserContent = DISTILLER_RETRY.replaceAll("{{error}}", () => error.message);
     const retryMessages: BrainMessage[] = [
       { role: "system", content: DISTILLER_SYSTEM },
       { role: "user", content: userContent },
@@ -118,7 +123,7 @@ function filterLengthAndEmpty(shards: readonly ParsedShard[]): ParsedShard[] {
     if (shard.text.trim().length === 0) {
       continue;
     }
-    if (countCodePoints(shard.text) > MAX_SHARD_CODE_POINTS) {
+    if (shard.text.length > MAX_SHARD_UTF16_UNITS) {
       continue;
     }
     usable.push(shard);

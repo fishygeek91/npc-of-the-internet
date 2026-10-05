@@ -139,6 +139,69 @@ export async function startResidencyDaemon(
     logger.warn({ truncatedBytes }, "soulchain_recovery_truncated_torn_append");
   }
 
+  const resources: BootResources = { store };
+  try {
+    return await bootResidency({ config, deps, logger, keyring, soulPrivateKey, resources });
+  } catch (error: unknown) {
+    // Boot failed after the store was opened: release whatever was acquired (WS client,
+    // session heartbeat timer, replication drain, store) so nothing leaks, then rethrow.
+    for (const cleanupError of await releaseResources(resources)) {
+      const message = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+      logger.warn({ err: message }, "boot_cleanup_failed");
+    }
+    throw error;
+  }
+}
+
+/** Resources acquired during boot, released on boot failure or shutdown. */
+type BootResources = {
+  store: ClosableSoulStore;
+  replicationDrain?: ReplicationDrainHandle;
+  session?: Session;
+  wsClient?: WsDoorSessionClient;
+};
+
+/**
+ * Release boot resources (WS client → session → replication drain → store). Every step
+ * runs even when an earlier one throws, so a failing `wsClient.close()` still closes the
+ * store. Returns the errors thrown, in order.
+ */
+async function releaseResources(resources: BootResources): Promise<unknown[]> {
+  const errors: unknown[] = [];
+  const step = async (fn: () => Promise<void>): Promise<void> => {
+    try {
+      await fn();
+    } catch (error: unknown) {
+      errors.push(error);
+    }
+  };
+  await step(async () => {
+    await resources.wsClient?.close();
+  });
+  await step(async () => {
+    resources.session?.stop();
+    await resources.session?.drainAppends();
+  });
+  await step(async () => {
+    await resources.replicationDrain?.stop();
+  });
+  await step(async () => {
+    await resources.store.close();
+  });
+  return errors;
+}
+
+/** Door hello → session start → WS bind; records each acquired resource in `resources`. */
+async function bootResidency(ctx: {
+  config: DaemonConfig;
+  deps: ResidencyDaemonDeps;
+  logger: Logger;
+  keyring: SingleKeyKeyring;
+  soulPrivateKey: Uint8Array;
+  resources: BootResources;
+}): Promise<ResidencyDaemonHandle> {
+  const { config, deps, logger, keyring, soulPrivateKey, resources } = ctx;
+  const { store } = resources;
   const baseUrl = `http://${config.doorHttpHost}:${String(config.doorHttpPort)}`;
   const wsBaseUrl = `ws://${config.doorHttpHost}:${String(config.doorHttpPort)}`;
   const door = new HttpDoorConnection({ baseUrl });
@@ -181,6 +244,7 @@ export async function startResidencyDaemon(
       intervalMs: config.replication.drainIntervalMs,
       logger
     });
+    resources.replicationDrain = replicationDrain;
     logger.info(
       { targetCount: adapters.length, intervalMs: config.replication.drainIntervalMs },
       "replication_drain_started"
@@ -231,6 +295,7 @@ export async function startResidencyDaemon(
     },
     ...(onDeparted !== undefined ? { onDeparted } : {})
   });
+  resources.session = session;
 
   const sessionSigner = keyring.deriveSessionKey(config.doorId, session.epoch);
   const sessionPubkey = encodePublicKey(sessionSigner.publicKey);
@@ -362,6 +427,7 @@ export async function startResidencyDaemon(
     }
   };
 
+  resources.wsClient = wsClient;
   await wsClient.connect();
 
   logger.info({ doorId: config.doorId, epoch: session.epoch }, "residency_live");
@@ -374,13 +440,10 @@ export async function startResidencyDaemon(
     shuttingDown = true;
 
     await setReadyFile(false);
-    await wsClient.close();
-    session.stop();
-    await session.drainAppends();
-    if (replicationDrain !== undefined) {
-      await replicationDrain.stop();
+    const errors = await releaseResources(resources);
+    if (errors.length > 0) {
+      throw errors[0];
     }
-    await store.close();
   };
 
   if (!deps.skipSignals) {
