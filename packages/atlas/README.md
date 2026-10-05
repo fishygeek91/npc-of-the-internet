@@ -72,12 +72,17 @@ Returns `{ journals: [{ epoch, door_id, cid, journal }], page, per_page, total, 
 ## Library usage
 
 ```typescript
-import { createAtlasServer, loadAtlasConfig } from "@npc/atlas";
+import { createAtlasServer, loadAtlasConfig, registerShutdownSignals } from "@npc/atlas";
 
 const config = loadAtlasConfig();
 const app = await createAtlasServer(config);
+registerShutdownSignals(app); // SIGTERM/SIGINT → app.close() → exit (container PID 1)
 await app.listen({ port: config.port, host: "0.0.0.0" });
 ```
+
+`ChainView` (used by the server) reloads only when `chain.jsonl` size/mtime changes; concurrent
+requests share one in-flight load, and an unreadable result is reused for at most
+`unreadableTtlMs` (default 2 s) while neither `chain.jsonl` nor the `blobs/` directory changes.
 
 Tests use `fastify.inject()` against `createAtlasServer` without listening.
 
