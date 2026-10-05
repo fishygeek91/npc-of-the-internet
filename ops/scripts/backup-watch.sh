@@ -203,8 +203,11 @@ blob_manifest() {
   if ! stat -c%s "$blobs_dir" >/dev/null 2>&1; then
     fmt=(-f '%N %z')
   fi
+  # osp-core writes blobs atomically via a short-lived ".tmp-*" file in the
+  # same directory; such in-flight temp files are never fingerprinted or
+  # uploaded (the rename to the CID name is what makes a blob exist).
   (cd "$blobs_dir" && find . -type f -exec stat "${fmt[@]}" {} + 2>/dev/null) \
-    | sed 's#^\./##' | LC_ALL=C sort
+    | sed 's#^\./##' | grep -v '^\.tmp-' | LC_ALL=C sort
 }
 
 # Set identity of blobs/: digest of the sorted name+size list (renames and
@@ -458,8 +461,8 @@ upload_cycle() {
   # --- 1. blobs (immutable CIDs — copy only; never delete remote orphans) ---
   if (( blobs_dirty == 1 )); then
     if (( full == 1 )); then
-      local exclude=()
-      [[ -s "$erased" ]] && exclude=(--exclude-from "$erased")
+      local exclude=(--exclude ".tmp-*")
+      [[ -s "$erased" ]] && exclude+=(--exclude-from "$erased")
       log "Copying blobs/ → ${remote}/blobs/ (full check; append-only; never deletes remote)"
       if ! rclone copy "$blobs_src" "${remote}/blobs" "${exclude[@]}" "${RCLONE_ARGS[@]}"; then
         log "ERROR: blob copy failed; skipping chain upload so the remote tip never references missing blobs"
