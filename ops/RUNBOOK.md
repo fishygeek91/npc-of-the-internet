@@ -557,6 +557,12 @@ ghostc logs -f runtime 2>&1 | grep -E 'residency_|ws_session_'
 15 s for the daemon to pick it up. Exit `1` ("No running daemon picked up …") means the
 runtime is down or the trigger is off; the request is withdrawn so it can never fire later.
 The cycle itself takes the review time (≤ `DISCORD_REVIEW_TIMEOUT_MS`) plus two Brain calls.
+
+**Only depart after a real conversation.** The operator trigger needs just one transcript line,
+but distillation must produce several usable shards. The first depart attempt consumes (and
+destroys) the transcript; if a short conversation yields too few shards, the cycle retries twice
+(~2.5 min) and then ends `abandoned` — the Wanderer re-arrives, but those lines are gone and no
+memories were formed from them. Check `residency_cycle_*` logs after the cycle.
 Equivalent without the CLI: `ghostc kill -s SIGUSR2 runtime` (tini forwards it).
 
 Log events, in order: `residency_cycle_requested` → `residency_cycle_started` →
