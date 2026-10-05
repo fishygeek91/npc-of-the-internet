@@ -1,5 +1,14 @@
 # @npc/runtime
 
+## 0.4.3
+
+### Patch Changes
+
+- 234730c: Ops-only (ships the backup image): the backup sidecar treated rclone's empty `lsjson` result on bucket remotes (B2/S3 print `[` and `]` on separate lines with exit 0 when the object is missing) as unparseable, so with no remote `chain.jsonl` it refused every chain upload — blobs were backed up but the chain tip never was. Empty multi-line arrays now count as size 0. The budget test's rclone shim now mimics bucket-remote `lsjson` semantics, and fails against the old script.
+  - @npc/osp-core@0.4.3
+  - @npc/immune@0.4.3
+  - @npc/door-sdk@0.4.3
+
 ## 0.4.2
 
 ### Patch Changes
