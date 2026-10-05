@@ -199,88 +199,92 @@ export function startReplicationDrain(
 ): ReplicationDrainHandle {
   const now = options.now ?? ((): string => new Date().toISOString());
   let intervalId: ReturnType<typeof setInterval> | undefined;
-  let ticking = false;
-  let inFlight: Promise<void> | undefined;
+  /** The tick that is actually running (interval- or manually-started), if any. */
+  let running: Promise<void> | undefined;
 
-  const tick = async (): Promise<void> => {
-    if (options.targets.length === 0) {
+  const runTick = async (): Promise<void> => {
+    const headSeq = await readIpfsHeadSeq(options.ipfsDir);
+    if (headSeq === null) {
       return;
     }
 
-    if (ticking) {
+    const lastManifestSeq = await readLastManifestSeq(options.ipfsDir);
+    const cadenceDue = headSeq - lastManifestSeq >= MANIFEST_CADENCE_SEQ;
+    const unacked = await anyTargetHasUnacked(options.ipfsDir, options.targets);
+
+    if (!cadenceDue && !unacked) {
       return;
     }
-    ticking = true;
 
-    try {
-      const headSeq = await readIpfsHeadSeq(options.ipfsDir);
-      if (headSeq === null) {
-        return;
+    const { manifest, manifestCid } = await runManifestCadence({
+      ipfsDir: options.ipfsDir,
+      soulPrivateKey: options.soulPrivateKey,
+      publishedCarPath: options.publishedCarPath,
+      manifestCidPath: options.manifestCidPath,
+      now
+    });
+
+    // Ack only CIDs present in the uploaded artifact (records ∪ manifest root).
+    // Entries enqueued after cadence (append race) stay pending and self-heal next tick.
+    const covered = new Set<string>([...manifest.records, manifestCid]);
+
+    const carBytes = await readFile(options.publishedCarPath);
+    const carUint8 = new Uint8Array(carBytes);
+
+    for (const adapter of options.targets) {
+      const pending = await listUnackedForTarget(options.ipfsDir, adapter.name);
+      if (pending.length === 0) {
+        continue;
       }
 
-      const lastManifestSeq = await readLastManifestSeq(options.ipfsDir);
-      const cadenceDue = headSeq - lastManifestSeq >= MANIFEST_CADENCE_SEQ;
-      const unacked = await anyTargetHasUnacked(options.ipfsDir, options.targets);
-
-      if (!cadenceDue && !unacked) {
-        return;
-      }
-
-      const { manifest, manifestCid } = await runManifestCadence({
-        ipfsDir: options.ipfsDir,
-        soulPrivateKey: options.soulPrivateKey,
-        publishedCarPath: options.publishedCarPath,
-        manifestCidPath: options.manifestCidPath,
-        now
-      });
-
-      // Ack only CIDs present in the uploaded artifact (records ∪ manifest root).
-      // Entries enqueued after cadence (append race) stay pending and self-heal next tick.
-      const covered = new Set<string>([...manifest.records, manifestCid]);
-
-      const carBytes = await readFile(options.publishedCarPath);
-      const carUint8 = new Uint8Array(carBytes);
-
-      for (const adapter of options.targets) {
-        const pending = await listUnackedForTarget(options.ipfsDir, adapter.name);
-        if (pending.length === 0) {
-          continue;
-        }
-
-        try {
-          await adapter.uploadCar(carUint8, manifestCid);
-          const at = now();
-          let remaining = 0;
-          for (const entry of pending) {
-            if (!covered.has(entry.cid)) {
-              remaining += 1;
-              continue;
-            }
-            await ackReplication(options.ipfsDir, {
-              acked: entry.cid,
-              target: adapter.name,
-              at
-            });
+      try {
+        await adapter.uploadCar(carUint8, manifestCid);
+        const at = now();
+        let remaining = 0;
+        for (const entry of pending) {
+          if (!covered.has(entry.cid)) {
+            remaining += 1;
+            continue;
           }
-          options.logger.info(
-            { queueDepth: remaining, target: adapter.name },
-            "replication_upload_ok"
-          );
-        } catch (error: unknown) {
-          const message = error instanceof Error ? error.message : String(error);
-          options.logger.warn(
-            { err: message, queueDepth: pending.length, target: adapter.name },
-            "replication_upload_failed"
-          );
+          await ackReplication(options.ipfsDir, {
+            acked: entry.cid,
+            target: adapter.name,
+            at
+          });
         }
+        options.logger.info(
+          { queueDepth: remaining, target: adapter.name },
+          "replication_upload_ok"
+        );
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error);
+        options.logger.warn(
+          { err: message, queueDepth: pending.length, target: adapter.name },
+          "replication_upload_failed"
+        );
       }
-    } finally {
-      ticking = false;
     }
   };
 
+  /** Start a tick, or join the one already running (never two at once). */
+  const tick = (): Promise<void> => {
+    if (options.targets.length === 0) {
+      return Promise.resolve();
+    }
+    if (running !== undefined) {
+      return running;
+    }
+    const current = runTick().finally(() => {
+      if (running === current) {
+        running = undefined;
+      }
+    });
+    running = current;
+    return current;
+  };
+
   const tickWrapped = (): void => {
-    inFlight = tick().catch((error: unknown) => {
+    tick().catch((error: unknown) => {
       const message = error instanceof Error ? error.message : String(error);
       options.logger.error({ err: message }, "replication_drain_tick_error");
     });
@@ -297,8 +301,10 @@ export function startReplicationDrain(
         clearInterval(intervalId);
         intervalId = undefined;
       }
-      if (inFlight !== undefined) {
-        await inFlight;
+      // Await the tick that is really in flight (an upload may still be running), not a
+      // promise from an interval firing that returned early because a tick was busy.
+      if (running !== undefined) {
+        await running.catch(() => undefined);
       }
     }
   };

@@ -182,8 +182,12 @@ export class Session {
   private readonly liveTranscript?: ResidencyTranscript;
   private readonly attentionPolicy: AttentionPolicy;
   private readonly roomLog: RoomLog;
-  /** Room refs observed but not yet covered by an attention decision. */
-  private pendingRefs: number[] = [];
+  /**
+   * Room entries observed but not yet covered by an attention decision. Captured at observe
+   * time (not re-resolved from the bounded log) so a burst that evicts them from the room
+   * log during a Brain call cannot drop them, or their `addressed` flag, from the batch.
+   */
+  private pendingEntries: RoomEntry[] = [];
   private readonly sessionSigner: SessionSigner;
   private readonly systemPromptValue: string;
   private readonly residency: string;
@@ -372,6 +376,7 @@ export class Session {
       }
       throw error;
     }
+    this.assertStillLive();
 
     this.pushHistory({ role: "user", content: text });
     this.pushHistory({ role: "assistant", content: assistantText });
@@ -453,35 +458,42 @@ export class Session {
       ...(body.channel_id === undefined ? {} : { channelId: body.channel_id })
     });
     this.liveTranscript?.record({ role: "user", text: body.text, author_id: body.author_id });
-    this.pendingRefs.push(entry.ref);
+    this.pendingEntries.push(entry);
 
     return this.enqueueInbound(async () => this.decideAttention(entry.ref));
   }
 
   /** One attention decision over every pending room entry (runs on inboundChain). */
   private async decideAttention(ref: number): Promise<ObserveResult> {
-    if (!this.pendingRefs.includes(ref)) {
+    if (!this.pendingEntries.some((entry) => entry.ref === ref)) {
       return { kind: "coalesced" };
     }
     if (this.phase !== "live") {
       throw new SessionError("session is not live");
     }
 
-    const batchRefs = this.pendingRefs;
-    this.pendingRefs = [];
-    const batch = batchRefs
-      .map((batchRef) => this.roomLog.resolveRef(String(batchRef)))
-      .filter((entry): entry is RoomEntry => entry !== undefined);
+    const batch = this.pendingEntries;
+    this.pendingEntries = [];
     const addressed = batch.some((entry) => entry.addressed);
     const selfShare = this.roomLog.selfShare(this.attentionPolicy.shareWindow);
 
+    const reactionsText = this.attentionPolicy.reactions
+      ? ATTENTION_REACTIONS_ON
+      : ATTENTION_REACTIONS_OFF;
     const system = `${this.systemPrompt}\n\n${ATTENTION_SYSTEM.replaceAll(
       "{{reactions}}",
-      this.attentionPolicy.reactions ? ATTENTION_REACTIONS_ON : ATTENTION_REACTIONS_OFF
+      () => reactionsText
     )}`;
-    const user = ATTENTION_USER_TEMPLATE.replaceAll("{{log}}", this.roomLog.render()).replaceAll(
-      "{{new_refs}}",
-      batchRefs.map((batchRef) => `#${String(batchRef)}`).join(", ")
+    // Single pass with a replacer function: `$&` / `` $` `` / `$'` / `$$` and `{{...}}` in
+    // untrusted room text stay inert (a string replacement would expand `$` patterns and
+    // could forge a left-edge log entry).
+    const fills: Record<"log" | "new_refs", string> = {
+      log: this.roomLog.render(),
+      new_refs: batch.map((entry) => `#${String(entry.ref)}`).join(", ")
+    };
+    const user = ATTENTION_USER_TEMPLATE.replaceAll(
+      /\{\{(log|new_refs)\}\}/gu,
+      (_match, key: "log" | "new_refs"): string => fills[key]
     );
     const messages: BrainMessage[] = [
       { role: "system", content: system },
@@ -500,6 +512,7 @@ export class Session {
       }
       throw error;
     }
+    this.assertStillLive();
 
     const resolved = resolveAttention({
       raw,
@@ -557,6 +570,17 @@ export class Session {
       batchSize: batch.length,
       notes: resolved.notes
     };
+  }
+
+  /**
+   * Re-check the phase after an awaited Brain call: if the residency began departing while
+   * the call was in flight, drop the result (no transcript record, no signed outbound) so
+   * nothing is written into a transcript that depart has already read and destroyed.
+   */
+  private assertStillLive(): void {
+    if (this.phase !== "live") {
+      throw new SessionError("session stopped while the Brain call was in flight");
+    }
   }
 
   /** Schema + binding checks shared by {@link handleInbound} and {@link observe}. */
@@ -623,6 +647,10 @@ export class Session {
       this.stop();
       await this.drainAppends();
     }
+    // Let any in-flight inbound decision settle (it re-checks the phase after its Brain
+    // call and bails) before the transcript is read and destroyed. Also covers a caller
+    // that ran stop() itself before depart.
+    await this.inboundChain;
     // Remaining phase is `departing` (retry after mid-pipeline failure).
 
     const brain = options.brain ?? this.brain;
