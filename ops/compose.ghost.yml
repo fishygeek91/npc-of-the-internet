@@ -1,11 +1,13 @@
 # Ghost v0.1 — Docker Compose stack for a single VPS.
 # Images also built and pushed by `.github/workflows/release.yml` on version tags.
 #
-# Optional secret-file mounts (set in ops/.env, then add host bind volumes via
-# compose override or extend volumes below):
-#   ANTHROPIC_API_KEY_HOST_PATH → /run/secrets/anthropic_api_key (runtime, Anthropic provider)
-#   NPC_BRAIN_API_KEY_HOST_PATH → /run/secrets/brain_api_key (runtime, openai-compat provider)
-#   DISCORD_BOT_TOKEN_HOST_PATH → /run/secrets/discord_bot_token (door-discord)
+# Optional secret-file mounts (set in ops/.env, then add exactly one overlay):
+#   ops/compose.secrets.yml (production, openai-compat; NPC_COMPOSE_SECRETS=1):
+#     NPC_BRAIN_API_KEY_HOST_PATH → /run/secrets/brain_api_key (runtime)
+#     DISCORD_BOT_TOKEN_HOST_PATH → /run/secrets/discord_bot_token (door-discord)
+#   ops/compose.secrets.anthropic.yml (Anthropic provider; NPC_COMPOSE_SECRETS=anthropic):
+#     ANTHROPIC_API_KEY_HOST_PATH → /run/secrets/anthropic_api_key (runtime)
+#     DISCORD_BOT_TOKEN_HOST_PATH → /run/secrets/discord_bot_token (door-discord)
 # When using files, set ANTHROPIC_API_KEY_FILE=/run/secrets/anthropic_api_key and/or
 # NPC_BRAIN_API_KEY_FILE=/run/secrets/brain_api_key and/or
 # DISCORD_BOT_TOKEN_FILE=/run/secrets/discord_bot_token (exactly one of NAME or NAME_FILE).
@@ -19,6 +21,8 @@ services:
       dockerfile: ops/Dockerfile.runtime
     image: ghcr.io/fishygeek91/npc-runtime:${NPC_IMAGE_TAG:-latest}
     restart: unless-stopped
+    # Docker's tini as PID 1: forwards SIGTERM/SIGINT and reaps zombie children.
+    init: true
     depends_on:
       door-discord:
         condition: service_healthy
@@ -74,6 +78,8 @@ services:
       dockerfile: ops/Dockerfile.door-discord
     image: ghcr.io/fishygeek91/npc-door-discord:${NPC_IMAGE_TAG:-latest}
     restart: unless-stopped
+    # Docker's tini as PID 1: forwards SIGTERM/SIGINT and reaps zombie children.
+    init: true
     environment:
       DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN:-}
       DISCORD_BOT_TOKEN_FILE: ${DISCORD_BOT_TOKEN_FILE:-}
@@ -128,6 +134,8 @@ services:
       dockerfile: ops/Dockerfile.atlas-api
     image: ghcr.io/fishygeek91/npc-atlas-api:${NPC_IMAGE_TAG:-latest}
     restart: unless-stopped
+    # Docker's tini as PID 1: forwards SIGTERM/SIGINT and reaps zombie children.
+    init: true
     # Docker published ports bypass ufw — always bind 127.0.0.1 unless Gate-2-approved.
     ports:
       - "127.0.0.1:8787:8787"
@@ -172,6 +180,8 @@ services:
       dockerfile: ops/Dockerfile.backup
     image: ghcr.io/fishygeek91/npc-backup:${NPC_IMAGE_TAG:-latest}
     restart: unless-stopped
+    # Docker's tini as PID 1: forwards SIGTERM/SIGINT and reaps zombie children.
+    init: true
     depends_on:
       runtime:
         condition: service_started
@@ -185,6 +195,8 @@ services:
       BACKUP_INTERVAL_SEC: ${BACKUP_INTERVAL_SEC:-300}
       BACKUP_VERIFY_SEC: ${BACKUP_VERIFY_SEC:-86400}
       BACKUP_RETRY_SEC: ${BACKUP_RETRY_SEC:-900}
+      BACKUP_HEARTBEAT_DEFER_SEC: ${BACKUP_HEARTBEAT_DEFER_SEC:-3600}
+      BACKUP_HISTORY_SEC: ${BACKUP_HISTORY_SEC:-86400}
     volumes:
       - soulchain:/data/soulchain:ro
       - ${RCLONE_CONFIG_HOST_PATH}:/config/rclone:ro
