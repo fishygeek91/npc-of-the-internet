@@ -26,6 +26,13 @@ RUN pnpm --filter @npc/atlas deploy --prod /out
 
 FROM node:22-slim AS runtime
 
+# Apply Debian security updates published after the base image was built. A
+# fixed OS CVE in a stale base layer otherwise fails the release Trivy gate for
+# every image at once (v0.4.0: libpcre2-8-0 CVE-2026-103111, fixed in deb12u2).
+RUN apt-get update \
+  && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y --no-install-recommends \
+  && rm -rf /var/lib/apt/lists/*
+
 # Container uid/gid pinned to 10001 so host bind-mounted keys/rclone owned 10001:10001 are readable on Linux VPS (#84). macOS Docker Desktop remaps ownership and hides the bug.
 RUN groupadd --gid 10001 npc && useradd --uid 10001 --gid npc --create-home --home-dir /home/npc npc
 
