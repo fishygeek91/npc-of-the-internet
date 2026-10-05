@@ -7,7 +7,7 @@ Discord Door adapter: one guild channel becomes a Door. Wraps `@npc/door-sdk` `D
 - **`startDiscordDoor(options)`** — boot Door HTTP/WS servers (optional), Discord gateway, review gate, and channel relay
 - **`loadDiscordDoorConfig(env)`** — Zod-validated env config (inject `env` in tests)
 - **`DiscordGateway`** — thin seam over discord.js (`DiscordJsGateway` in prod; `FakeGateway` in tests)
-- **`ReviewGate` / `ReviewGatedDoor`** — async host approval before sync `decideShard` (timeout → **rejected**); `ReviewGatedDoor` verifies freshness, session binding + cosign signature **before** posting shards to Discord; one review in flight at a time (identical retry joins it, any other → `review_pending`)
+- **`ReviewGate` / `ReviewGatedDoor`** — async host approval before sync `decideShard` (timeout → **rejected**); `ReviewGatedDoor` verifies freshness (once, on receipt — a slow human review never turns the request `timestamp_stale`), session binding + cosign signature **before** posting shards to Discord; one review in flight at a time (a re-signed retry of the same shard set joins it, any other → `review_pending`; after completion the same review gets the stored response)
 
 ## Config (env)
 
@@ -20,7 +20,7 @@ Discord Door adapter: one guild channel becomes a Door. Wraps `@npc/door-sdk` `D
 | `DISCORD_OPERATOR_IDS` | yes | Comma-separated operator user ids |
 | `DOOR_KEY_PATH` | yes | Path to door Ed25519 private key (32 raw bytes or base64url) |
 | `SOUL_PUBLIC_KEY` | yes | Wanderer soul public key (base64url) |
-| `DISCORD_REVIEW_TIMEOUT_MS` | no | Cosign review wait (default `300000`). **Timeout rejects.** |
+| `DISCORD_REVIEW_TIMEOUT_MS` | no | Cosign review wait (default `240000`; keep below the runtime's 290 s review-request timeout). **Timeout rejects.** |
 | `DISCORD_REVIEW_CHANNEL_ID` | no | Alternate channel/thread for review posts |
 | `DOOR_HTTP_HOST` / `DOOR_HTTP_PORT` | no | Door REST + WebSocket session listen (default `127.0.0.1:9090`; WS path `/door/session`) |
 | `DISCORD_USER_RATE_PER_MIN` / `DISCORD_USER_BURST` | no | Per-user inbound token bucket |

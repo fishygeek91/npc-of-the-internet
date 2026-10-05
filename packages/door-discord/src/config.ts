@@ -7,7 +7,12 @@ import { DiscordDoorError } from "./errors.js";
 
 const DEFAULT_HTTP_HOST = "127.0.0.1";
 const DEFAULT_HTTP_PORT = 9090;
-const DEFAULT_REVIEW_TIMEOUT_MS = 300_000;
+/**
+ * Default host review wait. Kept below the Wanderer's HTTP review-call timeout
+ * (`DEFAULT_COSIGN_REVIEW_TIMEOUT_MS`, 290 s — itself under Node fetch's 300 s headers
+ * timeout) so a review normally answers within one request; see `spec/door/api.md`.
+ */
+const DEFAULT_REVIEW_TIMEOUT_MS = 240_000;
 const DEFAULT_USER_RATE_PER_MIN = 20;
 const DEFAULT_USER_BURST = 5;
 const DEFAULT_CHANNEL_RATE_PER_MIN = 60;

@@ -519,7 +519,7 @@ describe("Door", () => {
     await expect(door.cosign(reviewRequest)).rejects.toThrow(/expected 5–20 shards/);
   });
 
-  it("cosign review then commit; door_cosig verifies; second review → epoch_closed", async () => {
+  it("cosign review then commit; door_cosig verifies; identical retry replays, other review → epoch_closed", async () => {
     const { door, doorKeypair } = createDoor({ soulPublicKey: soul.publicKey });
     await establishArrival(door, soul, session, EPOCH);
 
@@ -539,9 +539,21 @@ describe("Door", () => {
     expect(reviewResponse.decisions).toHaveLength(5);
     expect(reviewResponse.decisions.every((decision) => decision.status === "approved")).toBe(true);
 
-    await expect(door.cosign(reviewRequest)).rejects.toBeInstanceOf(DoorError);
-    await expect(door.cosign(reviewRequest)).rejects.toMatchObject({ code: "epoch_closed" });
-    await expect(door.cosign(reviewRequest)).rejects.toThrow(/epoch_closed/);
+    // Authenticated retry of the same review (lost reply): stored response, no re-review.
+    await expect(door.cosign(reviewRequest)).resolves.toEqual(reviewResponse);
+    // Any other review for the closed epoch (different shard set) → epoch_closed.
+    const otherReview = signCosignReviewRequest(session, {
+      protocol_version: DOOR_PROTOCOL_VERSION,
+      phase: "review",
+      door_id: DOOR_ID,
+      epoch: EPOCH,
+      session_pubkey: encodePublicKey(session.publicKey),
+      shards: sampleShards(6),
+      issued_at: ISSUED_AT
+    });
+    await expect(door.cosign(otherReview)).rejects.toBeInstanceOf(DoorError);
+    await expect(door.cosign(otherReview)).rejects.toMatchObject({ code: "epoch_closed" });
+    await expect(door.cosign(otherReview)).rejects.toThrow(/epoch_closed/);
 
     const shardId = shards[0].shard_id;
     const commitResponse = await door.cosign(

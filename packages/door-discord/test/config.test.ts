@@ -25,7 +25,7 @@ describe("loadDiscordDoorConfig", () => {
     const config = loadDiscordDoorConfig(baseEnv());
     expect(config.guildId).toBe("10001");
     expect(config.operatorIds).toEqual(["10004"]);
-    expect(config.reviewTimeoutMs).toBe(300_000);
+    expect(config.reviewTimeoutMs).toBe(240_000);
   });
 
   it("fails fast naming DISCORD_BOT_TOKEN when missing", () => {

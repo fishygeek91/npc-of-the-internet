@@ -289,7 +289,7 @@ describe("DoorStub", () => {
     );
   });
 
-  it("cosign review approves all shards by default and rejects a second review", async () => {
+  it("cosign review approves all shards by default; replays an identical retry and rejects a different review", async () => {
     const stub = createStub();
     await establishArrival(stub, keyring, EPOCH);
 
@@ -310,8 +310,19 @@ describe("DoorStub", () => {
     expect(reviewResponse.decisions).toHaveLength(5);
     expect(reviewResponse.decisions.every((decision) => decision.status === "approved")).toBe(true);
 
-    await expect(stub.cosign(reviewRequest)).rejects.toThrow(DoorStubError);
-    await expect(stub.cosign(reviewRequest)).rejects.toThrow(/epoch_closed/);
+    // Lost-reply retry of the same review replays the stored response.
+    await expect(stub.cosign(reviewRequest)).resolves.toEqual(reviewResponse);
+    const otherReview = signCosignReviewRequest(keyring, {
+      protocol_version: DOOR_PROTOCOL_VERSION,
+      phase: "review",
+      door_id: DOOR_ID,
+      epoch: EPOCH,
+      session_pubkey: encodePublicKey(sessionSigner.publicKey),
+      shards: sampleShards(6),
+      issued_at: ISSUED_AT
+    });
+    await expect(stub.cosign(otherReview)).rejects.toThrow(DoorStubError);
+    await expect(stub.cosign(otherReview)).rejects.toThrow(/epoch_closed/);
   });
 
   it("cosign review honors rejectShardIds and blocks commit for rejected shards", async () => {

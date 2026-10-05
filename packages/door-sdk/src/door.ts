@@ -76,15 +76,29 @@ type ActiveSession = {
   sessionPubkey: string;
 };
 
+type CosignReviewResponse = Extract<CosignResponse, { phase: "review" }>;
+type CosignCommitResponse = Extract<CosignResponse, { phase: "commit" }>;
+
+/** Last commit co-signed for a `shard_id` (single-use binding + idempotent retry). */
+type CommittedShard = {
+  seq: number;
+  core: string;
+  response: CosignCommitResponse;
+};
+
 type CosignEpochState = {
   reviewCompleted: boolean;
   /** Approved `shard_id` → reviewed plaintext (commit `core` must reference this text). */
   approvedShards: Map<string, string>;
-  /** `shard_id` → highest envelope `seq` already co-signed at commit (single-use binding). */
-  committedSeq: Map<string, number>;
+  /** `shard_id` → highest-`seq` commit already co-signed (single-use binding). */
+  committed: Map<string, CommittedShard>;
   /** Bound at review; commit may run after departure using this binding. */
   epoch: number;
   sessionPubkey: string;
+  /** {@link Door.cosignReviewKey} of the completed review (authenticated retry replay). */
+  reviewKey: string;
+  /** Signed response of the completed review, returned verbatim to a matching retry. */
+  reviewResponse: CosignReviewResponse;
 };
 
 type UnsignedHeartbeatFields = Omit<HeartbeatRequest, "sig">;
@@ -414,6 +428,17 @@ export class Door {
 
     this.assertIssuedAtFresh(request.issued_at);
 
+    return this.cosignReceivedFresh(request);
+  }
+
+  /**
+   * Run a cosign phase for a request whose `issued_at` freshness was already checked
+   * **once, on receipt** (by {@link cosign} or {@link verifyCosignRequest}). Session
+   * binding, epoch state, and the request signature are (re)verified here; the clock is
+   * not. Doors with asynchronous host review call this after the review completes so a
+   * slow human review cannot turn a fresh request into `timestamp_stale`.
+   */
+  protected async cosignReceivedFresh(request: CosignRequest): Promise<CosignResponse> {
     if (request.phase === "review") {
       return this.cosignReview(request);
     }
@@ -425,6 +450,31 @@ export class Door {
       "unsupported_phase",
       "unsupported_phase: cosign phase must be review or commit"
     );
+  }
+
+  /**
+   * Identity of a review request for retry matching: `(epoch, session_pubkey, sorted
+   * {shard_id, text})`. Independent of `issued_at` / `sig`, which a retrying Wanderer
+   * re-signs. Canonical JSON string (texts compared exactly, i.e. by content).
+   */
+  protected cosignReviewKey(request: Extract<CosignRequest, { phase: "review" }>): string {
+    const shards = request.shards
+      .map((shard) => [shard.shard_id, shard.text] as const)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      .map(([shardId, text]) => ({ shard_id: shardId, text }));
+    return new TextDecoder().decode(
+      canonicalize({
+        door_id: request.door_id,
+        epoch: request.epoch,
+        session_pubkey: request.session_pubkey,
+        shards
+      })
+    );
+  }
+
+  /** True once this epoch's cosign review has completed (decisions are fixed). */
+  protected isCosignReviewCompleted(): boolean {
+    return this.cosignState?.reviewCompleted === true;
   }
 
   /**
@@ -575,12 +625,12 @@ export class Door {
   }
 
   /**
-   * Validate cosign session binding, request signature, and review shard count
-   * without mutating state. Call before any side effects (e.g. Discord review
-   * posts) so unauthenticated or oversized requests cannot reach host channels.
+   * Validate cosign `issued_at` freshness, session binding, request signature, and
+   * review shard count without mutating state. Call **on receipt**, before any side
+   * effects (e.g. Discord review posts), so stale replays and unauthenticated or
+   * oversized requests cannot reach host channels; then finish with
+   * {@link cosignReceivedFresh}, which does not re-check the clock.
    * Per-shard field validation remains in {@link cosignReview}.
-   * Includes the `issued_at` freshness check so stale replays are rejected
-   * before any side effect.
    */
   protected verifyCosignRequest(request: CosignRequest): void {
     if (request.door_id !== this.doorId) {
@@ -592,8 +642,38 @@ export class Door {
 
     this.assertIssuedAtFresh(request.issued_at);
 
+    this.verifyCosignAuth(request);
+  }
+
+  /**
+   * Session binding / epoch state / request signature checks for cosign (no clock).
+   * A review retry after the epoch's review completed passes only when it is signed by
+   * the review session key and has the same {@link cosignReviewKey} (it then replays the
+   * stored response); any other review is `epoch_closed`.
+   */
+  private verifyCosignAuth(request: CosignRequest): void {
+    if (request.door_id !== this.doorId) {
+      throw DoorError.fromCode(
+        "session_invalid",
+        `door_id mismatch: expected ${this.doorId}, got ${request.door_id}`
+      );
+    }
+
     if (request.phase === "review") {
       if (this.cosignState !== null && this.cosignState.reviewCompleted) {
+        const state = this.cosignState;
+        const matchesCompleted =
+          request.epoch === state.epoch &&
+          request.session_pubkey === state.sessionPubkey &&
+          verify(
+            cosignReviewSigningPayload(request),
+            decodeSignature(request.sig),
+            decodePublicKey(state.sessionPubkey)
+          ) &&
+          this.cosignReviewKey(request) === state.reviewKey;
+        if (matchesCompleted) {
+          return;
+        }
         throw DoorError.fromCode(
           "epoch_closed",
           "epoch_closed: cosign review already completed for this epoch"
@@ -664,8 +744,13 @@ export class Door {
 
   private async cosignReview(
     request: Extract<CosignRequest, { phase: "review" }>
-  ): Promise<Extract<CosignResponse, { phase: "review" }>> {
-    this.verifyCosignRequest(request);
+  ): Promise<CosignReviewResponse> {
+    this.verifyCosignAuth(request);
+
+    // Authenticated retry of the completed review (lost reply): replay, do not re-review.
+    if (this.cosignState !== null && this.cosignState.reviewCompleted) {
+      return this.cosignState.reviewResponse;
+    }
 
     const seenShardIds = new Set<string>();
     for (const shard of request.shards) {
@@ -696,14 +781,6 @@ export class Door {
       return decision;
     });
 
-    this.cosignState = {
-      reviewCompleted: true,
-      approvedShards,
-      committedSeq: new Map(),
-      epoch: request.epoch,
-      sessionPubkey: request.session_pubkey
-    };
-
     const receivedAt = this.clock.now();
     const doorSig = signCanonical(
       {
@@ -715,8 +792,7 @@ export class Door {
       },
       this.doorKeypair.privateKey
     );
-
-    return {
+    const response: CosignReviewResponse = {
       phase: "review",
       door_id: request.door_id,
       epoch: request.epoch,
@@ -724,12 +800,24 @@ export class Door {
       received_at: receivedAt,
       door_sig: doorSig
     };
+
+    this.cosignState = {
+      reviewCompleted: true,
+      approvedShards,
+      committed: new Map(),
+      epoch: request.epoch,
+      sessionPubkey: request.session_pubkey,
+      reviewKey: this.cosignReviewKey(request),
+      reviewResponse: response
+    };
+
+    return response;
   }
 
   private async cosignCommit(
     request: Extract<CosignRequest, { phase: "commit" }>
-  ): Promise<Extract<CosignResponse, { phase: "commit" }>> {
-    this.verifyCosignRequest(request);
+  ): Promise<CosignCommitResponse> {
+    this.verifyCosignAuth(request);
 
     if (request.core.length === 0) {
       throw DoorError.fromCode("shard_invalid", "shard_invalid: commit core must not be empty");
@@ -755,16 +843,22 @@ export class Door {
     const seq = await this.assertCommitCoreBound(request.core, cosignState.epoch, approvedText);
 
     // Single-use approval: one co-signature per chain position. A re-commit is only
-    // accepted for a strictly later `seq` (runtime retry after the chain head moved).
+    // accepted for a strictly later `seq` (runtime retry after the chain head moved),
+    // except an idempotent retry of the same `seq` with byte-identical `core` (the
+    // Wanderer lost the reply), which gets the stored response — same `door_cosig`.
     // No await between this check and the update below.
-    const lastSeq = cosignState.committedSeq.get(request.shard_id);
-    if (lastSeq !== undefined && seq <= lastSeq) {
-      throw DoorError.fromCode(
-        "shard_not_approved",
-        `shard_not_approved: approval for shard ${request.shard_id} already used at seq ${String(lastSeq)}`
-      );
+    const last = cosignState.committed.get(request.shard_id);
+    if (last !== undefined) {
+      if (seq === last.seq && request.core === last.core) {
+        return last.response;
+      }
+      if (seq <= last.seq) {
+        throw DoorError.fromCode(
+          "shard_not_approved",
+          `shard_not_approved: approval for shard ${request.shard_id} already used at seq ${String(last.seq)}`
+        );
+      }
     }
-    cosignState.committedSeq.set(request.shard_id, seq);
 
     const receivedAt = this.clock.now();
     const doorCosig = signDoorCosig(request.core, this.doorKeypair.privateKey);
@@ -780,7 +874,7 @@ export class Door {
       this.doorKeypair.privateKey
     );
 
-    return {
+    const response: CosignCommitResponse = {
       phase: "commit",
       door_id: request.door_id,
       epoch: request.epoch,
@@ -789,6 +883,8 @@ export class Door {
       received_at: receivedAt,
       door_sig: doorSig
     };
+    cosignState.committed.set(request.shard_id, { seq, core: request.core, response });
+    return response;
   }
 
   private resolveShardDecision(

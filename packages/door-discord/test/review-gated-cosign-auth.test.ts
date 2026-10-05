@@ -325,7 +325,8 @@ describe("ReviewGatedDoor replay / concurrency (review 2026-10)", () => {
   function reviewRequest(
     session: Ed25519Keypair,
     doorId: string,
-    issuedAt = ISSUED_AT
+    issuedAt = ISSUED_AT,
+    textPrefix = "A calm memory"
   ): Extract<CosignRequest, { phase: "review" }> {
     return signCosignReview(session, {
       protocol_version: DOOR_PROTOCOL_VERSION,
@@ -335,7 +336,7 @@ describe("ReviewGatedDoor replay / concurrency (review 2026-10)", () => {
       session_pubkey: encodePublicKey(session.publicKey),
       shards: Array.from({ length: 5 }, (_, index) => ({
         shard_id: `ok_${String(index + 1)}`,
-        text: `A calm memory ${String(index + 1)}.`
+        text: `${textPrefix} ${String(index + 1)}.`
       })),
       issued_at: issuedAt
     });
@@ -388,12 +389,35 @@ describe("ReviewGatedDoor replay / concurrency (review 2026-10)", () => {
     await handle.stop();
   });
 
+  it("a re-signed retry (new issued_at/sig, same shard set) joins the in-flight review", async () => {
+    const { gateway, handle, doorId, session } = await startWithArrival();
+    const first = handle.door.cosign(reviewRequest(session, doorId));
+    await waitForReviews(gateway, 5);
+    const retry = handle.door.cosign(reviewRequest(session, doorId, "2026-07-21T00:02:00.000Z"));
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 20);
+    });
+    expect(reviewMessageCount(gateway)).toBe(5);
+
+    await approveAll(gateway);
+    const [a, b] = await Promise.all([first, retry]);
+    expect(b).toEqual(a);
+    // After completion, a further authenticated retry replays the stored response.
+    await expect(
+      handle.door.cosign(reviewRequest(session, doorId, "2026-07-21T00:03:00.000Z"))
+    ).resolves.toEqual(a);
+    expect(reviewMessageCount(gateway)).toBe(5);
+    await handle.stop();
+  });
+
   it("a different concurrent review is rejected (review_pending) without re-posting", async () => {
     const { gateway, handle, doorId, session } = await startWithArrival();
     const first = handle.door.cosign(reviewRequest(session, doorId));
     await waitForReviews(gateway, 5);
     await expect(
-      handle.door.cosign(reviewRequest(session, doorId, "2026-07-21T00:02:00.000Z"))
+      handle.door.cosign(
+        reviewRequest(session, doorId, "2026-07-21T00:02:00.000Z", "A different memory")
+      )
     ).rejects.toMatchObject({ code: "review_pending" });
     expect(reviewMessageCount(gateway)).toBe(5);
 

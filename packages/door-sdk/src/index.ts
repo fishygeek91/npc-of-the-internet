@@ -84,7 +84,7 @@ export { DoorError, defaultHttpStatusForDoorError, doorErrorToBody } from "./err
 export { InProcessDoorConnection } from "./transports/in-process.js";
 export { HttpDoorServer, MAX_HTTP_BODY_BYTES } from "./transports/http.js";
 export type { HttpDoorServerOptions } from "./transports/http.js";
-export { HttpDoorConnection } from "./transports/http-client.js";
+export { HttpDoorConnection, DEFAULT_COSIGN_REVIEW_TIMEOUT_MS } from "./transports/http-client.js";
 export type { HttpDoorConnectionOptions } from "./transports/http-client.js";
 export { WsDoorSessionServer, WS_SESSION_BIND_FAILED } from "./transports/ws.js";
 export type { WsDoorSessionServerOptions } from "./transports/ws.js";

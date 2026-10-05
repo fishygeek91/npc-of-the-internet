@@ -28,7 +28,10 @@ import {
   outboundSigningPayload,
   sessionBindSigningPayload
 } from "../src/signing.js";
-import { HttpDoorConnection } from "../src/transports/http-client.js";
+import {
+  DEFAULT_COSIGN_REVIEW_TIMEOUT_MS,
+  HttpDoorConnection
+} from "../src/transports/http-client.js";
 import { HttpDoorServer } from "../src/transports/http.js";
 import { InProcessDoorConnection } from "../src/transports/in-process.js";
 import { WsDoorSessionServer } from "../src/transports/ws.js";
@@ -560,6 +563,90 @@ describe("HttpDoorConnection", () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+
+  it("cosign review uses an explicit client timeout (default 290 s); other calls do not", async () => {
+    expect(DEFAULT_COSIGN_REVIEW_TIMEOUT_MS).toBe(290_000);
+    const client = new HttpDoorConnection({ baseUrl: env.httpBaseUrl, cosignReviewTimeoutMs: 30 });
+    await client.hello({
+      protocol_version: DOOR_PROTOCOL_VERSION,
+      soul_pubkey: encodePublicKey(env.soul.publicKey)
+    });
+    const epoch = EPOCH + 9;
+    await client.attest(
+      signAttestRequest(
+        env.soul,
+        env.session,
+        {
+          protocol_version: DOOR_PROTOCOL_VERSION,
+          door_id: DOOR_ID,
+          epoch,
+          kind: "arrival",
+          core: attestCore("arrival", epoch),
+          session_pubkey: encodePublicKey(env.session.publicKey),
+          issued_at: ISSUED_AT
+        },
+        true
+      )
+    );
+    const reviewRequest = signCosignReviewRequest(env.session, {
+      protocol_version: DOOR_PROTOCOL_VERSION,
+      phase: "review",
+      door_id: DOOR_ID,
+      epoch,
+      session_pubkey: encodePublicKey(env.session.publicKey),
+      shards: sampleShards(5),
+      issued_at: ISSUED_AT
+    });
+
+    const signals: Array<AbortSignal | null | undefined> = [];
+    // A Door whose host review never answers in time: hang until the client aborts.
+    const hangingFetch: typeof fetch = (_input, init) => {
+      signals.push(init?.signal);
+      return new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal;
+        if (signal === undefined || signal === null) {
+          reject(new Error("test: review request carried no timeout signal"));
+          return;
+        }
+        signal.addEventListener("abort", () => {
+          reject(signal.reason as Error);
+        });
+      });
+    };
+    vi.stubGlobal("fetch", hangingFetch);
+    try {
+      await expect(client.cosign(reviewRequest)).rejects.toMatchObject({
+        code: "door_unavailable",
+        message: expect.stringMatching(/timed out after 30ms/u) as unknown as string
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    expect(signals).toHaveLength(1);
+
+    // Non-review calls keep fetch defaults (no explicit signal).
+    const seen: Array<AbortSignal | null | undefined> = [];
+    const originalFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", ((input, init) => {
+      seen.push(init?.signal);
+      return originalFetch(input, init);
+    }) as typeof fetch);
+    try {
+      await client.heartbeat(
+        signHeartbeatRequest(env.session, {
+          protocol_version: DOOR_PROTOCOL_VERSION,
+          door_id: DOOR_ID,
+          epoch,
+          session_pubkey: encodePublicKey(env.session.publicKey),
+          seq: 1,
+          issued_at: ISSUED_AT
+        })
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    expect(seen).toEqual([undefined]);
   });
 
   it("happy path: hello then attest, heartbeat, and cosign review", async () => {
