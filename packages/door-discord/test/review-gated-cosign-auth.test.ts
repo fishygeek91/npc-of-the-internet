@@ -1,4 +1,5 @@
 import {
+  canonicalize,
   encodePublicKey,
   encodeSignature,
   generateKeypair,
@@ -26,7 +27,19 @@ import { TestClock } from "./helpers/test-clock.js";
 const CLOCK_START = "2026-07-21T00:00:00.000Z";
 const EPOCH = 42;
 const ISSUED_AT = "2026-07-21T00:01:00.000Z";
-const ATTEST_CORE = '{"type":"attestation","kind":"arrival"}';
+/** Canonical OSP attestation core bound to `(door_id, epoch, kind)` — the Door rejects unbound cores. */
+function attestCore(kind: AttestRequest["kind"], epoch: number, doorId: string): string {
+  return new TextDecoder().decode(
+    canonicalize({
+      spec: "osp/0.2",
+      seq: 1,
+      prev: "bafyprev",
+      type: "attestation",
+      body: { kind, door_id: doorId, epoch },
+      residency: `door:${doorId}/epoch:${String(epoch)}`
+    })
+  );
+}
 
 afterEach(async () => {
   await cleanupTempDirs();
@@ -52,7 +65,7 @@ function signAttestArrival(
     door_id: doorId,
     epoch: EPOCH,
     kind: "arrival",
-    core: ATTEST_CORE,
+    core: attestCore("arrival", EPOCH, doorId),
     session_pubkey: encodePublicKey(session.publicKey),
     issued_at: ISSUED_AT
   };
@@ -279,6 +292,113 @@ describe("ReviewGatedDoor cosign auth before Discord side effects", () => {
     expect(response.phase).toBe("review");
     expect(response.decisions.every((decision) => decision.status === "approved")).toBe(true);
 
+    await handle.stop();
+  });
+});
+
+describe("ReviewGatedDoor replay / concurrency (review 2026-10)", () => {
+  async function startWithArrival(): Promise<{
+    gateway: FakeGateway;
+    handle: Awaited<ReturnType<typeof startDiscordDoor>>;
+    doorId: string;
+    session: Ed25519Keypair;
+  }> {
+    const gateway = new FakeGateway();
+    const config = await testConfig({ reviewTimeoutMs: 60_000 });
+    const doorId = doorIdForGuild(config.guildId);
+    const session = generateKeypair();
+    const handle = await startDiscordDoor({
+      config,
+      gateway,
+      clock: new TestClock(CLOCK_START),
+      sleep: async (ms) => {
+        await new Promise<void>((resolve) => {
+          setTimeout(resolve, Math.min(ms, 5));
+        });
+      },
+      disableServers: true
+    });
+    await handle.connection.attest(signAttestArrival(SOUL, session, doorId));
+    return { gateway, handle, doorId, session };
+  }
+
+  function reviewRequest(
+    session: Ed25519Keypair,
+    doorId: string,
+    issuedAt = ISSUED_AT
+  ): Extract<CosignRequest, { phase: "review" }> {
+    return signCosignReview(session, {
+      protocol_version: DOOR_PROTOCOL_VERSION,
+      phase: "review",
+      door_id: doorId,
+      epoch: EPOCH,
+      session_pubkey: encodePublicKey(session.publicKey),
+      shards: Array.from({ length: 5 }, (_, index) => ({
+        shard_id: `ok_${String(index + 1)}`,
+        text: `A calm memory ${String(index + 1)}.`
+      })),
+      issued_at: issuedAt
+    });
+  }
+
+  async function waitForReviews(gateway: FakeGateway, count: number): Promise<void> {
+    for (let attempt = 0; attempt < 200 && reviewMessageCount(gateway) < count; attempt += 1) {
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 5);
+      });
+    }
+  }
+
+  async function approveAll(gateway: FakeGateway): Promise<void> {
+    for (const message of gateway.sent) {
+      if (message.content.includes("**Cosign review**")) {
+        await gateway.emitReaction({
+          messageId: message.id,
+          channelId: CHANNEL_ID,
+          userId: OPERATOR_ID,
+          emoji: APPROVE_EMOJI
+        });
+      }
+    }
+  }
+
+  it("stale issued_at is rejected before any review post", async () => {
+    const { gateway, handle, doorId, session } = await startWithArrival();
+    const stale = reviewRequest(session, doorId, "2026-07-20T00:00:00.000Z");
+    await expect(handle.door.cosign(stale)).rejects.toMatchObject({ code: "timestamp_stale" });
+    expect(reviewMessageCount(gateway)).toBe(0);
+    await handle.stop();
+  });
+
+  it("an identical retry joins the in-flight review; shards are posted once", async () => {
+    const { gateway, handle, doorId, session } = await startWithArrival();
+    const request = reviewRequest(session, doorId);
+    const first = handle.door.cosign(request);
+    await waitForReviews(gateway, 5);
+    const second = handle.door.cosign(request);
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 20);
+    });
+    expect(reviewMessageCount(gateway)).toBe(5);
+
+    await approveAll(gateway);
+    const [a, b] = await Promise.all([first, second]);
+    expect(a).toEqual(b);
+    expect(a.phase).toBe("review");
+    await handle.stop();
+  });
+
+  it("a different concurrent review is rejected (review_pending) without re-posting", async () => {
+    const { gateway, handle, doorId, session } = await startWithArrival();
+    const first = handle.door.cosign(reviewRequest(session, doorId));
+    await waitForReviews(gateway, 5);
+    await expect(
+      handle.door.cosign(reviewRequest(session, doorId, "2026-07-21T00:02:00.000Z"))
+    ).rejects.toMatchObject({ code: "review_pending" });
+    expect(reviewMessageCount(gateway)).toBe(5);
+
+    await approveAll(gateway);
+    await expect(first).resolves.toMatchObject({ phase: "review" });
     await handle.stop();
   });
 });

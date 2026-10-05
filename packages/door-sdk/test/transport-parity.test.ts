@@ -27,7 +27,19 @@ const DOOR_ID = "discord:parity";
 const EPOCH = 42;
 const ISSUED_AT = "2026-07-20T15:09:00.000Z";
 const RECEIVED_AT = "2026-07-20T15:10:00.000Z";
-const CORE = '{"type":"attestation","kind":"arrival"}';
+/** Canonical OSP attestation core bound to `(door_id, epoch, kind)` — the Door rejects unbound cores. */
+function attestCore(kind: AttestRequest["kind"], epoch: number, doorId = DOOR_ID): string {
+  return new TextDecoder().decode(
+    canonicalize({
+      spec: "osp/0.2",
+      seq: 1,
+      prev: "bafyprev",
+      type: "attestation",
+      body: { kind, door_id: doorId, epoch },
+      residency: `door:${doorId}/epoch:${String(epoch)}`
+    })
+  );
+}
 
 /** Injectable clock for deterministic timestamps. */
 class FakeClock {
@@ -177,7 +189,7 @@ describe("transport parity", () => {
         door_id: DOOR_ID,
         epoch: EPOCH,
         kind: "arrival",
-        core: CORE,
+        core: attestCore("arrival", EPOCH),
         session_pubkey: encodePublicKey(env.session.publicKey),
         issued_at: ISSUED_AT
       },
@@ -202,7 +214,7 @@ describe("transport parity", () => {
         door_id: DOOR_ID,
         epoch: EPOCH + 1,
         kind: "arrival",
-        core: CORE,
+        core: attestCore("arrival", EPOCH + 1),
         session_pubkey: encodePublicKey(env.session.publicKey),
         issued_at: ISSUED_AT
       },
@@ -240,7 +252,7 @@ describe("transport parity", () => {
         door_id: DOOR_ID,
         epoch,
         kind: "arrival",
-        core: CORE,
+        core: attestCore("arrival", epoch),
         session_pubkey: encodePublicKey(env.session.publicKey),
         issued_at: ISSUED_AT
       },
@@ -318,7 +330,7 @@ describe("transport parity", () => {
         door_id: DOOR_ID,
         epoch,
         kind: "arrival",
-        core: CORE,
+        core: attestCore("arrival", epoch),
         session_pubkey: encodePublicKey(env.session.publicKey),
         issued_at: ISSUED_AT
       },

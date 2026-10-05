@@ -38,7 +38,19 @@ const DOOR_ID = "discord:client";
 const EPOCH = 50;
 const ISSUED_AT = "2026-07-20T15:09:00.000Z";
 const RECEIVED_AT = "2026-07-20T15:10:00.000Z";
-const CORE = '{"type":"attestation","kind":"arrival"}';
+/** Canonical OSP attestation core bound to `(door_id, epoch, kind)` — the Door rejects unbound cores. */
+function attestCore(kind: AttestRequest["kind"], epoch: number, doorId = DOOR_ID): string {
+  return new TextDecoder().decode(
+    canonicalize({
+      spec: "osp/0.2",
+      seq: 1,
+      prev: "bafyprev",
+      type: "attestation",
+      body: { kind, door_id: doorId, epoch },
+      residency: `door:${doorId}/epoch:${String(epoch)}`
+    })
+  );
+}
 
 class FakeClock {
   constructor(private readonly fixed: string) {}
@@ -204,7 +216,7 @@ describe("HttpDoorConnection", () => {
         door_id: DOOR_ID,
         epoch: EPOCH,
         kind: "arrival",
-        core: CORE,
+        core: attestCore("arrival", EPOCH),
         session_pubkey: encodePublicKey(env.session.publicKey),
         issued_at: ISSUED_AT
       },
@@ -233,7 +245,7 @@ describe("HttpDoorConnection", () => {
         door_id: DOOR_ID,
         epoch,
         kind: "arrival",
-        core: CORE,
+        core: attestCore("arrival", epoch),
         session_pubkey: encodePublicKey(env.session.publicKey),
         issued_at: ISSUED_AT
       },
@@ -272,7 +284,7 @@ describe("HttpDoorConnection", () => {
         door_id: DOOR_ID,
         epoch,
         kind: "arrival",
-        core: CORE,
+        core: attestCore("arrival", epoch),
         session_pubkey: encodePublicKey(env.session.publicKey),
         issued_at: ISSUED_AT
       },
@@ -311,7 +323,7 @@ describe("HttpDoorConnection", () => {
         door_id: DOOR_ID,
         epoch: EPOCH + 3,
         kind: "arrival",
-        core: CORE,
+        core: attestCore("arrival", EPOCH + 3),
         session_pubkey: encodePublicKey(env.session.publicKey),
         issued_at: ISSUED_AT
       },
@@ -327,7 +339,7 @@ describe("HttpDoorConnection", () => {
         door_id: DOOR_ID,
         epoch: EPOCH + 4,
         kind: "departure",
-        core: '{"type":"attestation","kind":"departure"}',
+        core: attestCore("departure", EPOCH + 4),
         session_pubkey: encodePublicKey(env.session.publicKey),
         issued_at: ISSUED_AT
       },
@@ -391,7 +403,7 @@ describe("HttpDoorConnection", () => {
         door_id: DOOR_ID,
         epoch: EPOCH + 5,
         kind: "arrival",
-        core: CORE,
+        core: attestCore("arrival", EPOCH + 5),
         session_pubkey: encodePublicKey(env.session.publicKey),
         issued_at: ISSUED_AT
       },
@@ -464,7 +476,7 @@ describe("HttpDoorConnection", () => {
           door_id: DOOR_ID,
           epoch: EPOCH + 6,
           kind: "arrival",
-          core: CORE,
+          core: attestCore("arrival", EPOCH + 6),
           session_pubkey: encodePublicKey(env.session.publicKey),
           issued_at: ISSUED_AT
         },
@@ -495,7 +507,7 @@ describe("HttpDoorConnection", () => {
           door_id: DOOR_ID,
           epoch,
           kind: "arrival",
-          core: CORE,
+          core: attestCore("arrival", epoch),
           session_pubkey: encodePublicKey(env.session.publicKey),
           issued_at: ISSUED_AT
         },
@@ -567,7 +579,7 @@ describe("HttpDoorConnection", () => {
         door_id: DOOR_ID,
         epoch,
         kind: "arrival",
-        core: CORE,
+        core: attestCore("arrival", epoch),
         session_pubkey: encodePublicKey(env.session.publicKey),
         issued_at: ISSUED_AT
       },
@@ -623,7 +635,7 @@ describe("WsDoorSessionClient", () => {
         door_id: DOOR_ID,
         epoch,
         kind: "arrival",
-        core: CORE,
+        core: attestCore("arrival", epoch),
         session_pubkey: encodePublicKey(env.session.publicKey),
         issued_at: ISSUED_AT
       },

@@ -8,6 +8,7 @@ import {
   SlashCommandBuilder,
   type ChatInputCommandInteraction,
   type Message,
+  type MessageMentionOptions,
   type MessageReaction,
   type PartialMessageReaction,
   type PartialUser,
@@ -15,12 +16,27 @@ import {
 } from "discord.js";
 
 import { DiscordDoorError } from "../errors.js";
+import { clampDiscordMessage } from "./chunk.js";
 import type { DiscordGateway, GatewayCommand, GatewayMessage, GatewayReaction } from "./gateway.js";
 
 export type DiscordJsGatewayOptions = {
   token: string;
   guildId: string;
+  /**
+   * Called when a Discord event handler fails (message / reaction / command dispatch).
+   * Errors never propagate into discord.js as unhandled rejections.
+   */
+  onError?: (event: string, error: unknown) => void;
 };
+
+/**
+ * Mentions the bot may ping: none. Wanderer / host text is untrusted (LLM output can
+ * contain `@everyone`, `<@&role>`, `<@user>`), and replies must not ping the author.
+ * Returns a fresh object per send.
+ */
+export function noPingAllowedMentions(): MessageMentionOptions {
+  return { parse: [], repliedUser: false };
+}
 
 /** Name the Wanderer answers to; bot mentions are rendered as this plain word. */
 export const WANDERER_MENTION_NAME = "Wanderer";
@@ -94,7 +110,23 @@ export class DiscordJsGateway implements DiscordGateway {
         GatewayIntentBits.MessageContent,
         GatewayIntentBits.GuildMessageReactions
       ],
-      partials: [Partials.Message, Partials.Channel, Partials.Reaction]
+      partials: [Partials.Message, Partials.Channel, Partials.Reaction],
+      // Client-wide default; every send also passes allowedMentions explicitly.
+      allowedMentions: noPingAllowedMentions(),
+      failIfNotExists: false
+    });
+    // Wired once here (events only flow after login in start()).
+    this.client.on(Events.MessageCreate, (message) => {
+      this.guard("message", () => this.dispatchMessage(message));
+    });
+    this.client.on(Events.MessageReactionAdd, (reaction, user) => {
+      this.guard("reaction", () => this.dispatchReaction(reaction, user));
+    });
+    this.client.on(Events.InteractionCreate, (interaction) => {
+      if (!interaction.isChatInputCommand()) {
+        return;
+      }
+      this.guard("command", () => this.dispatchCommand(interaction));
     });
   }
 
@@ -115,19 +147,6 @@ export class DiscordJsGateway implements DiscordGateway {
   }
 
   async start(): Promise<void> {
-    this.client.on(Events.MessageCreate, (message) => {
-      void this.dispatchMessage(message);
-    });
-    this.client.on(Events.MessageReactionAdd, (reaction, user) => {
-      void this.dispatchReaction(reaction, user);
-    });
-    this.client.on(Events.InteractionCreate, (interaction) => {
-      if (!interaction.isChatInputCommand()) {
-        return;
-      }
-      void this.dispatchCommand(interaction);
-    });
-
     // Register ready/error before login so we never miss a fast ready event.
     const ready = new Promise<void>((resolve, reject) => {
       const onReady = (readyClient: { user: { id: string } }): void => {
@@ -170,10 +189,17 @@ export class DiscordJsGateway implements DiscordGateway {
       );
     }
     const replyToId = options?.replyToId;
+    // Last-resort length guard (relay chunks Wanderer text before reaching here).
+    const safeContent = clampDiscordMessage(content);
     const sent =
       replyToId === undefined
-        ? await channel.send({ content })
-        : await channel.send({ content, reply: { messageReference: replyToId } });
+        ? await channel.send({ content: safeContent, allowedMentions: noPingAllowedMentions() })
+        : await channel.send({
+            content: safeContent,
+            allowedMentions: noPingAllowedMentions(),
+            // A deleted parent must not fail the send (spec: post without the reference).
+            reply: { messageReference: replyToId, failIfNotExists: false }
+          });
     return { id: sent.id };
   }
 
@@ -203,11 +229,42 @@ export class DiscordJsGateway implements DiscordGateway {
       throw new DiscordDoorError("discord_error", "unknown interaction for ephemeral reply");
     }
     this.pendingEphemeral.delete(interactionId);
+    const safeContent = clampDiscordMessage(content);
     if (interaction.replied || interaction.deferred) {
-      await interaction.followUp({ content, ephemeral: true });
+      await interaction.followUp({
+        content: safeContent,
+        ephemeral: true,
+        allowedMentions: noPingAllowedMentions()
+      });
       return;
     }
-    await interaction.reply({ content, ephemeral: true });
+    await interaction.reply({
+      content: safeContent,
+      ephemeral: true,
+      allowedMentions: noPingAllowedMentions()
+    });
+  }
+
+  /** Run an async event handler; failures go to `onError`, never unhandled rejections. */
+  private guard(event: string, run: () => Promise<void>): void {
+    let pending: Promise<void>;
+    try {
+      pending = run();
+    } catch (error: unknown) {
+      this.reportError(event, error);
+      return;
+    }
+    pending.catch((error: unknown) => {
+      this.reportError(event, error);
+    });
+  }
+
+  private reportError(event: string, error: unknown): void {
+    try {
+      this.options.onError?.(event, error);
+    } catch {
+      // The error reporter itself must never take the gateway down.
+    }
   }
 
   private async registerSlashCommands(): Promise<void> {

@@ -7,7 +7,7 @@ Discord Door adapter: one guild channel becomes a Door. Wraps `@npc/door-sdk` `D
 - **`startDiscordDoor(options)`** — boot Door HTTP/WS servers (optional), Discord gateway, review gate, and channel relay
 - **`loadDiscordDoorConfig(env)`** — Zod-validated env config (inject `env` in tests)
 - **`DiscordGateway`** — thin seam over discord.js (`DiscordJsGateway` in prod; `FakeGateway` in tests)
-- **`ReviewGate` / `ReviewGatedDoor`** — async host approval before sync `decideShard` (timeout → **rejected**); `ReviewGatedDoor` verifies session binding + cosign signature **before** posting shards to Discord
+- **`ReviewGate` / `ReviewGatedDoor`** — async host approval before sync `decideShard` (timeout → **rejected**); `ReviewGatedDoor` verifies freshness, session binding + cosign signature **before** posting shards to Discord; one review in flight at a time (identical retry joins it, any other → `review_pending`)
 
 ## Config (env)
 
@@ -34,7 +34,9 @@ See `ops/SECRETS.md` for secret names only.
 
 - **Addressing:** inbound frames carry `addressed: true` when the message @mentions the bot (or reply-pings it) or is a Discord reply to one of the Wanderer's messages. The relay shows a best-effort "typing…" indicator for addressed messages.
 - **Mentions:** `<@id>` / `<@&id>` / `<#id>` tokens are rendered as plain names (bot → `Wanderer`, users → display name, `#channel`), and `@everyone`/`@here` lose the `@`. `@name` text would trip the runtime immune `pii.handle` screen and drop the whole message.
-- **Ids:** the relay keeps a bounded (1000) msg_id ↔ Discord id map, so outbound `reply_to` becomes a real Discord reply and `reaction.target_msg_id` resolves to the right message. Inbound `reply_to` is the parent's protocol msg_id when known.
+- **No pings:** every bot message (relay, review posts, notices, ephemeral replies) is sent with `allowedMentions: { parse: [], repliedUser: false }` (also the client default), so Wanderer/LLM text containing `@everyone`, `@here`, role or user mentions never notifies anyone, and replies don't ping the author.
+- **Length:** Discord caps messages at 2000 chars (protocol allows 4000): outbound text is split on newline/space boundaries (never inside a surrogate pair); only the first chunk is a reply. Replies use `failIfNotExists: false`, so a deleted parent posts without a reference.
+- **Ids:** the relay keeps a bounded (1000) msg_id ↔ Discord id map, so outbound `reply_to` becomes a real Discord reply and `reaction.target_msg_id` resolves to the right message. Inbound `reply_to` is the parent's protocol msg_id when known. The map is per epoch (the runtime's `out-N` ids restart each session); the set of the Wanderer's own message ids (for addressing) survives epochs and is bounded separately.
 - **Reactions:** outbound `reaction: { emoji, target_msg_id }` → `message.react(emoji)` (needs the **Add Reactions** permission). A failed reaction logs `reaction_failed` and never posts an operator notice.
 - **Silence:** the runtime (selective mode) may not answer at all — that is the design.
 

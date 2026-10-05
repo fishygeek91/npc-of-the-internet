@@ -26,7 +26,19 @@ const DOOR_ID = "discord:http";
 const EPOCH = 11;
 const ISSUED_AT = "2026-07-20T15:09:00.000Z";
 const RECEIVED_AT = "2026-07-20T15:10:00.000Z";
-const CORE = '{"type":"attestation","kind":"arrival"}';
+/** Canonical OSP attestation core bound to `(door_id, epoch, kind)` — the Door rejects unbound cores. */
+function attestCore(kind: AttestRequest["kind"], epoch: number, doorId = DOOR_ID): string {
+  return new TextDecoder().decode(
+    canonicalize({
+      spec: "osp/0.2",
+      seq: 1,
+      prev: "bafyprev",
+      type: "attestation",
+      body: { kind, door_id: doorId, epoch },
+      residency: `door:${doorId}/epoch:${String(epoch)}`
+    })
+  );
+}
 
 class FakeClock {
   constructor(private readonly fixed: string) {}
@@ -259,7 +271,7 @@ describe("HTTP transport", () => {
           door_id: DOOR_ID,
           epoch: EPOCH,
           kind: "arrival",
-          core: CORE,
+          core: attestCore("arrival", EPOCH),
           session_pubkey: encodePublicKey(session.publicKey),
           issued_at: ISSUED_AT
         },
@@ -279,7 +291,7 @@ describe("HTTP transport", () => {
           door_id: DOOR_ID,
           epoch: EPOCH + 1,
           kind: "departure",
-          core: '{"type":"attestation","kind":"departure"}',
+          core: attestCore("departure", EPOCH + 1),
           session_pubkey: encodePublicKey(session.publicKey),
           issued_at: ISSUED_AT
         },
@@ -309,7 +321,7 @@ describe("HTTP transport", () => {
           door_id: DOOR_ID,
           epoch: EPOCH,
           kind: "arrival",
-          core: CORE,
+          core: attestCore("arrival", EPOCH),
           session_pubkey: encodePublicKey(session.publicKey),
           issued_at: ISSUED_AT
         },
@@ -460,7 +472,7 @@ describe("WS session lifecycle (#66)", () => {
           door_id: DOOR_ID,
           epoch: EPOCH,
           kind: "arrival",
-          core: CORE,
+          core: attestCore("arrival", EPOCH),
           session_pubkey: encodePublicKey(sessionN.publicKey),
           issued_at: ISSUED_AT
         },
@@ -500,7 +512,7 @@ describe("WS session lifecycle (#66)", () => {
           door_id: DOOR_ID,
           epoch: EPOCH + 1,
           kind: "arrival",
-          core: CORE,
+          core: attestCore("arrival", EPOCH + 1),
           session_pubkey: encodePublicKey(sessionN1.publicKey),
           issued_at: ISSUED_AT
         },
@@ -558,7 +570,7 @@ describe("WS session lifecycle (#66)", () => {
           door_id: DOOR_ID,
           epoch: EPOCH,
           kind: "arrival",
-          core: CORE,
+          core: attestCore("arrival", EPOCH),
           session_pubkey: encodePublicKey(session.publicKey),
           issued_at: ISSUED_AT
         },
@@ -588,7 +600,7 @@ describe("WS session lifecycle (#66)", () => {
           door_id: DOOR_ID,
           epoch: EPOCH,
           kind: "departure",
-          core: '{"type":"attestation","kind":"departure"}',
+          core: attestCore("departure", EPOCH),
           session_pubkey: encodePublicKey(session.publicKey),
           issued_at: ISSUED_AT
         },
