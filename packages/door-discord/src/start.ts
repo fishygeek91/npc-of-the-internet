@@ -1,4 +1,5 @@
 import {
+  FileCosignStateStore,
   HttpDoorServer,
   InProcessDoorConnection,
   WsDoorSessionServer,
@@ -125,7 +126,8 @@ export async function startDiscordDoor(
       "session.addressing",
       "heartbeat",
       "attest",
-      "cosign.manual"
+      "cosign.manual",
+      "cosign.past_epochs"
     ],
     decideShard: (shard) => reviewGate.decideShard(shard)
   };
@@ -136,9 +138,25 @@ export async function startDiscordDoor(
       doorKeypair,
       soulPublicKey: config.soulPublicKey,
       clock,
-      policy
+      policy,
+      cosignRetention: {
+        maxEpochs: config.cosignRetainEpochs,
+        maxAgeMs: config.cosignRetainMs
+      },
+      ...(config.stateDir !== undefined
+        ? { cosignStateStore: new FileCosignStateStore(config.stateDir) }
+        : {})
     },
     reviewGate
+  );
+  logger.info(
+    {
+      durable: config.stateDir !== undefined,
+      retainEpochs: config.cosignRetainEpochs,
+      retainMs: config.cosignRetainMs,
+      retainedEpochs: door.getRetainedReviewEpochs()
+    },
+    "door_cosign_retention"
   );
 
   const connection = new InProcessDoorConnection(door);

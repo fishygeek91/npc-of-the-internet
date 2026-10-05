@@ -185,7 +185,6 @@ describe("quarantine integration", () => {
       keyring,
       door,
       doorId: DOOR_ID,
-      epoch: session.epoch,
       clock,
       quarantineWindowMs: QUARANTINE_WINDOW_MS
     });
@@ -227,7 +226,6 @@ describe("quarantine integration", () => {
       keyring,
       door,
       doorId: DOOR_ID,
-      epoch: session.epoch,
       clock,
       quarantineWindowMs: QUARANTINE_WINDOW_MS,
       journalMarkdown: departResult.journalMarkdown
@@ -313,7 +311,6 @@ describe("quarantine integration", () => {
       keyring,
       door,
       doorId: DOOR_ID,
-      epoch: session.epoch,
       clock,
       quarantineWindowMs: QUARANTINE_WINDOW_MS,
       journalMarkdown: departResult.journalMarkdown

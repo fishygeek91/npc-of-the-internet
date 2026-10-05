@@ -245,7 +245,6 @@ describe("quarantine commit TOCTOU + flag idempotency", () => {
       keyring,
       door,
       doorId: DOOR_ID,
-      epoch: session.epoch,
       clock,
       quarantineWindowMs: QUARANTINE_WINDOW_MS,
       journalMarkdown: departResult.journalMarkdown
@@ -403,7 +402,6 @@ describe("quarantine commit TOCTOU + flag idempotency", () => {
       keyring,
       door,
       doorId: DOOR_ID,
-      epoch: session.epoch,
       clock,
       quarantineWindowMs: QUARANTINE_WINDOW_MS,
       journalMarkdown: departResult.journalMarkdown

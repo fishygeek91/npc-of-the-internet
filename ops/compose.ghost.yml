@@ -114,8 +114,15 @@ services:
       SOUL_PUBLIC_KEY: ${SOUL_PUBLIC_KEY}
       DOOR_HTTP_HOST: "0.0.0.0"
       DOOR_HTTP_PORT: "9090"
+      # Completed cosign reviews are retained per epoch (bounded) and persisted here, so
+      # the runtime can commit a past epoch's quarantined shards while a later residency
+      # is live, across door-discord restarts (ops/RUNBOOK.md §7.5).
+      DOOR_STATE_DIR: /data/door-state
+      DOOR_COSIGN_RETAIN_EPOCHS: ${DOOR_COSIGN_RETAIN_EPOCHS:-16}
+      DOOR_COSIGN_RETAIN_MS: ${DOOR_COSIGN_RETAIN_MS:-604800000}
     volumes:
       - ${DOOR_KEY_HOST_PATH}:/run/keys/door.key:ro
+      - door-state:/data/door-state
     expose:
       - "9090"
     healthcheck:
@@ -244,3 +251,4 @@ volumes:
   soulchain:
   soulchain-ipfs:
   published:
+  door-state:

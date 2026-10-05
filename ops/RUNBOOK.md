@@ -16,11 +16,11 @@ Four services share named Docker volumes from `ops/compose.ghost.yml`:
 | Service | Image | Role | Volume access |
 |---------|-------|------|------------------|
 | **runtime** | `ghcr.io/fishygeek91/npc-runtime` | Residency daemon (`npc-runtime`): soulchain writer, Door HTTP/WS client, live Session loop | `soulchain` + `soulchain-ipfs` + `published` (read-write) |
-| **door-discord** | `ghcr.io/fishygeek91/npc-door-discord` | Discord Door relay; HTTP REST and WebSocket coalesced on port **9090** | none |
+| **door-discord** | `ghcr.io/fishygeek91/npc-door-discord` | Discord Door relay; HTTP REST and WebSocket coalesced on port **9090** | `door-state` (read-write; per-epoch cosign review state, §7.5) |
 | **atlas-api** | `ghcr.io/fishygeek91/npc-atlas-api` | Read-only Atlas API on **127.0.0.1:8787** only (Docker published ports bypass ufw — see [RUNBOOK.ghost §6](RUNBOOK.ghost.md#6-keep-atlas-off-the-public-internet)) | `soulchain` + `published` (read-only) |
 | **backup** | `ghcr.io/fishygeek91/npc-backup` | Append-triggered `rclone` backup to remote storage | `soulchain` only (read-only) |
 
-Named volumes: `soulchain` (`/data/soulchain`), `soulchain-ipfs` (`/data/soulchain-ipfs`), and `published` (`/data/published`). Host-mounted secrets (paths configured in `ops/.env`): soul private key, door private key, and `rclone.conf`. Only **runtime** writes the chain; **backup** backs up the file `soulchain` volume only (not the IPFS or published volumes).
+Named volumes: `soulchain` (`/data/soulchain`), `soulchain-ipfs` (`/data/soulchain-ipfs`), `published` (`/data/published`), and `door-state` (`/data/door-state`, door-discord only). Host-mounted secrets (paths configured in `ops/.env`): soul private key, door private key, and `rclone.conf`. Only **runtime** writes the chain; **backup** backs up the file `soulchain` volume only (not the IPFS or published volumes).
 
 Ghost compose always sets `NPC_SOULCHAIN_IPFS_DIR=/data/soulchain-ipfs`, so runtime opens `DualSoulStore` (file store authoritative, IPFS mirror). Compose also sets `NPC_PUBLISHED_CAR_PATH` and `NPC_MANIFEST_CID_PATH` under `/data/published` for Atlas CAR/manifest hooks. **Outbound** IPFS replication stays disabled by default (`NPC_REPLICATION_ENABLED` unset) — enabling is Gate 2; see [RUNBOOK.ghost §10a](RUNBOOK.ghost.md#10a-ipfs-replication-optional-gate-2-for-live-push) and `ops/SECRETS.md` for env names.
 
@@ -503,20 +503,22 @@ turning one on is an operator decision (Gate 2 — see [`LIFECYCLE.md`](../LIFEC
 4. **Journal.** The Wanderer writes its residency journal from the **approved** shards only
    (rejected prose never reaches it) to `NPC_JOURNAL_DIR`
    (`/data/published/journals/journal-<door>-epoch-<n>.md`). Atlas does not read this file —
-   Atlas `/journals` shows a journal only once it is on chain (step 6).
+   Atlas `/journals` shows a journal only once it is on chain (step 7).
 5. **Records.** Appended to the soulchain: `memory` `kind: rejected` (immune-screen drops,
    host rejections — category only), `memory` `kind: candidate` per approved shard,
    then `attestation` `departure` (Door co-signed) and `travel` (`to_door_id` = same Door).
    Atlas `/state` reports `traveling`.
-6. **Commit sweep (optional, off by default).** With `NPC_QUARANTINE_COMMIT_INTERVAL_MS` set,
-   the Wanderer stays away until the candidates ripen (`NPC_QUARANTINE_WINDOW_MS`), then
-   promotes them to `memory` `kind: shard` with Door co-signatures; the first shard carries the
-   journal (side blob), which is what makes it appear on Atlas. See 7.5 for why this happens
-   *before* re-arrival.
-7. **Re-arrive.** `hello` → `arrival` at `epoch + 1` (the Door retired the old epoch at
+6. **Re-arrive** — right away; the Wanderer does not wait out the quarantine window
+   (door-discord keeps the epoch's review per epoch, in its `door-state` volume, so the
+   candidates can be committed later while the next residency is live — 7.5). `hello` → `arrival` at `epoch + 1` (the Door retired the old epoch at
    departure and accepts any epoch above the last it saw) → new session socket → `residency_live`
    and `ws_session_ready` in the logs, runtime `healthy` again. The new residency starts with an
    empty transcript and no conversation history.
+7. **Commit sweep (optional, off by default).** With `NPC_QUARANTINE_COMMIT_INTERVAL_MS` set,
+   the live runtime checks on that timer for candidates of past epochs that have ripened
+   (`NPC_QUARANTINE_WINDOW_MS`, default 24 h) and promotes them to `memory` `kind: shard` with
+   Door co-signatures; the first shard of a residency carries its journal (side blob, read back
+   from `NPC_JOURNAL_DIR`), which is what makes it appear on Atlas. See 7.5.
 
 **Failure handling.** A failed depart (Brain error, too few shards, Door/review timeout) is
 retried twice (after 30 s and 120 s; Bug #69 retry semantics: the cosign review is joined or
@@ -525,9 +527,9 @@ records, the next arrival supersedes it — the same chain shape as a crash, and
 conversation's memories are lost (`residency_depart_abandoned` at `error`). Re-arrival retries
 with backoff (5 s → 5 min) until the Door answers. `SIGTERM` during a cycle (e.g.
 `ghostc restart runtime`) aborts it cleanly: no re-arrival from the dying process, appended
-records stay valid, and the next boot arrives at a fresh epoch as after any restart (a
-candidate appended before the stop is stranded — never committed — because the Door forgets
-the review on that arrival).
+records stay valid, and the next boot arrives at a fresh epoch as after any restart
+(candidates appended before the stop are still committed by the next boot's sweep — the Door
+retains their review, also across its own restarts thanks to the `door-state` volume).
 
 ### 7.2 Run a cycle by hand (operator trigger)
 
@@ -558,9 +560,11 @@ The cycle itself takes the review time (≤ `DISCORD_REVIEW_TIMEOUT_MS`) plus tw
 Equivalent without the CLI: `ghostc kill -s SIGUSR2 runtime` (tini forwards it).
 
 Log events, in order: `residency_cycle_requested` → `residency_cycle_started` →
-`residency_departed` (approved/rejected/candidates/journalPath) → [`residency_commit_sweep*`]
-→ `door_hello` → `residency_live` → `residency_cycle_complete` → `residency_cycle_outcome`
-(`kind: cycled | abandoned | skipped | busy | aborted`). `skipped` = the transcript was empty
+`residency_departed` (approved/rejected/candidates/journalPath) →
+[`residency_commit_deferred_to_live_sweep`] → `door_hello` → `residency_live` →
+[`residency_live_sweep_armed`] → `residency_cycle_complete` → `residency_cycle_outcome`
+(`kind: cycled | abandoned | skipped | busy | aborted`); later, once candidates ripen,
+`residency_live_commit_sweep` (committed / ripening / stranded counts). `skipped` = the transcript was empty
 (nothing to distill); `busy` = a cycle was already running.
 
 ### 7.3 Automatic cycles (timer)
@@ -588,31 +592,68 @@ node packages/osp-cli/dist/cli.js verify ./_soulchain-snapshot --door-key="$DOOR
 
 Expect, after the old residency's heartbeats: `memory/candidate` (one per ✅),
 `memory/rejected` (per ❌ / timeout / screen category), `attestation/departure epoch=N`,
-`attestation/travel from=… epoch=N`, [`memory/shard` × approved, with the commit sweep], then
-`attestation/arrival epoch=N+1` and its heartbeats; `verify` exits 0. Use the `=` form of
+`attestation/travel from=… epoch=N`, then `attestation/arrival epoch=N+1` and its heartbeats;
+with the commit sweep on, `memory/shard` × approved (residency `…/epoch:N`) appear among epoch
+N+1's heartbeats once the window has passed; `verify` exits 0. Use the `=` form of
 `--door-key` (base64url keys may start with `-`). `curl -sS http://127.0.0.1:8787/state`
 returns `present` with the new epoch.
 
-### 7.5 Commit sweep and its constraint (read before enabling)
+### 7.5 Commit sweep and Door review retention (read before enabling)
 
 Promoting a candidate needs a Door co-signature over the commit envelope, and the Door only
-co-signs for the epoch whose review it holds. door-sdk keeps **one** review state, in memory,
-and **resets it on every arrival** (and on a door-discord restart). So commits for epoch *N*
-are only possible **between departure N and arrival N+1**. The daemon therefore runs the sweep
-in the travel gap: it polls every `NPC_QUARANTINE_COMMIT_INTERVAL_MS` until no candidate of
-epoch *N* is still ripening (bounded by window + 5 polls; 3 consecutive failures give up),
-then re-arrives. Consequences:
+co-signs for an epoch whose review it still holds. door-discord advertises `cosign.past_epochs`:
+it keeps every completed review **per epoch** — not reset on arrival — for the last
+`DOOR_COSIGN_RETAIN_EPOCHS` (default 16) reviewed epochs and at most `DOOR_COSIGN_RETAIN_MS`
+(default 7 days), and persists it in `DOOR_STATE_DIR` (`/data/door-state`, named volume
+`door-state` in Ghost compose) so a door-discord restart or upgrade keeps it. So the runtime
+commits past epochs **while the next residency is live**:
 
-- The Wanderer is absent for the whole quarantine window, so with the sweep on,
-  `NPC_QUARANTINE_WINDOW_MS` must be `≤ 3600000` (config refuses otherwise). Suggested:
-  `NPC_QUARANTINE_COMMIT_INTERVAL_MS=30000`, `NPC_QUARANTINE_WINDOW_MS=600000` (10 min).
+```bash
+# ops/.env — commit sweep on, production window
+NPC_QUARANTINE_COMMIT_INTERVAL_MS=600000   # check every 10 min (≥ 10000)
+NPC_QUARANTINE_WINDOW_MS=86400000          # default 24 h
+```
+
+```bash
+ghostc up -d runtime door-discord
+ghostc logs door-discord 2>&1 | grep door_cosign_retention   # durable: true, retainedEpochs
+ghostc logs runtime 2>&1 | grep -E 'residency_lifecycle_config|residency_live_sweep_armed'
+# residency_lifecycle_config … liveCommitSweep: true
+```
+
+- Commit requests for epoch *N* are signed with epoch *N*'s session key (re-derived from the
+  soul key; nothing extra is stored). The Door still checks everything it did before: the
+  shard was **approved** in epoch *N*'s review, the core is bound to epoch *N*'s residency and
+  the reviewed text, one co-signature per chain position.
+- **Upgrade in lockstep.** A runtime older than this change rejects a `hello` listing
+  `cosign.past_epochs`; deploy runtime and door-discord from the same release.
+- **Legacy Door** (no `cosign.past_epochs`): the runtime falls back to the old travel-gap sweep,
+  and refuses to boot (`NPC_QUARANTINE_WINDOW_MS must be ≤ 3600000 …`, before any chain write)
+  if the window is over 1 h while the sweep is on.
+- **Stranded candidates.** A candidate whose review the Door no longer holds — evicted by the
+  retention bound, reviewed before this change, an abandoned residency, or a door-discord
+  restart **without** `DOOR_STATE_DIR` — gets `review_not_retained`; the runtime logs
+  `quarantine_candidates_stranded_review_not_retained` once per process and stops asking. It
+  stays `memory.candidate` (on chain, never composed, never on Atlas). Keep the retention
+  bound well above the window (default 7 days vs 24 h).
+- **Door state volume.** `door-state` holds, per retained epoch, the **approved** shard texts
+  (rejected text is never written), the review's session public key and the commit
+  co-signatures already issued — no secrets. Back it up only if you care about committing
+  candidates after a host loss; deleting it strands candidates still ripening. If door-discord
+  refuses to start with `invalid persisted cosign review state` (or a state file for another
+  `door_id` after a guild change), move `cosign-state.json` aside — that strands ripening
+  candidates, nothing else:
+
+  ```bash
+  ghostc run --rm --no-deps --entrypoint sh door-discord -c \
+    'mv /data/door-state/cosign-state.json /data/door-state/cosign-state.json.bad'
+  ```
+
+- Fresh volume ownership: the image pre-creates `/data/door-state` as `npc` (uid 10001), same as
+  the runtime volumes (§1.4). Smoke test:
+  `ghostc run --rm --no-deps --entrypoint sh door-discord -c "touch /data/door-state/.w && rm /data/door-state/.w"`.
 - There is no production path to flag a candidate during the window yet (`wanderer quarantine
   flag` is still test-only); the host review in Discord is the veto. The window is a delay,
   not a second review.
-- Candidates that miss their gap (sweep off, door-discord restarted, runtime stopped) stay
-  candidates forever: still on chain, never composed into the Wanderer, never on Atlas.
 - With the sweep off (default) **journals never reach Atlas** — they exist only as files in
-  `NPC_JOURNAL_DIR`.
-
-Follow-up (protocol change, see `DEVIATIONS.md`): Door-side review state per epoch that
-survives re-arrival (and restarts), so the sweep can run while the next residency is live.
+  `NPC_JOURNAL_DIR`, and candidates stay candidates.

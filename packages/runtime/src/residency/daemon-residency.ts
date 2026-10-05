@@ -3,6 +3,7 @@ import {
   DOOR_PROTOCOL_VERSION,
   sessionBindSigningPayload,
   WsDoorSessionClient,
+  type HelloResponse,
   type HttpDoorConnection
 } from "@npc/door-sdk";
 import { encodePublicKey, encodeSignature, type SoulStore } from "@npc/osp-core";
@@ -37,7 +38,15 @@ export type DaemonResidencyContext = {
   onHeartbeatError: (error: unknown, stage: "door" | "append") => void;
   /** Ready-file hook: `true` once this residency's socket is connected, `false` on drop. */
   onConnectionChange: (connected: boolean) => void;
+  /**
+   * Called with the verified `hello` before `Session.start` (nothing appended yet);
+   * throwing aborts this arrival (boot-time capability checks).
+   */
+  onHello?: (hello: HelloResponse) => void;
 };
+
+/** Door capability: completed cosign reviews are retained per epoch across arrivals. */
+export const PAST_EPOCH_COMMITS_CAPABILITY = "cosign.past_epochs";
 
 /**
  * Arrive at the Door for one residency: `hello` (door id check + `active_epoch` crash
@@ -69,6 +78,8 @@ export async function arriveDaemonResidency(ctx: DaemonResidencyContext): Promis
       "door_mismatch"
     );
   }
+
+  ctx.onHello?.(hello);
 
   // WHITEPAPER §3.2: raw conversation lives only in memory for the residency; depart
   // distills it into shards and destroys it. Never written to disk.
@@ -254,6 +265,8 @@ export async function arriveDaemonResidency(ctx: DaemonResidencyContext): Promis
     transcriptSize: () => transcript.size,
     detach,
     depart: () => session.depart({ journalDir: ctx.journalDir, toDoorId: ctx.doorId }),
-    close
+    close,
+    pastEpochCommits: hello.capabilities.includes(PAST_EPOCH_COMMITS_CAPABILITY),
+    withAppendLock: (fn) => session.withAppendLock(fn)
   };
 }

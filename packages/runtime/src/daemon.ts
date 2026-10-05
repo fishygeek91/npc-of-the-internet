@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { mkdir, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -20,18 +20,22 @@ import {
   startReplicationDrain,
   type ReplicationDrainHandle
 } from "./replication/index.js";
-import { commitQuarantinedShards } from "./quarantine/commit.js";
+import { commitQuarantinedShards, residencyEpochAtDoor } from "./quarantine/commit.js";
+import { resolveJournalPath } from "./quarantine/resolve-journal-path.js";
+import { MAX_COMMIT_WINDOW_MS } from "./residency/config.js";
 import { watchControlDir, type ControlDirWatcher } from "./residency/control-dir.js";
 import {
   abortableSleep,
   ResidencyController,
   type AbortableSleep,
   type CommitDepartedEpoch,
+  type CommitPendingEpochs,
   type CycleOutcome,
   type CycleTrigger
 } from "./residency/controller.js";
 import {
   arriveDaemonResidency,
+  PAST_EPOCH_COMMITS_CAPABILITY,
   type DaemonResidencyContext
 } from "./residency/daemon-residency.js";
 import type { Clock, Timer } from "./session/types.js";
@@ -64,6 +68,8 @@ export type ResidencyDaemonDeps = {
   heartbeatIntervalMs?: number;
   /** Abortable sleep for cycle backoff and commit-sweep polling (tests). */
   sleep?: AbortableSleep;
+  /** Wall clock override (tests); defaults to the system clock. */
+  clock?: Clock;
 };
 
 /** Handle returned by {@link startResidencyDaemon}. */
@@ -224,7 +230,7 @@ async function bootResidency(ctx: {
   const door = new HttpDoorConnection({ baseUrl });
 
   const brain = deps.brain ?? createBrain(config.brain);
-  const clock = createRealClock();
+  const clock = deps.clock ?? createRealClock();
   const timer = deps.timer ?? createRealTimer();
 
   /** Counts heartbeat Door/append failures for ops visibility. */
@@ -305,6 +311,11 @@ async function bootResidency(ctx: {
       });
   };
 
+  const residencyConfig = config.residency;
+  const sweepEnabled = residencyConfig.commitIntervalMs > 0;
+  /** Set once the first residency is live; boot-only checks run before that. */
+  let booted = false;
+
   const residencyCtx: DaemonResidencyContext = {
     store,
     door,
@@ -324,34 +335,92 @@ async function bootResidency(ctx: {
       logger.warn({ err: message, stage, heartbeatErrorCount }, "heartbeat_failed");
     },
     onConnectionChange,
+    onHello: (hello) => {
+      // Legacy Door (no per-epoch review retention): commits only work in the travel gap,
+      // so the Wanderer would be away for the whole window. Refuse at boot, before any
+      // append, exactly like the former config check; later re-arrivals only log (the
+      // controller skips that sweep) so a mid-run Door downgrade cannot strand it.
+      if (
+        !booted &&
+        sweepEnabled &&
+        !hello.capabilities.includes(PAST_EPOCH_COMMITS_CAPABILITY) &&
+        residencyConfig.quarantineWindowMs > MAX_COMMIT_WINDOW_MS
+      ) {
+        throw new DaemonError(
+          `NPC_QUARANTINE_WINDOW_MS must be ≤ ${String(MAX_COMMIT_WINDOW_MS)} while NPC_QUARANTINE_COMMIT_INTERVAL_MS is set and the Door does not advertise ${PAST_EPOCH_COMMITS_CAPABILITY}: the Wanderer would wait out the window between residencies (see ops/RUNBOOK.md §7.5)`,
+          "invalid_config",
+          "NPC_QUARANTINE_WINDOW_MS"
+        );
+      }
+    },
     ...(deps.heartbeatIntervalMs !== undefined
       ? { heartbeatIntervalMs: deps.heartbeatIntervalMs }
       : {}),
     ...(onDeparted !== undefined ? { onDeparted } : {})
   };
 
-  const residencyConfig = config.residency;
-  const commit: CommitDepartedEpoch | undefined =
-    residencyConfig.commitIntervalMs > 0
-      ? ({ epoch, journalMarkdown }) =>
-          commitQuarantinedShards({
-            store,
-            keyring,
-            door,
-            doorId: config.doorId,
-            epoch,
-            clock,
-            quarantineWindowMs: residencyConfig.quarantineWindowMs,
-            residency: `door:${config.doorId}/epoch:${String(epoch)}`,
-            ...(journalMarkdown !== undefined ? { journalMarkdown } : {})
-          })
-      : undefined;
+  const commit: CommitDepartedEpoch | undefined = sweepEnabled
+    ? ({ epoch, journalMarkdown }) =>
+        commitQuarantinedShards({
+          store,
+          keyring,
+          door,
+          doorId: config.doorId,
+          clock,
+          quarantineWindowMs: residencyConfig.quarantineWindowMs,
+          residency: `door:${config.doorId}/epoch:${String(epoch)}`,
+          ...(journalMarkdown !== undefined ? { journalMarkdown } : {})
+        })
+    : undefined;
+
+  /** Candidates the Door reported `review_not_retained` (never retried in this process). */
+  const strandedCandidates = new Set<string>();
+  /** Journal of a past residency, read back from `NPC_JOURNAL_DIR` (survives restarts). */
+  const journalFor = async (residency: string): Promise<string | undefined> => {
+    const epoch = residencyEpochAtDoor(residency, config.doorId);
+    if (epoch === null) {
+      return undefined;
+    }
+    try {
+      return await readFile(
+        resolveJournalPath(residencyConfig.journalDir, config.doorId, epoch),
+        "utf8"
+      );
+    } catch {
+      return undefined;
+    }
+  };
+  const commitPending: CommitPendingEpochs | undefined = sweepEnabled
+    ? async () => {
+        const result = await commitQuarantinedShards({
+          store,
+          keyring,
+          door,
+          doorId: config.doorId,
+          clock,
+          quarantineWindowMs: residencyConfig.quarantineWindowMs,
+          journalFor,
+          skipCids: strandedCandidates
+        });
+        for (const cid of result.strandedCids) {
+          strandedCandidates.add(cid);
+        }
+        if (result.strandedCids.length > 0) {
+          logger.warn(
+            { stranded: result.strandedCids.length },
+            "quarantine_candidates_stranded_review_not_retained"
+          );
+        }
+        return result;
+      }
+    : undefined;
 
   const controller = new ResidencyController({
     arrive: () => arriveDaemonResidency(residencyCtx),
-    ...(commit !== undefined
+    ...(commit !== undefined && commitPending !== undefined
       ? {
           commit,
+          commitPending,
           commitIntervalMs: residencyConfig.commitIntervalMs,
           quarantineWindowMs: residencyConfig.quarantineWindowMs
         }
@@ -365,12 +434,15 @@ async function bootResidency(ctx: {
   });
   resources.controller = controller;
   await controller.begin();
+  booted = true;
 
   logger.info(
     {
       operatorTrigger: residencyConfig.operatorTrigger,
       maxResidencyMs: residencyConfig.maxResidencyMs,
       commitIntervalMs: residencyConfig.commitIntervalMs,
+      quarantineWindowMs: residencyConfig.quarantineWindowMs,
+      liveCommitSweep: sweepEnabled && controller.current?.pastEpochCommits === true,
       journalDir: residencyConfig.journalDir
     },
     "residency_lifecycle_config"

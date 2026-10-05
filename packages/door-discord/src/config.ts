@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 
+import { DEFAULT_COSIGN_RETAIN_EPOCHS, DEFAULT_COSIGN_RETAIN_MS } from "@npc/door-sdk";
 import { decodePublicKey } from "@npc/osp-core";
 import { z } from "zod";
 
@@ -38,7 +39,10 @@ const discordDoorConfigSchema = z.object({
   channelRatePerMinute: z.number().int().positive(),
   channelBurst: z.number().int().positive(),
   communityName: z.string().min(1).max(200),
-  communityDescription: z.string().min(1).max(2000)
+  communityDescription: z.string().min(1).max(2000),
+  stateDir: z.string().min(1).optional(),
+  cosignRetainEpochs: z.number().int().positive(),
+  cosignRetainMs: z.number().int().positive()
 });
 
 /** Validated Discord Door configuration loaded from environment variables. */
@@ -169,6 +173,10 @@ function parseSoulPublicKey(raw: string): Uint8Array {
  * Review timeout default rejects on expiry (safe default — a host who ignores
  * review must not silently endorse memories).
  *
+ * Cosign review retention: `DOOR_STATE_DIR` (optional; when set, completed reviews are
+ * persisted there and survive a restart), `DOOR_COSIGN_RETAIN_EPOCHS` (default 16),
+ * `DOOR_COSIGN_RETAIN_MS` (default 7 days).
+ *
  * @param env - Environment map; defaults to `process.env`. Inject a plain object in tests.
  */
 export function loadDiscordDoorConfig(env: NodeJS.ProcessEnv = process.env): DiscordDoorConfig {
@@ -203,6 +211,9 @@ export function loadDiscordDoorConfig(env: NodeJS.ProcessEnv = process.env): Dis
       ? DEFAULT_COMMUNITY_DESCRIPTION
       : env.DISCORD_COMMUNITY_DESCRIPTION;
 
+  const stateDirRaw = env.DOOR_STATE_DIR?.trim() ?? "";
+  const stateDir = stateDirRaw === "" ? undefined : stateDirRaw;
+
   const result = discordDoorConfigSchema.safeParse({
     botToken,
     guildId,
@@ -231,7 +242,18 @@ export function loadDiscordDoorConfig(env: NodeJS.ProcessEnv = process.env): Dis
       "DISCORD_CHANNEL_BURST"
     ),
     communityName,
-    communityDescription
+    communityDescription,
+    ...(stateDir === undefined ? {} : { stateDir }),
+    cosignRetainEpochs: parsePositiveInt(
+      env.DOOR_COSIGN_RETAIN_EPOCHS,
+      DEFAULT_COSIGN_RETAIN_EPOCHS,
+      "DOOR_COSIGN_RETAIN_EPOCHS"
+    ),
+    cosignRetainMs: parsePositiveInt(
+      env.DOOR_COSIGN_RETAIN_MS,
+      DEFAULT_COSIGN_RETAIN_MS,
+      "DOOR_COSIGN_RETAIN_MS"
+    )
   });
 
   if (!result.success) {

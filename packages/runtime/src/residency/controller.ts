@@ -3,6 +3,7 @@ import type { Logger } from "pino";
 import type { CommitQuarantineResult } from "../quarantine/commit.js";
 import type { DepartResult } from "../session/session.js";
 import type { Timer } from "../session/types.js";
+import { MAX_COMMIT_WINDOW_MS } from "./config.js";
 
 /** What started a residency cycle. */
 export type CycleTrigger = "operator" | "timer";
@@ -49,6 +50,14 @@ export interface LiveResidency {
   depart(): Promise<DepartResult>;
   /** Release without departure (shutdown): stop heartbeats, drain appends, detach. */
   close(): Promise<void>;
+  /**
+   * The Door advertised `cosign.past_epochs` in this residency's `hello`: it retains
+   * completed reviews per epoch, so past epochs' candidates can be committed while this
+   * residency is live. Absent/false = legacy Door (commits only in the travel gap).
+   */
+  readonly pastEpochCommits?: boolean;
+  /** Run `fn` serialized with this residency's chain appends (heartbeats). */
+  withAppendLock?<T>(fn: () => Promise<T>): Promise<T>;
 }
 
 /** Commit hook: promote the departed epoch's ripe candidates (scoped to that residency). */
@@ -57,6 +66,12 @@ export type CommitDepartedEpoch = (args: {
   journalMarkdown?: string;
 }) => Promise<CommitQuarantineResult>;
 
+/**
+ * Live commit hook: promote every ripe candidate of this Door's past epochs (the Door
+ * advertised `cosign.past_epochs`). Runs on a timer while a residency is live.
+ */
+export type CommitPendingEpochs = () => Promise<CommitQuarantineResult>;
+
 /** Abortable sleep; must reject (or resolve) promptly when `signal` aborts. */
 export type AbortableSleep = (ms: number, signal: AbortSignal) => Promise<void>;
 
@@ -64,11 +79,20 @@ export type AbortableSleep = (ms: number, signal: AbortSignal) => Promise<void>;
 export type ResidencyControllerOptions = {
   /** Begin a residency at the Door (Session.start + WS bind). */
   arrive: () => Promise<LiveResidency>;
-  /** Post-departure commit sweep; omit to disable (candidates stay candidates). */
+  /**
+   * Travel-gap commit sweep for a legacy Door (no `cosign.past_epochs`): runs between
+   * departure and re-arrival, only while `quarantineWindowMs` ≤ {@link MAX_COMMIT_WINDOW_MS}.
+   * Omit to disable (candidates stay candidates).
+   */
   commit?: CommitDepartedEpoch;
-  /** Poll interval of the commit sweep (required when `commit` is set). */
+  /**
+   * Live commit sweep for a Door that advertises `cosign.past_epochs`: every
+   * `commitIntervalMs` while a residency is live (serialized with its appends).
+   */
+  commitPending?: CommitPendingEpochs;
+  /** Interval of the commit sweeps (required when `commit` or `commitPending` is set). */
   commitIntervalMs?: number;
-  /** Quarantine window; bounds the commit sweep (window + 5 polls). */
+  /** Quarantine window; bounds the travel-gap sweep (window + 5 polls). */
   quarantineWindowMs?: number;
   /** Cycle when the residency is older than this; `0` disables the timer trigger. */
   maxResidencyMs: number;
@@ -118,9 +142,13 @@ function errorMessage(error: unknown): string {
  *
  * `cycle` = detach the session socket → `Session.depart` (distill the live transcript,
  * host cosign review, candidate/rejected records, journal, departure + travel
- * attestations) → optional commit sweep of the departed epoch while traveling →
- * `Session.start` at the next epoch (re-arrival supersedes nothing: the Door retired the
- * old epoch at departure and accepts `epoch > lastKnownEpoch`).
+ * attestations) → [legacy Door only: commit sweep of the departed epoch while
+ * traveling] → `Session.start` at the next epoch (re-arrival supersedes nothing: the
+ * Door retired the old epoch at departure and accepts `epoch > lastKnownEpoch`).
+ *
+ * With a Door that advertises `cosign.past_epochs`, quarantined candidates are instead
+ * committed by a **live sweep** (`commitPending`, every `commitIntervalMs`) while the
+ * next residency is live, so the quarantine window does not keep the Wanderer away.
  *
  * Triggers are external ({@link requestCycle}) plus an optional residency-age timer.
  * At most one cycle runs at a time; shutdown aborts waits and never re-arrives.
@@ -133,10 +161,15 @@ export class ResidencyController {
   private shuttingDown = false;
   private readonly abort = new AbortController();
   private ageTimerId: unknown = null;
+  private liveSweepTimerId: unknown = null;
+  private liveSweepRunning: Promise<void> | null = null;
   private timerSkipLogged = false;
 
   constructor(options: ResidencyControllerOptions) {
-    if (options.commit !== undefined && (options.commitIntervalMs ?? 0) <= 0) {
+    if (
+      (options.commit !== undefined || options.commitPending !== undefined) &&
+      (options.commitIntervalMs ?? 0) <= 0
+    ) {
       throw new Error("ResidencyController: commitIntervalMs must be > 0 when commit is set");
     }
     this.options = options;
@@ -160,6 +193,7 @@ export class ResidencyController {
     const residency = await this.options.arrive();
     this.live = residency;
     this.arrivedAtMs = this.options.nowMs();
+    this.armLiveSweep(residency);
     if (this.options.maxResidencyMs > 0) {
       this.ageTimerId = this.options.timer.setInterval(() => {
         this.checkResidencyAge();
@@ -224,6 +258,7 @@ export class ResidencyController {
       this.options.timer.clearInterval(this.ageTimerId);
       this.ageTimerId = null;
     }
+    this.disarmLiveSweep();
     this.abort.abort();
     const inFlight = this.inFlight;
     if (inFlight !== null) {
@@ -270,6 +305,8 @@ export class ResidencyController {
     }
 
     this.options.logger.info({ trigger, epoch: fromEpoch, lines }, "residency_cycle_started");
+    // No live sweep while traveling; an in-flight one is drained by depart (append queue).
+    this.disarmLiveSweep();
     try {
       // 1. Travel gap starts: no inbound reaches the departing session from here on.
       //    (A failed socket close is logged, not fatal: Session.depart stops the session
@@ -316,8 +353,8 @@ export class ResidencyController {
           },
           "residency_departed"
         );
-        if (this.options.commit !== undefined && departed.candidateCids.length > 0) {
-          committedCount = await this.commitSweep(fromEpoch, departed);
+        if (departed.candidateCids.length > 0) {
+          committedCount = await this.travelGapCommit(residency, fromEpoch, departed);
         }
       } else {
         this.options.logger.error(
@@ -337,6 +374,7 @@ export class ResidencyController {
         await next.close();
         throw new CycleAborted();
       }
+      this.armLiveSweep(next);
       this.options.logger.info(
         { trigger, fromEpoch, toEpoch: next.epoch, committed: committedCount },
         "residency_cycle_complete"
@@ -369,8 +407,110 @@ export class ResidencyController {
   }
 
   /**
-   * Commit sweep for the departed epoch, run **between departure and re-arrival** —
-   * the only time the Door still holds that epoch's review (it resets on arrival).
+   * Decide the departed epoch's commit path. A Door with `cosign.past_epochs` keeps the
+   * review across the next arrival, so nothing runs here: the live sweep of the next
+   * residency commits the candidates once they ripen (the default 24 h window works).
+   * A legacy Door forgets the review on arrival, so its candidates can only be committed
+   * now — and only while the window is short (≤ {@link MAX_COMMIT_WINDOW_MS}); otherwise
+   * they stay candidates. Returns the number of shards committed.
+   */
+  private async travelGapCommit(
+    residency: LiveResidency,
+    epoch: number,
+    departed: DepartResult
+  ): Promise<number> {
+    if (residency.pastEpochCommits === true && this.options.commitPending !== undefined) {
+      this.options.logger.info(
+        { epoch, candidates: departed.candidateCids.length },
+        "residency_commit_deferred_to_live_sweep"
+      );
+      return 0;
+    }
+    if (this.options.commit === undefined) {
+      return 0;
+    }
+    const windowMs = this.options.quarantineWindowMs ?? 0;
+    if (windowMs > MAX_COMMIT_WINDOW_MS) {
+      this.options.logger.error(
+        { epoch, quarantineWindowMs: windowMs, maxTravelGapWindowMs: MAX_COMMIT_WINDOW_MS },
+        "residency_commit_sweep_unsupported"
+      );
+      return 0;
+    }
+    return this.commitSweep(epoch, departed);
+  }
+
+  /** Start the live commit sweep timer for `residency` when its Door supports it. */
+  private armLiveSweep(residency: LiveResidency): void {
+    this.disarmLiveSweep();
+    const commitPending = this.options.commitPending;
+    const intervalMs = this.options.commitIntervalMs ?? 0;
+    if (commitPending === undefined || intervalMs <= 0 || residency.pastEpochCommits !== true) {
+      return;
+    }
+    this.liveSweepTimerId = this.options.timer.setInterval(() => {
+      this.runLiveSweep(residency);
+    }, intervalMs);
+    this.options.logger.info({ epoch: residency.epoch, intervalMs }, "residency_live_sweep_armed");
+  }
+
+  private disarmLiveSweep(): void {
+    if (this.liveSweepTimerId !== null) {
+      this.options.timer.clearInterval(this.liveSweepTimerId);
+      this.liveSweepTimerId = null;
+    }
+  }
+
+  /**
+   * One live sweep tick: commit ripe candidates of past epochs, serialized with the live
+   * residency's appends. Skips while a cycle runs, a sweep is still running, or the
+   * residency is no longer live. Failures are logged and retried on the next tick.
+   */
+  private runLiveSweep(residency: LiveResidency): void {
+    const commitPending = this.options.commitPending;
+    if (
+      commitPending === undefined ||
+      this.shuttingDown ||
+      this.inFlight !== null ||
+      this.live !== residency ||
+      this.liveSweepRunning !== null
+    ) {
+      return;
+    }
+    const run = (
+      residency.withAppendLock !== undefined
+        ? residency.withAppendLock(commitPending)
+        : commitPending()
+    )
+      .then((result) => {
+        if (result.committedCids.length > 0 || result.strandedCids.length > 0) {
+          this.options.logger.info(
+            {
+              epoch: residency.epoch,
+              committed: result.committedCids.length,
+              ripening: result.ripeningCids.length,
+              stranded: result.strandedCids.length,
+              journalAttached: result.journalAttached
+            },
+            "residency_live_commit_sweep"
+          );
+        }
+      })
+      .catch((error: unknown) => {
+        this.options.logger.warn(
+          { epoch: residency.epoch, err: errorMessage(error) },
+          "residency_live_commit_sweep_failed"
+        );
+      })
+      .finally(() => {
+        this.liveSweepRunning = null;
+      });
+    this.liveSweepRunning = run;
+  }
+
+  /**
+   * Commit sweep for the departed epoch at a legacy Door, run **between departure and
+   * re-arrival** — the only time such a Door still holds that epoch's review.
    * Polls until no candidate is ripening, the bound (window + 5 polls) passes, or
    * `commitMaxFailures` consecutive sweeps fail. Returns the number of shards committed.
    */

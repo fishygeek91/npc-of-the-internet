@@ -7,7 +7,7 @@ Discord Door adapter: one guild channel becomes a Door. Wraps `@npc/door-sdk` `D
 - **`startDiscordDoor(options)`** — boot Door HTTP/WS servers (optional), Discord gateway, review gate, and channel relay
 - **`loadDiscordDoorConfig(env)`** — Zod-validated env config (inject `env` in tests)
 - **`DiscordGateway`** — thin seam over discord.js (`DiscordJsGateway` in prod; `FakeGateway` in tests)
-- **`ReviewGate` / `ReviewGatedDoor`** — async host approval before sync `decideShard` (timeout → **rejected**); `ReviewGatedDoor` verifies freshness (once, on receipt — a slow human review never turns the request `timestamp_stale`), session binding + cosign signature **before** posting shards to Discord; one review in flight at a time (a re-signed retry of the same shard set joins it, any other → `review_pending`; after completion the same review gets the stored response)
+- **`ReviewGate` / `ReviewGatedDoor`** — async host approval before sync `decideShard` (timeout → **rejected**); `ReviewGatedDoor` verifies freshness (once, on receipt — a slow human review never turns the request `timestamp_stale`), session binding + cosign signature **before** posting shards to Discord; one review in flight at a time (a re-signed retry of the same shard set joins it, any other → `review_pending`; after completion the same review gets the stored response); completed reviews are retained per epoch (advertises `cosign.past_epochs`), so the runtime can commit a past epoch's shards while the next residency is live
 
 ## Config (env)
 
@@ -25,6 +25,8 @@ Discord Door adapter: one guild channel becomes a Door. Wraps `@npc/door-sdk` `D
 | `DOOR_HTTP_HOST` / `DOOR_HTTP_PORT` | no | Door REST + WebSocket session listen (default `127.0.0.1:9090`; WS path `/door/session`) |
 | `DISCORD_USER_RATE_PER_MIN` / `DISCORD_USER_BURST` | no | Per-user inbound token bucket |
 | `DISCORD_CHANNEL_RATE_PER_MIN` / `DISCORD_CHANNEL_BURST` | no | Per-channel inbound token bucket |
+| `DOOR_STATE_DIR` | no | Persist per-epoch cosign review state here (`cosign-state.json`); unset = in memory only (lost on restart). Ghost compose: `/data/door-state` |
+| `DOOR_COSIGN_RETAIN_EPOCHS` / `DOOR_COSIGN_RETAIN_MS` | no | Review retention bound (default `16` epochs / `604800000` ms = 7 days) |
 
 \* Set exactly one of `DISCORD_BOT_TOKEN` or `DISCORD_BOT_TOKEN_FILE` (non-empty).
 

@@ -16,11 +16,11 @@ Environment variable names and purposes only. **Never commit values.**
 | `NPC_BRAIN_MAX_TOKENS` | Default max output tokens per Brain completion (default: `1024`). |
 | `NPC_BRAIN_TIMEOUT_MS` | HTTP timeout in milliseconds for Brain API requests (default: `60000`). |
 | `NPC_BRAIN_PROVIDER_ALLOWLIST` | Comma-separated OpenRouter provider slugs. **Required and non-empty** when `NPC_BRAIN_BASE_URL` host is `openrouter.ai`. Documented Ghost example: `fireworks,together,deepinfra`. |
-| `NPC_QUARANTINE_WINDOW_MS` | Milliseconds a distillation candidate must ripen before commit to `memory.shard` (default: `86400000` — 24 hours). Ghost compose passes it through. Must be `≤ 3600000` while `NPC_QUARANTINE_COMMIT_INTERVAL_MS` is set (the Wanderer waits out the window between residencies — RUNBOOK §7). |
+| `NPC_QUARANTINE_WINDOW_MS` | Milliseconds a distillation candidate must ripen before commit to `memory.shard` (default: `86400000` — 24 hours). Ghost compose passes it through. With the commit sweep on, any value works against a Door advertising `cosign.past_epochs` (door-discord); against a legacy Door the runtime refuses to boot with a window over `3600000` (RUNBOOK §7.5). |
 | `NPC_RESIDENCY_OPERATOR_TRIGGER` | `1`/`true` lets an operator start a residency cycle with `wanderer depart` (control-dir request) or `SIGUSR2` to the daemon. Default `0` (off). Public config, not secret. |
 | `NPC_RESIDENCY_MAX_MS` | Automatic residency cycle once the live residency is older than this (checked every minute). `0`/unset = off (default); otherwise `≥ 3600000`. |
 | `NPC_RESIDENCY_MIN_LINES` | Timer trigger waits until the live transcript holds at least this many lines (default `10`); the operator trigger needs one. |
-| `NPC_QUARANTINE_COMMIT_INTERVAL_MS` | Poll interval of the post-departure commit sweep that promotes the departed epoch's ripe candidates to `memory.shard` (and publishes the journal on chain) before re-arrival. `0`/unset = off (default); otherwise `≥ 10000`. |
+| `NPC_QUARANTINE_COMMIT_INTERVAL_MS` | Interval of the commit sweep that promotes ripe candidates of past epochs to `memory.shard` (and publishes each residency's journal on chain). Runs on a timer during live residency when the Door advertises `cosign.past_epochs`; otherwise polls in the travel gap. `0`/unset = off (default); otherwise `≥ 10000`. Suggested `600000`. |
 | `NPC_CONTROL_DIR` | Directory the daemon polls for `wanderer depart` requests (default `/tmp/npc-control`; Ghost compose pins it on the `/tmp` tmpfs). |
 | `NPC_JOURNAL_DIR` | Directory for residency journal markdown files written at departure (default `/data/published/journals`; Ghost compose pins it on the `published` volume). |
 | `NPC_IMAGE_TAG` | Docker image tag for all Ghost stack services (default: `latest`). Set to `local` when using locally built images. |
@@ -51,6 +51,9 @@ Environment variable names and purposes only. **Never commit values.**
 | `DISCORD_CHANNEL_BURST` | Per-channel burst allowance before rate limiting (default `15`). |
 | `DISCORD_COMMUNITY_NAME` | Human-readable community name advertised by the Door (public config). |
 | `DISCORD_COMMUNITY_DESCRIPTION` | Short community description for the Door (public config). |
+| `DOOR_STATE_DIR` | Directory where door-discord persists per-epoch cosign review state (`cosign-state.json`: approved shard texts, review session public keys, issued commit co-signatures — no secrets). Unset = in memory only (lost on restart). Ghost compose pins `/data/door-state` on the `door-state` volume. Public config. |
+| `DOOR_COSIGN_RETAIN_EPOCHS` | Reviewed epochs whose cosign review door-discord retains for past-epoch commits (default `16`). |
+| `DOOR_COSIGN_RETAIN_MS` | Max age of a retained cosign review in ms (default `604800000` — 7 days). Keep well above `NPC_QUARANTINE_WINDOW_MS`. |
 | `DOOR_HTTP_HOST` / `DOOR_HTTP_PORT` | Door **listen** address for REST + WebSocket on a single coalesced port. door-discord binds `0.0.0.0:9090` in Ghost compose. runtime **connects** to `door-discord:9090` on the internal Docker network. Not published to the host by default. |
 | `NPC_RUNTIME_READY_FILE` | Path written when the residency WebSocket is live (default `/tmp/npc-runtime.ready`). Used by compose healthcheck; optional override. |
 | `NPC_REPLICATION_ENABLED` | Set to `1` or `true` to enable outbound IPFS replication drain in runtime. Default unset (disabled). Empty target set is safe — no push until targets are configured. Gate 2 before live tokens. |

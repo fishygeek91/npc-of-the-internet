@@ -509,7 +509,7 @@ describe("DoorStub", () => {
     );
   });
 
-  it("re-arrival resets cosignState so a later epoch can review again", async () => {
+  it("re-arrival lets a later epoch review again (earlier review retained, not reused)", async () => {
     const stub = createStub();
     const epoch1 = EPOCH;
     const epoch2 = EPOCH + 2;
