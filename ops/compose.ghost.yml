@@ -118,7 +118,7 @@ services:
       # the runtime can commit a past epoch's quarantined shards while a later residency
       # is live, across door-discord restarts (ops/RUNBOOK.md §7.5).
       DOOR_STATE_DIR: /data/door-state
-      DOOR_COSIGN_RETAIN_EPOCHS: ${DOOR_COSIGN_RETAIN_EPOCHS:-16}
+      DOOR_COSIGN_RETAIN_EPOCHS: ${DOOR_COSIGN_RETAIN_EPOCHS:-64}
       DOOR_COSIGN_RETAIN_MS: ${DOOR_COSIGN_RETAIN_MS:-604800000}
     volumes:
       - ${DOOR_KEY_HOST_PATH}:/run/keys/door.key:ro

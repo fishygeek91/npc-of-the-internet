@@ -221,6 +221,23 @@ describe("same-door re-arrival + residency-scoped commit", () => {
     await expect(commitQuarantinedShards({ ...common, door: failing })).rejects.toBeInstanceOf(
       QuarantineError
     );
+
+    // A Door that does not know the review yet (restarted without persisted state, no
+    // arrival since) answers review_pending: skipped this sweep, not a sweep failure.
+    const reviewPending = Object.assign(new Error("review_pending: no completed review"), {
+      name: "DoorError",
+      code: "review_pending"
+    });
+    const pendingDoor: DoorConnection = {
+      ...failing,
+      cosign: async () => {
+        throw reviewPending;
+      }
+    };
+    const pending = await commitQuarantinedShards({ ...common, door: pendingDoor });
+    expect(pending.committedCids).toEqual([]);
+    expect(pending.strandedCids).toEqual([]);
+    expect(pending.skippedCids.length).toBeGreaterThan(0);
     expect((await kinds(store)).filter((kind) => kind === "shard")).toHaveLength(5);
     expect((await verifyChain(store, { doorPublicKeys: DOOR_KEYS })).valid).toBe(true);
   });

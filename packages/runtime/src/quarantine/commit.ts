@@ -265,6 +265,14 @@ export async function commitQuarantinedShards(
           sealed = true;
           break;
         }
+        if (doorErrorCode(error) === "review_pending") {
+          // The Door does not (yet) know this candidate's review — e.g. it restarted without
+          // persisted cosign state and has seen no arrival since. Skip it this sweep instead
+          // of aborting the whole sweep; a later sweep retries.
+          skippedCids.push(cid);
+          sealed = true;
+          break;
+        }
         const message = error instanceof Error ? error.message : "unknown error";
         throw new QuarantineError(
           `commit failed for candidate ${cid}: ${message}`,

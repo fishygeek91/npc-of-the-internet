@@ -72,6 +72,29 @@ export class FileCosignStateStore implements CosignStateStore {
     this.path = join(dir, COSIGN_STATE_FILE);
   }
 
+  /**
+   * Fail fast when the state directory is not writable (create, write, fsync and remove a
+   * probe file). Call at boot: a save that fails only after a host review would make the
+   * Door answer `internal_error` once the host has already acted.
+   */
+  assertWritable(): void {
+    try {
+      mkdirSync(this.dir, { recursive: true, mode: 0o700 });
+      const probe = join(this.dir, `.write-probe-${String(process.pid)}`);
+      const fd = openSync(probe, "w", 0o600);
+      try {
+        writeSync(fd, "ok");
+        fsyncSync(fd);
+      } finally {
+        closeSync(fd);
+      }
+      unlinkSync(probe);
+    } catch (error: unknown) {
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new Error(`cosign state dir ${this.dir} is not writable: ${reason}`);
+    }
+  }
+
   load(): unknown {
     let text: string;
     try {

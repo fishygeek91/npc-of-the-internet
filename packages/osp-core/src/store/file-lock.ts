@@ -143,6 +143,12 @@ function isHolderLive(meta: LockMeta, isAlive: (pid: number) => boolean): boolea
   if (meta.pid === process.pid) {
     return meta.nonce !== undefined && heldNonces.has(meta.nonce);
   }
+  // v0.4.3 ran node as container PID 1 and wrote identity-less locks. Under compose
+  // `init: true` PID 1 is the init process (tini), which never holds a store lock, so a
+  // legacy PID-1 lock seen by a non-PID-1 process is a previous incarnation's — stale.
+  if (meta.pid === 1 && process.pid !== 1) {
+    return false;
+  }
   return isAlive(meta.pid);
 }
 

@@ -144,7 +144,7 @@ export async function startDiscordDoor(
         maxAgeMs: config.cosignRetainMs
       },
       ...(config.stateDir !== undefined
-        ? { cosignStateStore: new FileCosignStateStore(config.stateDir) }
+        ? { cosignStateStore: writableStateStore(config.stateDir) }
         : {})
     },
     reviewGate
@@ -303,4 +303,11 @@ export async function startDiscordDoor(
       }
     }
   };
+}
+
+/** File-backed cosign state store, verified writable before the Door starts. */
+function writableStateStore(dir: string): FileCosignStateStore {
+  const store = new FileCosignStateStore(dir);
+  store.assertWritable();
+  return store;
 }

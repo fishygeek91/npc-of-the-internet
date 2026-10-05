@@ -26,7 +26,7 @@ Discord Door adapter: one guild channel becomes a Door. Wraps `@npc/door-sdk` `D
 | `DISCORD_USER_RATE_PER_MIN` / `DISCORD_USER_BURST` | no | Per-user inbound token bucket |
 | `DISCORD_CHANNEL_RATE_PER_MIN` / `DISCORD_CHANNEL_BURST` | no | Per-channel inbound token bucket |
 | `DOOR_STATE_DIR` | no | Persist per-epoch cosign review state here (`cosign-state.json`); unset = in memory only (lost on restart). Ghost compose: `/data/door-state` |
-| `DOOR_COSIGN_RETAIN_EPOCHS` / `DOOR_COSIGN_RETAIN_MS` | no | Review retention bound (default `16` epochs / `604800000` ms = 7 days) |
+| `DOOR_COSIGN_RETAIN_EPOCHS` / `DOOR_COSIGN_RETAIN_MS` | no | Review retention bound (default `64` epochs / `604800000` ms = 7 days) |
 
 \* Set exactly one of `DISCORD_BOT_TOKEN` or `DISCORD_BOT_TOKEN_FILE` (non-empty).
 
