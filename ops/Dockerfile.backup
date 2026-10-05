@@ -4,8 +4,12 @@
 
 FROM alpine:3.21
 
+# `apk upgrade` applies Alpine security fixes published after the base image was
+# built; a stale base layer otherwise fails the release Trivy gate (v0.4.0:
+# libssl3/libcrypto3 CVE-2026-75804 + CVE-2026-84782, fixed in 3.3.7-r2).
 # Container uid/gid pinned to 10001 so host bind-mounted keys/rclone owned 10001:10001 are readable on Linux VPS (#84). macOS Docker Desktop remaps ownership and hides the bug.
-RUN apk add --no-cache bash inotify-tools rclone \
+RUN apk upgrade --no-cache \
+  && apk add --no-cache bash inotify-tools rclone \
   && addgroup -g 10001 npc \
   && adduser -u 10001 -G npc -S -h /home/npc npc
 
