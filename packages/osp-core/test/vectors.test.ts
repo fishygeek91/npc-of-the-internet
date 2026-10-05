@@ -1,13 +1,30 @@
-import { readdir, readFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import * as ed from "@noble/ed25519";
 import { CID } from "multiformats/cid";
 import { sha256 } from "multiformats/hashes/sha2";
 import { describe, expect, it } from "vitest";
 
-import { decodeBase64Url, decodePublicKey, encodeBase64Url } from "../src/encoding/base64url.js";
-import { cidMatchesHash, verifyRecords, type ChainRule } from "../src/index.js";
+import {
+  decodeBase64Url,
+  decodePublicKey,
+  decodeSignature,
+  encodeBase64Url
+} from "../src/encoding/base64url.js";
+import {
+  canonicalize,
+  cidMatchesHash,
+  computeCid,
+  CorruptionError,
+  FileSoulStore,
+  soulPayload,
+  verifyRecords,
+  type ChainRule,
+  type OspRecord
+} from "../src/index.js";
 
 const testDir = dirname(fileURLToPath(import.meta.url));
 const vectorsDir = resolve(testDir, "../../../spec/osp/vectors");
@@ -223,6 +240,86 @@ describe("conformance vectors", () => {
         matched,
         `${filename}: expected rule ${vector.expected}, got ${result.failures.map((f) => f.rule).join(", ")}`
       ).toBe(true);
+    }
+  });
+});
+
+describe("strict RFC 8032 vector (small-order soul key)", () => {
+  const filename = "bad-soul-sig-small-order-key.json";
+
+  it("fails every record with bad_soul_sig only, although ZIP-215 would accept each signature", async () => {
+    const vector = await loadVector(filename);
+    const doorPublicKeys: Record<string, Uint8Array> = {};
+    for (const [doorId, encoded] of Object.entries(vector.doorPublicKeys)) {
+      doorPublicKeys[doorId] = decodePublicKey(encoded);
+    }
+
+    const result = await verifyRecords(vector.records, { doorPublicKeys });
+    expect(result.valid).toBe(false);
+    if (result.valid) {
+      return;
+    }
+    expect(result.failures.map((failure) => failure.rule)).toEqual(
+      vector.records.map(() => "bad_soul_sig")
+    );
+
+    // The vector is meaningful: under noble's ZIP-215 default every signature "verifies".
+    const soulKey = decodePublicKey(vector.soulPublicKey);
+    for (const record of vector.records as OspRecord[]) {
+      const message = canonicalize(soulPayload(record));
+      const sig = decodeSignature(record.sig);
+      expect(ed.verify(sig, message, soulKey, { zip215: true })).toBe(true);
+      expect(ed.verify(sig, message, soulKey, { zip215: false })).toBe(false);
+    }
+  });
+
+  it("is refused by FileSoulStore when injected on disk and on append", async () => {
+    const vector = await loadVector(filename);
+    const records = vector.records as OspRecord[];
+    const doorPublicKeys: Record<string, Uint8Array> = {};
+    for (const [doorId, encoded] of Object.entries(vector.doorPublicKeys)) {
+      doorPublicKeys[doorId] = decodePublicKey(encoded);
+    }
+
+    const dir = await mkdtemp(join(tmpdir(), "osp-vector-small-order-"));
+    try {
+      const injected = join(dir, "injected");
+      await mkdir(join(injected, "blobs"), { recursive: true });
+      const lines: Buffer[] = [];
+      for (const record of records) {
+        const bytes = canonicalize(record);
+        await writeFile(join(injected, "blobs", await computeCid(record)), bytes);
+        lines.push(Buffer.from(bytes), Buffer.from("\n"));
+      }
+      await writeFile(join(injected, "chain.jsonl"), Buffer.concat(lines));
+
+      await expect(FileSoulStore.open(injected, { doorPublicKeys })).rejects.toThrow(
+        CorruptionError
+      );
+      const readOnly = await FileSoulStore.openReadOnly(injected, { doorPublicKeys });
+      try {
+        const verification = readOnly.verification();
+        expect(verification.valid).toBe(false);
+        if (!verification.valid) {
+          expect(verification.failures.some((f) => f.rule === "bad_soul_sig")).toBe(true);
+        }
+      } finally {
+        await readOnly.close();
+      }
+
+      const fresh = await FileSoulStore.open(join(dir, "fresh"), { doorPublicKeys });
+      try {
+        const genesis = records[0];
+        if (genesis === undefined) {
+          throw new Error("vector has no records");
+        }
+        await expect(fresh.append(genesis)).rejects.toThrow();
+        expect(await fresh.head()).toBeNull();
+      } finally {
+        await fresh.close();
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
     }
   });
 });

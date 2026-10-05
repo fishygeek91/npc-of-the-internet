@@ -1,4 +1,4 @@
-import { readdir, readFile } from "node:fs/promises";
+import { access, readdir, readFile } from "node:fs/promises";
 import * as path from "node:path";
 
 import { isValidCid } from "../crypto/cid.js";
@@ -6,6 +6,7 @@ import { CorruptionError, StorageError } from "../errors.js";
 
 import { FileSoulStore } from "./file-soul-store.js";
 import { IpfsSoulStore } from "./ipfs-soul-store.js";
+import { isNodeError, nodeErrorMessage } from "./node-fs-error.js";
 
 import type {
   AppendResult,
@@ -22,8 +23,9 @@ import type { OspRecord } from "../schemas/index.js";
  * At open, an empty or lagging mirror is backfilled from the authoritative file store
  * (genesis-seeded volumes and crash-torn dual writes both self-heal). Divergent heads at
  * the same seq remain a fatal error, as does a mirror ahead of the file store (including a
- * populated mirror behind an empty file store). Blobs tombstoned on the chain are removed
- * from the mirror at open (erasure reconciliation). If an IPFS
+ * populated mirror behind an empty file store). Blobs tombstoned on the chain that the file
+ * store no longer holds are removed from the mirror at open (erasure reconciliation; the
+ * mirror follows the file store). If an IPFS
  * append fails after a successful file append at runtime, the error still propagates; the
  * next open repairs the lag.
  */
@@ -51,7 +53,7 @@ export class DualSoulStore implements SoulStore {
 
     await DualSoulStore.backfillMirror(path.resolve(fileDir), fileStore, ipfsStore);
     await DualSoulStore.assertHeadsCompatible(await fileStore.head(), await ipfsStore.head());
-    await DualSoulStore.reconcileErasures(fileStore, ipfsStore);
+    await DualSoulStore.reconcileErasures(path.resolve(fileDir), fileStore, ipfsStore);
 
     return new DualSoulStore(fileStore, ipfsStore);
   }
@@ -73,7 +75,7 @@ export class DualSoulStore implements SoulStore {
 
     await DualSoulStore.backfillMirror(path.resolve(fileDir), fileStore, ipfsStore);
     await DualSoulStore.assertHeadsCompatible(await fileStore.head(), await ipfsStore.head());
-    await DualSoulStore.reconcileErasures(fileStore, ipfsStore);
+    await DualSoulStore.reconcileErasures(path.resolve(fileDir), fileStore, ipfsStore);
 
     return {
       store: new DualSoulStore(fileStore, ipfsStore),
@@ -224,19 +226,50 @@ export class DualSoulStore implements SoulStore {
   }
 
   /**
-   * Erasure reconciliation: every blob tombstoned on the authoritative chain must be absent
-   * from the mirror. `deleteSideBlob` removes the file copy before the mirror copy, so a crash
-   * in between (or a backfill that re-copied the blob) would otherwise leave erased prose in
-   * the IPFS mirror indefinitely.
+   * Erasure reconciliation: a blob tombstoned on the authoritative chain must be absent from
+   * the mirror whenever it is absent from the authoritative file store. `deleteSideBlob`
+   * removes the file copy before the mirror copy, so a crash in between (or a backfill that
+   * re-copied the blob) would otherwise leave erased prose in the IPFS mirror indefinitely.
+   *
+   * The mirror follows the file store rather than the tombstone alone: identical bytes have
+   * the same CID, so a later live record may legitimately re-put an erased blob (e.g. the same
+   * prose re-proposed after erasure). The file store then holds it again and the mirror must
+   * keep its copy too, or the two stores diverge permanently.
    */
   private static async reconcileErasures(
+    fileDir: string,
     fileStore: FileSoulStore,
     ipfsStore: IpfsSoulStore
   ): Promise<void> {
+    const erased = new Set<string>();
     for await (const record of fileStore.iterate()) {
       if (record.type === "tombstone") {
-        await ipfsStore.deleteSideBlob(record.body.blob_cid);
+        erased.add(record.body.blob_cid);
       }
+    }
+    for (const blobCid of erased) {
+      if (await DualSoulStore.fileStoreHasBlob(fileDir, blobCid)) {
+        continue;
+      }
+      await ipfsStore.deleteSideBlob(blobCid);
+    }
+  }
+
+  /** True when the authoritative file store has a blob file for `cid`. */
+  private static async fileStoreHasBlob(fileDir: string, cid: string): Promise<boolean> {
+    if (!isValidCid(cid)) {
+      return false;
+    }
+    try {
+      await access(path.join(fileDir, "blobs", cid));
+      return true;
+    } catch (error) {
+      if (isNodeError(error) && error.code === "ENOENT") {
+        return false;
+      }
+      throw new StorageError(
+        `failed to check blob ${cid} during erasure reconciliation: ${nodeErrorMessage(error)}`
+      );
     }
   }
 

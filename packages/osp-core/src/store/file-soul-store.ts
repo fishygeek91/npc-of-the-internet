@@ -27,7 +27,14 @@ import {
 
 import { BlobDir } from "./blob-dir.js";
 import { FileLock } from "./file-lock.js";
-import { bytesEqual, fsyncDirectory, fsyncPath, writeAllSync } from "./fsync.js";
+import {
+  bytesEqual,
+  fsyncDirectory,
+  fsyncPath,
+  isAtomicTempName,
+  removeStaleTempFiles,
+  writeAllSync
+} from "./fsync.js";
 import { isNodeError, nodeErrorMessage } from "./node-fs-error.js";
 
 import type { ChainFailure } from "../chain-types.js";
@@ -424,10 +431,15 @@ export class FileSoulStore implements SoulStore {
     this.closed = true;
   }
 
-  /** Ensure directory layout exists under the store root. */
+  /**
+   * Ensure directory layout exists under the store root (writable opens only), and
+   * garbage-collect orphaned `.tmp-*` atomic-write files older than
+   * `STALE_TEMP_MAX_AGE_MS` (1 h) from `blobs/`.
+   */
   private async ensureLayout(): Promise<void> {
     await mkdir(this.dir, { recursive: true });
     await mkdir(this.blobs.dirPath, { recursive: true });
+    await removeStaleTempFiles(this.blobs.dirPath, isAtomicTempName);
   }
 
   /**

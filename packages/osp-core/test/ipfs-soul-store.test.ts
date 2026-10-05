@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdtemp, rm, readFile, writeFile, open as fsOpen } from "node:fs/promises";
+import { mkdtemp, rm, readFile, writeFile, open as fsOpen, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
@@ -98,6 +98,45 @@ describe("IpfsSoulStore", () => {
 
   afterEach(async () => {
     await rm(dir, { recursive: true, force: true });
+  });
+
+  it("garbage-collects orphaned block temp files older than an hour on writable open only", async () => {
+    const store = await IpfsSoulStore.open(dir);
+    let genesisCid = "";
+    try {
+      genesisCid = (await store.append((await createGenesisRecord(soul)).record)).cid;
+    } finally {
+      await store.close();
+    }
+    const blockPath = resolveBlockPath(path.join(dir, "blocks"), genesisCid);
+    const shardDir = path.dirname(blockPath);
+    const blockName = path.basename(blockPath);
+    // Our atomic replacement temp and blockstore-fs/steno's `.<name>.tmp` temp.
+    const staleOurs = path.join(shardDir, `.tmp-${blockName}-1-aaaaaaaaaaaa`);
+    const staleSteno = path.join(shardDir, `.${blockName}.tmp`);
+    const freshSteno = path.join(shardDir, ".OTHER.data.tmp");
+    await writeFile(staleOurs, "torn");
+    await writeFile(staleSteno, "torn");
+    await writeFile(freshSteno, "in flight");
+    const twoHoursAgo = new Date(Date.now() - 2 * 3_600_000);
+    await utimes(staleOurs, twoHoursAgo, twoHoursAgo);
+    await utimes(staleSteno, twoHoursAgo, twoHoursAgo);
+
+    const readOnly = await IpfsSoulStore.openReadOnly(dir);
+    await readOnly.close();
+    expect(existsSync(staleOurs)).toBe(true);
+    expect(existsSync(staleSteno)).toBe(true);
+
+    const reopened = await IpfsSoulStore.open(dir);
+    try {
+      expect((await reopened.head())?.cid).toBe(genesisCid);
+    } finally {
+      await reopened.close();
+    }
+    expect(existsSync(staleOurs)).toBe(false);
+    expect(existsSync(staleSteno)).toBe(false);
+    expect(existsSync(freshSteno)).toBe(true);
+    expect(existsSync(blockPath)).toBe(true);
   });
 
   it("append / head / get / iterate happy path", async () => {
