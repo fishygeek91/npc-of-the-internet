@@ -1,7 +1,18 @@
 export const packageName = "@npc/door-sdk";
 
-export { Door, DEFAULT_MAX_ISSUED_AT_SKEW_MS } from "./door.js";
-export type { DoorOptions, SessionLifecycleEvent } from "./door.js";
+export {
+  Door,
+  DEFAULT_MAX_ISSUED_AT_SKEW_MS,
+  DEFAULT_COSIGN_RETAIN_EPOCHS,
+  DEFAULT_COSIGN_RETAIN_MS
+} from "./door.js";
+export type { CosignRetention, DoorOptions, SessionLifecycleEvent } from "./door.js";
+export {
+  COSIGN_STATE_FILE,
+  FileCosignStateStore,
+  PersistedCosignStateSchema
+} from "./cosign-state-store.js";
+export type { CosignStateStore, PersistedCosignState } from "./cosign-state-store.js";
 export type { HostPolicy } from "./policy.js";
 
 export {
@@ -19,6 +30,7 @@ export {
   CandidateShardSchema,
   CosignRequestSchema,
   CosignResponseSchema,
+  CosignCommitResponseSchema,
   InboundFrameSchema,
   OutboundFrameSchema,
   OutboundReactionSchema,

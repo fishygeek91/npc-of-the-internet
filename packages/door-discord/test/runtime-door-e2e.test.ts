@@ -168,7 +168,6 @@ describe("E2E runtime <-> door-discord", () => {
       keyring: new SingleKeyKeyring(SOUL.privateKey),
       door: handle.connection,
       doorId,
-      epoch: session.epoch,
       clock,
       quarantineWindowMs: 1
     });
@@ -209,7 +208,6 @@ describe("E2E runtime <-> door-discord", () => {
       keyring: new SingleKeyKeyring(SOUL.privateKey),
       door: handle.connection,
       doorId,
-      epoch: session.epoch,
       clock,
       quarantineWindowMs: 1
     });
@@ -249,7 +247,6 @@ describe("E2E runtime <-> door-discord", () => {
       keyring: new SingleKeyKeyring(SOUL.privateKey),
       door: lossy,
       doorId,
-      epoch: session.epoch,
       clock,
       quarantineWindowMs: 1
     };

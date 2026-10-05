@@ -1,0 +1,13 @@
+---
+"@npc/door-sdk": minor
+"@npc/door-discord": minor
+"@npc/runtime": minor
+---
+
+Per-epoch cosign review state: quarantined shards of a past epoch can now be committed while a later residency is live, so the commit sweep runs on a timer during normal residency with the default 24 h quarantine window.
+
+**door-sdk** — `Door` no longer clears its cosign review state on arrival. Completed reviews are retained per epoch (bounded by the new `cosignRetention` option: last 16 epochs / 7 days by default) and a commit for a retained past epoch is accepted while a newer residency is live, authenticated by that epoch's review session key; all binding rules (residency `door:<id>/epoch:<reviewed epoch>`, approved text, single-use per `seq`, idempotent identical-core retry) are unchanged. Reviews for a past epoch are `epoch_closed`. A commit for an unretained past epoch returns the new `review_not_retained` (410). New optional `cosignStateStore` (`FileCosignStateStore`: atomic write + fsync; approved text only) persists retained reviews across restarts; a failed save returns `internal_error` and no co-signature. New capability `cosign.past_epochs` (additive door/0.1, lockstep upgrade). `isCosignReviewCompleted` (protected) now takes the epoch. New exports: `FileCosignStateStore`, `CosignStateStore`, `PersistedCosignStateSchema`, `COSIGN_STATE_FILE`, `CosignRetention`, `DEFAULT_COSIGN_RETAIN_EPOCHS`, `DEFAULT_COSIGN_RETAIN_MS`, `CosignCommitResponseSchema`; `Door.getRetainedReviewEpochs()`.
+
+**door-discord** — advertises `cosign.past_epochs`; new env `DOOR_STATE_DIR` (persist review state; Ghost compose mounts a `door-state` volume at `/data/door-state`), `DOOR_COSIGN_RETAIN_EPOCHS`, `DOOR_COSIGN_RETAIN_MS`.
+
+**runtime** — `commitQuarantinedShards` signs each commit for the candidate's own epoch (session key re-derived from the soul key) instead of one `epoch` option (removed), ignores candidates of other Doors, adds `journalFor` / `skipCids` options and reports `strandedCids` (`review_not_retained`). With a Door advertising `cosign.past_epochs`, the daemon re-arrives right after departure and commits ripe past-epoch candidates on `NPC_QUARANTINE_COMMIT_INTERVAL_MS` while live (serialized with heartbeat appends; journals read back from `NPC_JOURNAL_DIR`). The config-time `NPC_QUARANTINE_WINDOW_MS ≤ 1 h` refusal is gone; against a legacy Door the daemon keeps the travel-gap sweep and refuses to boot (after `hello`, before any append) with a window over 1 h. New: `Session.withAppendLock`, `LiveResidency.pastEpochCommits` / `withAppendLock`, `ResidencyControllerOptions.commitPending`, `ResidencyDaemonDeps.clock`.

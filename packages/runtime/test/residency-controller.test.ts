@@ -5,6 +5,7 @@ import {
   ResidencyController,
   type AbortableSleep,
   type CommitDepartedEpoch,
+  type CommitPendingEpochs,
   type LiveResidency,
   type ResidencyControllerOptions
 } from "../src/residency/controller.js";
@@ -50,6 +51,8 @@ function fakeWorld(opts: {
   lines?: number;
   depart?: (residency: FakeResidency) => Promise<DepartResult>;
   arriveFailures?: number;
+  /** Door advertised `cosign.past_epochs` (live commit sweep). */
+  pastEpochCommits?: boolean;
 }) {
   const events: string[] = [];
   const residencies: FakeResidency[] = [];
@@ -80,7 +83,16 @@ function fakeWorld(opts: {
       },
       close: async () => {
         events.push(`close:${String(epoch)}`);
-      }
+      },
+      ...(opts.pastEpochCommits !== undefined
+        ? {
+            pastEpochCommits: opts.pastEpochCommits,
+            withAppendLock: async <T>(fn: () => Promise<T>): Promise<T> => {
+              events.push(`lock:${String(epoch)}`);
+              return fn();
+            }
+          }
+        : {})
     };
     residencies.push(residency);
     events.push(`arrive:${String(epoch)}`);
@@ -418,8 +430,145 @@ describe("ResidencyController", () => {
   });
 });
 
+describe("ResidencyController live commit sweep (cosign.past_epochs)", () => {
+  const settle = async (): Promise<void> => {
+    for (let i = 0; i < 5; i += 1) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+  };
+
+  it("commits past epochs on a timer while live; the cycle no longer waits in the travel gap", async () => {
+    const world = fakeWorld({ pastEpochCommits: true });
+    let gapCommits = 0;
+    const live: CommitPendingEpochs = async () => {
+      world.events.push("commitPending");
+      return { ...results0(), committedCids: ["s0"] };
+    };
+    const { controller, timer, entries, delays } = controllerWith(world, {
+      commit: async () => {
+        gapCommits += 1;
+        return results0();
+      },
+      commitPending: live,
+      commitIntervalMs: 30_000,
+      quarantineWindowMs: 24 * HOUR
+    });
+    await controller.begin();
+    timer.tick();
+    await settle();
+    expect(world.events).toEqual(["arrive:1", "lock:1", "commitPending"]);
+
+    // A tick while a cycle runs does nothing; the cycle re-arrives without a gap sweep.
+    let releaseDepart: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      releaseDepart = resolve;
+    });
+    world.residencies[0]!.depart = async () => {
+      world.events.push("depart:1");
+      await gate;
+      return departResult(1);
+    };
+    const cycle = controller.requestCycle("operator");
+    await settle();
+    timer.tick();
+    await settle();
+    releaseDepart?.();
+    expect(await cycle).toMatchObject({ kind: "cycled", toEpoch: 2, committedCount: 0 });
+    expect(gapCommits).toBe(0);
+    expect(delays).toEqual([]);
+    expect(entries.some((entry) => entry.msg === "residency_commit_deferred_to_live_sweep")).toBe(
+      true
+    );
+
+    // The next residency's timer commits epoch 1's candidates under epoch 2's append lock.
+    timer.tick();
+    await settle();
+    expect(world.events).toEqual([
+      "arrive:1",
+      "lock:1",
+      "commitPending",
+      "detach:1",
+      "depart:1",
+      "close:1",
+      "arrive:2",
+      "lock:2",
+      "commitPending"
+    ]);
+    expect(entries.some((entry) => entry.msg === "residency_live_commit_sweep")).toBe(true);
+
+    // Shutdown disarms the sweep.
+    await controller.shutdown();
+    timer.tick();
+    await settle();
+    expect(world.events.filter((event) => event === "commitPending")).toHaveLength(2);
+  });
+
+  it("a failing live sweep is logged and retried on the next tick", async () => {
+    const world = fakeWorld({ pastEpochCommits: true });
+    let calls = 0;
+    const { controller, timer, entries } = controllerWith(world, {
+      commitPending: async () => {
+        calls += 1;
+        if (calls === 1) throw new Error("door down");
+        return results0();
+      },
+      commit: async () => results0(),
+      commitIntervalMs: 30_000,
+      quarantineWindowMs: 24 * HOUR
+    });
+    await controller.begin();
+    timer.tick();
+    await settle();
+    timer.tick();
+    await settle();
+    expect(calls).toBe(2);
+    expect(
+      entries.filter((entry) => entry.msg === "residency_live_commit_sweep_failed")
+    ).toHaveLength(1);
+    await controller.shutdown();
+  });
+
+  it("legacy Door: no live sweep; a window over 1 h skips the travel-gap sweep (logged)", async () => {
+    const world = fakeWorld({ pastEpochCommits: false });
+    let gapCommits = 0;
+    let liveCommits = 0;
+    const { controller, timer, entries } = controllerWith(world, {
+      commit: async () => {
+        gapCommits += 1;
+        return results0();
+      },
+      commitPending: async () => {
+        liveCommits += 1;
+        return results0();
+      },
+      commitIntervalMs: 30_000,
+      quarantineWindowMs: 24 * HOUR
+    });
+    await controller.begin();
+    timer.tick();
+    await settle();
+    expect(await controller.requestCycle("operator")).toMatchObject({ kind: "cycled", toEpoch: 2 });
+    timer.tick();
+    await settle();
+    expect(liveCommits).toBe(0);
+    expect(gapCommits).toBe(0);
+    expect(
+      entries.some(
+        (entry) => entry.level === "error" && entry.msg === "residency_commit_sweep_unsupported"
+      )
+    ).toBe(true);
+    await controller.shutdown();
+  });
+});
+
 function results0(): CommitQuarantineResult {
-  return { committedCids: [], ripeningCids: [], skippedCids: [], journalAttached: false };
+  return {
+    committedCids: [],
+    ripeningCids: [],
+    skippedCids: [],
+    strandedCids: [],
+    journalAttached: false
+  };
 }
 
 function baseOptions(world: ReturnType<typeof fakeWorld>): ResidencyControllerOptions {

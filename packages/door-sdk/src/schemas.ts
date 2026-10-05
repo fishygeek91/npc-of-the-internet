@@ -62,7 +62,8 @@ export const CapabilitySchema = z.enum([
   "cosign.manual",
   "cosign.auto",
   "session.reactions",
-  "session.addressing"
+  "session.addressing",
+  "cosign.past_epochs"
 ]);
 
 export type Capability = z.infer<typeof CapabilitySchema>;
@@ -218,7 +219,8 @@ const CosignReviewResponseSchema = z.object({
   door_sig: SignatureStringSchema
 });
 
-const CosignCommitResponseSchema = z.object({
+/** `POST /door/cosign` commit-phase response. */
+export const CosignCommitResponseSchema = z.object({
   phase: z.literal("commit"),
   door_id: DoorIdSchema,
   epoch: EpochSchema,

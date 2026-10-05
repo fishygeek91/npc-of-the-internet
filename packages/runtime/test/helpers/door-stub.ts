@@ -1,4 +1,4 @@
-import { Door, DoorError, type HostPolicy } from "@npc/door-sdk";
+import { Door, DoorError, type CosignRetention, type HostPolicy } from "@npc/door-sdk";
 import type { Ed25519Keypair } from "@npc/osp-core";
 
 import { SessionError } from "../../src/session/errors.js";
@@ -32,6 +32,8 @@ export type DoorStubOptions = {
   decide?: (shard: CosignCandidateShard) => "approved" | "rejected";
   /** Reject these shard ids during cosign review when `decide` is not set. */
   rejectShardIds?: ReadonlySet<string>;
+  /** Per-epoch cosign review retention (door-sdk defaults when unset). */
+  cosignRetention?: CosignRetention;
 };
 
 /**
@@ -66,7 +68,8 @@ export class DoorStub implements DoorConnection {
       doorKeypair: options.doorKeypair,
       soulPublicKey: options.soulPublicKey,
       clock: options.clock,
-      policy
+      policy,
+      ...(options.cosignRetention !== undefined ? { cosignRetention: options.cosignRetention } : {})
     });
   }
 

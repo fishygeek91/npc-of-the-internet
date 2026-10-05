@@ -6,7 +6,7 @@ import {
   type SoulStore
 } from "@npc/osp-core";
 
-import type { Keyring } from "../keyring/types.js";
+import type { Keyring, SessionSigner } from "../keyring/types.js";
 import { storeJournalBlob, storeShardTextBlob } from "../memory-side-blobs.js";
 import { assertRuntimeWritableChain, RUNTIME_OSP_SPEC } from "../osp-spec.js";
 import {
@@ -49,24 +49,39 @@ function preparedCommitKey(candidateCid: string, seq: number, prev: string): str
   return `${candidateCid}\u0000${String(seq)}\u0000${prev}`;
 }
 
+/** Door error code for a commit whose epoch's review the Door no longer retains. */
+export const REVIEW_NOT_RETAINED = "review_not_retained";
+
 /** Options for {@link commitQuarantinedShards}. */
 export type CommitQuarantinedShardsOptions = {
   store: SoulStore;
   keyring: Keyring;
   door: DoorConnection;
+  /**
+   * The Door that co-signs. Only candidates whose `residency` is
+   * `door:<doorId>/epoch:<n>` are considered (no other Door can co-sign them). Each
+   * commit request is for that candidate's epoch `n` and is signed with the session key
+   * of `(doorId, n)` — the key that authenticated `n`'s cosign review — so candidates of
+   * a past epoch can be committed while a later residency is live (`cosign.past_epochs`).
+   */
   doorId: string;
-  epoch: number;
   clock: Clock;
   quarantineWindowMs: number;
+  /** Journal markdown attached (once) to a residency's first committed shard. */
   journalMarkdown?: string;
+  /**
+   * Per-residency journal lookup (takes precedence over `journalMarkdown`); `undefined`
+   * attaches no journal for that residency. Used by sweeps spanning several epochs.
+   */
+  journalFor?: (residency: string) => Promise<string | undefined>;
   /**
    * When set, only candidates whose record `residency` equals this string
    * (`door:<door_id>/epoch:<n>`) are considered; candidates from other residencies are
-   * neither committed nor reported. The Door co-signs commits only for the epoch whose
-   * review it holds, so the residency daemon scopes each sweep to the departed epoch —
-   * otherwise one stranded older candidate would fail the whole sweep.
+   * neither committed nor reported (e.g. the legacy travel-gap sweep of one epoch).
    */
   residency?: string;
+  /** Candidate CIDs to ignore (e.g. already reported stranded by an earlier sweep). */
+  skipCids?: ReadonlySet<string>;
 };
 
 /** Result of {@link commitQuarantinedShards}. */
@@ -77,6 +92,12 @@ export type CommitQuarantineResult = {
   ripeningCids: string[];
   /** Candidate CIDs skipped because rejected or already committed. */
   skippedCids: string[];
+  /**
+   * Ripe candidate CIDs the Door can no longer co-sign (`review_not_retained`: never
+   * reviewed there, evicted by its retention bound, or lost in a restart). They stay
+   * `memory.candidate`; retrying is pointless.
+   */
+  strandedCids: string[];
   /**
    * True when this call embedded `journalMarkdown` on a newly committed shard.
    * False when the journal was omitted (already on chain for the residency,
@@ -113,9 +134,19 @@ export async function commitQuarantinedShards(
   const committedCids: string[] = [];
   const ripeningCids: string[] = [];
   const skippedCids: string[] = [];
+  const strandedCids: string[] = [];
 
-  const sessionSigner = options.keyring.deriveSessionKey(options.doorId, options.epoch);
-  const sessionPubkeyEncoded = encodePublicKey(sessionSigner.publicKey);
+  /** Session signer per candidate epoch (derived from the soul key for `(doorId, epoch)`). */
+  const signers = new Map<number, { signer: SessionSigner; pubkey: string }>();
+  const signerFor = (epoch: number): { signer: SessionSigner; pubkey: string } => {
+    let entry = signers.get(epoch);
+    if (entry === undefined) {
+      const signer = options.keyring.deriveSessionKey(options.doorId, epoch);
+      entry = { signer, pubkey: encodePublicKey(signer.publicKey) };
+      signers.set(epoch, entry);
+    }
+    return entry;
+  };
   /** Residencies that received a journal on a shard during this call. */
   const journalsAttachedThisCall = new Set<string>();
   let journalAttached = false;
@@ -123,6 +154,10 @@ export async function commitQuarantinedShards(
   for (const candidate of scan.candidates) {
     const { cid } = candidate;
     if (options.residency !== undefined && candidate.residency !== options.residency) {
+      continue;
+    }
+    const epoch = residencyEpochAtDoor(candidate.residency, options.doorId);
+    if (epoch === null || options.skipCids?.has(cid) === true) {
       continue;
     }
 
@@ -138,6 +173,7 @@ export async function commitQuarantinedShards(
 
     // Retry when another append (e.g. mid-loop flag) moves head after Door cosign.
     const maxHeadRetries = 8;
+    const { signer: sessionSigner, pubkey: sessionPubkeyEncoded } = signerFor(epoch);
     let sealed = false;
     for (let attempt = 0; attempt < maxHeadRetries; attempt += 1) {
       // TOCTOU: a flag may land after the pre-loop scan (Door round-trips take time).
@@ -168,7 +204,7 @@ export async function commitQuarantinedShards(
           protocol_version: DOOR_PROTOCOL_VERSION,
           phase: "commit",
           door_id: options.doorId,
-          epoch: options.epoch,
+          epoch,
           session_pubkey: sessionPubkeyEncoded,
           shard_id: shardIdFromText(candidate.text),
           core,
@@ -224,6 +260,11 @@ export async function commitQuarantinedShards(
         if (error instanceof QuarantineError) {
           throw error;
         }
+        if (doorErrorCode(error) === REVIEW_NOT_RETAINED) {
+          strandedCids.push(cid);
+          sealed = true;
+          break;
+        }
         const message = error instanceof Error ? error.message : "unknown error";
         throw new QuarantineError(
           `commit failed for candidate ${cid}: ${message}`,
@@ -240,7 +281,37 @@ export async function commitQuarantinedShards(
     }
   }
 
-  return { committedCids, ripeningCids, skippedCids, journalAttached };
+  return { committedCids, ripeningCids, skippedCids, strandedCids, journalAttached };
+}
+
+/**
+ * Epoch `n` of a residency string `door:<doorId>/epoch:<n>` at this Door; `null` for a
+ * residency of another Door or a malformed string.
+ */
+export function residencyEpochAtDoor(residency: string, doorId: string): number | null {
+  const prefix = `door:${doorId}/epoch:`;
+  if (!residency.startsWith(prefix)) {
+    return null;
+  }
+  const raw = residency.slice(prefix.length);
+  if (!/^[1-9]\d*$/u.test(raw)) {
+    return null;
+  }
+  const epoch = Number.parseInt(raw, 10);
+  return Number.isSafeInteger(epoch) ? epoch : null;
+}
+
+/** Door API `error.code` of `error` or of an error in its `cause` chain, if any. */
+function doorErrorCode(error: unknown): string | undefined {
+  let current: unknown = error;
+  for (let depth = 0; depth < 5 && current instanceof Error; depth += 1) {
+    const code = (current as { code?: unknown }).code;
+    if (typeof code === "string" && code.length > 0 && current.name === "DoorError") {
+      return code;
+    }
+    current = current.cause;
+  }
+  return undefined;
 }
 
 /**
@@ -267,13 +338,18 @@ async function prepareCommit(
   };
 
   if (
-    options.journalMarkdown !== undefined &&
     !scan.residenciesWithJournal.has(candidate.residency) &&
     !journalsAttachedThisCall.has(candidate.residency)
   ) {
-    const journalBlob = await storeJournalBlob(options.store, options.journalMarkdown);
-    memoryBody.journal_cid = journalBlob.journal_cid;
-    memoryBody.journal_hash = journalBlob.journal_hash;
+    const journalMarkdown =
+      options.journalFor !== undefined
+        ? await options.journalFor(candidate.residency)
+        : options.journalMarkdown;
+    if (journalMarkdown !== undefined) {
+      const journalBlob = await storeJournalBlob(options.store, journalMarkdown);
+      memoryBody.journal_cid = journalBlob.journal_cid;
+      memoryBody.journal_hash = journalBlob.journal_hash;
+    }
   }
 
   const core = new TextDecoder().decode(

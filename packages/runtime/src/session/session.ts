@@ -627,6 +627,15 @@ export class Session {
   }
 
   /**
+   * Run `fn` on this session's append queue, serialized with heartbeat appends (and
+   * drained by {@link depart} / {@link drainAppends}). Used by the residency daemon's
+   * live commit sweep so a commit append never races a heartbeat for the same `seq`.
+   */
+  withAppendLock<T>(fn: () => Promise<T>): Promise<T> {
+    return this.enqueueAppend(fn);
+  }
+
+  /**
    * End a residency: distill transcripts, cosign shard review, append quarantine
    * memory records (`rejected` for immune screen drops and host rejections,
    * `candidate` for host-approved shards), then departure and travel attestations.

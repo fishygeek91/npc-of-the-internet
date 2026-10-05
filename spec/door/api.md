@@ -58,7 +58,7 @@ All public keys and signatures on the Door wire are **opaque strings** encoding 
 
 **Canonical signing payload:** JSON object containing all signed fields, **sorted keys**, UTF-8, no insignificant whitespace, excluding the signature field itself — same rules as OSP canonical serialization. Exact conformance vectors will live in `spec/door/vectors/` (future task); implementers MUST match the algorithm in `osp-core` once vectors land.
 
-**Session-key binding (v0.1):** The session key is derived from the soul key for `(door_id, epoch)` and recorded in an `attestation` record at arrival. Every outbound Wanderer message on `/door/session`, every `/door/heartbeat` request, every `/door/attest` request after arrival, and every `/door/cosign` request MUST include `session_pubkey` and `sig` under that session key (arrival attest uses the soul key — see `/door/attest`). Receivers MUST reject payloads where `session_pubkey` does not match the active session for the claimed `(door_id, epoch)` or where `sig` fails verification.
+**Session-key binding (v0.1):** The session key is derived from the soul key for `(door_id, epoch)` and recorded in an `attestation` record at arrival. Every outbound Wanderer message on `/door/session`, every `/door/heartbeat` request, every `/door/attest` request after arrival, and every `/door/cosign` request MUST include `session_pubkey` and `sig` under that session key (arrival attest uses the soul key — see `/door/attest`). Receivers MUST reject payloads where `session_pubkey` does not match the active session for the claimed `(door_id, epoch)` or where `sig` fails verification. **Exception — cosign commit:** a `/door/cosign` commit is bound to the session that authenticated the **reviewed** epoch's review, not to the active session; it is valid after departure and, at a Door advertising `cosign.past_epochs`, while a later epoch is active (see **Review retention**).
 
 ### Timestamps
 
@@ -92,8 +92,9 @@ Machine-readable feature flags the Door supports. v0.1 registered values:
 | `cosign.auto` | Door may auto-approve shards matching host policy (not required in v0.1). |
 | `session.reactions` | Door delivers outbound `reaction` bodies (single-emoji reaction to a prior message) and accepts text-less outbound frames that carry only a `reaction`. |
 | `session.addressing` | Door sets inbound `addressed` when the platform shows the message is aimed at the Wanderer (e.g. @mention, reply to one of its messages). |
+| `cosign.past_epochs` | Door retains each completed cosign review per epoch across later arrivals (bounded — see `/door/cosign` **Review retention**), so commit-phase requests for a past epoch are accepted while a newer residency is live. |
 
-**Additive capabilities (`session.reactions`, `session.addressing`).** These extend `door/0.1` without changing any previously required field: every new field is optional, and a Wanderer MUST NOT send a text-less or `reaction`-bearing outbound frame unless the Door advertised `session.reactions` in `hello`. Doors and runtimes from the same release ship together; a runtime that predates these values rejects a `hello` that lists them, so upgrade the Door and runtime in lockstep.
+**Additive capabilities (`session.reactions`, `session.addressing`, `cosign.past_epochs`).** These extend `door/0.1` without changing any previously required field: every new field is optional, and a Wanderer MUST NOT send a text-less or `reaction`-bearing outbound frame unless the Door advertised `session.reactions` in `hello`. `cosign.past_epochs` adds no wire field; it changes which commit requests a Door accepts (and adds the `review_not_retained` error), and a Wanderer MUST NOT rely on commits for a past epoch after a newer arrival unless the Door advertised it. Doors and runtimes from the same release ship together; a runtime that predates these values rejects a `hello` that lists them, so upgrade the Door and runtime in lockstep.
 
 ### Error shape (all endpoints)
 
@@ -116,6 +117,7 @@ Typical HTTP status mapping:
 | `403` | Valid session but action not permitted (e.g. cosign while not departing). |
 | `404` | Unknown `door_id` or no active residency for `(door_id, epoch)`. |
 | `409` | Epoch/session conflict (e.g. epoch already closed, arrival epoch replay). |
+| `410` | State the request depends on is permanently gone (e.g. `review_not_retained`). |
 | `413` | Request body exceeds Door transport size limit. |
 | `422` | Semantically invalid (e.g. shard over length limit). |
 | `500` | Door internal error. |
@@ -403,7 +405,7 @@ End-of-residency **host review and co-signing** of candidate memory shards. Afte
 
 The flow is **two-phase** on the same path: **review** (approve/reject candidates) then **commit** (sign each approved shard's envelope `core`). This matches OSP verification: `verifyChain` / `verifyRecord` verify every `cosigners[i]` over envelope **core** bytes — not over shard-payload objects.
 
-Typically invoked during the `depart` flow (T2.5), after the session WebSocket is closed or concurrently with `session_end`.
+Phase 1 (review) is invoked during the `depart` flow (T2.5), after the session WebSocket is closed or concurrently with `session_end`. Phase 2 (commit) runs once a quarantined candidate ripens — at a Door advertising `cosign.past_epochs`, typically while the Wanderer's next residency is already live (see **Review retention**).
 
 ### Phase 1 — Review
 
@@ -465,9 +467,9 @@ Under `osp/0.2`, the commit-phase `core` body carries `text_cid` / `text_hash` (
 |-------|------|----------|-------------|
 | `protocol_version` | string | yes | `door/0.1`. |
 | `phase` | string | yes | Must be `"commit"`. |
-| `door_id` | string | yes | Departing residency. |
-| `epoch` | integer | yes | Departing epoch. |
-| `session_pubkey` | string | yes | Session key for this epoch. |
+| `door_id` | string | yes | Reviewed residency's Door. |
+| `epoch` | integer | yes | Reviewed epoch (the epoch of the Phase 1 review; may be a past epoch — see **Review retention**). |
+| `session_pubkey` | string | yes | Session key of the reviewed epoch (the key that signed its review). |
 | `shard_id` | string | yes | `shard_id` from Phase 1 (must have been `approved`). |
 | `core` | string | yes | UTF-8 string equal to the OSP `core` canonical JSON bytes for the unsigned `memory` envelope (the exact bytes the Door will sign). Max 64 KiB. |
 | `issued_at` | string | yes | Wanderer timestamp. |
@@ -498,12 +500,26 @@ The Wanderer places `door_cosig` into the record's `cosigners` array (typically 
 
 - **Review request:** Session-key `sig` for the departing epoch.
 - **Review response:** `door_sig` over the decision list; optional per-shard `host_audit_sig` (never soulchain `cosigners`).
-- **Commit request:** Session-key `sig`; Door MUST reject `shard_id` not approved in Phase 1 for this `(door_id, epoch)`, a `core` that fails **Commit binding**, and a reused approval (**Single-use approval**; an **Idempotent retry** is not reuse).
+- **Commit request:** `sig` under the session key of the **reviewed** epoch (`session_pubkey` MUST equal the session key bound at that epoch's review; the active session is irrelevant); Door MUST reject `shard_id` not approved in Phase 1 for this `(door_id, epoch)`, a `core` that fails **Commit binding**, and a reused approval (**Single-use approval**; an **Idempotent retry** is not reuse).
 - **Review identity:** two review requests are the **same review** when they have the same `door_id`, `epoch`, `session_pubkey` and the same set of `{ shard_id, text }` pairs (order-insensitive). `issued_at` and `sig` are not part of the identity — a retrying Wanderer re-signs with a fresh `issued_at`.
 - **Concurrent review:** at most one review may be in flight. A Door with asynchronous host review MUST NOT re-post shards for a retry: a fresh, correctly session-signed request for the same review joins the pending review and receives its response; any other review request while one is pending is rejected with `review_pending`.
-- **Completed review:** once an epoch's review completed, a fresh, correctly session-signed request for the same review MUST receive the stored review response (same `decisions`, `received_at`, `door_sig`) — the Wanderer lost the reply. Any other review for that epoch is `epoch_closed`.
+- **Completed review:** once an epoch's review completed, a fresh, correctly session-signed request for the same review MUST receive the stored review response (same `decisions`, `received_at`, `door_sig`) — the Wanderer lost the reply. Any other review for that epoch is `epoch_closed`. Replay is only owed until the Door accepts a newer arrival: afterwards every review for the past epoch (including a retry of its completed review) is `epoch_closed` — reviews exist only for the active (or just-departed) epoch. A Door MAY also answer `epoch_closed` to a retry after a restart (the reference Door does not persist the review identity, which embeds rejected shard text).
 - **Review latency:** a review response blocks on human review. The Wanderer's HTTP client uses an explicit review-call timeout (reference: 290 s, below Node `fetch`'s 300 s headers timeout) and a Door SHOULD bound host review well below it (door-discord default `DISCORD_REVIEW_TIMEOUT_MS` = 240 s; timeout rejects). A client timeout is recoverable by retrying the same review (join / stored response above).
 - **Commit response:** `door_cosig` MUST verify as Ed25519 over the exact `core` bytes under `door_pubkey` (same verification as `/door/attest`).
+
+### Review retention (`cosign.past_epochs`)
+
+Quarantine (`spec/osp/records.md`) commits a shard only after its candidate ripened (reference window: 24 h), and with one Door the Wanderer's next residency is a new arrival at that same Door. A Door advertising `cosign.past_epochs`:
+
+- MUST NOT discard a completed review on arrival, departure or supersession. It keeps, per reviewed epoch: the review's `session_pubkey`, the approved `{ shard_id, text }` pairs, and the **Single-use approval** records (latest co-signed `seq` + `core` + response per `shard_id`). Rejected shard text need not (and in the reference implementation does not) outlive the review.
+- MUST accept a commit for any retained epoch, including a past epoch while a newer epoch is active, authenticated by that epoch's `session_pubkey`, with every other rule unchanged (**Commit binding** to `door:<door_id>/epoch:<reviewed epoch>`, approved `text`, **Single-use approval**, **Idempotent retry**).
+- MAY evict retained reviews, but only by a documented bound, which SHOULD comfortably exceed the Wanderer's quarantine window (and the residencies that fit in it) — a candidate whose review is evicted before it ripens is stranded. Reference implementation (`door-sdk`): the latest **16** reviewed epochs and at most **7 days** after review completion, whichever evicts first (configurable; door-discord: `DOOR_COSIGN_RETAIN_EPOCHS`, `DOOR_COSIGN_RETAIN_MS`).
+- SHOULD persist retained reviews durably so they survive a Door restart (door-discord: `DOOR_STATE_DIR`; atomic write + fsync). A durable Door MUST persist a new **Single-use approval** record before returning its `door_cosig`; if it cannot, it MUST NOT return the co-signature (`internal_error`, `500`).
+- MUST answer a commit for an epoch below the highest arrival epoch it accepted, with no retained review, with `review_not_retained` (`410`): the review never happened at this Door, was evicted, or was lost in a non-durable restart. It is permanent — the Wanderer stops retrying that candidate (it stays `memory.candidate`). A commit for the active epoch (or a later one) before its review completed remains `review_pending`.
+
+**Security.** A past epoch's session key was retired at departure, yet still authenticates commits for that epoch. That is acceptable because the commit grants nothing the host did not already approve: the Door co-signs only `memory.shard` cores bound to that epoch's residency whose text equals a shard the host **approved** in that epoch's review, once per chain position; and a co-signature is useless without a soul-key signature to append the record. A leaked retired session key can therefore at most obtain co-signatures for already approved memories of its own epoch — never for new text, another epoch, an attestation, or a session frame (those still require the **active** session). Session keys are derived from the soul key per `(door_id, epoch)`, so the Wanderer can re-derive a past epoch's key for its commits without retaining extra secrets.
+
+A Door that does not advertise `cosign.past_epochs` MAY discard the review on the next arrival; the Wanderer then commits only between departure and its next arrival at that Door (the reference runtime refuses quarantine windows over 1 h in that case).
 
 ### Errors
 
@@ -517,6 +533,8 @@ The Wanderer places `door_cosig` into the record's `cosigners` array (typically 
 | `shard_count` | `422` | Review: fewer than 5 or more than 20 shards. |
 | `shard_invalid` | `422` | Shard text over limit, missing `shard_id`, or invalid / unbound `core` (see **Commit binding**). |
 | `review_pending` | `503` | Host review not complete, or a different review is already in flight (Door MAY use async review; Wanderer retries Phase 1). |
+| `review_not_retained` | `410` | `cosign.past_epochs`: commit for a past epoch whose review this Door does not retain (never reviewed here, evicted, or lost in a restart). Permanent; do not retry. |
+| `internal_error` | `500` | Door failed to persist review / single-use state; no co-signature was issued (retry later). |
 
 ---
 

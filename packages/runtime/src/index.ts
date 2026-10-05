@@ -17,6 +17,7 @@ export {
 export type {
   AbortableSleep,
   CommitDepartedEpoch,
+  CommitPendingEpochs,
   CycleOutcome,
   CycleTrigger,
   LiveResidency,
@@ -94,7 +95,12 @@ export {
 } from "./quarantine/scan.js";
 export type { QuarantineCandidate, QuarantineScan } from "./quarantine/scan.js";
 export { assignShardIds, shardIdFromText } from "./quarantine/shard-id.js";
-export { commitQuarantinedShards } from "./quarantine/commit.js";
+export {
+  commitQuarantinedShards,
+  residencyEpochAtDoor,
+  REVIEW_NOT_RETAINED
+} from "./quarantine/commit.js";
+export { PAST_EPOCH_COMMITS_CAPABILITY } from "./residency/daemon-residency.js";
 export type {
   CommitQuarantineResult,
   CommitQuarantinedShardsOptions

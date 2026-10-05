@@ -65,6 +65,8 @@ export async function testConfig(
     channelBurst: 40,
     communityName: "Test Guild",
     communityDescription: "Integration test community",
+    cosignRetainEpochs: 16,
+    cosignRetainMs: 7 * 24 * 60 * 60 * 1000,
     ...overrides
   };
 }

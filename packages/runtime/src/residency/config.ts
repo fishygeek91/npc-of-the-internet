@@ -23,10 +23,12 @@ export const DEFAULT_TIMER_MIN_TRANSCRIPT_LINES = 10;
 export const MIN_COMMIT_INTERVAL_MS = 10_000;
 
 /**
- * Largest `NPC_QUARANTINE_WINDOW_MS` accepted while the commit sweep is enabled (1 h).
- * The Door only co-signs commits for the epoch whose review it holds, and forgets that
- * review on the next arrival — so the Wanderer must wait out the window *between*
- * residencies (absent from its Door). A 24 h window would mean a 24 h absence.
+ * Largest `NPC_QUARANTINE_WINDOW_MS` usable with a **legacy** Door (one that does not
+ * advertise `cosign.past_epochs`) while the commit sweep is enabled (1 h). Such a Door
+ * forgets an epoch's review on the next arrival, so the Wanderer must wait out the
+ * window *between* residencies (absent from its Door). The daemon refuses to boot
+ * against a legacy Door with a longer window; a Door with `cosign.past_epochs` has no
+ * such limit (the sweep runs while the next residency is live).
  */
 export const MAX_COMMIT_WINDOW_MS = 3_600_000;
 
@@ -47,8 +49,9 @@ export type ResidencyConfig = {
   /** `NPC_JOURNAL_DIR`: where depart writes the residency journal markdown. */
   journalDir: string;
   /**
-   * `NPC_QUARANTINE_COMMIT_INTERVAL_MS`: poll interval of the post-departure commit
-   * sweep (between departure and re-arrival); `0` = disabled (candidates stay candidates).
+   * `NPC_QUARANTINE_COMMIT_INTERVAL_MS`: interval of the commit sweep — on a timer during
+   * live residency (Door with `cosign.past_epochs`), or polling in the travel gap (legacy
+   * Door); `0` = disabled (candidates stay candidates).
    */
   commitIntervalMs: number;
   /** `NPC_QUARANTINE_WINDOW_MS`: how long a candidate ripens before it may commit. */
@@ -97,8 +100,9 @@ function parsePath(env: NodeJS.ProcessEnv, name: string, fallback: string): stri
  * Every trigger is **off** unless explicitly enabled: `NPC_RESIDENCY_OPERATOR_TRIGGER`
  * (default off), `NPC_RESIDENCY_MAX_MS` (default `0` = off, else ≥ 1 h; with
  * `NPC_RESIDENCY_MIN_LINES`, default 10) and
- * `NPC_QUARANTINE_COMMIT_INTERVAL_MS` (default `0` = off, else ≥ 10 s, and then
- * `NPC_QUARANTINE_WINDOW_MS` must be ≤ 1 h). Paths: `NPC_CONTROL_DIR`
+ * `NPC_QUARANTINE_COMMIT_INTERVAL_MS` (default `0` = off, else ≥ 10 s; against a legacy
+ * Door without `cosign.past_epochs` the daemon additionally requires
+ * `NPC_QUARANTINE_WINDOW_MS` ≤ 1 h at boot). Paths: `NPC_CONTROL_DIR`
  * (default `/tmp/npc-control`), `NPC_JOURNAL_DIR` (default `/data/published/journals`).
  */
 export function loadResidencyConfig(env: NodeJS.ProcessEnv = process.env): ResidencyConfig {
@@ -145,13 +149,6 @@ export function loadResidencyConfig(env: NodeJS.ProcessEnv = process.env): Resid
   if (quarantineWindowMs <= 0) {
     throw new DaemonError(
       "NPC_QUARANTINE_WINDOW_MS must be a positive integer",
-      "invalid_config",
-      "NPC_QUARANTINE_WINDOW_MS"
-    );
-  }
-  if (commitIntervalMs !== 0 && quarantineWindowMs > MAX_COMMIT_WINDOW_MS) {
-    throw new DaemonError(
-      `NPC_QUARANTINE_WINDOW_MS must be ≤ ${String(MAX_COMMIT_WINDOW_MS)} while NPC_QUARANTINE_COMMIT_INTERVAL_MS is set: the Wanderer waits out the window between residencies (see ops/RUNBOOK.md "Residency lifecycle")`,
       "invalid_config",
       "NPC_QUARANTINE_WINDOW_MS"
     );

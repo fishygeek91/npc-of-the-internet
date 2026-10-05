@@ -85,13 +85,22 @@ describe("loadResidencyConfig", () => {
     );
   });
 
-  it("refuses a commit sweep with a window longer than 1 h (the Wanderer would be away that long)", () => {
-    expect(
-      envVarOf(() => loadResidencyConfig({ NPC_QUARANTINE_COMMIT_INTERVAL_MS: "60000" }))
-    ).toBe("NPC_QUARANTINE_WINDOW_MS");
-    // Without the sweep the default 24 h window is fine.
+  it("accepts the default 24 h window with the commit sweep (the ≤ 1 h legacy-Door limit is checked against hello at boot)", () => {
+    const config = loadResidencyConfig({ NPC_QUARANTINE_COMMIT_INTERVAL_MS: "60000" });
+    expect(config.commitIntervalMs).toBe(60_000);
+    expect(config.quarantineWindowMs).toBe(86_400_000);
+    // Without the sweep the default 24 h window is fine too.
     expect(loadResidencyConfig({ NPC_QUARANTINE_WINDOW_MS: "86400000" }).quarantineWindowMs).toBe(
       86_400_000
     );
+    // Non-positive windows are still refused.
+    expect(
+      envVarOf(() =>
+        loadResidencyConfig({
+          NPC_QUARANTINE_COMMIT_INTERVAL_MS: "60000",
+          NPC_QUARANTINE_WINDOW_MS: "0"
+        })
+      )
+    ).toBe("NPC_QUARANTINE_WINDOW_MS");
   });
 });

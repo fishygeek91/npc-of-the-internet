@@ -28,6 +28,27 @@ describe("loadDiscordDoorConfig", () => {
     expect(config.reviewTimeoutMs).toBe(240_000);
   });
 
+  it("cosign review retention: in-memory by default, DOOR_STATE_DIR enables persistence", () => {
+    const defaults = loadDiscordDoorConfig(baseEnv());
+    expect(defaults.stateDir).toBeUndefined();
+    expect(defaults.cosignRetainEpochs).toBe(16);
+    expect(defaults.cosignRetainMs).toBe(604_800_000);
+
+    const configured = loadDiscordDoorConfig({
+      ...baseEnv(),
+      DOOR_STATE_DIR: " /data/door-state ",
+      DOOR_COSIGN_RETAIN_EPOCHS: "4",
+      DOOR_COSIGN_RETAIN_MS: "86400000"
+    });
+    expect(configured.stateDir).toBe("/data/door-state");
+    expect(configured.cosignRetainEpochs).toBe(4);
+    expect(configured.cosignRetainMs).toBe(86_400_000);
+
+    expect(() => loadDiscordDoorConfig({ ...baseEnv(), DOOR_COSIGN_RETAIN_EPOCHS: "0" })).toThrow(
+      /DOOR_COSIGN_RETAIN_EPOCHS/
+    );
+  });
+
   it("fails fast naming DISCORD_BOT_TOKEN when missing", () => {
     const env = baseEnv();
     delete env.DISCORD_BOT_TOKEN;

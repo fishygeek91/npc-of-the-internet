@@ -10,6 +10,11 @@ import {
   type Ed25519Keypair
 } from "@npc/osp-core";
 
+import {
+  PersistedCosignStateSchema,
+  type CosignStateStore,
+  type PersistedCosignState
+} from "./cosign-state-store.js";
 import { DoorError } from "./errors.js";
 import type { HostPolicy } from "./policy.js";
 import {
@@ -50,6 +55,24 @@ export const DEFAULT_MAX_ISSUED_AT_SKEW_MS = 300_000;
  */
 export const OUTBOUND_MSG_ID_MEMORY = 10_000;
 
+/** Default number of reviewed epochs whose cosign review state a Door retains (16). */
+export const DEFAULT_COSIGN_RETAIN_EPOCHS = 16;
+
+/** Default maximum age of a retained cosign review (7 days, by review completion time). */
+export const DEFAULT_COSIGN_RETAIN_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * Bounds on retained per-epoch cosign review state (`spec/door/api.md` — **Review
+ * retention**). A review is evicted once it is older than `maxAgeMs` or once more than
+ * `maxEpochs` reviews are retained (lowest epoch first).
+ */
+export type CosignRetention = {
+  /** Max reviewed epochs retained (default {@link DEFAULT_COSIGN_RETAIN_EPOCHS}). */
+  maxEpochs?: number;
+  /** Max review age in ms (default {@link DEFAULT_COSIGN_RETAIN_MS}). */
+  maxAgeMs?: number;
+};
+
 /** Session lifecycle event emitted when a residency epoch is closed or superseded. */
 export type SessionLifecycleEvent = {
   type: "retired" | "superseded";
@@ -69,6 +92,15 @@ export type DoorOptions = {
    * Defaults to {@link DEFAULT_MAX_ISSUED_AT_SKEW_MS}.
    */
   maxIssuedAtSkewMs?: number;
+  /** Retention bounds for per-epoch cosign review state (defaults: 16 epochs, 7 days). */
+  cosignRetention?: CosignRetention;
+  /**
+   * Durable store for retained cosign review state. When set, state is loaded at
+   * construction (a corrupt file or a file for another `door_id` throws) and saved
+   * after every review and commit, so commits for past epochs survive a Door restart.
+   * Default: in-memory only (lost on restart).
+   */
+  cosignStateStore?: CosignStateStore;
 };
 
 type ActiveSession = {
@@ -86,19 +118,25 @@ type CommittedShard = {
   response: CosignCommitResponse;
 };
 
+/** Completed cosign review of one epoch, retained until evicted (see {@link CosignRetention}). */
 type CosignEpochState = {
-  reviewCompleted: boolean;
   /** Approved `shard_id` → reviewed plaintext (commit `core` must reference this text). */
   approvedShards: Map<string, string>;
   /** `shard_id` → highest-`seq` commit already co-signed (single-use binding). */
   committed: Map<string, CommittedShard>;
-  /** Bound at review; commit may run after departure using this binding. */
+  /** Bound at review; commits for this epoch authenticate with this session key. */
   epoch: number;
   sessionPubkey: string;
-  /** {@link Door.cosignReviewKey} of the completed review (authenticated retry replay). */
-  reviewKey: string;
+  /** Door-clock time the review completed (ISO) — retention age. */
+  reviewedAt: string;
+  /**
+   * {@link Door.cosignReviewKey} of the completed review (authenticated retry replay).
+   * `null` for state restored from a {@link CosignStateStore}: the key embeds rejected
+   * shard text, which is never persisted, so a restored review is not replayable.
+   */
+  reviewKey: string | null;
   /** Signed response of the completed review, returned verbatim to a matching retry. */
-  reviewResponse: CosignReviewResponse;
+  reviewResponse: CosignReviewResponse | null;
 };
 
 type UnsignedHeartbeatFields = Omit<HeartbeatRequest, "sig">;
@@ -123,7 +161,11 @@ export class Door {
   /** Highest arrival epoch ever accepted (in-memory; lost on process restart). */
   private lastKnownEpoch: number | null = null;
   private lastHeartbeatSeq = 0;
-  private cosignState: CosignEpochState | null = null;
+  /** Completed cosign reviews by epoch (bounded by {@link CosignRetention}; not reset on arrival). */
+  private readonly cosignStates = new Map<number, CosignEpochState>();
+  private readonly retainEpochs: number;
+  private readonly retainMs: number;
+  private readonly cosignStateStore: CosignStateStore | null;
   private sessionLifecycleListener: ((event: SessionLifecycleEvent) => void) | null = null;
   private sessionEndMsgCounter = 0;
   /** Outbound `msg_id`s accepted for the active epoch (bounded; reset on arrival). */
@@ -136,6 +178,25 @@ export class Door {
     this.clock = options.clock;
     this.policy = options.policy;
     this.maxIssuedAtSkewMs = options.maxIssuedAtSkewMs ?? DEFAULT_MAX_ISSUED_AT_SKEW_MS;
+    this.retainEpochs = options.cosignRetention?.maxEpochs ?? DEFAULT_COSIGN_RETAIN_EPOCHS;
+    this.retainMs = options.cosignRetention?.maxAgeMs ?? DEFAULT_COSIGN_RETAIN_MS;
+    if (!Number.isSafeInteger(this.retainEpochs) || this.retainEpochs < 1) {
+      throw new RangeError("cosignRetention.maxEpochs must be a positive integer");
+    }
+    if (!Number.isSafeInteger(this.retainMs) || this.retainMs < 1) {
+      throw new RangeError("cosignRetention.maxAgeMs must be a positive integer");
+    }
+    this.cosignStateStore = options.cosignStateStore ?? null;
+    if (this.cosignStateStore !== null) {
+      this.restoreCosignStates(this.cosignStateStore.load());
+      this.pruneCosignStates();
+    }
+  }
+
+  /** Epochs whose completed cosign review this Door currently retains (ascending). */
+  getRetainedReviewEpochs(): number[] {
+    this.pruneCosignStates();
+    return [...this.cosignStates.keys()].sort((a, b) => a - b);
   }
 
   /** Active session public key after a successful arrival attest, if any. */
@@ -303,7 +364,8 @@ export class Door {
         sessionPubkey: request.session_pubkey
       };
       this.sessionRetired = false;
-      this.cosignState = null;
+      // Completed cosign reviews of earlier epochs are retained (bounded): commits for
+      // a past epoch may arrive while this newer residency is live.
       this.lastHeartbeatSeq = 0;
       this.seenOutboundMsgIds.clear();
       this.lastKnownEpoch = request.epoch;
@@ -472,9 +534,9 @@ export class Door {
     );
   }
 
-  /** True once this epoch's cosign review has completed (decisions are fixed). */
-  protected isCosignReviewCompleted(): boolean {
-    return this.cosignState?.reviewCompleted === true;
+  /** True while this Door retains a completed cosign review for `epoch` (decisions are fixed). */
+  protected isCosignReviewCompleted(epoch: number): boolean {
+    return this.getCosignState(epoch) !== undefined;
   }
 
   /**
@@ -660,10 +722,16 @@ export class Door {
     }
 
     if (request.phase === "review") {
-      if (this.cosignState !== null && this.cosignState.reviewCompleted) {
-        const state = this.cosignState;
+      const state = this.getCosignState(request.epoch);
+      if (state !== undefined) {
+        // Replay only while no newer arrival happened: reviews for a past epoch are
+        // closed even though its (commit) state is retained.
+        const replayable =
+          state.reviewKey !== null &&
+          state.reviewResponse !== null &&
+          (this.lastKnownEpoch === null || this.lastKnownEpoch <= request.epoch);
         const matchesCompleted =
-          request.epoch === state.epoch &&
+          replayable &&
           request.session_pubkey === state.sessionPubkey &&
           verify(
             cosignReviewSigningPayload(request),
@@ -703,21 +771,24 @@ export class Door {
     }
 
     if (request.phase === "commit") {
-      // Commit may run after departure (quarantine window). Bind to the review
-      // session instead of requireActiveSession, which fails once retired.
-      if (this.cosignState === null || !this.cosignState.reviewCompleted) {
+      // Commit may run after departure (quarantine window), including while a later
+      // residency is live: bind to the retained review of `request.epoch` (its session
+      // key) instead of requireActiveSession, which fails once retired.
+      const state = this.getCosignState(request.epoch);
+      if (state === undefined) {
+        if (this.lastKnownEpoch !== null && request.epoch < this.lastKnownEpoch) {
+          throw DoorError.fromCode(
+            "review_not_retained",
+            `review_not_retained: no cosign review retained for past epoch ${String(request.epoch)}`,
+            { field: "epoch", got: request.epoch }
+          );
+        }
         throw DoorError.fromCode(
           "review_pending",
           "review_pending: cosign review not completed for this epoch"
         );
       }
-      if (request.epoch !== this.cosignState.epoch) {
-        throw DoorError.fromCode(
-          "session_invalid",
-          `epoch mismatch: expected ${String(this.cosignState.epoch)}, got ${String(request.epoch)}`
-        );
-      }
-      if (request.session_pubkey !== this.cosignState.sessionPubkey) {
+      if (request.session_pubkey !== state.sessionPubkey) {
         throw DoorError.fromCode(
           "session_invalid",
           "session_pubkey does not match the review-phase session"
@@ -748,8 +819,13 @@ export class Door {
     this.verifyCosignAuth(request);
 
     // Authenticated retry of the completed review (lost reply): replay, do not re-review.
-    if (this.cosignState !== null && this.cosignState.reviewCompleted) {
-      return this.cosignState.reviewResponse;
+    const completed = this.getCosignState(request.epoch);
+    if (completed !== undefined) {
+      if (completed.reviewResponse === null) {
+        // Unreachable: verifyCosignAuth only passes a replayable completed review.
+        throw DoorError.fromCode("epoch_closed", "epoch_closed: cosign review already completed");
+      }
+      return completed.reviewResponse;
     }
 
     const seenShardIds = new Set<string>();
@@ -801,15 +877,19 @@ export class Door {
       door_sig: doorSig
     };
 
-    this.cosignState = {
-      reviewCompleted: true,
+    this.cosignStates.set(request.epoch, {
       approvedShards,
       committed: new Map(),
       epoch: request.epoch,
       sessionPubkey: request.session_pubkey,
+      reviewedAt: receivedAt,
       reviewKey: this.cosignReviewKey(request),
       reviewResponse: response
-    };
+    });
+    this.pruneCosignStates();
+    this.persistCosignStates(() => {
+      this.cosignStates.delete(request.epoch);
+    });
 
     return response;
   }
@@ -823,9 +903,9 @@ export class Door {
       throw DoorError.fromCode("shard_invalid", "shard_invalid: commit core must not be empty");
     }
 
-    // cosignState is non-null after verifyCosignRequest for commit.
-    const cosignState = this.cosignState;
-    if (cosignState === null || !cosignState.reviewCompleted) {
+    // Retained after verifyCosignAuth for commit (no await in between).
+    const cosignState = this.getCosignState(request.epoch);
+    if (cosignState === undefined) {
       throw DoorError.fromCode(
         "review_pending",
         "review_pending: cosign review not completed for this epoch"
@@ -884,6 +964,15 @@ export class Door {
       door_sig: doorSig
     };
     cosignState.committed.set(request.shard_id, { seq, core: request.core, response });
+    // Durable before the co-signature leaves the Door; on failure no cosig is returned
+    // and the single-use record is rolled back (the retry is then a fresh commit).
+    this.persistCosignStates(() => {
+      if (last === undefined) {
+        cosignState.committed.delete(request.shard_id);
+      } else {
+        cosignState.committed.set(request.shard_id, last);
+      }
+    });
     return response;
   }
 
@@ -1076,6 +1165,112 @@ export class Door {
           max_skew_ms: this.maxIssuedAtSkewMs
         }
       );
+    }
+  }
+
+  /** Retained completed review for `epoch` after applying retention bounds. */
+  private getCosignState(epoch: number): CosignEpochState | undefined {
+    this.pruneCosignStates();
+    return this.cosignStates.get(epoch);
+  }
+
+  /**
+   * Evict reviews older than the retention age, then the lowest epochs beyond the
+   * retention count. In-memory only; the next save persists the pruned set.
+   */
+  private pruneCosignStates(): void {
+    if (this.cosignStates.size === 0) {
+      return;
+    }
+    const nowMs = parseIsoToMs(this.clock.now());
+    if (nowMs !== null) {
+      for (const [epoch, state] of this.cosignStates) {
+        const reviewedMs = parseIsoToMs(state.reviewedAt);
+        if (reviewedMs === null || nowMs - reviewedMs > this.retainMs) {
+          this.cosignStates.delete(epoch);
+        }
+      }
+    }
+    if (this.cosignStates.size > this.retainEpochs) {
+      const epochs = [...this.cosignStates.keys()].sort((a, b) => a - b);
+      for (const epoch of epochs.slice(0, epochs.length - this.retainEpochs)) {
+        this.cosignStates.delete(epoch);
+      }
+    }
+  }
+
+  /**
+   * Save retained review state to the {@link CosignStateStore}, if any. On failure run
+   * `rollback` (undo the in-memory change being persisted) and throw `internal_error`.
+   */
+  private persistCosignStates(rollback: () => void): void {
+    const store = this.cosignStateStore;
+    if (store === null) {
+      return;
+    }
+    const snapshot: PersistedCosignState = {
+      version: 1,
+      door_id: this.doorId,
+      epochs: [...this.cosignStates.values()]
+        .sort((a, b) => a.epoch - b.epoch)
+        .map((state) => ({
+          epoch: state.epoch,
+          session_pubkey: state.sessionPubkey,
+          reviewed_at: state.reviewedAt,
+          approved: [...state.approvedShards].map(([shardId, text]) => ({
+            shard_id: shardId,
+            text
+          })),
+          committed: [...state.committed].map(([shardId, entry]) => ({
+            shard_id: shardId,
+            seq: entry.seq,
+            core: entry.core,
+            response: entry.response
+          }))
+        }))
+    };
+    try {
+      store.save(snapshot);
+    } catch (error: unknown) {
+      rollback();
+      throw DoorError.fromCode(
+        "internal_error",
+        "internal_error: failed to persist cosign review state",
+        undefined,
+        error
+      );
+    }
+  }
+
+  /** Install state loaded from the {@link CosignStateStore} (throws on invalid / foreign state). */
+  private restoreCosignStates(raw: unknown): void {
+    if (raw === null) {
+      return;
+    }
+    const parsed = PersistedCosignStateSchema.safeParse(raw);
+    if (!parsed.success) {
+      throw new Error(`invalid persisted cosign review state: ${parsed.error.message}`);
+    }
+    if (parsed.data.door_id !== this.doorId) {
+      throw new Error(
+        `persisted cosign review state belongs to door ${parsed.data.door_id}, not ${this.doorId}`
+      );
+    }
+    for (const entry of parsed.data.epochs) {
+      this.cosignStates.set(entry.epoch, {
+        approvedShards: new Map(entry.approved.map((shard) => [shard.shard_id, shard.text])),
+        committed: new Map(
+          entry.committed.map((commit) => [
+            commit.shard_id,
+            { seq: commit.seq, core: commit.core, response: commit.response }
+          ])
+        ),
+        epoch: entry.epoch,
+        sessionPubkey: entry.session_pubkey,
+        reviewedAt: entry.reviewed_at,
+        reviewKey: null,
+        reviewResponse: null
+      });
     }
   }
 

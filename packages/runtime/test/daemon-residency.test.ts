@@ -73,7 +73,15 @@ type Env = {
   config: (residency?: Partial<ResidencyConfig>) => DaemonConfig;
 };
 
-async function createEnv(): Promise<Env> {
+/** Wall clock with a test-controlled offset, shared by the Door and the daemon. */
+class OffsetClock {
+  offsetMs = 0;
+  now(): string {
+    return new Date(Date.now() + this.offsetMs).toISOString();
+  }
+}
+
+async function createEnv(opts: { pastEpochs?: boolean; clock?: OffsetClock } = {}): Promise<Env> {
   const root = await mkdtemp(join(tmpdir(), "npc-residency-"));
   const chainDir = join(root, "chain");
   const soulKeyPath = join(root, "soul.key");
@@ -101,8 +109,11 @@ async function createEnv(): Promise<Env> {
     doorId: DOOR_ID,
     doorKeypair: DOOR,
     soulPublicKey: SOUL.publicKey,
-    clock: { now: () => new Date().toISOString() },
-    policy
+    clock: opts.clock ?? { now: () => new Date().toISOString() },
+    policy:
+      opts.pastEpochs === true
+        ? { ...policy, capabilities: [...policy.capabilities, "cosign.past_epochs"] }
+        : policy
   });
   const httpServer = new HttpDoorServer({ door });
   const httpInfo = await httpServer.start();
@@ -388,6 +399,91 @@ describe("residency lifecycle (daemon)", () => {
     );
     expect(order.lastIndexOf("shard")).toBeLessThan(order.lastIndexOf("arrival"));
     expect(order.indexOf("shard")).toBeGreaterThan(order.indexOf("travel"));
+  });
+
+  it("past-epoch Door: re-arrives at once, then the live sweep commits epoch 1 after a 24 h window", async () => {
+    await env.wsServer.stop();
+    await env.httpServer.stop();
+    const clock = new OffsetClock();
+    env = await createEnv({ pastEpochs: true, clock });
+    const timer = new FakeTimer();
+    const brain = lifecycleBrain();
+    // Default 24 h window: refused before cosign.past_epochs, accepted now.
+    handle = await startResidencyDaemon(env.config({ commitIntervalMs: 30_000 }), {
+      brain,
+      timer,
+      clock,
+      logger: pino({ level: "silent" }),
+      skipSignals: true
+    });
+    const daemon = handle;
+    await waitFor(() => env.wsServer.getActiveClients().size === 1, "socket");
+    env.wsServer.broadcastInbound({ text: RAW_LINE, author_id: "u1" }, "in-1");
+    await waitFor(() => brain.calls.length === 1, "reply");
+
+    // The cycle no longer waits out the window in the travel gap.
+    const outcome = await daemon.requestCycle("operator");
+    expect(outcome).toMatchObject({
+      kind: "cycled",
+      fromEpoch: 1,
+      toEpoch: 2,
+      candidateCount: SHARDS.length,
+      committedCount: 0
+    });
+    await waitFor(() => env.wsServer.getActiveClients().size === 1, "second socket");
+    expect(env.door.getActiveEpoch()).toBe(2);
+
+    const shardCount = async (): Promise<number> =>
+      (await readFile(join(env.chainDir, "chain.jsonl"), "utf8"))
+        .split("\n")
+        .filter((line) => line.includes('"kind":"shard"')).length;
+
+    // While ripening, a sweep tick commits nothing.
+    timer.tick();
+    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+    expect(await shardCount()).toBe(0);
+
+    // A day later (Door and daemon share the clock), the live sweep commits epoch 1's
+    // candidates while epoch 2 is live — the Door still holds epoch 1's review.
+    clock.offsetMs = 24 * 60 * 60 * 1000 + 60_000;
+    timer.tick();
+    await waitFor(async () => (await shardCount()) === SHARDS.length, "live commits");
+    expect(daemon.currentEpoch()).toBe(2);
+    // Still live: inbound on epoch 2 is answered.
+    env.wsServer.broadcastInbound({ text: "still here?", author_id: "u2" }, "in-2");
+    await waitFor(() => brain.calls.length >= 4, "reply in epoch 2");
+    await daemon.shutdown();
+    handle = null;
+
+    const records = await readChain(env.chainDir);
+    const shards = records.filter(
+      (record) => record.type === "memory" && record.body.kind === "shard"
+    );
+    expect(shards).toHaveLength(SHARDS.length);
+    expect(shards.every((record) => record.residency === `door:${DOOR_ID}/epoch:1`)).toBe(true);
+    expect(shards.filter((record) => "journal_cid" in record.body)).toHaveLength(1);
+    const order = records.map((record) =>
+      record.type === "attestation"
+        ? `${String(record.body.kind)}:${String(record.body.epoch ?? record.body.from_epoch)}`
+        : record.type === "memory"
+          ? String(record.body.kind)
+          : record.type
+    );
+    // Commits land during residency 2, after its arrival.
+    expect(order.indexOf("shard")).toBeGreaterThan(order.indexOf("arrival:2"));
+  });
+
+  it("legacy Door + commit sweep + 24 h window: boot refuses before any append", async () => {
+    await expect(
+      startResidencyDaemon(env.config({ commitIntervalMs: 30_000 }), {
+        brain: lifecycleBrain(),
+        timer: new FakeTimer(),
+        logger: pino({ level: "silent" }),
+        skipSignals: true
+      })
+    ).rejects.toMatchObject({ reason: "invalid_config", envVar: "NPC_QUARANTINE_WINDOW_MS" });
+    const records = await readChain(env.chainDir);
+    expect(records.map((record) => record.type)).toEqual(["genesis"]);
   });
 
   it("SIGUSR2 triggers a cycle when the operator trigger is enabled; listeners are removed on shutdown", async () => {

@@ -11,7 +11,9 @@ import type { ReviewGate } from "./review-gate.js";
 
 /**
  * Door subclass that awaits Discord host review before the sync `decideShard` phase.
- * Commit cosign passes through after the same auth verify (same instance required post-depart).
+ * Commit cosign passes through after the same auth verify. Completed reviews are retained
+ * per epoch (bounded; durable with a `cosignStateStore`), so commits for a past epoch
+ * still work while a later residency is live.
  *
  * Freshness/auth/signature/shard-count checks run **once, on receipt** via
  * {@link Door.verifyCosignRequest} — before any review-gate Discord side effects, so
@@ -53,7 +55,7 @@ export class ReviewGatedDoor extends Door {
    */
   override async cosign(request: CosignRequest): Promise<CosignResponse> {
     this.verifyCosignRequest(request);
-    if (request.phase !== "review" || this.isCosignReviewCompleted()) {
+    if (request.phase !== "review" || this.isCosignReviewCompleted(request.epoch)) {
       // Commit, or an authenticated retry of the completed review (replayed by the Door).
       return this.cosignReceivedFresh(request);
     }

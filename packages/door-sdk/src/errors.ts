@@ -25,6 +25,8 @@ export function defaultHttpStatusForDoorError(code: string): number {
     case "review_pending":
     case "door_unavailable":
       return 503;
+    case "review_not_retained":
+      return 410;
     default:
       if (code.startsWith("unsupported_")) {
         return 400;
