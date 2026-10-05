@@ -194,6 +194,9 @@ only on the daily verify and at container start. If the count is far higher:
 
 - `docker logs <backup-container> | grep -c 'full check'` — many full cycles mean the
   container is restart-looping (each start = full verify) or `BACKUP_VERIFY_SEC` is low.
+  A failing verify is retried as a full cycle at most once per `BACKUP_RETRY_SEC`
+  (log: `Full cycle failed; next full attempt in …`); the container stays unhealthy until
+  one succeeds.
 - Many `Copying chain.jsonl` lines with only heartbeats in between → `BACKUP_HEARTBEAT_DEFER_SEC`
   is unset/0 in `ops/.env`, or the runtime's heartbeat record shape changed (deferral only
   matches canonical `attestation` records with a flat `"kind":"heartbeat"` body; anything
@@ -203,8 +206,11 @@ only on the daily verify and at container start. If the count is far higher:
 
 Granted erasure requests (spec/osp/privacy.md §6) delete the blob locally and append a
 `tombstone` record. The backup sidecar then deletes exactly the tombstoned `blob_cid`s
-from `remote/blobs/` (after uploading the chain that carries the tombstone) and never
-uploads them again. Verify after an erasure:
+from `remote/blobs/` (after uploading the chain that carries the tombstone) and does not
+upload them again — unless identical prose is later re-appended (same CID, records.md
+rule 12) and a record after the tombstone references it, which makes it a live blob again.
+Verify after an erasure (the `--b2-versions` listing must be empty too — see RUNBOOK
+"B2 lifecycle": the `blobs/` lifecycle rule is required for erasure):
 
 ```bash
 sudo docker logs <backup-container> 2>&1 | grep -E 'Erasure:|tombstone'

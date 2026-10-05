@@ -8,7 +8,9 @@
 #     named by strictly-parsed tombstone records.
 #   - chain.jsonl is append-only → refuse size regression unless ALLOW_CHAIN_SHRINK=1;
 #     an overwritten tip is preserved under remote/history/<UTC>-<pid>/ via
-#     --backup-dir at most once per BACKUP_HISTORY_SEC (rollback points).
+#     --backup-dir at most once per BACKUP_HISTORY_SEC (rollback points) — and
+#     always when the new tip is not a pure append of the last uploaded one
+#     (in-place `osp migrate`, operator restore, shrink override).
 #   - Blobs reach the remote before the chain tip that references them: the chain
 #     is snapshotted before blobs/ is listed, the snapshot is what gets uploaded,
 #     and a failed blob copy aborts the cycle before the chain step.
@@ -36,13 +38,21 @@
 #   - BACKUP_VERIFY_SEC: a full round-trip (full copy + lsjson + copyto) at least
 #     this often, so a revoked key / deleted bucket / lost object surfaces and heals.
 #   - BACKUP_RETRY_SEC: after a failure, an unchanged fingerprint is retried at
-#     most this often (new appends still retry immediately).
+#     most this often (new appends still retry immediately, as incremental
+#     cycles). A failed FULL cycle (verify or startup) is retried as a full cycle
+#     at most this often whatever changes locally; in between, cycles run
+#     incrementally. Only the process's startup cycle (and BACKUP_ONCE) is always
+#     full. While a full failure is outstanding the healthcheck marker is not
+#     refreshed (the remote is unverified), so the failure stays visible.
 #
 # Erasure propagation (spec/osp/privacy.md §6): tombstone records appended since
 # the last upload (plus a full chain scan on force/verify cycles) name blob CIDs
 # that must leave infrastructure we control. After the chain carrying the
 # tombstone is uploaded, exactly those CIDs (strict CID format; never a chain
-# record CID) are deleted from remote blobs/ and are never uploaded again.
+# record CID) are deleted from remote blobs/ and are not uploaded again — unless
+# the same content-addressed blob is back on disk and a record after its last
+# tombstone references it again (identical prose re-appended, records.md rule
+# 12): it is then a live blob and uploads normally.
 #
 # Concurrency: periodic, debounced and startup cycles serialize on a lock in the
 # state dir (flock; mkdir-lock fallback). Signals: TERM/INT exit 143 promptly and
@@ -205,9 +215,15 @@ blob_manifest() {
   fi
   # osp-core writes blobs atomically via a short-lived ".tmp-*" file in the
   # same directory; such in-flight temp files are never fingerprinted or
-  # uploaded (the rename to the CID name is what makes a blob exist).
-  (cd "$blobs_dir" && find . -type f -exec stat "${fmt[@]}" {} + 2>/dev/null) \
-    | sed 's#^\./##' | grep -v '^\.tmp-' | LC_ALL=C sort
+  # uploaded (the rename to the CID name is what makes a blob exist). They are
+  # excluded by find itself (same basename rule as rclone's --exclude ".tmp-*"),
+  # so they are never stat'ed, and an empty or temp-only blobs/ is an empty
+  # manifest, not a failed pipeline. `|| true`: find exits 1 when a listed file
+  # vanishes before stat (rename/erasure race) — the next cycle sees the change.
+  (
+    cd "$blobs_dir" || exit 0
+    find . -type f ! -name '.tmp-*' -exec stat "${fmt[@]}" {} + 2>/dev/null || true
+  ) | sed 's#^\./##' | LC_ALL=C sort
 }
 
 # Set identity of blobs/: digest of the sorted name+size list (renames and
@@ -257,9 +273,44 @@ remote_chain_size() {
 }
 
 # Record a failed cycle for this fingerprint (drives BACKUP_RETRY_SEC backoff).
+#   $1 = cycle fingerprint, $2 = 1 when the failed cycle was a full cycle.
 mark_failed() {
+  local at
+  at="$(date +%s)"
   state_set failed.sig "$1"
-  state_set failed.at "$(date +%s)"
+  state_set failed.at "$at"
+  if [[ "${2:-0}" == "1" ]]; then
+    state_set full.failed.at "$at"
+  fi
+}
+
+# Refresh the healthcheck marker — unless a full (startup/verify) cycle failed
+# and no full cycle has succeeded since: the remote is unverified (revoked key,
+# deleted bucket, lost object), and incremental successes or skips must not hide
+# that. Only a successful full retry turns the healthcheck green again.
+mark_ok() {
+  if [[ -n "$(state_get full.failed.at)" ]]; then
+    return 0
+  fi
+  touch "$BACKUP_OK_PATH"
+}
+
+# Of the CIDs listed in file $1, print (sorted) those that appear on a line of
+# chain $2 AFTER their last tombstone naming them as blob_cid: the same
+# content-addressed blob was referenced again (records.md rule 12), so it is a
+# live blob, not an erased one. A CID with no tombstone line stays erased.
+revived_cids() {
+  awk 'FILENAME == ARGV[1] { if (NF) want[$0] = 1; next }
+    {
+      for (c in want) {
+        if (index($0, c)) {
+          seen[c] = FNR
+          if (index($0, "\"blob_cid\":\"" c "\"") && $0 ~ /"type":"tombstone"[}]$/) last[c] = FNR
+        }
+      }
+    }
+    END { for (c in want) if ((c in last) && seen[c] > last[c]) print c }' "$1" "$2" \
+    | LC_ALL=C sort
 }
 
 # Classify what was appended since the last uploaded chain.
@@ -351,11 +402,26 @@ sync_backup() {
     return 0
   fi
 
-  local now verified_at full=0
+  local now verified_at full_failed_at full=0
   now="$(date +%s)"
   verified_at="$(state_get verified.at)"
-  if [[ "$mode" == "force" ]] || (( now - ${verified_at:-0} >= BACKUP_VERIFY_SEC )); then
+  full_failed_at="$(state_get full.failed.at)"
+  if [[ "$mode" == "force" ]]; then
+    # Startup / BACKUP_ONCE: always a full round-trip, even inside a backoff.
     full=1
+  elif [[ -n "$full_failed_at" ]] || (( now - ${verified_at:-0} >= BACKUP_VERIFY_SEC )); then
+    # A full cycle is due: verify window elapsed, or an earlier full cycle failed.
+    # A failed full cycle is retried at most every BACKUP_RETRY_SEC; until then
+    # this cycle runs incrementally (cheap; still uploads new appends) instead of
+    # a full copy + lsjson on every tick and every debounced change.
+    if [[ -n "$full_failed_at" ]] && (( now - full_failed_at < BACKUP_RETRY_SEC )); then
+      if [[ "$(state_get full.backoff.logged)" != "$full_failed_at" ]]; then
+        state_set full.backoff.logged "$full_failed_at"
+        log "Full cycle failed; next full attempt in $(( full_failed_at + BACKUP_RETRY_SEC - now ))s (BACKUP_RETRY_SEC=${BACKUP_RETRY_SEC}); incremental cycles only until then"
+      fi
+    else
+      full=1
+    fi
   fi
 
   # Fast path: nothing changed since the last successful upload → zero remote
@@ -365,7 +431,7 @@ sync_backup() {
     && [[ ! -s "$(state_path erase.pending)" ]] \
     && [[ "$(chain_signature "$chain_src")" == "$(state_get chain.sig)" ]] \
     && [[ "$(blob_signature)" == "$(state_get blobs.sig)" ]]; then
-    touch "$BACKUP_OK_PATH"
+    mark_ok
     return 0
   fi
 
@@ -417,7 +483,7 @@ upload_cycle() {
   fi
   [[ -s "$(state_path erase.pending)" ]] && pending_erase=1
   if (( blobs_dirty == 0 && chain_dirty == 0 && pending_erase == 0 )); then
-    touch "$BACKUP_OK_PATH"
+    mark_ok
     return 0
   fi
 
@@ -440,7 +506,7 @@ upload_cycle() {
           state_set defer.until "$deadline"
           log "Deferring ${tail_kind}-only change (no remote calls) for up to $(( deadline - now ))s (BACKUP_HEARTBEAT_DEFER_SEC=${BACKUP_HEARTBEAT_DEFER_SEC})"
         fi
-        touch "$BACKUP_OK_PATH"
+        mark_ok
         return 0
       fi
     fi
@@ -455,8 +521,39 @@ upload_cycle() {
     log "Retrying previously failed cycle (unchanged since failure; BACKUP_RETRY_SEC=${BACKUP_RETRY_SEC})"
   fi
 
-  # Erased CIDs (deleted or pending deletion) are never uploaded again.
+  # Erased CIDs (deleted or pending deletion) are not uploaded again while they
+  # stay erased. One that is back on disk AND referenced by a record after its
+  # last tombstone (identical prose re-appended → same CID; records.md rule 12)
+  # is live again: drop it from the erasure state and upload it like any blob.
+  # A tombstoned blob that is absent, or present but not referenced again, stays
+  # excluded.
   { state_get erase.done; state_get erase.pending; } | LC_ALL=C sort -u >"$erased"
+  if [[ -s "$erased" ]]; then
+    local present="${tmp}/present.cycle.${tag}" revived="${tmp}/revived.cycle.${tag}"
+    local keep="${tmp}/keep.cycle.${tag}"
+    sed 's/ [0-9][0-9]*$//' "$manifest" \
+      | awk 'FILENAME == ARGV[1] { e[$0] = 1; next } ($0 in e)' "$erased" - >"$present"
+    : >"$revived"
+    if [[ -s "$present" ]]; then
+      revived_cids "$present" "$snap" >"$revived"
+    fi
+    if [[ -s "$revived" ]]; then
+      log "Erasure: $(wc -l <"$revived" | tr -d ' ') erased blob(s) referenced again after their tombstone (same CID re-appended); uploading as live blob(s)"
+      state_get erase.done | without_lines "$revived" - >"$keep"
+      state_set_file erase.done "$keep"
+      state_get erase.pending | without_lines "$revived" - >"$keep"
+      if [[ -s "$keep" ]]; then
+        state_set_file erase.pending "$keep"
+      else
+        state_clear erase.pending
+      fi
+      without_lines "$revived" "$erased" >"$keep"
+      cp "$keep" "$erased"
+      # The blob may already be in the recorded blob fingerprint (it reappeared
+      # in an earlier cycle, before the referencing record): upload it now.
+      blobs_dirty=1
+    fi
+  fi
 
   # --- 1. blobs (immutable CIDs — copy only; never delete remote orphans) ---
   if (( blobs_dirty == 1 )); then
@@ -466,7 +563,7 @@ upload_cycle() {
       log "Copying blobs/ → ${remote}/blobs/ (full check; append-only; never deletes remote)"
       if ! rclone copy "$blobs_src" "${remote}/blobs" "${exclude[@]}" "${RCLONE_ARGS[@]}"; then
         log "ERROR: blob copy failed; skipping chain upload so the remote tip never references missing blobs"
-        mark_failed "$cycle_sig"
+        mark_failed "$cycle_sig" "$full"
         return 1
       fi
       without_names "$erased" "$manifest" >"$uploaded"
@@ -483,7 +580,7 @@ upload_cycle() {
           --files-from "$new_names" --no-traverse --no-check-dest \
           "${RCLONE_ARGS[@]}"; then
           log "ERROR: blob copy failed; skipping chain upload so the remote tip never references missing blobs"
-          mark_failed "$cycle_sig"
+          mark_failed "$cycle_sig" "$full"
           return 1
         fi
       fi
@@ -502,7 +599,7 @@ upload_cycle() {
     if (( full == 1 )) || [[ -z "$known_size" ]]; then
       if ! remote_size="$(remote_chain_size "$remote_chain")"; then
         log "ERROR: could not determine remote chain.jsonl size; refusing upload (shrink guard cannot run safely)"
-        mark_failed "$cycle_sig"
+        mark_failed "$cycle_sig" "$full"
         return 1
       fi
     else
@@ -512,31 +609,44 @@ upload_cycle() {
     if (( local_size < remote_size )); then
       if [[ "$ALLOW_CHAIN_SHRINK" != "1" ]]; then
         log "ERROR: refusing to upload smaller chain.jsonl (local=${local_size} remote=${remote_size}); set ALLOW_CHAIN_SHRINK=1 to override"
-        mark_failed "$cycle_sig"
+        mark_failed "$cycle_sig" "$full"
         return 1
       fi
       log "WARN: ALLOW_CHAIN_SHRINK=1 — uploading smaller chain.jsonl (local=${local_size} remote=${remote_size}); previous tip moves to history/"
     fi
 
     # Preserve the prior tip under history/<UTC>-<pid>/ at most once per
-    # BACKUP_HISTORY_SEC (a shrink override always snapshots). The pid suffix
-    # keeps names distinct within one second.
-    local history_args=() history_ts="" history_at
+    # BACKUP_HISTORY_SEC. A shrink override, and any tip that is not a pure
+    # append of the last uploaded chain (in-place `osp migrate`, operator
+    # restore, lost local state), always snapshots: the overwritten tip would
+    # otherwise have no rollback point. The pid suffix keeps names distinct
+    # within one second.
+    local history_args=() history_ts="" history_at non_append=0
     history_at="$(state_get history.at)"
-    if (( local_size < remote_size )) || (( now - ${history_at:-0} >= BACKUP_HISTORY_SEC )); then
+    if [[ "$tail_kind" == "other" && ! -s "$tail_file" ]]; then
+      non_append=1
+    fi
+    if (( local_size < remote_size || non_append == 1 )) \
+      || (( now - ${history_at:-0} >= BACKUP_HISTORY_SEC )); then
       history_ts="$(date -u +"%Y%m%dT%H%M%SZ")-${BASHPID:-$$}"
       history_args=(--backup-dir "${remote}/history/${history_ts}")
-      log "Copying chain.jsonl → ${remote_chain} (backup-dir history/${history_ts})"
+      if (( non_append == 1 )); then
+        log "Copying chain.jsonl → ${remote_chain} (backup-dir history/${history_ts}; not a pure append of the last upload)"
+      else
+        log "Copying chain.jsonl → ${remote_chain} (backup-dir history/${history_ts})"
+      fi
     else
       log "Copying chain.jsonl → ${remote_chain} (history snapshot not due)"
     fi
     if ! rclone copyto "$snap" "$remote_chain" "${history_args[@]}" "${RCLONE_ARGS[@]}"; then
       log "ERROR: chain.jsonl upload failed"
-      mark_failed "$cycle_sig"
+      mark_failed "$cycle_sig" "$full"
       return 1
     fi
     # The window restarts only when a different prior tip was actually moved
     # (identical tips are skipped by copyto; a missing tip has nothing to keep).
+    # A same-size non-append rewrite leaves the window as is (one extra rollback
+    # point at most) rather than risk restarting it when nothing was moved.
     if [[ -n "$history_ts" ]] && (( remote_size > 0 && remote_size != local_size )); then
       state_set history.at "$now"
     fi
@@ -560,13 +670,23 @@ upload_cycle() {
   } | LC_ALL=C sort -u \
     | without_lines "$erase_done" - >"$pending"
   if [[ -s "$pending" ]]; then
+    # Never delete a blob the chain references again after its tombstone (a
+    # full rescan still sees the old tombstone).
+    local live="${tmp}/live.cycle.${tag}"
+    revived_cids "$pending" "$snap" >"$live"
+    if [[ -s "$live" ]]; then
+      without_lines "$live" "$pending" >"${tmp}/keep.cycle.${tag}"
+      cp "${tmp}/keep.cycle.${tag}" "$pending"
+    fi
+  fi
+  if [[ -s "$pending" ]]; then
     state_set_file erase.pending "$pending"
     log "Erasure: deleting $(wc -l <"$pending" | tr -d ' ') tombstoned blob(s) from ${remote}/blobs/"
     # --files-from: direct per-name lookups, exactly these objects. B2 hides on
     # delete by default; --b2-hard-delete removes the version (ignored elsewhere).
     if ! rclone delete "${remote}/blobs" --files-from "$pending" --b2-hard-delete "${RCLONE_ARGS[@]}"; then
       log "ERROR: erasure delete failed; will retry"
-      mark_failed "$cycle_sig"
+      mark_failed "$cycle_sig" "$full"
       return 1
     fi
     { state_get erase.done; cat "$pending"; } | LC_ALL=C sort -u >"$erased"
@@ -579,11 +699,17 @@ upload_cycle() {
 
   if (( full == 1 )); then
     state_set verified.at "$now"
+    state_clear full.failed.at
+    state_clear full.backoff.logged
   fi
   state_clear failed.sig
   state_clear failed.at
-  touch "$BACKUP_OK_PATH"
-  log "Sync complete (marker ${BACKUP_OK_PATH})"
+  mark_ok
+  if [[ -n "$(state_get full.failed.at)" ]]; then
+    log "Sync complete (incremental; marker NOT refreshed until a full cycle succeeds)"
+  else
+    log "Sync complete (marker ${BACKUP_OK_PATH})"
+  fi
 }
 
 # Serialize cycles (periodic, debounced, startup) on a lock in the state dir.
@@ -690,19 +816,37 @@ descendants() {
 cleanup() {
   trap - TERM INT
   rm -f "$DEBOUNCE_FLAG"
-  local pids=() pid child
+  local all="" frontier="" next pid child round
   # Collect the whole tree before killing: a dead subshell's children are
-  # re-parented and no longer reachable through pgrep -P.
+  # re-parented and no longer reachable through pgrep -P. Freeze it top-down
+  # (SIGSTOP a level, then list its children) so no subshell can fork a child
+  # between collection and the kill — such a child would escape as an orphan.
   for pid in "$DEBOUNCE_PID" "$PERIODIC_PID" "$STARTUP_PID" "$WAITER_PID"; do
-    [[ -n "$pid" ]] || continue
-    while IFS= read -r child; do
-      [[ -n "$child" ]] && pids+=("$child")
-    done < <(descendants "$pid")
-    pids+=("$pid")
+    if [[ -n "$pid" ]]; then
+      frontier+=" ${pid}"
+    fi
   done
-  if (( ${#pids[@]} > 0 )); then
-    kill "${pids[@]}" 2>/dev/null || true
-    for pid in "${pids[@]}"; do
+  for ((round = 0; round < 16; round++)); do
+    [[ -n "$frontier" ]] || break
+    # shellcheck disable=SC2086 # space-separated pid list
+    kill -STOP $frontier 2>/dev/null || true
+    all+="$frontier"
+    next=""
+    for pid in $frontier; do
+      while IFS= read -r child; do
+        if [[ -n "$child" && " ${all} ${next} " != *" ${child} "* ]]; then
+          next+=" ${child}"
+        fi
+      done < <(child_pids "$pid")
+    done
+    frontier="$next"
+  done
+  if [[ -n "$all" ]]; then
+    # shellcheck disable=SC2086 # space-separated pid list
+    kill $all 2>/dev/null || true
+    # shellcheck disable=SC2086
+    kill -CONT $all 2>/dev/null || true
+    for pid in $all; do
       wait "$pid" 2>/dev/null || true
     done
   fi
@@ -777,9 +921,11 @@ else
     WAITER_PID=""
     chain_path="${BACKUP_SOURCE_DIR}/chain.jsonl"
     if [[ -f "$chain_path" ]]; then
-      chain_mtime="$(stat_mtime "$chain_path")"
-      chain_size="$(stat_size "$chain_path")"
-      blob_sig="$(blob_signature)"
+      # A transient stat/listing failure (file replaced mid-poll) must not end
+      # the main loop under set -e: treat it as "unchanged" for this tick.
+      chain_mtime="$(stat_mtime "$chain_path")" || continue
+      chain_size="$(stat_size "$chain_path")" || continue
+      blob_sig="$(blob_signature)" || blob_sig="$last_blob_sig"
       if [[ "$chain_mtime" != "$last_chain_mtime" || "$chain_size" != "$last_chain_size" || "$blob_sig" != "$last_blob_sig" ]]; then
         if [[ -n "$last_chain_mtime" ]]; then
           log "Change detected (poll)"

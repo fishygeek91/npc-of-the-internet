@@ -32,18 +32,19 @@ The backup sidecar (`ops/scripts/backup-watch.sh`) runs each upload cycle in thi
 1. **Snapshot** `chain.jsonl`, then list `blobs/` (the runtime writes a blob before the chain line that references it, so the snapshot never references a blob the cycle did not see).
 2. `blobs/` → remote `blobs/` with `rclone copy` — **never** `rclone sync`. Normal cycles send only blob entries (`name size`) not yet uploaded, via `--files-from <list> --no-traverse --no-check-dest` (content-addressed + immutable → idempotent, no remote listing). Force/verify cycles run a full checking `rclone copy` (self-heal). A failed blob copy aborts the cycle before the chain step.
 3. **Size-regression guard:** if the snapshot is smaller than the remote tip, refuse with ERROR unless `ALLOW_CHAIN_SHRINK=1`. The remote size is the last uploaded size kept in local state; `rclone lsjson` (with bucket-remote empty-array handling) runs only on force/verify cycles or when that state is missing.
-4. Snapshot → remote `chain.jsonl` (`rclone copyto`). At most once per `BACKUP_HISTORY_SEC` (default daily), and always for a shrink override, it passes `--backup-dir ${remote}/history/<YYYYMMDDTHHMMSSZ>-<pid>` so the prior tip becomes a rollback point.
-5. **Erasure propagation** ([`spec/osp/privacy.md`](../spec/osp/privacy.md) §6): blob CIDs named by tombstone records appended since the last upload (full chain rescan on force/verify) are deleted from remote `blobs/` with `rclone delete --files-from <exactly those CIDs> --b2-hard-delete` — only after the chain carrying the tombstone is on the remote. Lines must match the strict tombstone shape and CID format; a CID that is also a chain record CID is refused. Erased CIDs are never uploaded again. See [TROUBLESHOOTING: Erasure](TROUBLESHOOTING.md#erasure-tombstoned-blobs-on-b2).
+4. Snapshot → remote `chain.jsonl` (`rclone copyto`). At most once per `BACKUP_HISTORY_SEC` (default daily) it passes `--backup-dir ${remote}/history/<YYYYMMDDTHHMMSSZ>-<pid>` so the prior tip becomes a rollback point — and **always** when the snapshot is not a pure append of the last uploaded chain (shrink override, in-place `osp migrate`, operator restore, lost sidecar state), so a rewrite never overwrites the remote tip without a rollback point.
+5. **Erasure propagation** ([`spec/osp/privacy.md`](../spec/osp/privacy.md) §6): blob CIDs named by tombstone records appended since the last upload (full chain rescan on force/verify) are deleted from remote `blobs/` with `rclone delete --files-from <exactly those CIDs> --b2-hard-delete` — only after the chain carrying the tombstone is on the remote. Lines must match the strict tombstone shape and CID format; a CID that is also a chain record CID is refused. Erased CIDs are not uploaded again — unless the same content-addressed blob is back on disk **and** a record after its last tombstone references it again (identical prose re-appended → same CID, allowed by [`records.md`](../spec/osp/records.md) rule 12); it is then a live blob, uploads normally and is not re-deleted by later rescans. See [TROUBLESHOOTING: Erasure](TROUBLESHOOTING.md#erasure-tombstoned-blobs-on-b2).
 6. Touches `BACKUP_OK_PATH` (default `/tmp/backup.ok`) only after full success (or a policy skip, below).
 
 Set `BACKUP_ONCE=1` to run one full (forced) cycle and exit (used by restore drills).
 
 **Remote-call budget.** Every rclone invocation authorizes and usually looks up the bucket/object (B2 **Class C** calls; free accounts cap these at 2,500/day account-wide — the key-backup bucket shares the cap). Budget rules:
 
-- **Unchanged** `blobs/` (set identity: digest of sorted `name size` list) and `chain.jsonl` (size + digest) → zero remote calls; `BACKUP_OK_PATH` is still refreshed.
+- **Unchanged** `blobs/` (set identity: digest of sorted `name size` list) and `chain.jsonl` (size + digest) → zero remote calls; `BACKUP_OK_PATH` is still refreshed (unless a full-cycle failure is outstanding, below).
 - **Heartbeat deferral.** The runtime appends a signed heartbeat attestation (1 chain line + 1 record blob) every 10 minutes. If *every* record appended since the last uploaded chain is a heartbeat (or only unreferenced blobs changed), the cycle makes no remote calls until `BACKUP_HEARTBEAT_DEFER_SEC` (default 1 h) after the last successful chain upload; the periodic loop wakes for that deadline, so a heartbeat reaches the remote within the window. **The healthcheck stays green while deferring** — by policy a remote that lags by ≤ 1 h of heartbeats is current enough; a crash in that window loses at most those heartbeats (presence proofs, not memories). Any other record (memory, tombstone, arrival/departure, …) uploads after the `BACKUP_DEBOUNCE_SEC` debounce.
 - **Full verify** every `BACKUP_VERIFY_SEC` (default 1 day) and at startup: checking blob copy + `lsjson` + `copyto` + tombstone rescan, so a revoked key, deleted bucket or lost object surfaces and heals.
-- A failing unchanged cycle backs off to `BACKUP_RETRY_SEC` (default 15 min); new appends retry immediately.
+- A failing unchanged cycle backs off to `BACKUP_RETRY_SEC` (default 15 min); new appends retry immediately (as incremental cycles).
+- A failing **full** cycle (verify, or the startup round-trip) is retried as a full cycle at most once per `BACKUP_RETRY_SEC`, whatever changes locally; in between, cycles run incrementally (new appends still upload). Only each container start (and `BACKUP_ONCE`) always runs a full cycle. While a full-cycle failure is outstanding, `BACKUP_OK_PATH` is **not** refreshed — not even by incremental successes — so the healthcheck (marker < 900 s) turns unhealthy until a full retry succeeds; look for `Full cycle failed; next full attempt in …` in the sidecar log.
 
 **Estimate** (≈3 Class C per rclone invocation: authorize + bucket/object lookup; list pages add 1 per 1,000 objects):
 
@@ -67,7 +68,7 @@ ${BACKUP_RCLONE_REMOTE}/
 
 Blobs are uploaded before the chain file so a restore never references blob CIDs that have not yet reached the remote. The `history/` tree is the anti-clobber guarantee — B2 bucket versioning is **not** required for it. After any restore, always run `osp verify` before starting the stack. If a crash left a torn trailing line or a stale `.append.lock`, recover with `FileSoulStore.openWithRecovery` (see [Crash recovery](#6-crash-recovery)) before verifying.
 
-**B2 lifecycle / retention (recommended).** B2 buckets default to *keep all versions*: every `chain.jsonl` overwrite leaves the previous upload as a hidden version, and rclone's `--backup-dir` (server-side copy + hide) and deletes do the same, so storage grows without bound and erased blobs could survive as hidden versions. In the B2 web UI → Bucket Settings → Lifecycle Settings, add custom rules with **non-overlapping** prefixes (`<path>` = the path part of `BACKUP_RCLONE_REMOTE`, e.g. `soulchain`):
+**B2 lifecycle / retention (required for erasure on `blobs/`).** B2 buckets default to *keep all versions*: every `chain.jsonl` overwrite leaves the previous upload as a hidden version, and rclone's `--backup-dir` (server-side copy + hide) and deletes do the same, so storage grows without bound and erased blobs could survive as hidden versions. In the B2 web UI → Bucket Settings → Lifecycle Settings, add custom rules with **non-overlapping** prefixes (`<path>` = the path part of `BACKUP_RCLONE_REMOTE`, e.g. `soulchain`):
 
 | `fileNamePrefix` | `daysFromUploadingToHiding` | `daysFromHidingToDeleting` | Effect |
 |---|---|---|---|
@@ -76,6 +77,12 @@ Blobs are uploaded before the chain file so a restore never references blob CIDs
 | `<path>/history/` | 30 | 1 | ≈ 30 daily rollback points, then purged |
 
 The sidecar deletes erased blobs with `--b2-hard-delete`, which removes the current version immediately; the lifecycle rule cleans up any older versions within a day (or run `rclone cleanup <remote>/blobs` on the host after an erasure to purge old versions of every blob immediately).
+
+**Erasure needs the `blobs/` lifecycle rule — it is not optional.** Incremental cycles upload new blobs with `--no-check-dest` (no remote lookup), so a blob re-sent after a partially failed cycle becomes a *second B2 version* of the same name, and `--b2-hard-delete` may remove only the newest version: the older copy of the erased bytes then survives as a hidden version until the "keep only the last version" rule (`<path>/blobs/`, `daysFromHidingToDeleting: 1`) purges it. After every erasure, confirm no version of the CID remains (wait for the lifecycle run, or `rclone cleanup <remote>/blobs` first):
+
+```bash
+rclone ls ghost-remote:npc/soulchain/blobs/ --b2-versions --include '<blob_cid>*' --config /path/to/rclone.conf   # expect no output
+```
 
 ---
 

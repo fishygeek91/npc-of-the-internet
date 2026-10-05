@@ -52,6 +52,8 @@ ARGS_LOG="${TMP}/rclone-args.log"
 FAIL_ON="${TMP}/fail-on"
 SLOW="${TMP}/slow"
 OVERLAP="${TMP}/overlap.log"
+FULL_TIMES="${TMP}/full-copy-times.log"
+STATE="${TMP}/state"
 mkdir -p "${SRC}/blobs" "$REMOTE_DIR" "$SHIM"
 : >"$CALLS"
 : >"$ARGS_LOG"
@@ -62,7 +64,9 @@ type = local
 EOF
 
 # Shim: record each subcommand (CALLS) and full argv (ARGS_LOG, plus the content
-# of any --files-from list); fail a subcommand listed in $FAIL_ON; when $SLOW
+# of any --files-from list); fail a subcommand listed in $FAIL_ON ("copy-full"
+# fails only full checking copies, i.e. copy without --files-from, and records
+# their start time in FULL_TIMES); when $SLOW
 # exists, hold each call for 1s and record overlapping calls (cycles must be
 # serialized). lsjson on a missing object mimics bucket remotes (B2/S3): exit 0
 # with an empty multi-line array (the local backend would exit 3 instead).
@@ -71,11 +75,15 @@ cat >"${SHIM}/rclone" <<EOF
 echo "\$1" >>"${CALLS}"
 echo "\$*" >>"${ARGS_LOG}"
 args=("\$@")
+kind="\$1"
+[[ "\$1" == "copy" ]] && kind="copy-full"
 for ((i = 0; i < \${#args[@]}; i++)); do
   if [[ "\${args[i]}" == "--files-from" ]]; then
     echo "files-from[\$1]: \$(tr '\n' ' ' <"\${args[i+1]}")" >>"${ARGS_LOG}"
+    kind="\$1"
   fi
 done
+[[ "\$kind" == "copy-full" ]] && date +%s >>"${FULL_TIMES}"
 if [[ -f "${SLOW}" ]]; then
   if mkdir "${TMP}/inflight" 2>/dev/null; then
     trap 'rmdir "${TMP}/inflight" 2>/dev/null' EXIT
@@ -84,7 +92,7 @@ if [[ -f "${SLOW}" ]]; then
   fi
   sleep 1
 fi
-if [[ -f "${FAIL_ON}" ]] && grep -qx "\$1" "${FAIL_ON}"; then
+if [[ -f "${FAIL_ON}" ]] && grep -qx -e "\$1" -e "\$kind" "${FAIL_ON}"; then
   exit 1
 fi
 if [[ "\$1" == "lsjson" && ! -e "\${2#testlocal:}" ]]; then
@@ -172,6 +180,12 @@ memory_line() {
   printf '{"body":{"kind":"candidate","text":"my \\"kind\\":\\"heartbeat\\" felt slow today"},"cosigners":[],"prev":"%s","residency":"door:discord:1/epoch:3","seq":%d,"sig":"c2ln","spec":"osp/0.1","type":"memory"}\n' \
     "${1:-$PREV}" "$SEQ"
 }
+# A memory record referencing side blob $1 as its text_cid.
+memory_text_line() {
+  next_seq
+  printf '{"body":{"kind":"candidate","text_cid":"%s"},"cosigners":[],"prev":"%s","residency":"door:discord:1/epoch:3","seq":%d,"sig":"c2ln","spec":"osp/0.2","type":"memory"}\n' \
+    "$1" "$PREV" "$SEQ"
+}
 tombstone_line() {
   next_seq
   printf '{"body":{"blob_cid":"%s","erased_at":"2026-10-05T01:00:00.000Z","reason":"%s","target_cid":"%s"},"cosigners":[],"prev":"%s","residency":null,"seq":%d,"sig":"dG9tYnN0b25l","spec":"osp/0.2","type":"tombstone"}\n' \
@@ -188,7 +202,7 @@ start_watch() {
     BACKUP_SOURCE_DIR="$SRC" \
     BACKUP_RCLONE_REMOTE="testlocal:${REMOTE_DIR}" \
     RCLONE_CONFIG="${TMP}/rclone.conf" \
-    BACKUP_STATE_DIR="${TMP}/state" \
+    BACKUP_STATE_DIR="$STATE" \
     BACKUP_OK_PATH="${TMP}/backup.ok" \
     BACKUP_DEBOUNCE_SEC=1 \
     BACKUP_INTERVAL_SEC=1 \
@@ -292,6 +306,25 @@ log "PASS .tmp-* atomic-write temp files ignored (no calls, never uploaded)"
 [[ "$(grep -c -- '--backup-dir' "$ARGS_LOG" || true)" == "0" ]] || die "--backup-dir passed again inside BACKUP_HISTORY_SEC"
 log "PASS history/ snapshot taken once per window"
 
+# --- 4c. a non-append rewrite (in-place migrate / restore) always keeps a rollback point ---
+: >"$ARGS_LOG"
+pre_rewrite="${TMP}/pre-rewrite.jsonl"
+cp "${SRC}/chain.jsonl" "$pre_rewrite"
+sed 's/^{"seq":0}$/{"migrated":true,"seq":0}/' "$pre_rewrite" >"${TMP}/rewritten.jsonl"
+cmp -s "$pre_rewrite" "${TMP}/rewritten.jsonl" && die "rewrite fixture did not change the chain"
+mv "${TMP}/rewritten.jsonl" "${SRC}/chain.jsonl" # atomic, larger, not an append
+wait_until 10 "rewritten chain uploaded" remote_chain_matches
+[[ "$(history_count)" == "2" ]] || die "non-append rewrite inside BACKUP_HISTORY_SEC must snapshot the prior tip (history count $(history_count))"
+newest_history="$(find "${REMOTE_DIR}/history" -type f -name chain.jsonl | LC_ALL=C sort | tail -n 1)"
+cmp -s "$newest_history" "$pre_rewrite" || die "history snapshot must hold the pre-rewrite tip"
+grep -q "not a pure append of the last upload" "${TMP}/watch.log" || die "non-append history snapshot not logged"
+sleep 1
+memory_line >>"${SRC}/chain.jsonl" # pure append inside the window → no new snapshot
+wait_until 10 "append after rewrite uploaded" remote_chain_matches
+[[ "$(grep -c -- '--backup-dir' "$ARGS_LOG" || true)" == "1" ]] || die "pure append after the rewrite must not snapshot again inside the window"
+[[ "$(history_count)" == "2" ]] || die "pure append after the rewrite must not add a history snapshot"
+log "PASS non-append rewrite always snapshots the prior tip; following append does not"
+
 # --- 5. blob copy failure aborts before the chain step, then backs off ---
 echo copy >"$FAIL_ON"
 printf 'blob-c' >"${SRC}/blobs/bafyc"
@@ -372,6 +405,22 @@ grep -q "did not match the strict shape" "${TMP}/watch.log" || die "malformed to
 grep -q "is a chain record CID; refusing" "${TMP}/watch.log" || die "record-CID tombstone not refused"
 log "PASS tombstone deletes exactly the tombstoned blob (malformed/record-CID refused)"
 
+# --- 9b. identical prose re-appended (same CID, records.md rule 12) uploads again ---
+sleep 1
+: >"$ARGS_LOG"
+printf 'shard text to erase' >"${SRC}/blobs/${erase_cid}" # same content → same CID
+memory_line >>"${SRC}/chain.jsonl"                       # does NOT reference it
+wait_until 10 "unrelated append uploaded" remote_chain_matches
+sleep 1
+[[ -e "${REMOTE_DIR}/blobs/${erase_cid}" ]] && die "a tombstoned blob that no later record references must not be re-uploaded"
+grep -q "files-from\[copy\]:.*${erase_cid}" "$ARGS_LOG" && die "tombstoned, unreferenced blob was sent to the remote"
+memory_text_line "$erase_cid" >>"${SRC}/chain.jsonl" # referenced again after its tombstone
+wait_until 10 "re-referenced blob uploaded" test -f "${REMOTE_DIR}/blobs/${erase_cid}"
+wait_until 5 "re-reference chain uploaded" remote_chain_matches
+grep -qx "$erase_cid" "${STATE}/erase.done" && die "revived CID must leave erase.done"
+grep -q '^delete ' "$ARGS_LOG" && die "revival must not trigger a remote delete"
+log "PASS re-appended identical blob (same CID) uploads once referenced again; unreferenced stays excluded"
+
 # --- 10. concurrent cycles are serialized (periodic vs debounced) ---
 : >"$OVERLAP"
 touch "$SLOW"
@@ -406,6 +455,9 @@ lsjson_at_least() { (( $(count_of lsjson) >= $1 )); }
 wait_until 5 "verify cycle lsjson" lsjson_at_least 2
 log "PASS idle verify window forces a full remote round-trip"
 stop_watch
+[[ -f "${REMOTE_DIR}/blobs/${erase_cid}" ]] || die "full rescan deleted a blob referenced again after its tombstone"
+[[ "$(count_of delete)" == "0" ]] || die "full rescan re-issued a delete for a revived blob"
+log "PASS full rescans keep the revived blob (no delete)"
 
 # --- 13. a deferral never outlives BACKUP_HEARTBEAT_DEFER_SEC (periodic flush) ---
 last_log_has() { tail -n 3 "${TMP}/watch.log" | grep -q "$1"; }
@@ -424,6 +476,80 @@ wait_until 15 "deferred heartbeat flushed by the periodic tick" remote_chain_mat
 t_flush="$(date +%s)"
 (( t_flush - t_upload <= 8 + 2 )) || die "deferral exceeded the window: flushed $(( t_flush - t_upload ))s after the last upload (window 8s)"
 log "PASS heartbeat deferral flushed by the periodic tick within the window ($(( t_flush - t_upload ))s, window 8s)"
+stop_watch
+
+# --- 14. a failing FULL cycle backs off too (no full copy + lsjson per tick) ---
+full_copies() { grep '^copy ' "$ARGS_LOG" | grep -vc -- '--files-from' || true; }
+full_copies_at_least() { (( $(full_copies) >= $1 )); }
+: >"$CALLS"
+: >"$ARGS_LOG"
+: >"$FULL_TIMES"
+echo copy-full >"$FAIL_ON"
+start_watch 2 3600 # verify due every 2s; ticks every 1s
+wait_until 15 "startup full copy attempted" full_copies_at_least 1
+sleep 1
+rm -f "${TMP}/backup.ok"
+sleep 5
+[[ "$(full_copies)" == "1" ]] || die "failed full cycle re-ran inside BACKUP_RETRY_SEC: $(full_copies) full copies"
+[[ "$(count_of lsjson)" == "0" ]] || die "failed full cycle must not lsjson on every tick ($(count_of lsjson))"
+[[ ! -f "${TMP}/backup.ok" ]] || die "marker refreshed while a full-cycle failure is outstanding"
+memory_line >>"${SRC}/chain.jsonl"
+wait_until 10 "incremental upload during full-cycle backoff" remote_chain_matches
+sleep 2
+[[ "$(full_copies)" == "1" ]] || die "debounced change ran a full cycle inside the backoff: $(full_copies) full copies"
+[[ ! -f "${TMP}/backup.ok" ]] || die "incremental success must not refresh the marker while the full cycle is failing"
+grep -q "Full cycle failed; next full attempt" "${TMP}/watch.log" || die "full-cycle backoff not logged"
+log "PASS failed full cycle backs off: 1 full copy, 0 lsjson over 7+ ticks; incremental append still uploaded; marker stays stale"
+stop_watch
+
+# --- 14b. full retries are spaced >= BACKUP_RETRY_SEC; restart still does one full; success clears ---
+: >"$ARGS_LOG"
+: >"$FULL_TIMES"
+start_watch 2 3
+wait_until 15 "startup full copy despite outstanding backoff" full_copies_at_least 1
+sleep 8
+n_full="$(full_copies)"
+(( n_full >= 2 && n_full <= 4 )) || die "expected 2-4 full attempts in ~9s with BACKUP_RETRY_SEC=3, got ${n_full}"
+prev_t=""
+while IFS= read -r t; do
+  if [[ -n "$prev_t" ]] && (( t - prev_t < 3 )); then
+    die "full attempts ${prev_t} -> ${t} closer than BACKUP_RETRY_SEC=3"
+  fi
+  prev_t="$t"
+done <"$FULL_TIMES"
+rm -f "$FAIL_ON"
+wait_until 10 "full retry succeeds and refreshes the marker" test -f "${TMP}/backup.ok"
+[[ ! -e "${STATE}/full.failed.at" ]] || die "successful full cycle must clear full.failed.at"
+log "PASS full retries spaced >= BACKUP_RETRY_SEC (${n_full} in ~9s); success clears backoff and refreshes marker"
+stop_watch
+
+# --- 15. empty / temp-only blobs/ never ends the main loop (poll mode: set -e + pipefail) ---
+SRC="${TMP}/soulchain-empty"
+REMOTE_DIR="${TMP}/remote-empty"
+STATE="${TMP}/state-empty"
+mkdir -p "${SRC}/blobs" "$REMOTE_DIR"
+printf '{"seq":0}\n' >"${SRC}/chain.jsonl"
+start_watch 3600 3600
+wait_until 15 "empty-blobs initial sync" remote_chain_matches
+sleep 5
+kill -0 "$WATCH_PID" 2>/dev/null || die "watcher exited with an empty blobs/"
+printf 'half' >"${SRC}/blobs/.tmp-only"
+sleep 5
+kill -0 "$WATCH_PID" 2>/dev/null || die "watcher exited with only .tmp-* files in blobs/"
+memory_line >>"${SRC}/chain.jsonl"
+wait_until 10 "change detected after empty/temp-only blobs/" remote_chain_matches
+printf 'real' >"${SRC}/blobs/bafyreal"
+for i in $(seq 1 40); do # churn: temp files that vanish between readdir and stat
+  printf 'x' >"${SRC}/blobs/.tmp-churn${i}"
+  rm -f "${SRC}/blobs/.tmp-churn${i}"
+  sleep 0.1
+done
+kill -0 "$WATCH_PID" 2>/dev/null || die "watcher exited during .tmp-* churn"
+memory_line >>"${SRC}/chain.jsonl"
+wait_until 10 "upload after temp churn" remote_chain_matches
+[[ -f "${REMOTE_DIR}/blobs/bafyreal" ]] || die "real blob not uploaded after temp churn"
+[[ -z "$(find "${REMOTE_DIR}/blobs" -name '.tmp-*' 2>/dev/null)" ]] || die ".tmp-* file uploaded"
+log "PASS empty and temp-only blobs/ keep the watcher alive; changes still detected"
 stop_watch
 
 log "All backup-watch budget checks passed (mode: ${MODE})"
