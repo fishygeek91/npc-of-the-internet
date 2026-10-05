@@ -141,7 +141,12 @@ remote_chain_size() {
     echo "[backup-watch] ERROR: rclone lsjson failed for ${remote_chain} (exit ${rc}); refusing to guess remote size" >&2
     return 1
   fi
-  if [[ -z "$json" || "$json" == "[]" ]]; then
+  # Bucket remotes (B2, S3) have no real directories: lsjson on a missing object
+  # exits 0 and prints an empty array split across lines ("[" newline "]"), so
+  # compare with whitespace removed. Missing remote tip = size 0 (first upload).
+  local compact
+  compact="$(printf "%s" "$json" | tr -d '[:space:]')"
+  if [[ -z "$compact" || "$compact" == "[]" ]]; then
     echo "0"
     return 0
   fi

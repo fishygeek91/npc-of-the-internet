@@ -39,12 +39,18 @@ cat >"${TMP}/rclone.conf" <<EOF
 type = local
 EOF
 
-# Shim: record each subcommand; fail it when listed in $FAIL_ON.
+# Shim: record each subcommand; fail it when listed in $FAIL_ON. lsjson on a
+# missing object mimics bucket remotes (B2/S3): exit 0 with an empty multi-line
+# array, as rclone does there (the local backend would exit 3 instead).
 cat >"${SHIM}/rclone" <<EOF
 #!/usr/bin/env bash
 echo "\$1" >>"${CALLS}"
 if [[ -f "${FAIL_ON}" ]] && grep -qx "\$1" "${FAIL_ON}"; then
   exit 1
+fi
+if [[ "\$1" == "lsjson" && ! -e "\${2#testlocal:}" ]]; then
+  printf '[\n]\n'
+  exit 0
 fi
 exec "${REAL_RCLONE}" "\$@"
 EOF
