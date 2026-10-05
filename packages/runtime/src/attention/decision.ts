@@ -78,33 +78,61 @@ export function isAddressed(args: {
 
 /** Tag names reasoning models use to wrap their private chain of thought. */
 const REASONING_TAGS = "think|thinking|reasoning|reflection";
-const REASONING_BLOCK_PATTERN = new RegExp(
-  `<(${REASONING_TAGS})\\b[^>]*>[\\s\\S]*?<\\/\\1\\s*>`,
-  "giu"
-);
-const REASONING_CLOSE_PATTERN = new RegExp(`<\\/(?:${REASONING_TAGS})\\s*>`, "giu");
-const REASONING_OPEN_PATTERN = new RegExp(`<(?:${REASONING_TAGS})\\b`, "iu");
+/** Open (`<think …>`, or a truncated `<think`) or close (`</think>`) reasoning tag. */
+const REASONING_TAG_PATTERN = new RegExp(`<(\\/)?\\s*(${REASONING_TAGS})\\b[^>]*>?`, "giu");
 const REASONING_MARKER_PATTERN = new RegExp(`<\\/?\\s*(?:${REASONING_TAGS})\\b`, "iu");
 
 /**
  * Remove model reasoning (`<think>…</think>` and similar) from Brain output. A dangling
  * close tag (provider stripped the opener) drops everything before it; an unclosed open
  * tag (reasoning truncated by the token cap) drops everything after it.
+ *
+ * Tags inside a balanced top-level `{…}` object (e.g. the decision's own
+ * `{"say":"try <think> tags"}`) are content, not reasoning markers, and are ignored —
+ * otherwise an unclosed tag in a JSON string would erase the whole answer.
  */
 export function stripReasoning(raw: string): string {
-  let cleaned = raw.replace(REASONING_BLOCK_PATTERN, " ");
-  let lastCloseEnd = -1;
-  for (const match of cleaned.matchAll(REASONING_CLOSE_PATTERN)) {
-    lastCloseEnd = match.index + match[0].length;
+  const spans = topLevelObjectSpans(raw);
+  const insideObject = (index: number): boolean =>
+    spans.some(([start, end]) => index > start && index <= end);
+
+  const removals: Array<[number, number]> = [];
+  let open: { start: number; name: string } | null = null;
+  for (const match of raw.matchAll(REASONING_TAG_PATTERN)) {
+    if (insideObject(match.index)) {
+      continue;
+    }
+    const name = (match[2] ?? "").toLowerCase();
+    const end = match.index + match[0].length;
+    if (match[1] === undefined) {
+      // Nested opens inside an open block are part of that block.
+      open ??= { start: match.index, name };
+      continue;
+    }
+    if (open !== null && open.name === name) {
+      removals.push([open.start, end]);
+    } else {
+      // Dangling close: everything before it was reasoning.
+      removals.push([0, end]);
+    }
+    open = null;
   }
-  if (lastCloseEnd !== -1) {
-    cleaned = cleaned.slice(lastCloseEnd);
-  }
-  const open = REASONING_OPEN_PATTERN.exec(cleaned);
   if (open !== null) {
-    cleaned = cleaned.slice(0, open.index);
+    removals.push([open.start, raw.length]);
   }
-  return cleaned;
+
+  // Merge overlapping ranges, then keep what lies between them.
+  removals.sort((a, b) => a[0] - b[0]);
+  const kept: string[] = [];
+  let cursor = 0;
+  for (const [start, end] of removals) {
+    if (start > cursor) {
+      kept.push(raw.slice(cursor, start));
+    }
+    cursor = Math.max(cursor, end);
+  }
+  kept.push(raw.slice(cursor));
+  return kept.join(" ");
 }
 
 /**

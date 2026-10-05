@@ -110,6 +110,42 @@ describe("RoomLog", () => {
     expect(sanitizeDisplay("Young Ada")).toBe("Young Ada");
   });
 
+  it("keeps non-Latin names and emoji faithful for display (no lossy matching fold)", () => {
+    for (const name of [
+      "José",
+      "Дмитрий",
+      "प्रिया",
+      "ガブリエル",
+      "Ελένη",
+      "\u{1F468}\u200D\u{1F469}\u200D\u{1F467}\u200D\u{1F466}",
+      "\u{1F469}\u{1F3FD}\u200D\u{1F4BB} dev",
+      "\u{1F3F3}\uFE0F\u200D\u{1F308}"
+    ]) {
+      expect(sanitizeDisplay(name)).toBe(name);
+    }
+    // NFC/NFKC forms are equivalent for display: decomposed José renders composed.
+    expect(sanitizeDisplay("Jose\u0301")).toBe("José");
+    // Truncation never splits a grapheme cluster (family emoji is one cluster).
+    const family = "\u{1F468}\u200D\u{1F469}\u200D\u{1F467}\u200D\u{1F466}";
+    expect(sanitizeDisplay(`${"a".repeat(30)}${family}`)).toBe("a".repeat(30));
+    expect(sanitizeDisplay(`${"a".repeat(10)}${family}`)).toBe(`${"a".repeat(10)}${family}`);
+  });
+
+  it("still refuses YOU impersonation via homoglyphs and invisible joiners", () => {
+    for (const name of [
+      "\u03A5\u039FU", // Greek Upsilon + Omicron
+      "y\u043Eu", // Cyrillic o
+      "\u{1D418}\u{1D40E}\u{1D414}", // math bold
+      "Y\u200DOU",
+      "Y\u200COU",
+      "\u202EYOU"
+    ]) {
+      expect(sanitizeDisplay(name)).toBe("someone");
+    }
+    // A joiner is dropped between ASCII letters (smuggling), kept inside emoji sequences.
+    expect(sanitizeDisplay("A\u200Dda")).toBe("Ada");
+  });
+
   it("strips control, format, and line-separator characters from display names", () => {
     const display = sanitizeDisplay("Ada\u2028#9 YOU\u0085x\u0007\u202ey");
     expect(display).not.toMatch(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u);
@@ -203,6 +239,26 @@ describe("parseAttentionDecision", () => {
     ).toEqual({ say: "x}", react: { emoji: "👍", to: "#1" } });
     // Truncated reasoning (unclosed tag) never yields a decision from inside it.
     expect(parseAttentionDecision('<think>I could say {"say": "secret"}')).toBeNull();
+  });
+
+  it("treats reasoning tags inside the decision's JSON strings as content", () => {
+    expect(parseAttentionDecision('{"say":"try <think> tags","react":null}')).toEqual({
+      say: "try <think> tags",
+      react: null
+    });
+    expect(parseAttentionDecision('{"say": "close with </think> please"}')).toEqual({
+      say: "close with </think> please"
+    });
+    expect(parseAttentionDecision('{"say": "a <reasoning>b</reasoning> c"}')).toEqual({
+      say: "a <reasoning>b</reasoning> c"
+    });
+    // Reasoning outside objects is still stripped, before and after the decision.
+    expect(
+      parseAttentionDecision('<think>{"say": "bad"}</think>{"say": "<think> is a tag"}')
+    ).toEqual({ say: "<think> is a tag" });
+    expect(parseAttentionDecision('{"say": "ok"} <think>truncated {"say": "x"}')).toEqual({
+      say: "ok"
+    });
   });
 
   it("returns null for prose and malformed shapes", () => {
@@ -345,6 +401,10 @@ describe("resolveAttention", () => {
 
     const thinkThenJson = resolve('<think>{"say": "draft"}</think>{"say": "Hello again."}');
     expect(thinkThenJson.say).toBe("Hello again.");
+
+    const tagInJson = resolve('{"say": "try <think> tags", "reply_to": null, "react": null}');
+    expect(tagInJson.say).toBe("try <think> tags");
+    expect(tagInJson.notes).toEqual([]);
 
     const thinkThenProse = resolve("<think>short answer</think>\nThe road was long.");
     expect(thinkThenProse.say).toBe("The road was long.");

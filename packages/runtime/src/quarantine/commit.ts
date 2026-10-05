@@ -21,6 +21,34 @@ import { isCandidateRipe, scanQuarantineState, scanRejectedCandidateCidsSince } 
 import { sealQuarantineRecord } from "./seal.js";
 import { shardIdFromText } from "./shard-id.js";
 
+type ShardMemoryBody = {
+  kind: "shard";
+  text_cid: string;
+  text_hash: string;
+  candidate_cid: string;
+  distilled_at: string;
+  journal_cid?: string;
+  journal_hash?: string;
+};
+
+/** A commit envelope prepared for one chain position (reused verbatim on retry). */
+type PreparedCommit = { seq: number; core: string; memoryBody: ShardMemoryBody };
+
+/**
+ * Prepared commit envelopes per store, keyed by `(candidate cid, seq, prev)`. A retry at
+ * the same chain position (e.g. the Door co-signed but the reply was lost) re-sends the
+ * byte-identical `core` — same `distilled_at`, same journal refs — so the Door's
+ * idempotent same-seq retry returns the same `door_cosig` instead of `shard_not_approved`.
+ * Entries are dropped once sealed or once the head moves past their `seq`. In-memory only:
+ * after a process restart the core is rebuilt with a new `distilled_at`, which the Door
+ * refuses for an already co-signed position (`shard_not_approved`) until the head moves.
+ */
+const preparedCommits = new WeakMap<SoulStore, Map<string, PreparedCommit>>();
+
+function preparedCommitKey(candidateCid: string, seq: number, prev: string): string {
+  return `${candidateCid}\u0000${String(seq)}\u0000${prev}`;
+}
+
 /** Options for {@link commitQuarantinedShards}. */
 export type CommitQuarantinedShardsOptions = {
   store: SoulStore;
@@ -66,6 +94,13 @@ export async function commitQuarantinedShards(
   // still visible to scanRejectedCandidateCidsSince (seq > scanHeadSeq).
   const scanHead = await options.store.head();
   const scanHeadSeq = scanHead?.seq ?? -1;
+  const prepared = preparedCommits.get(options.store) ?? new Map<string, PreparedCommit>();
+  preparedCommits.set(options.store, prepared);
+  for (const [key, entry] of prepared) {
+    if (entry.seq <= scanHeadSeq) {
+      prepared.delete(key);
+    }
+  }
   const scan = await scanQuarantineState(options.store);
   const committedCids: string[] = [];
   const ripeningCids: string[] = [];
@@ -107,51 +142,16 @@ export async function commitQuarantinedShards(
         throw new QuarantineError("commit: store has no head", "commit_failed");
       }
 
-      const textBlob = await storeShardTextBlob(options.store, candidate.text);
-      const memoryBody: {
-        kind: "shard";
-        text_cid: string;
-        text_hash: string;
-        candidate_cid: string;
-        distilled_at: string;
-        journal_cid?: string;
-        journal_hash?: string;
-      } = {
-        kind: "shard",
-        text_cid: textBlob.text_cid,
-        text_hash: textBlob.text_hash,
-        candidate_cid: cid,
-        // Commit-time stamp; candidates retain the original `proposed_at`.
-        distilled_at: options.clock.now()
-      };
-
-      const canAttachJournal =
-        options.journalMarkdown !== undefined &&
-        !scan.residenciesWithJournal.has(candidate.residency) &&
-        !journalsAttachedThisCall.has(candidate.residency);
-
-      if (canAttachJournal && options.journalMarkdown !== undefined) {
-        const journalBlob = await storeJournalBlob(options.store, options.journalMarkdown);
-        memoryBody.journal_cid = journalBlob.journal_cid;
-        memoryBody.journal_hash = journalBlob.journal_hash;
-      }
-
       const seq = head.seq + 1;
       const prev = head.cid;
+      const preparedKey = preparedCommitKey(cid, seq, prev);
 
       try {
-        const core = new TextDecoder().decode(
-          canonicalize(
-            corePayload({
-              spec: RUNTIME_OSP_SPEC,
-              seq,
-              prev,
-              type: "memory",
-              body: memoryBody,
-              residency: candidate.residency
-            })
-          )
-        );
+        const { core, memoryBody } =
+          prepared.get(preparedKey) ??
+          (await prepareCommit(options, candidate, cid, seq, prev, journalsAttachedThisCall, scan));
+        prepared.set(preparedKey, { seq, core, memoryBody });
+        const attachesJournal = memoryBody.journal_cid !== undefined;
 
         const unsignedCommit: Omit<Extract<CosignRequest, { phase: "commit" }>, "sig"> = {
           protocol_version: DOOR_PROTOCOL_VERSION,
@@ -201,8 +201,9 @@ export async function commitQuarantinedShards(
           cosigners: [commitResponse.door_cosig]
         });
         await options.store.append(record);
+        prepared.delete(preparedKey);
         committedCids.push(sealedCid);
-        if (canAttachJournal && options.journalMarkdown !== undefined) {
+        if (attachesJournal) {
           journalsAttachedThisCall.add(candidate.residency);
           journalAttached = true;
         }
@@ -229,4 +230,52 @@ export async function commitQuarantinedShards(
   }
 
   return { committedCids, ripeningCids, skippedCids, journalAttached };
+}
+
+/**
+ * Build the unsigned `memory.shard` envelope `core` for `candidate` at `(seq, prev)`,
+ * storing its side blobs. `distilled_at` is the commit-time stamp (candidates retain the
+ * original `proposed_at`); the journal is attached on at most one shard per residency.
+ */
+async function prepareCommit(
+  options: CommitQuarantinedShardsOptions,
+  candidate: { text: string; residency: string },
+  cid: string,
+  seq: number,
+  prev: string,
+  journalsAttachedThisCall: ReadonlySet<string>,
+  scan: { residenciesWithJournal: ReadonlySet<string> }
+): Promise<PreparedCommit> {
+  const textBlob = await storeShardTextBlob(options.store, candidate.text);
+  const memoryBody: ShardMemoryBody = {
+    kind: "shard",
+    text_cid: textBlob.text_cid,
+    text_hash: textBlob.text_hash,
+    candidate_cid: cid,
+    distilled_at: options.clock.now()
+  };
+
+  if (
+    options.journalMarkdown !== undefined &&
+    !scan.residenciesWithJournal.has(candidate.residency) &&
+    !journalsAttachedThisCall.has(candidate.residency)
+  ) {
+    const journalBlob = await storeJournalBlob(options.store, options.journalMarkdown);
+    memoryBody.journal_cid = journalBlob.journal_cid;
+    memoryBody.journal_hash = journalBlob.journal_hash;
+  }
+
+  const core = new TextDecoder().decode(
+    canonicalize(
+      corePayload({
+        spec: RUNTIME_OSP_SPEC,
+        seq,
+        prev,
+        type: "memory",
+        body: memoryBody,
+        residency: candidate.residency
+      })
+    )
+  );
+  return { seq, core, memoryBody };
 }

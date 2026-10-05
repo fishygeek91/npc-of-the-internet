@@ -31,10 +31,29 @@ const JSON_CONTENT_TYPE = "application/json";
 /** Max characters of a non-Door error body retained in {@link DoorError.details}. */
 const MAX_ERROR_BODY_CHARS = 512;
 
+/**
+ * Default client timeout for the `POST /door/cosign` **review** call (290 s).
+ *
+ * A review blocks on human host review, so it needs far longer than other calls. It must
+ * exceed the Door's host review wait (door-discord `DISCORD_REVIEW_TIMEOUT_MS`, default
+ * 240 s, plus posting time) and stays below Node's global `fetch` (undici) default
+ * `headersTimeout` of 300 s, which would otherwise cut the request first with a less
+ * explicit error (raising it needs a custom undici dispatcher, i.e. a new dependency).
+ * A timed-out review is recoverable: the Wanderer re-signs and retries, and the Door joins
+ * the in-flight review or replays the completed one (`spec/door/api.md`).
+ */
+export const DEFAULT_COSIGN_REVIEW_TIMEOUT_MS = 290_000;
+
 /** Options for {@link HttpDoorConnection}. */
 export type HttpDoorConnectionOptions = {
   /** Door HTTP base URL (e.g. `http://127.0.0.1:3000`); trailing slash is stripped. */
   baseUrl: string;
+  /**
+   * Client timeout (ms) for the cosign review call; defaults to
+   * {@link DEFAULT_COSIGN_REVIEW_TIMEOUT_MS}. Values above 300 000 have no effect beyond
+   * Node fetch's own 300 s headers timeout.
+   */
+  cosignReviewTimeoutMs?: number;
 };
 
 /**
@@ -44,11 +63,13 @@ export type HttpDoorConnectionOptions = {
  */
 export class HttpDoorConnection implements DoorConnection {
   private readonly baseUrl: string;
+  private readonly cosignReviewTimeoutMs: number;
   /** Door identity pubkey established by a verified hello response. */
   private doorPublicKey: Uint8Array | null = null;
 
   constructor(options: HttpDoorConnectionOptions) {
     this.baseUrl = options.baseUrl.replace(/\/$/, "");
+    this.cosignReviewTimeoutMs = options.cosignReviewTimeoutMs ?? DEFAULT_COSIGN_REVIEW_TIMEOUT_MS;
   }
 
   /** `POST /door/hello` — discover Door identity and capabilities. */
@@ -103,7 +124,12 @@ export class HttpDoorConnection implements DoorConnection {
   /** `POST /door/cosign` — shard review or commit. */
   async cosign(request: CosignRequest): Promise<CosignResponse> {
     const doorPublicKey = this.requireDoorPublicKey();
-    const response = await this.post("/door/cosign", request, CosignResponseSchema);
+    const response = await this.post(
+      "/door/cosign",
+      request,
+      CosignResponseSchema,
+      request.phase === "review" ? this.cosignReviewTimeoutMs : undefined
+    );
     if (response.phase !== request.phase) {
       throw DoorError.fromCode(
         "invalid_request",
@@ -166,18 +192,26 @@ export class HttpDoorConnection implements DoorConnection {
     return this.doorPublicKey;
   }
 
-  private async post<T>(path: string, body: unknown, successSchema: z.ZodType<T>): Promise<T> {
+  private async post<T>(
+    path: string,
+    body: unknown,
+    successSchema: z.ZodType<T>,
+    timeoutMs?: number
+  ): Promise<T> {
     let response: Response;
     try {
       response = await fetch(`${this.baseUrl}${path}`, {
         method: "POST",
         headers: { "Content-Type": JSON_CONTENT_TYPE },
-        body: JSON.stringify(body)
+        body: JSON.stringify(body),
+        ...(timeoutMs === undefined ? {} : { signal: AbortSignal.timeout(timeoutMs) })
       });
     } catch (cause) {
       throw DoorError.fromCode(
         "door_unavailable",
-        "door unavailable: network request failed",
+        isTimeoutError(cause)
+          ? `door unavailable: request timed out after ${String(timeoutMs)}ms`
+          : "door unavailable: network request failed",
         undefined,
         cause
       );
@@ -186,7 +220,15 @@ export class HttpDoorConnection implements DoorConnection {
     let json: unknown;
     try {
       json = await response.json();
-    } catch {
+    } catch (cause) {
+      if (isTimeoutError(cause)) {
+        throw DoorError.fromCode(
+          "door_unavailable",
+          `door unavailable: request timed out after ${String(timeoutMs)}ms`,
+          undefined,
+          cause
+        );
+      }
       throw new DoorError(
         "door_unavailable",
         `door unavailable: non-JSON response (HTTP ${String(response.status)})`,
@@ -221,6 +263,11 @@ export class HttpDoorConnection implements DoorConnection {
       { body: summarizeErrorBody(json) }
     );
   }
+}
+
+/** True for the `AbortSignal.timeout` rejection (`TimeoutError` DOMException). */
+function isTimeoutError(error: unknown): boolean {
+  return error instanceof Error && error.name === "TimeoutError";
 }
 
 /** Verify Ed25519 signature over already-canonical payload bytes. */

@@ -64,7 +64,7 @@ All public keys and signatures on the Door wire are **opaque strings** encoding 
 
 ISO 8601 UTC strings with millisecond precision, e.g. `2026-07-20T15:04:05.123Z`. Field name `issued_at` on Wanderer-originated payloads; `received_at` on Door-originated acknowledgements.
 
-**Freshness:** Doors MUST reject `/door/attest` and `/door/cosign` requests whose `issued_at` differs from the Door clock by more than a configured absolute skew (default **±5 minutes** / `300_000` ms) with `timestamp_stale` (`401`). Invalid / non-ISO `issued_at` values are treated as stale. The same window applies to `outbound` session frames (checked after signature verification). Freshness MUST be checked before any host-visible side effect (e.g. posting shards for review).
+**Freshness:** Doors MUST reject `/door/attest` and `/door/cosign` requests whose `issued_at` differs from the Door clock by more than a configured absolute skew (default **±5 minutes** / `300_000` ms) with `timestamp_stale` (`401`). Invalid / non-ISO `issued_at` values are treated as stale. The same window applies to `outbound` session frames (checked after signature verification). Freshness MUST be checked before any host-visible side effect (e.g. posting shards for review). Freshness is checked **once, on receipt**: a Door with asynchronous host review MUST NOT re-apply the `issued_at` check after the review completes (session binding, epoch state and the request signature are still re-verified) — a request that was fresh when received never fails `timestamp_stale` because a human took longer than the skew window to review it.
 
 ### `CommunityDescriptor`
 
@@ -492,14 +492,17 @@ The Wanderer places `door_cosig` into the record's `cosigners` array (typically 
 - `osp/0.2`: `body.text_hash` MUST equal the base64url sha2-256 of the shard-text side blob for the reviewed text (`encodeShardTextBlob`, i.e. the canonical JSON string), `body.text_cid` (when present) MUST bind the same digest, and inline `body.text` MUST be absent;
 - legacy inline text: `body.text` MUST equal the reviewed text exactly.
 
-**Single-use approval:** each approved `shard_id` yields one co-signature per chain position. A further commit for the same `shard_id` is accepted only when its `core` `seq` is strictly greater than every `seq` already co-signed for it (the runtime re-requests after the chain head moved); otherwise `shard_not_approved`.
+**Single-use approval:** each approved `shard_id` yields one co-signature per chain position. A further commit for the same `shard_id` is accepted only when its `core` `seq` is strictly greater than every `seq` already co-signed for it (the runtime re-requests after the chain head moved); otherwise `shard_not_approved`. **Idempotent retry:** a commit for the same `shard_id` at the **same** `seq` as its latest co-signature with a **byte-identical** `core` (the Wanderer lost the reply) MUST return the stored response (same `door_cosig`) instead of `shard_not_approved`; it is a fresh, session-signed request like any other. Wanderers MUST therefore re-send the exact `core` they prepared for a chain position (same `distilled_at`, same side-blob refs) when retrying it; the reference runtime keeps prepared cores in memory per `(candidate, seq, prev)`.
 
 ### Auth / signing
 
 - **Review request:** Session-key `sig` for the departing epoch.
 - **Review response:** `door_sig` over the decision list; optional per-shard `host_audit_sig` (never soulchain `cosigners`).
-- **Commit request:** Session-key `sig`; Door MUST reject `shard_id` not approved in Phase 1 for this `(door_id, epoch)`, a `core` that fails **Commit binding**, and a reused approval (**Single-use approval**).
-- **Concurrent review:** at most one review may be in flight. A Door with asynchronous host review MUST NOT re-post shards for a duplicate request: an identical retry (same signed request) MAY join the pending review; any other review request while one is pending is rejected with `review_pending`.
+- **Commit request:** Session-key `sig`; Door MUST reject `shard_id` not approved in Phase 1 for this `(door_id, epoch)`, a `core` that fails **Commit binding**, and a reused approval (**Single-use approval**; an **Idempotent retry** is not reuse).
+- **Review identity:** two review requests are the **same review** when they have the same `door_id`, `epoch`, `session_pubkey` and the same set of `{ shard_id, text }` pairs (order-insensitive). `issued_at` and `sig` are not part of the identity — a retrying Wanderer re-signs with a fresh `issued_at`.
+- **Concurrent review:** at most one review may be in flight. A Door with asynchronous host review MUST NOT re-post shards for a retry: a fresh, correctly session-signed request for the same review joins the pending review and receives its response; any other review request while one is pending is rejected with `review_pending`.
+- **Completed review:** once an epoch's review completed, a fresh, correctly session-signed request for the same review MUST receive the stored review response (same `decisions`, `received_at`, `door_sig`) — the Wanderer lost the reply. Any other review for that epoch is `epoch_closed`.
+- **Review latency:** a review response blocks on human review. The Wanderer's HTTP client uses an explicit review-call timeout (reference: 290 s, below Node `fetch`'s 300 s headers timeout) and a Door SHOULD bound host review well below it (door-discord default `DISCORD_REVIEW_TIMEOUT_MS` = 240 s; timeout rejects). A client timeout is recoverable by retrying the same review (join / stored response above).
 - **Commit response:** `door_cosig` MUST verify as Ed25519 over the exact `core` bytes under `door_pubkey` (same verification as `/door/attest`).
 
 ### Errors
@@ -509,11 +512,11 @@ The Wanderer places `door_cosig` into the record's `cosigners` array (typically 
 | `unsupported_phase` | `400` | `phase` not `"review"` or `"commit"`. |
 | `session_invalid` | `401` | Session not valid for cosign. |
 | `signature_invalid` | `401` | Request `sig` failed. |
-| `epoch_closed` | `409` | Cosign already completed for this epoch. |
-| `shard_not_approved` | `403` | Commit `shard_id` was not approved in Phase 1, or its approval was already used at this or a later `seq`. |
+| `epoch_closed` | `409` | Cosign review already completed for this epoch and the request is not a retry of that review (see **Completed review**). |
+| `shard_not_approved` | `403` | Commit `shard_id` was not approved in Phase 1, or its approval was already used at this or a later `seq` (other than an **Idempotent retry** of the latest one). |
 | `shard_count` | `422` | Review: fewer than 5 or more than 20 shards. |
 | `shard_invalid` | `422` | Shard text over limit, missing `shard_id`, or invalid / unbound `core` (see **Commit binding**). |
-| `review_pending` | `503` | Host review not complete, or another review is already in flight (Door MAY use async review; Wanderer retries Phase 1). |
+| `review_pending` | `503` | Host review not complete, or a different review is already in flight (Door MAY use async review; Wanderer retries Phase 1). |
 
 ---
 

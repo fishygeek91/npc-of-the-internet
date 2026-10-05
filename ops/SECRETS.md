@@ -37,7 +37,7 @@ Environment variable names and purposes only. **Never commit values.**
 | `DISCORD_GUILD_ID` | Discord guild snowflake bound to this Door (public config). |
 | `DISCORD_CHANNEL_ID` | Discord channel snowflake for residency relay (public config). |
 | `DISCORD_OPERATOR_IDS` | Comma-separated Discord user snowflakes allowed to cosign/status (public config). |
-| `DISCORD_REVIEW_TIMEOUT_MS` | Cosign review wait; timeout rejects shards (default `300000`). |
+| `DISCORD_REVIEW_TIMEOUT_MS` | Cosign review wait; timeout rejects shards (default `240000`; keep well under the runtime's 290 s review-request timeout so the review answers within one HTTP call). |
 | `DISCORD_REVIEW_CHANNEL_ID` | Optional Discord channel snowflake for cosign review posts; when unset, falls back to `DISCORD_CHANNEL_ID`. |
 | `DISCORD_USER_RATE_PER_MIN` | Per-user message rate limit (messages per minute, default `20`). |
 | `DISCORD_USER_BURST` | Per-user burst allowance before rate limiting (default `5`). |

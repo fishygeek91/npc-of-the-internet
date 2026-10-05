@@ -34,23 +34,88 @@ function impersonatesSelf(display: string): boolean {
   return words[0] === marker || words.join("") === marker;
 }
 
+/** Zero-width (non-)joiner: kept only inside emoji / complex-script sequences. */
+const JOINER_PATTERN = /^[\u200C\u200D]$/u;
+/** Non-ASCII letter, mark, pictograph, or skin-tone modifier a joiner may connect. */
+const JOINABLE_PATTERN = /^[\p{L}\p{M}\p{Extended_Pictographic}\p{Emoji_Modifier}]$/u;
+/** Invisible format characters (bidi controls, ZWSP, tags, …) — removed outright. */
+const FORMAT_PATTERN = /^\p{Cf}$/u;
 /**
- * Sanitize an untrusted display name for a single-line log label.
- * NFKC-normalizes and drops format characters (as the immune screen does, so fullwidth
- * `ＹＯＵ` folds to `YOU`), turns control/line-separator characters and the separators the
- * log format relies on into spaces, and refuses names that impersonate `YOU`.
+ * Turned into a space: controls, line/paragraph separators, blank-looking fillers
+ * (Hangul fillers, braille blank), and the separators the log format relies on.
+ */
+const SPACE_LIKE_PATTERN = /^[\p{Cc}\p{Zl}\p{Zp}\u115F\u1160\u3164\uFFA0\u2800#:[\]]$/u;
+
+const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
+function isJoinable(char: string | undefined): boolean {
+  return char !== undefined && (char.codePointAt(0) ?? 0) > 0x7f && JOINABLE_PATTERN.test(char);
+}
+
+/**
+ * Display view of an untrusted name: NFKC, format characters removed (ZWJ/ZWNJ kept only
+ * between non-ASCII letters/marks/pictographs, so family emoji and Indic conjuncts stay
+ * intact while `Y\u200DOU`-style smuggling is dropped), control / separator / blank
+ * characters → space. Unlike the immune screen's matching normalizer it is not lossy:
+ * `José`, `Дмитрий`, `प्रिया` survive as written.
+ */
+function displayView(raw: string): string {
+  const chars = Array.from(raw.normalize("NFKC"));
+  let out = "";
+  let prevKept: string | undefined;
+  chars.forEach((char, index) => {
+    let piece: string;
+    if (JOINER_PATTERN.test(char)) {
+      piece = isJoinable(prevKept) && isJoinable(chars[index + 1]) ? char : "";
+    } else if (SPACE_LIKE_PATTERN.test(char)) {
+      piece = " ";
+    } else if (FORMAT_PATTERN.test(char)) {
+      piece = "";
+    } else {
+      piece = char;
+    }
+    if (piece.length > 0) {
+      out += piece;
+      prevKept = piece;
+    }
+  });
+  return out;
+}
+
+/** Cut to at most `max` UTF-16 units without splitting a grapheme cluster. */
+function truncateGraphemes(text: string, max: number): string {
+  let out = "";
+  for (const { segment } of graphemes.segment(text)) {
+    if (out.length + segment.length > max) {
+      break;
+    }
+    out += segment;
+  }
+  return out;
+}
+
+/**
+ * Sanitize an untrusted display name for a single-line log label (it reaches the LLM
+ * prompt, so it must stay faithful to what people actually called themselves).
+ * NFKC-normalizes, drops invisible format characters, turns control/line-separator
+ * characters and the separators the log format relies on into spaces, and truncates on a
+ * grapheme boundary. Names that impersonate `YOU` are refused using the immune screen's
+ * lossy matching view (fullwidth `ＹＯＵ`, Cyrillic/Greek homoglyphs, zero-width splits),
+ * which is used **only** for that check — never for the displayed text.
  */
 export function sanitizeDisplay(raw: string | undefined): string {
   if (raw === undefined) {
     return "someone";
   }
-  const cleaned = normalizeScreenText(raw)
-    .replace(/[\p{Cc}\p{Zl}\p{Zp}#:[\]]/gu, " ")
-    .replace(/\s+/gu, " ")
-    .trim()
-    .slice(0, DISPLAY_MAX)
-    .trim();
-  if (cleaned.length === 0 || impersonatesSelf(cleaned)) {
+  const cleaned = truncateGraphemes(
+    displayView(raw).replace(/\s+/gu, " ").trim(),
+    DISPLAY_MAX
+  ).trim();
+  if (
+    cleaned.length === 0 ||
+    impersonatesSelf(normalizeScreenText(cleaned)) ||
+    impersonatesSelf(normalizeScreenText(displayView(raw)))
+  ) {
     return "someone";
   }
   return cleaned;

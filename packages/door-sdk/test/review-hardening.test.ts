@@ -171,13 +171,13 @@ function commitReq(
 /** osp/0.2 memory shard core referencing `text` by side-blob hash/CID (as the runtime builds it). */
 async function memoryCore(
   text: string,
-  options?: { seq?: number; residency?: string; type?: string; textCid?: string }
+  options?: { seq?: number; residency?: string; type?: string; textCid?: string; prev?: string }
 ): Promise<string> {
   const blob = await contentAddressSideBlob(encodeShardTextBlob(text));
   return coreString({
     spec: "osp/0.2",
     seq: options?.seq ?? 10,
-    prev: "bafyprev",
+    prev: options?.prev ?? "bafyprev",
     type: options?.type ?? "memory",
     body: {
       kind: "shard",
@@ -287,18 +287,35 @@ describe("commit core binding", () => {
     await review(door, session);
     const atTen = await memoryCore(SHARDS[0].text, { seq: 10 });
     await door.cosign(commitReq(session, "s1", atTen));
-    await expect(door.cosign(commitReq(session, "s1", atTen))).rejects.toMatchObject({
-      code: "shard_not_approved"
-    });
+    // A different core at the same chain position (fork) is refused.
+    await expect(
+      door.cosign(commitReq(session, "s1", await memoryCore(SHARDS[0].text, { prev: "bafyfork" })))
+    ).rejects.toMatchObject({ code: "shard_not_approved" });
     await expect(
       door.cosign(commitReq(session, "s1", await memoryCore(SHARDS[0].text, { seq: 9 })))
     ).rejects.toMatchObject({ code: "shard_not_approved" });
     // Runtime retry after the chain head moved: strictly later seq is accepted once.
     const atEleven = await memoryCore(SHARDS[0].text, { seq: 11 });
     await door.cosign(commitReq(session, "s1", atEleven));
-    await expect(door.cosign(commitReq(session, "s1", atEleven))).rejects.toMatchObject({
+    await expect(
+      door.cosign(
+        commitReq(session, "s1", await memoryCore(SHARDS[0].text, { seq: 11, prev: "bafyfork" }))
+      )
+    ).rejects.toMatchObject({ code: "shard_not_approved" });
+    // The earlier position stays burned even for its original byte-identical core.
+    await expect(door.cosign(commitReq(session, "s1", atTen))).rejects.toMatchObject({
       code: "shard_not_approved"
     });
+  });
+
+  it("a lost-reply commit retry (same seq, byte-identical core) gets the same door_cosig", async () => {
+    const { door, soul, session } = setup();
+    await arrive(door, soul, session);
+    await review(door, session);
+    const atTen = await memoryCore(SHARDS[0].text, { seq: 10 });
+    const first = await door.cosign(commitReq(session, "s1", atTen));
+    const retry = await door.cosign(commitReq(session, "s1", atTen));
+    expect(retry).toEqual(first);
   });
 });
 
