@@ -38,8 +38,8 @@ OSP soulchain primitives: Zod record schemas, canonical JSON, Ed25519 signing, C
 **Layout** (under the soulchain directory):
 
 - `chain.jsonl` — one canonical JSON record per line (no pretty-printing)
-- `blobs/<cid>` — raw record bytes keyed by CID
-- `.append.lock` — exclusive lock during append (`wx`); metadata `{pid, acquiredAt, nonce}`. Recovery treats a lock with our own PID but a nonce this process does not hold as stale (container PID 1 reused after restart); other PIDs are live while the process exists and the lock is fresh.
+- `blobs/<cid>` — raw record bytes keyed by CID. Orphaned `.tmp-*` atomic-write files older than an hour are removed on writable open (`open` / `openWithRecovery`).
+- `.append.lock` — exclusive lock during append (`wx`); metadata `{pid, acquiredAt, nonce, host, startedAt}` (`startedAt` = process start time). Recovery, while the lock is fresh (< 1 h): another `host` → live (another container's PID namespace cannot be probed); same host, other PID → live while that process exists; same host and PID → live when `startedAt` matches ours within 1 s (a worker thread or second module instance of this process), stale otherwise (previous incarnation reusing the PID, e.g. container PID 1). Legacy locks without `host`/`startedAt` (v0.4.3) and our PID are stale unless their nonce is held by this module instance.
 
 **Open:** `FileSoulStore.open(dir)` validates the chain on load and **never** silently truncates torn writes. A partial trailing line (crash mid-append) or other corruption throws `CorruptionError`. Use `FileSoulStore.openWithRecovery(dir)` to remove a stale lock, truncate a torn trailing line, then open; it returns `{ store, truncatedBytes }`.
 
@@ -62,7 +62,8 @@ Local blockstore-backed store using `blockstore-fs` (no helia, no network). Same
 - `blocks/` — FsBlockstore sharded block files (opaque canonical record bytes)
 - `HEAD` — JSON `{"cid":"bagu…","seq":n}` (atomic tmp + rename + fsync)
 - `seq-index.jsonl` — append-only `{"seq":n,"cid":"bagu…"}` journal for ordered `iterate()`
-- `LOCK` — exclusive wx lock during append
+- `LOCK` — exclusive wx lock during append (same `FileLock` metadata and recovery rules as `.append.lock`)
+- Orphaned block temp files (`.tmp-*`, blockstore-fs `.<name>.tmp`) older than an hour are removed from `blocks/` on writable open
 
 **Open:** `IpfsSoulStore.open(dir)` validates on load; torn seq-index tails throw `CorruptionError`. `HEAD` must name exactly the last seq-index entry (seq **and** CID). Use `IpfsSoulStore.openWithRecovery(dir)` to clear stale locks, truncate torn `seq-index.jsonl` / `replication.jsonl` tails, and advance a stale `HEAD` when blocks+index are ahead (block-written / HEAD-not-updated crash window) — only after the whole indexed chain verifies, and never when `HEAD` diverges from the index. Returns `{ store, truncatedBytes }` (bytes removed from both journals).
 
@@ -70,7 +71,7 @@ Local blockstore-backed store using `blockstore-fs` (no helia, no network). Same
 
 ### DualSoulStore (v0.2 dual-write)
 
-`DualSoulStore.open(fileDir, ipfsDir)` opens both stores. When both are non-empty, differing heads are a fatal `CorruptionError`, as is a populated mirror behind an empty authoritative file store. At open, every blob tombstoned on the chain is removed from the mirror (erasure reconciliation). `append` writes to `FileSoulStore` first (authoritative), then `IpfsSoulStore`; `head`/`get`/`iterate` read from file. If IPFS append fails after file succeeded, the error propagates (dual-write integrity is not auto-repaired).
+`DualSoulStore.open(fileDir, ipfsDir)` opens both stores. When both are non-empty, differing heads are a fatal `CorruptionError`, as is a populated mirror behind an empty authoritative file store. At open, every blob tombstoned on the chain that the file store no longer holds is removed from the mirror (erasure reconciliation; the mirror follows the file store, so a blob re-put by a later live record is kept). `append` writes to `FileSoulStore` first (authoritative), then `IpfsSoulStore`; `head`/`get`/`iterate` read from file. If IPFS append fails after file succeeded, the error propagates (dual-write integrity is not auto-repaired).
 
 `DualSoulStore.openWithRecovery(fileDir, ipfsDir)` runs `FileSoulStore.openWithRecovery` and `IpfsSoulStore.openWithRecovery`, asserts compatible heads, and returns `{ store, truncatedBytes }` (sum of both recoveries).
 

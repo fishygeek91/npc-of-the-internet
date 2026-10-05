@@ -381,6 +381,121 @@ describe("DualSoulStore", () => {
     }
   });
 
+  it("keeps a tombstoned blob in the mirror when a later live record re-put it (same CID)", async () => {
+    // Same prose re-proposed after erasure → same blob CID re-put to both stores. The mirror
+    // must follow the file store, not the tombstone, or the stores diverge permanently.
+    const { contentAddressSideBlob } = await import("../src/index.js");
+    const door = generateKeypair();
+    const session = generateKeypair();
+    const doorPublicKeys = { "discord:g": door.publicKey };
+    const blobBytes = encodeShardTextBlob("same prose");
+    const blob = await contentAddressSideBlob(blobBytes);
+
+    let dual = await DualSoulStore.open(fileDir, ipfsDir, { doorPublicKeys });
+    let liveCid = "";
+    try {
+      const genesis = await createRecord({
+        spec: OSP_SPEC_V02,
+        seq: 0,
+        prev: null,
+        type: "genesis",
+        body: {
+          charter: "#",
+          soul_pubkey: encodePublicKey(soul.publicKey),
+          created_at: "2026-01-01T00:00:00.000Z"
+        },
+        residency: null,
+        cosigners: [],
+        soulPrivateKey: soul.privateKey
+      });
+      let head = await dual.append(genesis.record);
+      let seq = 0;
+      const cosigned = async (
+        fields: Omit<Parameters<typeof createRecord>[0], "cosigners" | "soulPrivateKey">
+      ) =>
+        createRecord({
+          ...fields,
+          cosigners: [signCore(fields, door.privateKey)],
+          soulPrivateKey: soul.privateKey
+        });
+      const arrival = await cosigned({
+        spec: OSP_SPEC_V02,
+        seq: 1,
+        prev: head.cid,
+        type: "attestation",
+        body: {
+          kind: "arrival",
+          pop_version: "pop/0.1",
+          door_id: "discord:g",
+          epoch: 1,
+          session_pubkey: encodePublicKey(session.publicKey),
+          at: "2026-01-02T00:00:00.000Z"
+        },
+        residency: RESIDENCY
+      });
+      head = await dual.append(arrival.record);
+      seq = 1;
+      const candidate = async (): Promise<string> => {
+        await dual.putSideBlob(blobBytes);
+        const record = await cosigned({
+          spec: OSP_SPEC_V02,
+          seq: seq + 1,
+          prev: head.cid,
+          type: "memory",
+          body: {
+            kind: "candidate",
+            text_cid: blob.cid,
+            text_hash: blob.hash,
+            proposed_at: "2026-01-02T00:30:00.000Z"
+          },
+          residency: RESIDENCY
+        });
+        head = await dual.append(record.record);
+        seq += 1;
+        return head.cid;
+      };
+
+      const erasedCid = await candidate();
+      await eraseSideBlob({
+        store: dual,
+        targetCid: erasedCid,
+        blobCid: blob.cid,
+        reason: "operator",
+        soulPrivateKey: soul.privateKey,
+        erasedAt: "2026-01-03T00:00:00.000Z"
+      });
+      const afterErase = await dual.head();
+      if (afterErase === null) {
+        throw new Error("expected head after erasure");
+      }
+      head = afterErase;
+      seq = afterErase.seq;
+      liveCid = await candidate();
+    } finally {
+      await dual.close();
+    }
+
+    const mirrorBlockPath = resolveBlockPath(path.join(ipfsDir, "blocks"), blob.cid);
+    expect(existsSync(path.join(fileDir, "blobs", blob.cid))).toBe(true);
+    expect(existsSync(mirrorBlockPath)).toBe(true);
+
+    dual = await DualSoulStore.open(fileDir, ipfsDir, { doorPublicKeys });
+    try {
+      expect((await dual.head())?.cid).toBe(liveCid);
+      expect(await dual.getSideBlob(blob.cid)).toEqual(blobBytes);
+    } finally {
+      await dual.close();
+    }
+    expect(existsSync(path.join(fileDir, "blobs", blob.cid))).toBe(true);
+    expect(existsSync(mirrorBlockPath)).toBe(true);
+    const mirror = await IpfsSoulStore.openReadOnly(ipfsDir, { doorPublicKeys });
+    try {
+      expect(await mirror.getSideBlob(blob.cid)).toEqual(blobBytes);
+    } finally {
+      await mirror.close();
+    }
+  });
+
   it("backfill skips non-CID files (e.g. orphan atomic-write temp files) in blobs/", async () => {
     const fileStore = await FileSoulStore.open(fileDir);
     try {

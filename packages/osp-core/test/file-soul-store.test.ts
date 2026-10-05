@@ -1,4 +1,5 @@
-import { mkdtemp, rm, readFile, writeFile, open as fsOpen, access } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdtemp, rm, readFile, writeFile, open as fsOpen, access, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
@@ -127,6 +128,40 @@ describe("FileSoulStore", () => {
 
   afterEach(async () => {
     await rm(dir, { recursive: true, force: true });
+  });
+
+  it("garbage-collects orphaned .tmp-* blob files older than an hour on writable open only", async () => {
+    const store = await FileSoulStore.open(dir);
+    try {
+      await store.append((await createGenesisRecord(soul)).record);
+    } finally {
+      await store.close();
+    }
+    const blobsDir = path.join(dir, "blobs");
+    const staleTemp = path.join(blobsDir, ".tmp-bagustale-1-aaaaaaaaaaaa");
+    const freshTemp = path.join(blobsDir, ".tmp-bagufresh-1-bbbbbbbbbbbb");
+    const otherDotFile = path.join(blobsDir, ".keep");
+    await writeFile(staleTemp, "torn");
+    await writeFile(freshTemp, "in flight");
+    await writeFile(otherDotFile, "");
+    const twoHoursAgo = new Date(Date.now() - 2 * 3_600_000);
+    await utimes(staleTemp, twoHoursAgo, twoHoursAgo);
+    await utimes(otherDotFile, twoHoursAgo, twoHoursAgo);
+
+    const readOnly = await FileSoulStore.openReadOnly(dir);
+    await readOnly.close();
+    expect(existsSync(staleTemp)).toBe(true);
+
+    const reopened = await FileSoulStore.open(dir);
+    await reopened.close();
+    expect(existsSync(staleTemp)).toBe(false);
+    expect(existsSync(freshTemp)).toBe(true);
+    expect(existsSync(otherDotFile)).toBe(true);
+
+    await utimes(freshTemp, twoHoursAgo, twoHoursAgo);
+    const { store: recovered } = await FileSoulStore.openWithRecovery(dir);
+    await recovered.close();
+    expect(existsSync(freshTemp)).toBe(false);
   });
 
   it("opens an empty store with null head, then genesis append sets head seq 0", async () => {

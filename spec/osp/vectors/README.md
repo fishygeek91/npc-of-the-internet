@@ -28,3 +28,11 @@ Each `*.json` file contains:
 ## TEST-ONLY keys
 
 The generator (`packages/osp-core/scripts/generate-vectors.ts`) uses **deterministic TEST-ONLY** Ed25519 private keys (fixed 32-byte fill patterns: soul=7, door=8, session=9, alternate door=10). These keys exist only for conformance fixtures and must never be used in production or live soulchains.
+
+## Strict RFC 8032 vector
+
+`bad-soul-sig-small-order-key.json` uses the small-order identity point as the soul public key and `R = identity, S = 0` as every soul signature. That pair satisfies the cofactored ZIP-215 equation for any message, so a ZIP-215 verifier would accept the chain; strict RFC 8032 verification (records.md, "Signature encoding") rejects the key and each record fails `bad_soul_sig`. The generator asserts both properties when it builds the vector.
+
+## Pin manifests
+
+Pin manifests (`ipfs-store.md` §4) have no conformance-vector format; canonical-decode rules (non-canonical bytes, unknown keys, whitespace) are covered by unit tests in `packages/osp-core/test/pin-manifest.test.ts`.

@@ -144,6 +144,24 @@ move does a full upload of the clean chain (sidecar state lives in its tmpfs `/t
 container restart forgets the old prefix). Delete the archive prefix only after the new
 chain has verified and a backup cycle completed.
 
+### Upgrading across the 2026-10 osp-core hardening
+
+Strict tombstone rule 12, `"__proto__"` rejection and strict RFC 8032 are retroactive: a
+v0.4.3-written chain that violates one opens fine on the old image and crash-loops on the
+new one. Before switching `NPC_IMAGE_TAG`, run the **new** release's `osp verify` against a
+snapshot ([RUNBOOK §4.3.1](RUNBOOK.md#431-gate-upgrading-across-the-2026-10-osp-core-hardening)).
+If it fails, do not deploy — open an issue with the rule failures.
+
+### `live .append.lock held by pid N on host H` after a container recreate
+
+Since the 2026-10 hardening the append lock records the holder's hostname and process start
+time. A same-host, same-PID lock from a previous process (container restart) is cleared
+automatically; a lock from **another hostname** (e.g. a container that was recreated —
+new container id — after crashing mid-append, or another container sharing the volume)
+cannot be probed and is treated as live for up to an hour. If no other container uses the
+volume, stop the stack, delete `/data/soulchain/.append.lock` and/or
+`/data/soulchain-ipfs/LOCK` (whichever the error names), and start again.
+
 ### Crash loops append junk arrivals
 
 Dual-append is file-first: every crash-retry cycle that gets past signing appends a real

@@ -12,14 +12,18 @@ import * as ed from "@noble/ed25519";
 import { sha512 } from "@noble/hashes/sha512";
 
 import {
+  canonicalize,
+  computeCid,
   contentAddressSideBlob,
   createRecord,
   encodeJournalBlob,
   encodePublicKey,
   encodeShardTextBlob,
+  encodeSignature,
   OSP_SPEC_V01,
   OSP_SPEC_V02,
   signCore,
+  soulPayload,
   type Ed25519Keypair,
   type OspRecord
 } from "../src/index.js";
@@ -1144,7 +1148,51 @@ async function buildVectors(): Promise<VectorCase[]> {
     records: [chain.genesis.record, chain.arrival.record, protoKeyDecision]
   };
 
+  // Strict RFC 8032 (records.md "Signature encoding"): a small-order soul public key (the
+  // identity point) with R = identity, S = 0 satisfies the cofactored ZIP-215 equation for
+  // EVERY message. Strict verifiers reject the key, so each record fails bad_soul_sig.
+  const identityPoint = new Uint8Array(32);
+  identityPoint[0] = 1;
+  const smallOrderSoulPub = encodePublicKey(identityPoint);
+  const identityRZeroS = ed.etc.concatBytes(identityPoint, new Uint8Array(32));
+  const forgeSmallOrderSig = async <T extends OspRecord>(
+    record: T
+  ): Promise<{ record: T; cid: string }> => {
+    const forged = mutateRecord(record, (draft) => {
+      draft.sig = encodeSignature(identityRZeroS);
+    });
+    const message = canonicalize(soulPayload(forged));
+    if (
+      !ed.verify(identityRZeroS, message, identityPoint, { zip215: true }) ||
+      ed.verify(identityRZeroS, message, identityPoint, { zip215: false })
+    ) {
+      throw new Error("small-order vector must verify under ZIP-215 and fail strict RFC 8032");
+    }
+    return { record: forged, cid: await computeCid(forged) };
+  };
+  const smallOrderGenesis = await forgeSmallOrderSig(
+    mutateRecord((await createGenesisRecord(SOUL)).record, (draft) => {
+      if (draft.type === "genesis") {
+        draft.body.soul_pubkey = smallOrderSoulPub;
+      }
+    })
+  );
+  // Door-cosigned arrival: the cosignature is genuine; only the soul signature is forged.
+  const smallOrderArrival = await forgeSmallOrderSig(
+    (await createArrivalRecord(SOUL, DOOR, SESSION, 1, smallOrderGenesis.cid)).record
+  );
+  const badSoulSigSmallOrderKey: VectorCase = {
+    filename: "bad-soul-sig-small-order-key.json",
+    description:
+      "Genesis soul_pubkey is the small-order identity point and every sig is R = identity, S = 0 (valid under ZIP-215, rejected by strict RFC 8032) — bad_soul_sig",
+    expected: "bad_soul_sig",
+    soulPublicKey: smallOrderSoulPub,
+    doorPublicKeys: discordDoorKeys,
+    records: [smallOrderGenesis.record, smallOrderArrival.record]
+  };
+
   return [
+    badSoulSigSmallOrderKey,
     badTombstoneMissingTarget,
     badTombstoneBlobMismatch,
     schemaProtoKey,

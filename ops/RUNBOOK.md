@@ -292,6 +292,10 @@ If you have multiple door keys, repeat `--door-key` for each binding in `ATLAS_D
 
 Exit code `0` means the chain is valid. Exit code `1` means verification failed (printed rule failures). Exit code `2` means corruption or I/O error — see [Crash recovery](#6-crash-recovery) before proceeding.
 
+### 4.3.1 Gate: upgrading across the 2026-10 osp-core hardening
+
+The 2026-10 osp-core hardening (strict tombstone rule 12, `"__proto__"` key rejection, strict RFC 8032 signatures) applies to records **already on the chain**: a chain written by v0.4.3 or earlier that violates a new rule verified before but will fail to open after the upgrade (runtime crash-loop). Before switching `NPC_IMAGE_TAG` to a release containing it, run the **new** release's `osp verify` against a snapshot: check out the new release tag, rebuild the CLI (§4.1), then repeat §4.2–4.3. If it does not exit `0`, **do not deploy** — keep the current tag and open an issue with the printed rule failures.
+
 ### 4.4 Bump image tag and deploy
 
 After §4.1–4.3 establish a verifying baseline, deploy the new release:

@@ -1,5 +1,5 @@
-import { closeSync, existsSync, fsyncSync, openSync } from "node:fs";
-import { mkdir, stat } from "node:fs/promises";
+import { closeSync, existsSync, fsyncSync, openSync, type Dirent } from "node:fs";
+import { mkdir, readdir, stat } from "node:fs/promises";
 import * as path from "node:path";
 
 import { FsBlockstore } from "blockstore-fs";
@@ -29,7 +29,14 @@ import {
 import { FileLock } from "./file-lock.js";
 import { readHead, writeHeadAtomic } from "./head-file.js";
 import { assertBytesHashToCid } from "./blob-dir.js";
-import { bytesEqual, fsyncDirectory, fsyncPath, writeFileAtomic } from "./fsync.js";
+import {
+  bytesEqual,
+  fsyncDirectory,
+  fsyncPath,
+  isAtomicTempName,
+  removeStaleTempFiles,
+  writeFileAtomic
+} from "./fsync.js";
 import { isNodeError, nodeErrorMessage } from "./node-fs-error.js";
 import { enqueueReplication, recoverReplicationJournal } from "../replication/queue.js";
 import {
@@ -65,6 +72,11 @@ export function resolveBlockPath(
 }
 
 /** Collect all chunks from a blockstore get() async generator into one Uint8Array. */
+/** Block temp files: our `.tmp-*` atomic writes and steno's `.<name>.tmp` (blockstore-fs). */
+function isBlockTempName(name: string): boolean {
+  return isAtomicTempName(name) || (name.startsWith(".") && name.endsWith(".tmp"));
+}
+
 async function collectBytes(gen: AsyncIterable<Uint8Array>): Promise<Uint8Array> {
   const parts: Uint8Array[] = [];
   let total = 0;
@@ -453,10 +465,14 @@ export class IpfsSoulStore implements SoulStore {
     this.closed = true;
   }
 
-  /** Ensure directory layout exists under the store root. */
+  /**
+   * Ensure directory layout exists under the store root (writable opens only), and
+   * garbage-collect orphaned block temp files (see {@link removeStaleBlockTempFiles}).
+   */
   private async ensureLayout(): Promise<void> {
     await mkdir(this.dir, { recursive: true });
     await mkdir(this.blocksPath, { recursive: true });
+    await this.removeStaleBlockTempFiles();
 
     if (!existsSync(this.seqIndexPath)) {
       const fd = openSync(this.seqIndexPath, "w");
@@ -466,6 +482,26 @@ export class IpfsSoulStore implements SoulStore {
         closeSync(fd);
       }
       await fsyncDirectory(this.dir);
+    }
+  }
+
+  /**
+   * Remove orphaned block temp files older than `STALE_TEMP_MAX_AGE_MS` (1 h) from the
+   * blockstore root and its shard directories: our own `.tmp-*` atomic replacements and
+   * blockstore-fs/steno's `.<name>.tmp` temp files (crash between temp write and rename).
+   */
+  private async removeStaleBlockTempFiles(): Promise<void> {
+    await removeStaleTempFiles(this.blocksPath, isBlockTempName);
+    let entries: Dirent[];
+    try {
+      entries = await readdir(this.blocksPath, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        await removeStaleTempFiles(path.join(this.blocksPath, entry.name), isBlockTempName);
+      }
     }
   }
 

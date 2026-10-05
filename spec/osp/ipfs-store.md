@@ -94,7 +94,7 @@ Implements the existing `SoulStore` interface (`append`, `head`, `get(cid)`, `it
   blocks/…            # blockstore-fs sharded layout, key = CID, value = canonical record bytes
   HEAD                # JSON {"cid": "bagu…", "seq": n} — atomic write (tmp + rename + fsync)
   seq-index.jsonl     # append-only: {"seq": n, "cid": "bagu…"} per record (see 3.3)
-  LOCK                # wx-mode lockfile (same primitive as FileSoulStore): {pid, acquiredAt, nonce}
+  LOCK                # wx-mode lockfile (same primitive as FileSoulStore): {pid, acquiredAt, nonce, host, startedAt}
   replication.jsonl   # L2 queue (§5); absent when replication disabled
 ```
 
@@ -114,7 +114,7 @@ Crash windows: block written but `HEAD` not updated → on open, recovery walks 
 
 ### 3.4 Dual-write mode (Ghost default for v0.2)
 
-`FileSoulStore` remains the system of record until IPFS has run in production for a full residency cycle. v0.2 ships a `DualSoulStore` wrapper: append → `FileSoulStore` first (authoritative, feeds existing B2 backup per #63 hardening), then `IpfsSoulStore`; divergence between the two (differing head CID at any point) is a fatal boot error, as is a populated mirror behind an empty authoritative `FileSoulStore`. At open, every blob tombstoned on the authoritative chain is removed from the mirror (a crash between the file and mirror deletes must not leave erased prose mirrored). Cutover to IPFS-primary is a separate, later decision — not part of T7.1.
+`FileSoulStore` remains the system of record until IPFS has run in production for a full residency cycle. v0.2 ships a `DualSoulStore` wrapper: append → `FileSoulStore` first (authoritative, feeds existing B2 backup per #63 hardening), then `IpfsSoulStore`; divergence between the two (differing head CID at any point) is a fatal boot error, as is a populated mirror behind an empty authoritative `FileSoulStore`. At open, every blob tombstoned on the authoritative chain that the authoritative `FileSoulStore` no longer holds is removed from the mirror (a crash between the file and mirror deletes must not leave erased prose mirrored). The mirror follows the file store, not the tombstone alone: identical bytes share a CID, so a later live record may legitimately re-put an erased blob, and the mirror then keeps its copy. Cutover to IPFS-primary is a separate, later decision — not part of T7.1.
 
 ### 3.5 Conformance suite
 
