@@ -89,6 +89,13 @@ comes up and looks healthy, but that service runs an unscanned local build. Chec
 sudo docker manifest inspect ghcr.io/fishygeek91/npc-<svc>:vX.Y.Z >/dev/null && echo IMAGE_READY
 ```
 
+### Never delete a published release tag to "pull" it
+
+The release workflow's `tag` job re-creates a missing `vX.Y.Z` tag whenever the package
+version is newer than the highest remaining plain `v*` tag — so deleting a bad release's tag
+re-publishes it (including `:latest`) on the next push to `main`. To withdraw a release, ship a
+new version (bump via a changeset) and pin `NPC_IMAGE_TAG` on the VPS to a known-good tag.
+
 ## Discord door
 
 ### Bot connected + healthy but never responds
