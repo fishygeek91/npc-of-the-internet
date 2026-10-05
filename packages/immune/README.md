@@ -18,9 +18,9 @@ if (!result.ok) {
 ### API
 
 - **`screenText(text, opts?)`** — returns `{ ok: true }` or `{ ok: false, categories }`.
-- **`normalizeScreenText(text)`** — NFKC + strip Unicode format chars before screening; applied internally by `screenText`, exported for tests and callers that need the same normalization.
+- **`normalizeScreenText(text)`** — the *matching view* used before screening (applied internally by `screenText`; exported for tests and callers that need the same view): compatibility decomposition, Hangul fillers / Braille blank → space, strip format + default-ignorable characters (ZW*, CGJ, variation selectors) and combining marks, any-script decimal digits → ASCII, Cyrillic/Greek homoglyphs → Latin, NFKC. Lossy by design — match against it, never display or persist it.
 - **`ScreenCategory`** — `pii.email`, `pii.phone`, `pii.handle`, `injection.instruction`, `injection.role_marker`, `injection.url_payload`.
-- **`ScreenOptions.allowlist`** — exact-span allowlist for PII matches only; injection is never allowlisted. Entries are compared after `normalizeScreenText` (NFKC + strip format chars), so allowlist the normalized span, not a raw span that still contains Cf/compatibility characters.
+- **`ScreenOptions.allowlist`** — exact-span allowlist for PII matches only; injection is never allowlisted. Matched spans and allowlist entries are both passed through `normalizeScreenText` before comparison, so raw and normalized spellings of an entry behave the same.
 - **`ScreenLogger`** / **`ScreenSite`** — types for category-only rejection sinks at call sites.
 
 ### Purity
