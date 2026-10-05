@@ -278,6 +278,15 @@ grep -qx 'files-from\[copy\]: bafyb ' "$ARGS_LOG" || die "files-from list must c
 grep -qE '^(ls|lsf|lsjson|lsl|size) ' "$ARGS_LOG" && die "new-blob cycle must not list the remote"
 log "PASS new blob uploaded alone via --files-from --no-traverse --no-check-dest"
 
+# --- 4a. osp-core atomic-write temp files (.tmp-*) are never fingerprinted or uploaded ---
+before_tmp="$(calls)"
+printf 'half-written' >"${SRC}/blobs/.tmp-inflight"
+sleep 4
+[[ "$(calls)" == "$before_tmp" ]] || die "a .tmp-* file in blobs/ must not trigger remote calls"
+[[ -e "${REMOTE_DIR}/blobs/.tmp-inflight" ]] && die ".tmp-* file must never be uploaded"
+rm -f "${SRC}/blobs/.tmp-inflight"
+log "PASS .tmp-* atomic-write temp files ignored (no calls, never uploaded)"
+
 # --- 4b. history/: at most one rollback point per BACKUP_HISTORY_SEC ---
 [[ "$(history_count)" == "1" ]] || die "expected exactly 1 history snapshot inside the window, got $(history_count)"
 [[ "$(grep -c -- '--backup-dir' "$ARGS_LOG" || true)" == "0" ]] || die "--backup-dir passed again inside BACKUP_HISTORY_SEC"
