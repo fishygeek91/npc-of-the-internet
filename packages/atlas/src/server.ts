@@ -223,10 +223,49 @@ function parseOptionalInt(value: string | undefined): number | undefined {
   return parsed;
 }
 
+/** Minimal process surface used by {@link registerShutdownSignals} (injectable for tests). */
+export type ShutdownProcess = {
+  once(event: NodeJS.Signals, listener: (signal: NodeJS.Signals) => void): unknown;
+  exit(code?: number): never;
+};
+
+/**
+ * Close the server and exit on SIGTERM/SIGINT.
+ *
+ * Node as container PID 1 has no default SIGTERM handler, so without this
+ * `docker stop` waits out the grace period and SIGKILLs. Exits 0 after
+ * `app.close()` resolves, 1 if closing fails; repeated signals are ignored.
+ */
+export function registerShutdownSignals(
+  app: FastifyInstance,
+  proc: ShutdownProcess = process,
+  signals: readonly NodeJS.Signals[] = ["SIGTERM", "SIGINT"]
+): void {
+  let closing = false;
+  const onSignal = (): void => {
+    if (closing) {
+      return;
+    }
+    closing = true;
+    void app.close().then(
+      () => proc.exit(0),
+      (error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        process.stderr.write(`atlas shutdown_failed: ${message}\n`);
+        proc.exit(1);
+      }
+    );
+  };
+  for (const signal of signals) {
+    proc.once(signal, onSignal);
+  }
+}
+
 async function main(): Promise<void> {
   const { loadAtlasConfig } = await import("./config.js");
   const config = loadAtlasConfig();
   const app = await createAtlasServer(config);
+  registerShutdownSignals(app);
   await app.listen({ port: config.port, host: "0.0.0.0" });
 }
 

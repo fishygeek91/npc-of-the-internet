@@ -1,5 +1,10 @@
 export { loadAtlasConfig, type AtlasConfig } from "./config.js";
-export { ChainView, type ChainSnapshot } from "./chain-view.js";
+export {
+  ChainView,
+  DEFAULT_UNREADABLE_TTL_MS,
+  type ChainSnapshot,
+  type ChainViewOptions
+} from "./chain-view.js";
 export {
   deriveHead,
   deriveJournals,
@@ -20,4 +25,4 @@ export {
   type WandererStatus
 } from "./derive.js";
 export { AtlasError, atlasErrorToBody } from "./errors.js";
-export { createAtlasServer } from "./server.js";
+export { createAtlasServer, registerShutdownSignals, type ShutdownProcess } from "./server.js";
