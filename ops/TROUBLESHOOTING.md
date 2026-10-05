@@ -125,9 +125,24 @@ Related gotchas:
 ### Reseeding after a bad chain
 
 Genesis-only reseed of the **file volume only** — the DualSoulStore backfills the IPFS
-mirror from the file store at open (since v0.3.1). Before boot, `rclone purge` the stale
-B2 chain prefix: the backup sidecar's shrink-guard refuses to overwrite a longer chain
-with a shorter (clean) one.
+mirror from the file store at open (since v0.3.1). Before boot, move the stale B2 prefix
+aside (the backup sidecar's shrink guard refuses to overwrite a longer chain with a
+shorter, clean one). **Never `rclone purge` it** — the old chain and blobs are the only
+off-host copy if the reseed turns out wrong. With the backup service stopped:
+
+```bash
+sudo docker compose --env-file ops/.env -f ops/compose.ghost.yml stop backup
+# remote = BACKUP_RCLONE_REMOTE, e.g. ghost-remote:npc/soulchain
+rclone move ghost-remote:npc/soulchain ghost-remote:npc/soulchain-archive-$(date -u +%Y%m%d) \
+  --config /path/to/rclone.conf -v
+rclone lsf ghost-remote:npc/soulchain --config /path/to/rclone.conf   # expect empty
+```
+
+On B2, `move` is a server-side copy + hide per object (Class C copy calls ≈ object
+count — check the cap first, or raise it for the day). Restarting the sidecar after the
+move does a full upload of the clean chain (sidecar state lives in its tmpfs `/tmp`, so a
+container restart forgets the old prefix). Delete the archive prefix only after the new
+chain has verified and a backup cycle completed.
 
 ### Crash loops append junk arrivals
 
@@ -151,3 +166,45 @@ backup container goes unhealthy; `key-backup.sh` shares the same account-wide ca
   the old `BACKUP_DEBOUNCE_SEC=5`, raise it to `30` (or delete the line to take the default).
 - Raising the Class C cap in **Edit Caps** is a safe stopgap; Backblaze currently lists
   Class C calls as free — check the dialog's price before relying on that.
+
+### Class C budget after the 2026-10 sidecar redesign
+
+Expected steady state is a few hundred Class C calls/day (see RUNBOOK "Backup semantics"
+estimate): heartbeat-only appends upload at most once per `BACKUP_HEARTBEAT_DEFER_SEC`,
+new blobs are sent with `--files-from` (no remote listing), and a full listing happens
+only on the daily verify and at container start. If the count is far higher:
+
+- `docker logs <backup-container> | grep -c 'full check'` — many full cycles mean the
+  container is restart-looping (each start = full verify) or `BACKUP_VERIFY_SEC` is low.
+- Many `Copying chain.jsonl` lines with only heartbeats in between → `BACKUP_HEARTBEAT_DEFER_SEC`
+  is unset/0 in `ops/.env`, or the runtime's heartbeat record shape changed (deferral only
+  matches canonical `attestation` records with a flat `"kind":"heartbeat"` body; anything
+  else uploads promptly by design — update `HEARTBEAT_ERE` in `backup-watch.sh`).
+
+## Erasure (tombstoned blobs on B2)
+
+Granted erasure requests (spec/osp/privacy.md §6) delete the blob locally and append a
+`tombstone` record. The backup sidecar then deletes exactly the tombstoned `blob_cid`s
+from `remote/blobs/` (after uploading the chain that carries the tombstone) and never
+uploads them again. Verify after an erasure:
+
+```bash
+sudo docker logs <backup-container> 2>&1 | grep -E 'Erasure:|tombstone'
+rclone lsf ghost-remote:npc/soulchain/blobs/ --include '<blob_cid>' --config /path/to/rclone.conf  # expect nothing
+rclone lsf ghost-remote:npc/soulchain/blobs/ --b2-versions --include '<blob_cid>*' --config /path/to/rclone.conf
+```
+
+- Deletes use `--b2-hard-delete` (current version removed, not just hidden). Older
+  versions, if any, are purged by the bucket lifecycle rule within a day, or immediately
+  with `rclone cleanup ghost-remote:npc/soulchain/blobs --config …`.
+- `WARN: … tombstone line(s) did not match the strict shape` — the tombstone's JSON is not
+  the canonical `osp/0.2` shape (spec/osp/records.md); nothing was deleted remotely.
+  Investigate the record; if the blob must go, delete that single object by hand with
+  `rclone deletefile …/blobs/<blob_cid> --b2-hard-delete`.
+- `WARN: tombstoned blob … is a chain record CID; refusing remote delete` — the CID is a
+  record's own bytes (a `prev` link). Deleting it would break restores; this indicates a
+  bad tombstone — do not delete by hand, open an issue.
+- Under `osp/0.2`, `history/` copies of `chain.jsonl` contain only envelopes (CIDs,
+  hashes, tombstones) — never side-blob prose — so erasure does not touch them.
+- Erasure removes copies on infrastructure we control only (VPS + this bucket); volunteer
+  IPFS copies cannot be recalled (privacy.md §5).

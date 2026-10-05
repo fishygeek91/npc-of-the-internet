@@ -6,12 +6,12 @@ Environment variable names and purposes only. **Never commit values.**
 |------|---------|
 | `ANTHROPIC_API_KEY` | Anthropic API key for `AnthropicBrain`. Required when `NPC_BRAIN_PROVIDER` is unset or `anthropic`. Exactly one of this or `ANTHROPIC_API_KEY_FILE`. |
 | `ANTHROPIC_API_KEY_FILE` | In-container path to a file containing the Anthropic API key (trimmed). Prefer over env so the token is not visible in `docker inspect`. |
-| `ANTHROPIC_API_KEY_HOST_PATH` | Host path bind-mounted read-only to `/run/secrets/anthropic_api_key` when using file-based Anthropic secrets. |
+| `ANTHROPIC_API_KEY_HOST_PATH` | Host path bind-mounted read-only to `/run/secrets/anthropic_api_key` when using file-based Anthropic secrets (overlay `ops/compose.secrets.anthropic.yml`). |
 | `NPC_BRAIN_PROVIDER` | Brain implementation: `anthropic` (default when unset), `openai-compat`, or `fake` (tests only). |
 | `NPC_BRAIN_BASE_URL` | OpenAI-compatible API origin (no trailing slash required). Required when `NPC_BRAIN_PROVIDER=openai-compat`. Recommended: `https://openrouter.ai/api/v1`. |
 | `NPC_BRAIN_API_KEY` | API key for `OpenAICompatBrain`. Required when `NPC_BRAIN_PROVIDER=openai-compat`. Exactly one of this or `NPC_BRAIN_API_KEY_FILE`. |
 | `NPC_BRAIN_API_KEY_FILE` | In-container path to the openai-compat API key file (trimmed). |
-| `NPC_BRAIN_API_KEY_HOST_PATH` | Host path bind-mounted read-only to `/run/secrets/brain_api_key` when using file-based openai-compat secrets. |
+| `NPC_BRAIN_API_KEY_HOST_PATH` | Host path bind-mounted read-only to `/run/secrets/brain_api_key` when using file-based openai-compat secrets (overlay `ops/compose.secrets.yml`, production). |
 | `NPC_BRAIN_MODEL` | Model id. Required for openai-compat (no code default). Anthropic default: `claude-sonnet-4-20250514`. |
 | `NPC_BRAIN_MAX_TOKENS` | Default max output tokens per Brain completion (default: `1024`). |
 | `NPC_BRAIN_TIMEOUT_MS` | HTTP timeout in milliseconds for Brain API requests (default: `60000`). |
@@ -60,8 +60,10 @@ Environment variable names and purposes only. **Never commit values.**
 | `BACKUP_SOURCE_DIR` | In-container soulchain directory watched by the backup sidecar (compose sets `/data/soulchain`). |
 | `BACKUP_RCLONE_REMOTE` | rclone remote path for soulchain backup (e.g. `ghost-remote:npc/soulchain`). Required for backup sidecar. |
 | `BACKUP_DEBOUNCE_SEC` | Seconds of quiet after a change before syncing; coalesces conversation bursts into one upload (default `30`). |
-| `BACKUP_INTERVAL_SEC` | Periodic safety check interval in seconds (default `300`). Compares a local fingerprint of `blobs/` + `chain.jsonl` with the last successful upload — **no remote calls unless something changed**. Keep below the 900s healthcheck window. |
-| `BACKUP_VERIFY_SEC` | Force a real remote round-trip at least this often when idle, so a revoked key or deleted bucket surfaces (default `86400`). |
+| `BACKUP_INTERVAL_SEC` | Periodic safety check interval in seconds (default `300`). Compares a local fingerprint of `blobs/` (set of names+sizes) + `chain.jsonl` with the last successful upload — **no remote calls unless something changed**. Keep below the 900s healthcheck window. |
+| `BACKUP_VERIFY_SEC` | Full remote round-trip (checking `rclone copy` of all blobs, `lsjson` shrink guard, chain `copyto`, tombstone rescan) at least this often, so a revoked key, deleted bucket or lost object surfaces and self-heals (default `86400`). |
+| `BACKUP_HEARTBEAT_DEFER_SEC` | When everything appended since the last uploaded chain is heartbeat attestations, defer the upload until this many seconds after the last successful chain upload (default `3600`; `0` disables). Any other record uploads after the debounce. The healthcheck stays green while deferring. |
+| `BACKUP_HISTORY_SEC` | Minimum spacing of `history/<UTC>-<pid>/chain.jsonl` rollback points (default `86400` = daily). Intermediate tips are overwritten without a history copy; an `ALLOW_CHAIN_SHRINK=1` upload always snapshots. `0` = every upload (pre-2026-10 behavior). |
 | `BACKUP_RETRY_SEC` | After a failed cycle (shrink refusal, rclone error, provider cap), retry an unchanged chain at most this often; new appends still retry immediately (default `900`). |
 | `BACKUP_STATE_DIR` | Where the sidecar keeps its last-upload fingerprints (default `/tmp/backup-watch-state/<hash of source+remote>`). |
 | `ALLOW_CHAIN_SHRINK` | Ops override: set to `1` only intentionally to allow uploading a smaller `chain.jsonl` than the remote tip. Default unset (refuse size regression). |
@@ -73,7 +75,7 @@ Environment variable names and purposes only. **Never commit values.**
 | `KEY_BACKUP_RCLONE_REMOTE` | rclone remote path for encrypted key backup (e.g. `ghost-keys:npc/keys`). **Must differ** from `BACKUP_RCLONE_REMOTE`. |
 | `KEY_BACKUP_RCLONE_CONFIG` | Optional path to a separate `rclone.conf` (different B2 app key) for key backup. |
 | `NPC_KEY_DRILL_LIVE` | Set to `1` to force live key-backup drill (decrypt remote `latest/` and cmp host keys). Set to `0` to force offline fixture mode even if `AGE_IDENTITY_PATH` is set. |
-| `NPC_COMPOSE_SECRETS` | When `1`, `ghostc` also loads `ops/compose.secrets.yml` (bind-mounts `*_HOST_PATH` secrets). |
+| `NPC_COMPOSE_SECRETS` | `1`: `ghostc` also loads `ops/compose.secrets.yml` (production openai-compat: bind-mounts `NPC_BRAIN_API_KEY_HOST_PATH` + `DISCORD_BOT_TOKEN_HOST_PATH`). `anthropic`: loads `ops/compose.secrets.anthropic.yml` (`ANTHROPIC_API_KEY_HOST_PATH` + `DISCORD_BOT_TOKEN_HOST_PATH`). Each overlay fails fast if one of its host paths is unset. |
 
 ## OpenRouter account hardening
 
