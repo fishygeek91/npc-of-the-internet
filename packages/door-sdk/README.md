@@ -11,6 +11,8 @@ Shared library for building Door adapters: wire schemas, signing helpers, host p
 - **Transports** — `InProcessDoorConnection`, `HttpDoorServer`, `WsDoorSessionServer`, `HttpDoorConnection`, `WsDoorSessionClient`
 - **`DoorError`** — typed API errors with stable machine codes
 
+Co-signing is content-bound (`spec/door/api.md`): `attest` only co-signs a canonical `attestation` core of the requested `kind` for this Door's residency, and `cosign` commit only co-signs a `memory` shard core whose `text_hash` (or inline `text`) matches the reviewed shard, once per chain position. Outbound frames are replay-checked (`msg_replay`, `timestamp_stale`). `WsDoorSessionServer` bounds frames (`WS_MAX_PAYLOAD_BYTES`), uses short fixed close reasons, and never lets a malformed peer crash the process.
+
 `@npc/runtime` re-exports Door wire types from this package; integration tests use `DoorStub`, a thin wrapper around `Door`.
 
 ### Network clients

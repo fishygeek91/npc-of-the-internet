@@ -64,7 +64,7 @@ All public keys and signatures on the Door wire are **opaque strings** encoding 
 
 ISO 8601 UTC strings with millisecond precision, e.g. `2026-07-20T15:04:05.123Z`. Field name `issued_at` on Wanderer-originated payloads; `received_at` on Door-originated acknowledgements.
 
-**Freshness:** Doors MUST reject `/door/attest` and `/door/cosign` requests whose `issued_at` differs from the Door clock by more than a configured absolute skew (default **±5 minutes** / `300_000` ms) with `timestamp_stale` (`401`). Invalid / non-ISO `issued_at` values are treated as stale.
+**Freshness:** Doors MUST reject `/door/attest` and `/door/cosign` requests whose `issued_at` differs from the Door clock by more than a configured absolute skew (default **±5 minutes** / `300_000` ms) with `timestamp_stale` (`401`). Invalid / non-ISO `issued_at` values are treated as stale. The same window applies to `outbound` session frames (checked after signature verification). Freshness MUST be checked before any host-visible side effect (e.g. posting shards for review).
 
 ### `CommunityDescriptor`
 
@@ -185,7 +185,9 @@ Bidirectional **residency message stream** for the active epoch. Community-origi
 | `session_pubkey` | string | yes | Current session public key. |
 | `session_sig` | string | yes | Session-key signature over `{ door_id, epoch, session_pubkey }` proving binding (or soul-key signature at arrival per PoP — v0.1: session subkey proof). |
 
-Door MUST reject the connection with WebSocket close code `4401` if session binding fails, or send an `error` control frame (below) before closing.
+Door MUST reject the connection with WebSocket close code `4401` if session binding fails, or send an `error` control frame (below) before closing. The close reason is a short fixed string (e.g. `session bind failed: signature_invalid`, always ≤ 123 UTF-8 bytes per RFC 6455); Doors MUST NOT echo validation output or request data in it.
+
+Doors MUST bound inbound frame size (reference implementation: 256 KiB; larger frames close the socket with `1009`) and MUST treat WebSocket protocol violations (e.g. unmasked client frames) as a per-connection failure, never a host-process failure.
 
 ### Frame envelope
 
@@ -219,9 +221,13 @@ Every text frame is a JSON object:
 | `text` | string | cond. | Wanderer response text. Max 4000 chars in v0.1. Required unless `reaction` is present. |
 | `reply_to` | string | no | `msg_id` of the message being answered. The Door maps it to a platform reply reference (e.g. a Discord message reply). Doors that cannot resolve it post the text without a reference. |
 | `channel_id` | string | no | Route reply to the same channel as inbound. |
-| `reaction` | object | no | `session.reactions` only: `{ emoji, target_msg_id }`. `emoji` is exactly one Unicode emoji grapheme (≤ 32 UTF-16 units; no custom-emoji syntax). `target_msg_id` is the `msg_id` of the message to react to. A frame MAY carry both `text` and `reaction`. |
+| `reaction` | object | no | `session.reactions` only: `{ emoji, target_msg_id }`. `emoji` is exactly one Unicode emoji grapheme (≤ 32 UTF-16 units; no custom-emoji syntax). A keycap emoji is only `[0-9#*]`, optional U+FE0F, then U+20E3 (U+20E3 after any other character, or alone, is rejected). `target_msg_id` is the `msg_id` of the message to react to. A frame MAY carry both `text` and `reaction`. |
 
 At least one of `text` or `reaction` MUST be present. The session-key `sig` covers the whole body, including `reaction`, so reactions carry the same Proof-of-Presence guarantee as speech.
+
+**Replay:** Doors MUST reject an `outbound` frame whose `msg_id` was already accepted in the current epoch with `msg_replay` (reference implementation: the last 10 000 accepted `msg_id`s per epoch, reset on arrival; the `issued_at` freshness window bounds replay beyond that).
+
+**Platform delivery:** Wanderer text is untrusted on the host platform too: Doors MUST NOT let it trigger platform mentions / mass notifications (e.g. Discord `@everyone`, `@here`, role or user pings, reply-author pings). A Door whose platform caps message length below 4000 chars MAY post `text` as several consecutive platform messages (splitting on line/word boundaries, never inside a code point); only the first carries the `reply_to` reference, and the frame's `msg_id` maps to all parts. Protocol `msg_id` ↔ platform id mappings are per epoch (Wanderer `msg_id` counters restart with each session).
 
 **Silence is valid.** The Wanderer is not obliged to emit an outbound frame for every inbound frame. Reading without answering, answering several inbound messages with one frame, or reacting instead of speaking are all conforming behaviours; Doors MUST NOT treat a missing reply as an error.
 
@@ -256,6 +262,8 @@ Same object as HTTP `error` shape, plus optional `related_msg_id`.
 | `message_too_large` | `text` exceeds limit. |
 | `session_closed` | Residency already ended. |
 | `rate_limited` | Door throttling. |
+| `timestamp_stale` | `outbound` `issued_at` outside the freshness window. |
+| `msg_replay` | `outbound` `msg_id` already accepted in this epoch (`409` where an HTTP status applies). |
 
 ---
 
@@ -348,6 +356,13 @@ This is how `cosigners` becomes non-empty for arrival/departure/heartbeat withou
 
 The Wanderer places `door_cosig` into the record's `cosigners` array, then soul-signs and appends.
 
+**Core binding:** the Door MUST NOT co-sign arbitrary bytes. After the request signature (and, for arrival, epoch-replay) checks and before any state change, the Door parses `core` and rejects with `core_invalid` unless:
+
+- `core` is a JSON object whose OSP canonical serialization equals the submitted string exactly;
+- `type` is `"attestation"` and `body.kind` equals the request `kind`;
+- `residency` is `door:<door_id>/epoch:<epoch>` for this Door and the request `epoch`, and `body.door_id` / `body.epoch` equal the request values;
+- `body.session_pubkey`, when present, equals the request `session_pubkey`.
+
 ### Auth / signing
 
 - **Arrival:** Soul-key `sig` on the request; Door verifies soul pubkey from genesis / prior hello context the operator configured.
@@ -370,7 +385,7 @@ On `kind: "arrival"` after soul-key and freshness checks:
 | `error.code` | Status | Meaning |
 |--------------|--------|---------|
 | `unsupported_kind` | `400` | `kind` not in the allowed set. |
-| `core_invalid` | `400` | `core` empty, too large, or not valid UTF-8. |
+| `core_invalid` | `400` | `core` empty, too large, not valid UTF-8, or not bound to the request (see **Core binding**). |
 | `signature_invalid` | `401` | Request `sig` failed. |
 | `timestamp_stale` | `401` | `issued_at` outside Door acceptance window (or unparseable). |
 | `session_invalid` | `401` | Session required but missing/invalid (`departure` / `heartbeat`). |
@@ -472,11 +487,19 @@ Under `osp/0.2`, the commit-phase `core` body carries `text_cid` / `text_hash` (
 
 The Wanderer places `door_cosig` into the record's `cosigners` array (typically a single element), soul-signs, and appends. **Only** this `door_cosig` value belongs in `cosigners`; Phase 1 `host_audit_sig` (if present) is never copied there.
 
+**Commit binding:** the Door co-signs only the envelope of the shard the host reviewed. It rejects with `shard_invalid` unless `core` is canonical JSON (as for `/door/attest`), `type` is `"memory"`, `body.kind` is `"shard"`, `residency` is `door:<door_id>/epoch:<epoch>` of the reviewed epoch, `seq` is a positive integer, and the body references the reviewed `CandidateShard.text`:
+
+- `osp/0.2`: `body.text_hash` MUST equal the base64url sha2-256 of the shard-text side blob for the reviewed text (`encodeShardTextBlob`, i.e. the canonical JSON string), `body.text_cid` (when present) MUST bind the same digest, and inline `body.text` MUST be absent;
+- legacy inline text: `body.text` MUST equal the reviewed text exactly.
+
+**Single-use approval:** each approved `shard_id` yields one co-signature per chain position. A further commit for the same `shard_id` is accepted only when its `core` `seq` is strictly greater than every `seq` already co-signed for it (the runtime re-requests after the chain head moved); otherwise `shard_not_approved`.
+
 ### Auth / signing
 
 - **Review request:** Session-key `sig` for the departing epoch.
 - **Review response:** `door_sig` over the decision list; optional per-shard `host_audit_sig` (never soulchain `cosigners`).
-- **Commit request:** Session-key `sig`; Door MUST reject `shard_id` not approved in Phase 1 for this `(door_id, epoch)`.
+- **Commit request:** Session-key `sig`; Door MUST reject `shard_id` not approved in Phase 1 for this `(door_id, epoch)`, a `core` that fails **Commit binding**, and a reused approval (**Single-use approval**).
+- **Concurrent review:** at most one review may be in flight. A Door with asynchronous host review MUST NOT re-post shards for a duplicate request: an identical retry (same signed request) MAY join the pending review; any other review request while one is pending is rejected with `review_pending`.
 - **Commit response:** `door_cosig` MUST verify as Ed25519 over the exact `core` bytes under `door_pubkey` (same verification as `/door/attest`).
 
 ### Errors
@@ -487,10 +510,10 @@ The Wanderer places `door_cosig` into the record's `cosigners` array (typically 
 | `session_invalid` | `401` | Session not valid for cosign. |
 | `signature_invalid` | `401` | Request `sig` failed. |
 | `epoch_closed` | `409` | Cosign already completed for this epoch. |
-| `shard_not_approved` | `403` | Commit `shard_id` was not approved in Phase 1. |
+| `shard_not_approved` | `403` | Commit `shard_id` was not approved in Phase 1, or its approval was already used at this or a later `seq`. |
 | `shard_count` | `422` | Review: fewer than 5 or more than 20 shards. |
-| `shard_invalid` | `422` | Shard text over limit, missing `shard_id`, or invalid `core`. |
-| `review_pending` | `503` | Host review not complete (Door MAY use async review; Wanderer retries Phase 1). |
+| `shard_invalid` | `422` | Shard text over limit, missing `shard_id`, or invalid / unbound `core` (see **Commit binding**). |
+| `review_pending` | `503` | Host review not complete, or another review is already in flight (Door MAY use async review; Wanderer retries Phase 1). |
 
 ---
 

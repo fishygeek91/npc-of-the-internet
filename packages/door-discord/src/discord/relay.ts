@@ -1,7 +1,8 @@
 import type { Door, InboundFrame, OutboundFrame } from "@npc/door-sdk";
 
-import { DiscordDoorError, operatorNotice } from "../errors.js";
+import { operatorNotice } from "../errors.js";
 import type { DualRateLimiter } from "../rate-limit.js";
+import { chunkDiscordMessage } from "./chunk.js";
 import type { DiscordGateway, GatewayMessage } from "./gateway.js";
 
 export type RelayLogger = {
@@ -35,34 +36,65 @@ const SNOWFLAKE_PATTERN = /^\d{5,20}$/u;
 /**
  * Bounded bidirectional msg_id ↔ Discord id map (oldest bindings evicted first).
  * Lets the Wanderer address messages by protocol `msg_id` while the Door speaks Discord.
+ *
+ * Partitioned by residency epoch: the runtime's outbound `out-N` counter restarts with
+ * every Session (= every epoch), so protocol ids from an older epoch are cleared instead
+ * of aliasing new messages. The set of the Wanderer's own Discord message ids survives
+ * epochs (reply-to-Wanderer addressing) and is bounded separately.
  */
 class MessageIdMap {
-  private readonly toDiscord = new Map<string, string>();
+  private epoch: number | null = null;
+  /** msg_id → Discord ids (first entry is the reply / reaction target). */
+  private readonly toDiscord = new Map<string, string[]>();
   private readonly toProtocol = new Map<string, string>();
   private readonly selfDiscordIds = new Set<string>();
 
-  bind(msgId: string, discordId: string, fromSelf: boolean): void {
-    this.toDiscord.set(msgId, discordId);
-    this.toProtocol.set(discordId, msgId);
-    if (fromSelf) {
-      this.selfDiscordIds.add(discordId);
+  /** Clear protocol bindings when the residency epoch changes. */
+  useEpoch(epoch: number): void {
+    if (this.epoch === epoch) {
+      return;
+    }
+    this.epoch = epoch;
+    this.toDiscord.clear();
+    this.toProtocol.clear();
+  }
+
+  bind(msgId: string, discordIds: readonly string[], fromSelf: boolean): void {
+    if (discordIds.length === 0) {
+      return;
+    }
+    // Rebinding a msg_id drops its previous reverse entries (no orphaned growth).
+    this.unbind(msgId);
+    this.toDiscord.set(msgId, [...discordIds]);
+    for (const discordId of discordIds) {
+      const previous = this.toProtocol.get(discordId);
+      if (previous !== undefined && previous !== msgId) {
+        this.unbind(previous);
+      }
+      this.toProtocol.set(discordId, msgId);
+      if (fromSelf) {
+        this.selfDiscordIds.delete(discordId);
+        this.selfDiscordIds.add(discordId);
+      }
     }
     while (this.toDiscord.size > MESSAGE_ID_MAP_CAPACITY) {
       const oldest = this.toDiscord.keys().next();
       if (oldest.done === true) {
         break;
       }
-      const discord = this.toDiscord.get(oldest.value);
-      this.toDiscord.delete(oldest.value);
-      if (discord !== undefined) {
-        this.toProtocol.delete(discord);
-        this.selfDiscordIds.delete(discord);
+      this.unbind(oldest.value);
+    }
+    while (this.selfDiscordIds.size > MESSAGE_ID_MAP_CAPACITY) {
+      const oldest = this.selfDiscordIds.values().next();
+      if (oldest.done === true) {
+        break;
       }
+      this.selfDiscordIds.delete(oldest.value);
     }
   }
 
   discordIdFor(msgId: string): string | undefined {
-    const mapped = this.toDiscord.get(msgId);
+    const mapped = this.toDiscord.get(msgId)?.[0];
     if (mapped !== undefined) {
       return mapped;
     }
@@ -76,6 +108,28 @@ class MessageIdMap {
 
   isSelf(discordId: string): boolean {
     return this.selfDiscordIds.has(discordId);
+  }
+
+  /** Sizes of the three internal structures (tests / diagnostics). */
+  sizes(): { toDiscord: number; toProtocol: number; selfDiscordIds: number } {
+    return {
+      toDiscord: this.toDiscord.size,
+      toProtocol: this.toProtocol.size,
+      selfDiscordIds: this.selfDiscordIds.size
+    };
+  }
+
+  private unbind(msgId: string): void {
+    const discordIds = this.toDiscord.get(msgId);
+    if (discordIds === undefined) {
+      return;
+    }
+    this.toDiscord.delete(msgId);
+    for (const discordId of discordIds) {
+      if (this.toProtocol.get(discordId) === msgId) {
+        this.toProtocol.delete(discordId);
+      }
+    }
   }
 }
 
@@ -95,6 +149,11 @@ export class MessageRelay {
 
   constructor(options: MessageRelayOptions) {
     this.options = options;
+  }
+
+  /** Sizes of the msg_id map's internal structures (bounded; for diagnostics/tests). */
+  messageIdMapSizes(): { toDiscord: number; toProtocol: number; selfDiscordIds: number } {
+    return this.ids.sizes();
   }
 
   /** Wire gateway message handler (returns the promise so FakeGateway can await it). */
@@ -125,20 +184,28 @@ export class MessageRelay {
       return;
     }
 
+    this.ids.useEpoch(frame.epoch);
+
     const text = frame.body.text;
     if (text !== undefined) {
       const replyTarget = frame.body.reply_to;
       const replyToId = replyTarget === undefined ? undefined : this.ids.discordIdFor(replyTarget);
+      // Discord caps messages at 2000 chars (protocol allows 4000): post in chunks;
+      // only the first chunk carries the reply reference.
+      const sentIds: string[] = [];
       try {
-        const sent = await this.options.gateway.sendMessage(
-          this.options.channelId,
-          text,
-          replyToId === undefined ? undefined : { replyToId }
-        );
-        this.ids.bind(frame.msg_id, sent.id, true);
+        for (const chunk of chunkDiscordMessage(text)) {
+          const sent = await this.options.gateway.sendMessage(
+            this.options.channelId,
+            chunk,
+            replyToId === undefined || sentIds.length > 0 ? undefined : { replyToId }
+          );
+          sentIds.push(sent.id);
+        }
       } catch (error: unknown) {
         await this.surfaceError(error);
       }
+      this.ids.bind(frame.msg_id, sentIds, true);
     }
 
     const reaction = frame.body.reaction;
@@ -191,6 +258,7 @@ export class MessageRelay {
       this.options.logger.debug("inbound_no_active_session", {});
       return;
     }
+    this.ids.useEpoch(epoch);
 
     this.msgCounter += 1;
     const msgId = `discord-${message.id}-${String(this.msgCounter)}`;
@@ -210,19 +278,22 @@ export class MessageRelay {
         ...(replyTo === undefined ? {} : { reply_to: replyTo })
       }
     });
-    this.ids.bind(msgId, message.id, false);
+
+    // Door.createInboundFrame sets door_id/epoch from active session; re-check binding
+    // before any side effect (id binding, typing). Log, never throw into the gateway.
+    if (frame.door_id !== this.options.doorId) {
+      this.options.logger.warn("inbound_door_id_mismatch", {
+        expected: this.options.doorId,
+        got: frame.door_id
+      });
+      return;
+    }
+
+    this.ids.bind(msgId, [message.id], false);
 
     if (addressed && this.options.gateway.sendTyping !== undefined) {
       // Likely to answer: show "typing…" while the Wanderer thinks (best-effort).
       void this.options.gateway.sendTyping(message.channelId).catch(() => undefined);
-    }
-
-    // Door.createInboundFrame sets door_id/epoch from active session; re-check binding.
-    if (frame.door_id !== this.options.doorId) {
-      throw new DiscordDoorError(
-        "internal_error",
-        `inbound door_id mismatch: expected ${this.options.doorId}`
-      );
     }
 
     try {

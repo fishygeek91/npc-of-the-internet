@@ -1,4 +1,4 @@
-import type { CandidateShard } from "@npc/door-sdk";
+import { DoorError, type CandidateShard } from "@npc/door-sdk";
 
 import type { DiscordGateway, GatewayCommand, GatewayReaction } from "./discord/gateway.js";
 
@@ -69,6 +69,14 @@ export class ReviewGate {
    * Clears prior decisions at the start of each review round.
    */
   async collect(shards: readonly CandidateShard[]): Promise<void> {
+    const inFlight: PendingReview | null = this.pending;
+    if (inFlight !== null) {
+      // Never clobber an in-flight round (its caller would hang forever).
+      throw DoorError.fromCode(
+        "review_pending",
+        "review_pending: a cosign review is already in progress"
+      );
+    }
     this.decisions.clear();
     if (shards.length === 0) {
       return;

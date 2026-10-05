@@ -92,7 +92,10 @@ export async function startDiscordDoor(
     options.gateway ??
     new DiscordJsGateway({
       token: config.botToken,
-      guildId: config.guildId
+      guildId: config.guildId,
+      onError: (event, error) => {
+        logger.warn({ event, notice: operatorNotice(error) }, "discord_dispatch_error");
+      }
     });
 
   const reviewChannelId = config.reviewChannelId ?? config.channelId;

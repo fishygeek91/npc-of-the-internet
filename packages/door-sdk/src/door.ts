@@ -1,7 +1,11 @@
 import {
+  canonicalize,
+  cidMatchesHash,
   decodePublicKey,
   decodeSignature,
+  encodeMemoryTextBlob,
   encodePublicKey,
+  hashBlobBytes,
   verify,
   type Ed25519Keypair
 } from "@npc/osp-core";
@@ -40,6 +44,12 @@ import {
 /** Default ±skew for Wanderer `issued_at` vs Door clock (5 minutes). */
 export const DEFAULT_MAX_ISSUED_AT_SKEW_MS = 300_000;
 
+/**
+ * Accepted outbound `msg_id`s remembered per epoch for replay rejection (oldest
+ * evicted first). Combined with the `issued_at` freshness window this bounds replay.
+ */
+export const OUTBOUND_MSG_ID_MEMORY = 10_000;
+
 /** Session lifecycle event emitted when a residency epoch is closed or superseded. */
 export type SessionLifecycleEvent = {
   type: "retired" | "superseded";
@@ -68,7 +78,10 @@ type ActiveSession = {
 
 type CosignEpochState = {
   reviewCompleted: boolean;
-  approvedShardIds: Set<string>;
+  /** Approved `shard_id` → reviewed plaintext (commit `core` must reference this text). */
+  approvedShards: Map<string, string>;
+  /** `shard_id` → highest envelope `seq` already co-signed at commit (single-use binding). */
+  committedSeq: Map<string, number>;
   /** Bound at review; commit may run after departure using this binding. */
   epoch: number;
   sessionPubkey: string;
@@ -99,6 +112,8 @@ export class Door {
   private cosignState: CosignEpochState | null = null;
   private sessionLifecycleListener: ((event: SessionLifecycleEvent) => void) | null = null;
   private sessionEndMsgCounter = 0;
+  /** Outbound `msg_id`s accepted for the active epoch (bounded; reset on arrival). */
+  private readonly seenOutboundMsgIds = new Set<string>();
 
   constructor(options: DoorOptions) {
     this.doorId = options.doorId;
@@ -239,6 +254,8 @@ export class Door {
         );
       }
 
+      this.assertAttestCoreBound(request);
+
       // Host policy must approve before any session state mutation (not_hosting).
       if (this.policy.acceptArrival !== undefined) {
         try {
@@ -274,6 +291,7 @@ export class Door {
       this.sessionRetired = false;
       this.cosignState = null;
       this.lastHeartbeatSeq = 0;
+      this.seenOutboundMsgIds.clear();
       this.lastKnownEpoch = request.epoch;
     } else {
       // Spec: epoch_mismatch (409) when Door has an active session with a different epoch.
@@ -291,6 +309,7 @@ export class Door {
           `${request.kind} attest: invalid session signature`
         );
       }
+      this.assertAttestCoreBound(request);
       if (request.kind === "departure") {
         const departedEpoch = request.epoch;
         this.activeSession = null;
@@ -485,6 +504,23 @@ export class Door {
         "signature_invalid: outbound frame signature failed"
       );
     }
+    // After signature verification so unauthenticated frames cannot probe the clock.
+    this.assertIssuedAtFresh(frame.issued_at);
+    if (this.seenOutboundMsgIds.has(frame.msg_id)) {
+      throw DoorError.fromCode(
+        "msg_replay",
+        `msg_replay: outbound msg_id ${frame.msg_id} already accepted this epoch`,
+        { field: "msg_id", got: frame.msg_id }
+      );
+    }
+    this.seenOutboundMsgIds.add(frame.msg_id);
+    while (this.seenOutboundMsgIds.size > OUTBOUND_MSG_ID_MEMORY) {
+      const oldest = this.seenOutboundMsgIds.values().next();
+      if (oldest.done === true) {
+        break;
+      }
+      this.seenOutboundMsgIds.delete(oldest.value);
+    }
   }
 
   /** Build a Door-originated inbound frame for the active session. */
@@ -543,6 +579,8 @@ export class Door {
    * without mutating state. Call before any side effects (e.g. Discord review
    * posts) so unauthenticated or oversized requests cannot reach host channels.
    * Per-shard field validation remains in {@link cosignReview}.
+   * Includes the `issued_at` freshness check so stale replays are rejected
+   * before any side effect.
    */
   protected verifyCosignRequest(request: CosignRequest): void {
     if (request.door_id !== this.doorId) {
@@ -551,6 +589,8 @@ export class Door {
         `door_id mismatch: expected ${this.doorId}, got ${request.door_id}`
       );
     }
+
+    this.assertIssuedAtFresh(request.issued_at);
 
     if (request.phase === "review") {
       if (this.cosignState !== null && this.cosignState.reviewCompleted) {
@@ -647,18 +687,19 @@ export class Door {
       seenShardIds.add(shard.shard_id);
     }
 
-    const approvedShardIds = new Set<string>();
+    const approvedShards = new Map<string, string>();
     const decisions: ReviewDecision[] = request.shards.map((shard) => {
       const decision = this.resolveShardDecision(shard, request.door_id, request.epoch);
       if (decision.status === "approved") {
-        approvedShardIds.add(shard.shard_id);
+        approvedShards.set(shard.shard_id, shard.text);
       }
       return decision;
     });
 
     this.cosignState = {
       reviewCompleted: true,
-      approvedShardIds,
+      approvedShards,
+      committedSeq: new Map(),
       epoch: request.epoch,
       sessionPubkey: request.session_pubkey
     };
@@ -703,12 +744,27 @@ export class Door {
       );
     }
 
-    if (!cosignState.approvedShardIds.has(request.shard_id)) {
+    const approvedText = cosignState.approvedShards.get(request.shard_id);
+    if (approvedText === undefined) {
       throw DoorError.fromCode(
         "shard_not_approved",
         `shard_not_approved: shard ${request.shard_id} was not approved in review`
       );
     }
+
+    const seq = await this.assertCommitCoreBound(request.core, cosignState.epoch, approvedText);
+
+    // Single-use approval: one co-signature per chain position. A re-commit is only
+    // accepted for a strictly later `seq` (runtime retry after the chain head moved).
+    // No await between this check and the update below.
+    const lastSeq = cosignState.committedSeq.get(request.shard_id);
+    if (lastSeq !== undefined && seq <= lastSeq) {
+      throw DoorError.fromCode(
+        "shard_not_approved",
+        `shard_not_approved: approval for shard ${request.shard_id} already used at seq ${String(lastSeq)}`
+      );
+    }
+    cosignState.committedSeq.set(request.shard_id, seq);
 
     const receivedAt = this.clock.now();
     const doorCosig = signDoorCosig(request.core, this.doorKeypair.privateKey);
@@ -777,6 +833,102 @@ export class Door {
     return decision;
   }
 
+  /** OSP residency string for this Door at `epoch` (`door:<door_id>/epoch:<n>`). */
+  private residencyFor(epoch: number): string {
+    return `door:${this.doorId}/epoch:${String(epoch)}`;
+  }
+
+  /**
+   * Bind an attest `core` to the request: it must be a canonical OSP `attestation`
+   * envelope core whose `body.kind` equals the request `kind`, for this Door's
+   * residency at the request epoch (`body.door_id` / `body.epoch` must match; a
+   * `body.session_pubkey`, when present, must equal the request `session_pubkey`).
+   */
+  private assertAttestCoreBound(request: AttestRequest): void {
+    const core = parseCanonicalCore(request.core);
+    if (core === null) {
+      throw DoorError.fromCode("core_invalid", "core_invalid: core is not canonical JSON");
+    }
+    const body = core.body;
+    if (core.type !== "attestation" || !isPlainRecord(body) || body.kind !== request.kind) {
+      throw DoorError.fromCode(
+        "core_invalid",
+        `core_invalid: core must be an attestation record of kind ${request.kind}`
+      );
+    }
+    if (
+      core.residency !== this.residencyFor(request.epoch) ||
+      body.door_id !== this.doorId ||
+      body.epoch !== request.epoch
+    ) {
+      throw DoorError.fromCode(
+        "core_invalid",
+        "core_invalid: core residency must match this door and the request epoch"
+      );
+    }
+    if (body.session_pubkey !== undefined && body.session_pubkey !== request.session_pubkey) {
+      throw DoorError.fromCode(
+        "core_invalid",
+        "core_invalid: core session_pubkey must match the request session_pubkey"
+      );
+    }
+  }
+
+  /**
+   * Bind a commit `core` to the reviewed shard: canonical OSP `memory` envelope core,
+   * `body.kind: "shard"`, residency of the reviewed epoch, and text equal to the
+   * approved review text — via `text_hash` (osp/0.2 side blob; `text_cid` must match
+   * the hash when present) or inline `text` (osp/0.1). Returns the envelope `seq`.
+   */
+  private async assertCommitCoreBound(
+    rawCore: string,
+    epoch: number,
+    approvedText: string
+  ): Promise<number> {
+    const core = parseCanonicalCore(rawCore);
+    if (core === null) {
+      throw DoorError.fromCode("shard_invalid", "shard_invalid: commit core is not canonical JSON");
+    }
+    const body = core.body;
+    if (core.type !== "memory" || !isPlainRecord(body) || body.kind !== "shard") {
+      throw DoorError.fromCode(
+        "shard_invalid",
+        "shard_invalid: commit core must be a memory record of kind shard"
+      );
+    }
+    if (core.residency !== this.residencyFor(epoch)) {
+      throw DoorError.fromCode(
+        "shard_invalid",
+        "shard_invalid: commit core residency must match the reviewed epoch"
+      );
+    }
+    const seq = core.seq;
+    if (typeof seq !== "number" || !Number.isSafeInteger(seq) || seq < 1) {
+      throw DoorError.fromCode("shard_invalid", "shard_invalid: commit core seq is invalid");
+    }
+
+    if (body.text_hash !== undefined) {
+      const expectedHash = await hashBlobBytes(encodeMemoryTextBlob(approvedText));
+      const cidOk =
+        body.text_cid === undefined ||
+        (typeof body.text_cid === "string" && cidMatchesHash(body.text_cid, expectedHash));
+      if (body.text_hash !== expectedHash || !cidOk || body.text !== undefined) {
+        throw DoorError.fromCode(
+          "shard_invalid",
+          "shard_invalid: commit core text does not match the reviewed shard"
+        );
+      }
+      return seq;
+    }
+    if (body.text !== approvedText) {
+      throw DoorError.fromCode(
+        "shard_invalid",
+        "shard_invalid: commit core text does not match the reviewed shard"
+      );
+    }
+    return seq;
+  }
+
   private requireActiveSession(doorId: string, epoch: number, sessionPubkey: string): void {
     if (this.sessionRetired) {
       throw DoorError.fromCode("epoch_closed", "epoch_closed: residency already departed");
@@ -834,6 +986,36 @@ export class Door {
   private emitSessionLifecycle(event: SessionLifecycleEvent): void {
     this.sessionLifecycleListener?.(event);
   }
+}
+
+/** True for a non-null, non-array JSON object. */
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Parse an OSP `core` string; null unless it is a JSON object whose canonical
+ * serialization equals the input bytes (no parser differentials between what the
+ * Door checks and what it signs).
+ */
+function parseCanonicalCore(core: string): Record<string, unknown> | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(core) as unknown;
+  } catch {
+    return null;
+  }
+  if (!isPlainRecord(parsed)) {
+    return null;
+  }
+  try {
+    if (new TextDecoder().decode(canonicalize(parsed)) !== core) {
+      return null;
+    }
+  } catch {
+    return null;
+  }
+  return parsed;
 }
 
 /** Parse an ISO 8601 timestamp to epoch milliseconds; null when invalid. */

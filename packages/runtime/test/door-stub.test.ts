@@ -27,8 +27,31 @@ import { DOOR, SOUL } from "./helpers/fixed-keys.js";
 const DOOR_ID = "discord:g";
 const EPOCH = 77;
 const ISSUED_AT = "2026-07-20T15:09:00.000Z";
-const CORE = '{"type":"attestation","kind":"arrival"}';
-const MEMORY_CORE = '{"type":"memory","body":{"kind":"shard","text":"I remember the hall."}}';
+/** Canonical OSP attestation core bound to `(door_id, epoch, kind)` — the Door rejects unbound cores. */
+function attestCore(kind: AttestRequest["kind"], epoch: number, doorId = DOOR_ID): string {
+  return new TextDecoder().decode(
+    canonicalize({
+      spec: "osp/0.2",
+      seq: 1,
+      prev: "bafyprev",
+      type: "attestation",
+      body: { kind, door_id: doorId, epoch },
+      residency: `door:${doorId}/epoch:${String(epoch)}`
+    })
+  );
+}
+
+/** Canonical `memory` core for `sampleShards()[0]` (inline osp/0.1 text; the Door binds commit cores to reviewed text). */
+const MEMORY_CORE = new TextDecoder().decode(
+  canonicalize({
+    spec: "osp/0.1",
+    seq: 2,
+    prev: "bafyprev",
+    type: "memory",
+    body: { kind: "shard", text: "Memory shard 1 from the residency." },
+    residency: `door:${DOOR_ID}/epoch:${String(EPOCH)}`
+  })
+);
 
 function signAttestRequest(
   keyring: SingleKeyKeyring,
@@ -89,7 +112,7 @@ async function establishArrival(
       door_id: DOOR_ID,
       epoch,
       kind: "arrival",
-      core: CORE,
+      core: attestCore("arrival", epoch),
       session_pubkey: encodePublicKey(sessionSigner.publicKey),
       issued_at: ISSUED_AT
     },
@@ -121,7 +144,7 @@ describe("DoorStub", () => {
         door_id: DOOR_ID,
         epoch: EPOCH,
         kind: "arrival",
-        core: CORE,
+        core: attestCore("arrival", EPOCH),
         session_pubkey: encodePublicKey(sessionSigner.publicKey),
         issued_at: ISSUED_AT
       },
@@ -147,7 +170,7 @@ describe("DoorStub", () => {
         door_id: DOOR_ID,
         epoch: EPOCH,
         kind: "heartbeat",
-        core: CORE,
+        core: attestCore("heartbeat", EPOCH),
         session_pubkey: encodePublicKey(sessionSigner.publicKey),
         issued_at: ISSUED_AT
       },
@@ -167,7 +190,7 @@ describe("DoorStub", () => {
         door_id: DOOR_ID,
         epoch: EPOCH,
         kind: "arrival",
-        core: CORE,
+        core: attestCore("arrival", EPOCH),
         session_pubkey: encodePublicKey(sessionSigner.publicKey),
         issued_at: ISSUED_AT
       },
@@ -202,7 +225,7 @@ describe("DoorStub", () => {
         door_id: DOOR_ID,
         epoch: EPOCH,
         kind: "arrival",
-        core: CORE,
+        core: attestCore("arrival", EPOCH),
         session_pubkey: encodePublicKey(sessionSigner.publicKey),
         issued_at: ISSUED_AT
       },
@@ -236,7 +259,7 @@ describe("DoorStub", () => {
         door_id: DOOR_ID,
         epoch: EPOCH,
         kind: "arrival",
-        core: CORE,
+        core: attestCore("arrival", EPOCH),
         session_pubkey: encodePublicKey(sessionSigner.publicKey),
         issued_at: ISSUED_AT
       },
@@ -409,7 +432,7 @@ describe("DoorStub", () => {
         door_id: DOOR_ID,
         epoch: EPOCH,
         kind: "departure",
-        core: '{"type":"attestation","kind":"departure"}',
+        core: attestCore("departure", EPOCH),
         session_pubkey: encodePublicKey(sessionSigner.publicKey),
         issued_at: ISSUED_AT
       },
@@ -446,7 +469,7 @@ describe("DoorStub", () => {
         door_id: DOOR_ID,
         epoch: EPOCH,
         kind: "departure",
-        core: '{"type":"attestation","kind":"departure"}',
+        core: attestCore("departure", EPOCH),
         session_pubkey: encodePublicKey(sessionSigner.publicKey),
         issued_at: ISSUED_AT
       },
@@ -501,7 +524,7 @@ describe("DoorStub", () => {
         door_id: DOOR_ID,
         epoch: epoch1,
         kind: "departure",
-        core: '{"type":"attestation","kind":"departure"}',
+        core: attestCore("departure", epoch1),
         session_pubkey: encodePublicKey(keyring.deriveSessionKey(DOOR_ID, epoch1).publicKey),
         issued_at: ISSUED_AT
       },

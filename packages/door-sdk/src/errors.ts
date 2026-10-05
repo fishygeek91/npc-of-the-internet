@@ -9,6 +9,7 @@ export function defaultHttpStatusForDoorError(code: string): number {
     case "epoch_mismatch":
     case "epoch_replay":
     case "seq_replay":
+    case "msg_replay":
       return 409;
     case "shard_not_approved":
     case "not_hosting":
