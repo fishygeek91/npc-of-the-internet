@@ -1,5 +1,13 @@
 # @npc/runtime
 
+## 0.4.2
+
+### Patch Changes
+
+- @npc/osp-core@0.4.2
+- @npc/immune@0.4.2
+- @npc/door-sdk@0.4.2
+
 ## 0.4.1
 
 ### Patch Changes
