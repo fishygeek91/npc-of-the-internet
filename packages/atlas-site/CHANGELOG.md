@@ -1,5 +1,12 @@
 # @npc/atlas-site
 
+## 0.4.3
+
+### Patch Changes
+
+- @npc/osp-core@0.4.3
+- @npc/atlas@0.4.3
+
 ## 0.4.2
 
 ### Patch Changes
