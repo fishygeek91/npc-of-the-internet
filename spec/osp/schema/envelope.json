@@ -6,7 +6,10 @@
       "properties": {
         "spec": {
           "type": "string",
-          "enum": ["osp/0.1", "osp/0.2"]
+          "enum": [
+            "osp/0.1",
+            "osp/0.2"
+          ]
         },
         "seq": {
           "type": "integer",
@@ -24,7 +27,10 @@
           ]
         },
         "residency": {
-          "type": ["string", "null"]
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "cosigners": {
           "type": "array",
@@ -36,7 +42,14 @@
           "type": "string"
         }
       },
-      "required": ["spec", "seq", "prev", "residency", "cosigners", "sig"],
+      "required": [
+        "spec",
+        "seq",
+        "prev",
+        "residency",
+        "cosigners",
+        "sig"
+      ],
       "additionalProperties": false
     }
   },

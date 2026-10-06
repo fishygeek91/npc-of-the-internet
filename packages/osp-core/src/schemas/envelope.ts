@@ -199,11 +199,11 @@ function validateCosignerRules(
       ? record.body.kind
       : undefined;
 
-  if (record.type === "memory" && bodyKind === "shard") {
+  if (record.type === "memory" && (bodyKind === "shard" || bodyKind === "journal")) {
     if (record.cosigners.length < 1) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: "shard memory records require at least one cosigner",
+        message: `${bodyKind} memory records require at least one cosigner`,
         path: ["cosigners"]
       });
     }
@@ -252,6 +252,16 @@ function validateSpecBodyCompatibility(
     return;
   }
   const kind = record.body.kind;
+  if (kind === "journal") {
+    if (record.spec !== OSP_SPEC_V02) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "journal memory records require spec osp/0.2",
+        path: ["spec"]
+      });
+    }
+    return;
+  }
   if (kind !== "shard" && kind !== "candidate") {
     return;
   }

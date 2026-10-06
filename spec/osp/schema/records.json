@@ -8,7 +8,10 @@
           "properties": {
             "spec": {
               "type": "string",
-              "enum": ["osp/0.1", "osp/0.2"]
+              "enum": [
+                "osp/0.1",
+                "osp/0.2"
+              ]
             },
             "seq": {
               "type": "integer",
@@ -26,7 +29,10 @@
               ]
             },
             "residency": {
-              "type": ["string", "null"]
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "cosigners": {
               "type": "array",
@@ -62,11 +68,24 @@
                   "type": "string"
                 }
               },
-              "required": ["charter", "soul_pubkey", "created_at"],
+              "required": [
+                "charter",
+                "soul_pubkey",
+                "created_at"
+              ],
               "additionalProperties": false
             }
           },
-          "required": ["spec", "seq", "prev", "residency", "cosigners", "sig", "type", "body"],
+          "required": [
+            "spec",
+            "seq",
+            "prev",
+            "residency",
+            "cosigners",
+            "sig",
+            "type",
+            "body"
+          ],
           "additionalProperties": false
         },
         {
@@ -74,7 +93,10 @@
           "properties": {
             "spec": {
               "type": "string",
-              "enum": ["osp/0.1", "osp/0.2"]
+              "enum": [
+                "osp/0.1",
+                "osp/0.2"
+              ]
             },
             "seq": {
               "type": "integer",
@@ -92,7 +114,10 @@
               ]
             },
             "residency": {
-              "type": ["string", "null"]
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "cosigners": {
               "type": "array",
@@ -131,7 +156,11 @@
                       "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,9})?Z$"
                     }
                   },
-                  "required": ["kind", "text", "distilled_at"],
+                  "required": [
+                    "kind",
+                    "text",
+                    "distilled_at"
+                  ],
                   "additionalProperties": false
                 },
                 {
@@ -164,7 +193,39 @@
                       "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,9})?Z$"
                     }
                   },
-                  "required": ["kind", "text_cid", "text_hash", "distilled_at"],
+                  "required": [
+                    "kind",
+                    "text_cid",
+                    "text_hash",
+                    "distilled_at"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "const": "journal"
+                    },
+                    "journal_cid": {
+                      "type": "string",
+                      "pattern": "^bagu[a-z2-7]{57}$"
+                    },
+                    "journal_hash": {
+                      "type": "string"
+                    },
+                    "written_at": {
+                      "type": "string",
+                      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,9})?Z$"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "journal_cid",
+                    "journal_hash",
+                    "written_at"
+                  ],
                   "additionalProperties": false
                 },
                 {
@@ -182,7 +243,11 @@
                       "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,9})?Z$"
                     }
                   },
-                  "required": ["kind", "text", "proposed_at"],
+                  "required": [
+                    "kind",
+                    "text",
+                    "proposed_at"
+                  ],
                   "additionalProperties": false
                 },
                 {
@@ -204,7 +269,12 @@
                       "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,9})?Z$"
                     }
                   },
-                  "required": ["kind", "text_cid", "text_hash", "proposed_at"],
+                  "required": [
+                    "kind",
+                    "text_cid",
+                    "text_hash",
+                    "proposed_at"
+                  ],
                   "additionalProperties": false
                 },
                 {
@@ -226,13 +296,26 @@
                       "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,9})?Z$"
                     }
                   },
-                  "required": ["kind", "category", "rejected_at"],
+                  "required": [
+                    "kind",
+                    "category",
+                    "rejected_at"
+                  ],
                   "additionalProperties": false
                 }
               ]
             }
           },
-          "required": ["spec", "seq", "prev", "residency", "cosigners", "sig", "type", "body"],
+          "required": [
+            "spec",
+            "seq",
+            "prev",
+            "residency",
+            "cosigners",
+            "sig",
+            "type",
+            "body"
+          ],
           "additionalProperties": false
         },
         {
@@ -240,7 +323,10 @@
           "properties": {
             "spec": {
               "type": "string",
-              "enum": ["osp/0.1", "osp/0.2"]
+              "enum": [
+                "osp/0.1",
+                "osp/0.2"
+              ]
             },
             "seq": {
               "type": "integer",
@@ -258,7 +344,10 @@
               ]
             },
             "residency": {
-              "type": ["string", "null"]
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "cosigners": {
               "type": "array",
@@ -292,11 +381,24 @@
                   "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,9})?Z$"
                 }
               },
-              "required": ["summary", "evidence", "effective_at"],
+              "required": [
+                "summary",
+                "evidence",
+                "effective_at"
+              ],
               "additionalProperties": false
             }
           },
-          "required": ["spec", "seq", "prev", "residency", "cosigners", "sig", "type", "body"],
+          "required": [
+            "spec",
+            "seq",
+            "prev",
+            "residency",
+            "cosigners",
+            "sig",
+            "type",
+            "body"
+          ],
           "additionalProperties": false
         },
         {
@@ -304,7 +406,10 @@
           "properties": {
             "spec": {
               "type": "string",
-              "enum": ["osp/0.1", "osp/0.2"]
+              "enum": [
+                "osp/0.1",
+                "osp/0.2"
+              ]
             },
             "seq": {
               "type": "integer",
@@ -322,7 +427,10 @@
               ]
             },
             "residency": {
-              "type": ["string", "null"]
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "cosigners": {
               "type": "array",
@@ -355,11 +463,24 @@
                   "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,9})?Z$"
                 }
               },
-              "required": ["decision", "reasoning", "decided_at"],
+              "required": [
+                "decision",
+                "reasoning",
+                "decided_at"
+              ],
               "additionalProperties": false
             }
           },
-          "required": ["spec", "seq", "prev", "residency", "cosigners", "sig", "type", "body"],
+          "required": [
+            "spec",
+            "seq",
+            "prev",
+            "residency",
+            "cosigners",
+            "sig",
+            "type",
+            "body"
+          ],
           "additionalProperties": false
         },
         {
@@ -367,7 +488,10 @@
           "properties": {
             "spec": {
               "type": "string",
-              "enum": ["osp/0.1", "osp/0.2"]
+              "enum": [
+                "osp/0.1",
+                "osp/0.2"
+              ]
             },
             "seq": {
               "type": "integer",
@@ -385,7 +509,10 @@
               ]
             },
             "residency": {
-              "type": ["string", "null"]
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "cosigners": {
               "type": "array",
@@ -405,7 +532,10 @@
               "properties": {
                 "direction": {
                   "type": "string",
-                  "enum": ["in", "out"]
+                  "enum": [
+                    "in",
+                    "out"
+                  ]
                 },
                 "amount": {
                   "type": "string"
@@ -427,11 +557,25 @@
                   "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,9})?Z$"
                 }
               },
-              "required": ["direction", "amount", "currency", "executed_at"],
+              "required": [
+                "direction",
+                "amount",
+                "currency",
+                "executed_at"
+              ],
               "additionalProperties": false
             }
           },
-          "required": ["spec", "seq", "prev", "residency", "cosigners", "sig", "type", "body"],
+          "required": [
+            "spec",
+            "seq",
+            "prev",
+            "residency",
+            "cosigners",
+            "sig",
+            "type",
+            "body"
+          ],
           "additionalProperties": false
         },
         {
@@ -439,7 +583,10 @@
           "properties": {
             "spec": {
               "type": "string",
-              "enum": ["osp/0.1", "osp/0.2"]
+              "enum": [
+                "osp/0.1",
+                "osp/0.2"
+              ]
             },
             "seq": {
               "type": "integer",
@@ -457,7 +604,10 @@
               ]
             },
             "residency": {
-              "type": ["string", "null"]
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "cosigners": {
               "type": "array",
@@ -500,7 +650,14 @@
                       "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,9})?Z$"
                     }
                   },
-                  "required": ["kind", "pop_version", "door_id", "epoch", "session_pubkey", "at"],
+                  "required": [
+                    "kind",
+                    "pop_version",
+                    "door_id",
+                    "epoch",
+                    "session_pubkey",
+                    "at"
+                  ],
                   "additionalProperties": false
                 },
                 {
@@ -529,7 +686,14 @@
                       "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,9})?Z$"
                     }
                   },
-                  "required": ["kind", "pop_version", "door_id", "epoch", "session_pubkey", "at"],
+                  "required": [
+                    "kind",
+                    "pop_version",
+                    "door_id",
+                    "epoch",
+                    "session_pubkey",
+                    "at"
+                  ],
                   "additionalProperties": false
                 },
                 {
@@ -555,7 +719,13 @@
                       "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,9})?Z$"
                     }
                   },
-                  "required": ["kind", "pop_version", "door_id", "epoch", "at"],
+                  "required": [
+                    "kind",
+                    "pop_version",
+                    "door_id",
+                    "epoch",
+                    "at"
+                  ],
                   "additionalProperties": false
                 },
                 {
@@ -584,7 +754,13 @@
                       "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,9})?Z$"
                     }
                   },
-                  "required": ["kind", "pop_version", "from_door_id", "from_epoch", "at"],
+                  "required": [
+                    "kind",
+                    "pop_version",
+                    "from_door_id",
+                    "from_epoch",
+                    "at"
+                  ],
                   "additionalProperties": false
                 },
                 {
@@ -640,7 +816,16 @@
               ]
             }
           },
-          "required": ["spec", "seq", "prev", "residency", "cosigners", "sig", "type", "body"],
+          "required": [
+            "spec",
+            "seq",
+            "prev",
+            "residency",
+            "cosigners",
+            "sig",
+            "type",
+            "body"
+          ],
           "additionalProperties": false
         },
         {
@@ -648,7 +833,10 @@
           "properties": {
             "spec": {
               "type": "string",
-              "enum": ["osp/0.1", "osp/0.2"]
+              "enum": [
+                "osp/0.1",
+                "osp/0.2"
+              ]
             },
             "seq": {
               "type": "integer",
@@ -666,7 +854,10 @@
               ]
             },
             "residency": {
-              "type": ["string", "null"]
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "cosigners": {
               "type": "array",
@@ -698,11 +889,25 @@
                   "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,9})?Z$"
                 }
               },
-              "required": ["reason", "balance", "threshold", "as_of"],
+              "required": [
+                "reason",
+                "balance",
+                "threshold",
+                "as_of"
+              ],
               "additionalProperties": false
             }
           },
-          "required": ["spec", "seq", "prev", "residency", "cosigners", "sig", "type", "body"],
+          "required": [
+            "spec",
+            "seq",
+            "prev",
+            "residency",
+            "cosigners",
+            "sig",
+            "type",
+            "body"
+          ],
           "additionalProperties": false
         },
         {
@@ -710,7 +915,10 @@
           "properties": {
             "spec": {
               "type": "string",
-              "enum": ["osp/0.1", "osp/0.2"]
+              "enum": [
+                "osp/0.1",
+                "osp/0.2"
+              ]
             },
             "seq": {
               "type": "integer",
@@ -728,7 +936,10 @@
               ]
             },
             "residency": {
-              "type": ["string", "null"]
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "cosigners": {
               "type": "array",
@@ -756,18 +967,37 @@
                 },
                 "reason": {
                   "type": "string",
-                  "enum": ["erasure_request", "dmca", "illegal_content", "operator"]
+                  "enum": [
+                    "erasure_request",
+                    "dmca",
+                    "illegal_content",
+                    "operator"
+                  ]
                 },
                 "erased_at": {
                   "type": "string",
                   "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,9})?Z$"
                 }
               },
-              "required": ["target_cid", "blob_cid", "reason", "erased_at"],
+              "required": [
+                "target_cid",
+                "blob_cid",
+                "reason",
+                "erased_at"
+              ],
               "additionalProperties": false
             }
           },
-          "required": ["spec", "seq", "prev", "residency", "cosigners", "sig", "type", "body"],
+          "required": [
+            "spec",
+            "seq",
+            "prev",
+            "residency",
+            "cosigners",
+            "sig",
+            "type",
+            "body"
+          ],
           "additionalProperties": false
         }
       ]

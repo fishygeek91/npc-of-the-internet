@@ -153,10 +153,9 @@ Every attestation body MUST include `pop_version: "pop/0.1"` (see OSP records).
 
 On depart, before the `departure` attestation:
 
-- Distill the residency into candidate memory shards.
-- Run the cosign flow at the Door (`POST /door/cosign`).
-- Obtain Door co-signature for the departure record via `POST /door/attest` (`kind: "departure"`).
-- Append cosigned `memory` records, then `departure`, then `travel`.
+- Distill the residency into memory shards.
+- Have each shard (and then the journal) witnessed by the Door via `POST /door/attest` (`kind: "memory"`), appending the witnessed `memory` record or a `rejected` record for each.
+- Obtain Door co-signature for the departure record via `POST /door/attest` (`kind: "departure"`) and append it, then append `travel` (with `to_door_id` when the next Door is already chosen).
 
 ### 6.4 Arrive responsibilities
 
@@ -270,7 +269,7 @@ Conformance test vectors in `spec/pop/vectors/` are the final arbiter when this 
 ## 11. Related specifications
 
 - **OSP records** (`spec/osp/records.md`) — `attestation` record envelope and soulchain rules.
-- **Door API** (`spec/door/api.md`) — `hello`, `session`, `heartbeat`, `attest`, `cosign` endpoints.
+- **Door API** (`spec/door/api.md`) — `hello`, `session`, `heartbeat`, `attest` endpoints.
 - **ARCHITECTURE.md §3** — motivational overview (threshold/TEE described there as long-term, not Ghost requirements).
 
 ---
