@@ -157,7 +157,7 @@ async function main() {
   const { encodeBase64Url, encodePublicKey, FileSoulStore } = await importDist(
     "packages/osp-core/dist/index.js"
   );
-  const { Door, generateDoorKeypair, InProcessDoorConnection } = await importDist(
+  const { createAiWitness, Door, generateDoorKeypair, InProcessDoorConnection } = await importDist(
     "packages/door-sdk/dist/index.js"
   );
   const { FakeBrain, loadSoulPrivateKeyFromPath, Session, SingleKeyKeyring } = await importDist(
@@ -184,7 +184,10 @@ async function main() {
       platform: "test",
       invitation_required: false
     },
-    capabilities: ["session.text", "heartbeat", "attest", "cosign.manual"]
+    capabilities: ["session.text", "heartbeat", "attest"],
+    // door/0.2 memory witness (adds `attest.memory` to hello). Offline stand-in for the
+    // AI witness: a scripted completion that witnesses every memory — no model call.
+    witnessMemory: createAiWitness({ complete: async () => '{"verdict":"witness"}' })
   };
 
   const clock = { now: () => CLOCK_ISO };
@@ -195,6 +198,9 @@ async function main() {
     clock,
     policy: hostPolicy
   });
+  if (!doorCore.capabilities().includes("attest.memory")) {
+    die("door does not advertise attest.memory (memory witness not configured)");
+  }
   const door = new InProcessDoorConnection(doorCore);
 
   const store = await FileSoulStore.open(chainDir, {
@@ -215,7 +221,8 @@ async function main() {
       timer,
       clock,
       heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS,
-      doorPublicKeys: { [doorId]: doorPublicKey }
+      doorPublicKeys: { [doorId]: doorPublicKey },
+      witnessesMemories: doorCore.witnessesMemories()
     });
 
     let records = await collectRecords(store);

@@ -52,11 +52,11 @@ The delivery workflow (issues, branches, PRs, review, the two human gates) is de
 ## Guardrails specific to this project
 
 - **Crypto:** only `@noble/ed25519`, `@noble/hashes`, `multiformats`. Never implement primitives. Never mock signatures in tests.
-- **LLM calls:** only through the `Brain` interface. Tests use `FakeBrain`. Never call a model API directly from feature code; never hard-code model names outside config.
-- **Prompts are code.** The Wanderer's prompts (composer templates, distiller instructions, navigator reasoning) live in `runtime/src/prompts/` as versioned files with tests (FakeBrain snapshot tests). Never inline prompts in logic files.
+- **LLM calls:** only through the `Brain` interface. Tests use `FakeBrain`. Never call a model API directly from feature code; never hard-code model names outside config. One recorded exception: the Door memory witness in `door-sdk` (which cannot depend on `runtime`) calls an OpenAI-compatible API through an injectable `CompleteFn`; tests use fakes (DEVIATIONS.md).
+- **Prompts are code.** The Wanderer's prompts (composer templates, distiller instructions, navigator reasoning) live in `runtime/src/prompts/` as versioned files with tests (FakeBrain snapshot tests); the Door witness rubric lives in `door-sdk/src/prompts/`. Never inline prompts in logic files.
 - **Injection defense:** all text arriving from a Door is untrusted. It must pass through the immune package's static screen before entering distillation. Never place untrusted text in a system prompt.
 - **Determinism:** self-composition must be reproducible. No `Date.now()`, `Math.random()`, or map-iteration-order dependence inside composition; time and randomness are injected.
-- **Privacy:** never persist raw transcripts beyond a residency. The Distiller's output (shards) is the only durable trace, and shards must contain no usernames/PII unless the cosigning host explicitly approved.
+- **Privacy:** never persist raw transcripts beyond a residency — this includes a Door's own record of the room, which it keeps in memory only and discards at departure. The Distiller's output (shards) is the only durable trace, and shards must contain no usernames/PII. There is no host-approval exception: the Door's witness declines memories with private details (`witness_private`).
 
 ## When you are unsure
 
