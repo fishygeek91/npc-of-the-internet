@@ -322,6 +322,67 @@ describe("Door", () => {
     ).rejects.toThrow(/epoch_closed/);
   });
 
+  it("departure is idempotent: a lost-response retry is co-signed again until the next arrival", async () => {
+    const { door, doorKeypair } = createDoor({ soulPublicKey: soul.publicKey });
+    await establishArrival(door, soul, session, EPOCH);
+    const events: string[] = [];
+    door.addSessionLifecycleListener((event) => events.push(event.type));
+    const departureFields = {
+      protocol_version: DOOR_PROTOCOL_VERSION,
+      door_id: DOOR_ID,
+      epoch: EPOCH,
+      kind: "departure" as const,
+      core: attestCore("departure", EPOCH),
+      session_pubkey: encodePublicKey(session.publicKey),
+      issued_at: ISSUED_AT
+    };
+    const first = await door.attest(signAttestRequest(soul, session, departureFields, false));
+    // The response was lost; the Wanderer retries the very same departure.
+    const retry = await door.attest(signAttestRequest(soul, session, departureFields, false));
+    expect(retry.kind).toBe("departure");
+    expect(retry.door_cosig).toBe(first.door_cosig); // same core → same Ed25519 co-signature
+    expect(verifyDoorCosig(departureFields.core, retry.door_cosig, doorKeypair.publicKey)).toBe(
+      true
+    );
+    expect(events).toEqual(["retired"]); // the retry changes no state
+    expect(door.getActiveEpoch()).toBeNull();
+
+    // Only that exact departure is replayed: another core, a wrong signer, or other kinds are not.
+    const otherCore = new TextDecoder().decode(
+      canonicalize({
+        spec: "osp/0.2",
+        seq: 2,
+        prev: "bafyother",
+        type: "attestation",
+        body: { kind: "departure", door_id: DOOR_ID, epoch: EPOCH },
+        residency: RESIDENCY
+      })
+    );
+    await expect(
+      door.attest(signAttestRequest(soul, session, { ...departureFields, core: otherCore }, false))
+    ).rejects.toMatchObject({ code: "epoch_closed" });
+    await expect(
+      door.attest(signAttestRequest(soul, generateKeypair(), departureFields, false))
+    ).rejects.toMatchObject({ code: "signature_invalid" });
+    await expect(
+      door.attest(
+        signAttestRequest(
+          soul,
+          session,
+          { ...departureFields, kind: "heartbeat", core: attestCore("heartbeat", EPOCH) },
+          false
+        )
+      )
+    ).rejects.toMatchObject({ code: "epoch_closed" });
+
+    // The next arrival ends the replay window.
+    const nextSession = generateKeypair();
+    await establishArrival(door, soul, nextSession, EPOCH + 1);
+    await expect(
+      door.attest(signAttestRequest(soul, session, departureFields, false))
+    ).rejects.toMatchObject({ code: "epoch_mismatch" });
+  });
+
   it("rejects heartbeat attest when no arrival established session", async () => {
     const door = createTestDoor();
     const request = signAttestRequest(

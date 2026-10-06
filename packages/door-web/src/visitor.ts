@@ -8,15 +8,18 @@ export const NAME_MAX = 32;
 export const TEXT_MAX = 500;
 
 /**
- * Controls (`Cc`) and invisible format characters (`Cf`: zero-width space/joiners, bidi
- * marks and overrides, soft hyphen, Unicode tag characters) — spoofing and hidden text.
+ * Controls (`Cc`), invisible format characters (`Cf`: zero-width space/joiners, bidi
+ * marks and overrides, soft hyphen, Unicode tag characters) and other default-ignorable
+ * code points (Hangul fillers, variation selectors, …) — spoofing and hidden text.
  */
-const NAME_STRIP_RE = /[\p{Cc}\p{Cf}]/gu;
+const NAME_STRIP_RE = /[\p{Cc}\p{Cf}\p{Default_Ignorable_Code_Point}]/gu;
 /**
  * Same as {@link NAME_STRIP_RE} for message text, except newline and tab are kept, and so
- * is the zero-width joiner (U+200D) so emoji sequences like 👩‍💻 survive.
+ * are the zero-width joiner (U+200D) and variation selectors so emoji like 👩‍💻 and ❤️
+ * survive.
  */
-const TEXT_STRIP_RE = /[^\P{Cc}\n\t]|[^\P{Cf}\u200D]/gu;
+const TEXT_STRIP_RE =
+  /[^\P{Cc}\n\t]|[^\P{Cf}\u200D]|(?![\uFE00-\uFE0F]|[\u{E0100}-\u{E01EF}]|\u200D)\p{Default_Ignorable_Code_Point}/gu;
 /** Folded names a visitor may not take (they would read as the Wanderer itself). */
 const RESERVED_FOLDED_NAMES: ReadonlySet<string> = new Set(["wanderer", "thewanderer"]);
 
@@ -33,12 +36,14 @@ function codePointLength(value: string): number {
 }
 
 /**
- * Comparison form of a display name: NFKC, lowercase, letters only — so "THE  WANDERER",
- * "the wanderer." and full-width "Ｗａｎｄｅｒｅｒ" all fold to the same key.
+ * Comparison form of a display name: NFKC, default-ignorables dropped, lowercase, letters
+ * only — so "THE  WANDERER", "the wanderer.", full-width "Ｗａｎｄｅｒｅｒ" and
+ * "Wㅤanderer" (Hangul filler) all fold to the same key.
  */
 export function foldName(name: string): string {
   return name
     .normalize("NFKC")
+    .replace(NAME_STRIP_RE, "")
     .toLowerCase()
     .replace(/[^\p{L}]/gu, "");
 }
@@ -50,10 +55,10 @@ export function isReservedName(name: string): boolean {
 
 /**
  * Validate and clean a visitor message body (`{ name, text }`).
- * name: control and format (`Cf`) chars stripped, whitespace collapsed, trimmed, 1–32 code
- * points, and not "(The) Wanderer" after folding ({@link foldName}).
- * text: CRLF → LF, control and format chars (except LF, TAB, ZWJ) stripped, trimmed,
- * 1–500 code points.
+ * name: control, format (`Cf`) and default-ignorable chars stripped, whitespace collapsed,
+ * trimmed, 1–32 code points, and not "(The) Wanderer" after folding ({@link foldName}).
+ * text: CRLF → LF, control, format and default-ignorable chars (except LF, TAB, ZWJ and
+ * variation selectors) stripped, trimmed, 1–500 code points.
  */
 export function parseSay(body: unknown): SayParseResult {
   const record =

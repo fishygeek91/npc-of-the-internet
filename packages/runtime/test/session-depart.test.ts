@@ -78,6 +78,12 @@ class PausingStore implements SoulStore {
   failNextAppend: ((record: OspRecord) => boolean) | null = null;
   /** Append the next matching record, then throw anyway (the write landed), once. */
   landThenFailNextAppend: ((record: OspRecord) => boolean) | null = null;
+  /**
+   * With {@link landThenFailNextAppend}: `head()` keeps reporting the pre-append head until
+   * the next append (as FileSoulStore after a failed fsync of a line that did land).
+   */
+  lagHeadAfterLandedFailure = false;
+  private laggingHead: HeadInfo | null = null;
   /** Side-blob CIDs ever written. */
   readonly sideBlobCids: string[] = [];
 
@@ -106,16 +112,22 @@ class PausingStore implements SoulStore {
       this.failNextAppend = null;
       throw new Error("simulated append failure");
     }
+    // Like FileSoulStore, an append re-reads the real head first.
+    this.laggingHead = null;
     if (this.landThenFailNextAppend?.(record) === true) {
       this.landThenFailNextAppend = null;
+      const before = await this.inner.head();
       await this.inner.append(record);
+      if (this.lagHeadAfterLandedFailure) {
+        this.laggingHead = before;
+      }
       throw new Error("simulated append failure after the write landed");
     }
     return this.inner.append(record);
   }
 
   async head(): Promise<HeadInfo | null> {
-    return this.inner.head();
+    return this.laggingHead ?? this.inner.head();
   }
 
   async get(cid: string): Promise<OspRecord> {
@@ -198,10 +210,12 @@ function distillCalls(brain: FakeBrain): number {
 /**
  * DoorConnection over a DoorStub whose attest answers can be lost: when `loseResponse`
  * matches, the Door processes the request (and co-signs), but the caller sees
- * `door_unavailable`. Counts attests per kind.
+ * `door_unavailable`. `refuse` answers a matching request with its error without asking
+ * the Door. Counts attests per kind.
  */
 class LossyDoor implements DoorConnection {
   loseResponse: ((request: AttestRequest) => boolean) | null = null;
+  refuse: ((request: AttestRequest) => DoorError | null) | null = null;
   readonly attests: string[] = [];
 
   constructor(readonly inner: DoorStub) {}
@@ -212,6 +226,10 @@ class LossyDoor implements DoorConnection {
 
   async attest(request: AttestRequest): Promise<AttestResponse> {
     this.attests.push(request.kind);
+    const refused = this.refuse?.(request) ?? null;
+    if (refused !== null) {
+      throw refused;
+    }
     const response = await this.inner.attest(request);
     if (this.loseResponse?.(request) === true) {
       this.loseResponse = null;
@@ -797,18 +815,43 @@ describe("Session.depart retries (in-process depart ledger)", () => {
     await expectChainValid(store);
   });
 
+  it("lost departure answer: the retry re-sends the same core and the Door replays its co-signature", async () => {
+    const store = await buildGenesisStore();
+    const harness = createSessionHarness(store, scriptedBrain(nShards(1)));
+    const door = new LossyDoor(harness.door);
+    const session = await harness.start(door);
+    door.loseResponse = (request) => request.kind === "departure";
+    const options = await transcriptOptions();
+
+    await expect(session.depart(options)).rejects.toThrow(/response lost/);
+    // Time passes before the retry: the departure body must not change.
+    harness.clock.set("2026-07-20T00:05:00.000Z");
+    await session.depart(options);
+
+    expect(door.attests.filter((kind) => kind === "departure")).toHaveLength(2);
+    expect(shape(await collectRecords(store))).toEqual([
+      "attestation/arrival",
+      "memory/shard",
+      "memory/journal",
+      "attestation/departure",
+      "attestation/travel"
+    ]);
+    await expectChainValid(store);
+  });
+
   it("departBare: a departure the Door will not attest (epoch_closed) still appends travel", async () => {
     const store = await buildGenesisStore();
     const harness = createSessionHarness(store, scriptedBrain(nShards(1)));
     const door = new LossyDoor(harness.door);
     const session = await harness.start(door);
-    // The Door co-signs the departure (closing the epoch) but the answer never arrives.
-    door.loseResponse = (request) => request.kind === "departure";
+    door.refuse = (request) =>
+      request.kind === "departure"
+        ? DoorError.fromCode("epoch_closed", "epoch_closed: residency already departed")
+        : null;
     const options = await transcriptOptions();
 
-    await expect(session.depart(options)).rejects.toThrow(/response lost/);
-    const retry = await session.depart(options).catch((error: unknown) => error);
-    expect((retry as DoorError).code).toBe("epoch_closed");
+    const failed = await session.depart(options).catch((error: unknown) => error);
+    expect((failed as DoorError).code).toBe("epoch_closed");
 
     await expect(session.departBare("web:next")).resolves.toEqual({ departure: false });
 
@@ -825,5 +868,59 @@ describe("Session.depart retries (in-process depart ledger)", () => {
     ).toBe("web:next");
     await expectChainValid(store);
     await expect(session.departBare()).rejects.toThrow(/already departed/);
+  });
+
+  it("departBare: a departure append that landed and then threw is reported on chain", async () => {
+    const store = await buildGenesisStore();
+    const session = await createSessionHarness(store, scriptedBrain(nShards(1))).start();
+    store.landThenFailNextAppend = (record) =>
+      record.type === "attestation" && record.body.kind === "departure";
+
+    await expect(session.departBare("web:next")).resolves.toEqual({ departure: true });
+
+    expect(attestationKinds(await collectRecords(store))).toEqual([
+      "attestation/arrival",
+      "attestation/departure",
+      "attestation/travel"
+    ]);
+    await expectChainValid(store);
+  });
+
+  it("departBare: travel is sealed against the actual head when head() lags a landed departure", async () => {
+    const store = await buildGenesisStore();
+    const session = await createSessionHarness(store, scriptedBrain(nShards(1))).start();
+    store.lagHeadAfterLandedFailure = true;
+    store.landThenFailNextAppend = (record) =>
+      record.type === "attestation" && record.body.kind === "departure";
+
+    await expect(session.departBare("web:next")).resolves.toEqual({ departure: true });
+
+    expect(attestationKinds(await collectRecords(store))).toEqual([
+      "attestation/arrival",
+      "attestation/departure",
+      "attestation/travel"
+    ]);
+    await expectChainValid(store);
+  });
+
+  it("once departBare sealed travel, depart refuses; departBare finishes", async () => {
+    const store = await buildGenesisStore();
+    const harness = createSessionHarness(store, scriptedBrain(nShards(2)));
+    const door = new LossyDoor(harness.door);
+    const session = await harness.start(door);
+    door.loseResponse = (request) => request.kind === "departure";
+    store.failNextAppend = (record) =>
+      record.type === "attestation" && record.body.kind === "travel";
+
+    await expect(session.departBare("web:next")).rejects.toThrow(/simulated append failure/);
+    await expect(session.depart(await transcriptOptions())).rejects.toThrow(SessionError);
+    await expect(session.departBare("web:next")).resolves.toEqual({ departure: false });
+
+    expect(door.attests.filter((kind) => kind === "memory")).toEqual([]);
+    expect(shape(await collectRecords(store))).toEqual([
+      "attestation/arrival",
+      "attestation/travel"
+    ]);
+    await expectChainValid(store);
   });
 });

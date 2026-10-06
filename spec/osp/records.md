@@ -99,7 +99,7 @@ Memory subtypes are distinguished by **`body.kind`** (not by separate top-level 
 | `kind` | Meaning | `cosigners` |
 |--------|---------|-------------|
 | `shard` | A witnessed memory; included in self-composition. | **Required non-empty** (the Door's witness co-signature). |
-| `journal` | The Wanderer's account of a residency, written from that residency's witnessed shards only; at most one per residency; published (e.g. on the Atlas), never composed into the self. `osp/0.2` only. | **Required non-empty** (witnessed against the residency's witnessed shards). |
+| `journal` | The Wanderer's account of a residency, written from that residency's witnessed shards only; at most one journal text per residency (a lost-response retry may append the same text twice — readers dedupe by `journal_hash`, shards likewise by `text_hash`; verifiers do not reject it); published (e.g. on the Atlas), never composed into the self. `osp/0.2` only. | **Required non-empty** (witnessed against the residency's witnessed shards). |
 | `rejected` | A memory that did not make it: dropped by the Wanderer's own immune screen, or declined by the Door's witness. Category only; **no payload**. | `[]` |
 
 #### Order within a residency (informative)

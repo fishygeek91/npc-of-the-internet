@@ -7,7 +7,7 @@
  * shard / rejected / journal / departure / travel(→ B) records → arrival at Door B at
  * epoch + 1 → the chain verifies with both Door keys.
  */
-import { readFile, readdir } from "node:fs/promises";
+import { access, readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { OutboundFrameSchema, type OutboundFrame } from "@npc/door-sdk";
@@ -450,6 +450,95 @@ describe("residency lifecycle (daemon, multi-Door)", () => {
     );
     expect(handle.currentDoorId()).toBe(B);
     expect(handle.currentEpoch()).toBe(2);
+  });
+
+  it("boot ignores a travel without to_door_id: the last arrival's Door stays preferred", async () => {
+    const dirs = await createSoulDirs("npc-boot-travel-nowhere-");
+    const a = await door(A, DOOR);
+    const b = await door(B, OTHER_DOOR);
+    // A residency at A that departed with no destination (no Door was online).
+    const store = await FileSoulStore.open(dirs.chainDir, { doorPublicKeys: KEYS });
+    const session = await Session.start({
+      store,
+      brain: lifecycleBrain(),
+      door: a.door,
+      keyring: new SingleKeyKeyring(SOUL.privateKey),
+      doorId: A,
+      timer: new FakeTimer(),
+      clock: { now: () => new Date().toISOString() },
+      doorPublicKeys: KEYS
+    });
+    await session.departBare();
+    await store.close();
+
+    handle = await startResidencyDaemon(
+      multiDoorConfig({ dirs, doors: [a, b], doorPublicKeys: KEYS, preferredDoorId: B }),
+      { brain: lifecycleBrain(), timer: new FakeTimer(), logger: silent, skipSignals: true }
+    );
+    expect(handle.currentDoorId()).toBe(A);
+    expect(handle.currentEpoch()).toBe(2);
+  });
+
+  it("the Door restarted: its refusal of the socket re-bind travels on before any heartbeat", async () => {
+    const dirs = await createSoulDirs("npc-lost-bind-");
+    const a = await door(A, DOOR);
+    const b = await door(B, OTHER_DOOR);
+    const timer = new FakeTimer();
+    const { logger, lines } = capturingLogger();
+    handle = await startResidencyDaemon(
+      multiDoorConfig({ dirs, doors: [a, b], doorPublicKeys: KEYS, preferredDoorId: A }),
+      { brain: lifecycleBrain(), timer, logger, skipSignals: true }
+    );
+    const daemon = handle;
+    await waitFor(() => a.wsServer.getActiveClients().size === 1, "socket at A");
+
+    // Door A restarts on the same URL; the client reconnects and the bind is refused.
+    const port = Number(new URL(a.baseUrl).port);
+    await a.stop();
+    doors.splice(doors.indexOf(a), 1);
+    await door(A, DOOR, { port });
+
+    await waitFor(() => daemon.currentDoorId() === B, "travel after the refused re-bind");
+    expect(lines).toContainEqual(
+      expect.objectContaining({ msg: "residency_session_lost", doorId: A, epoch: 1, via: "bind" })
+    );
+    expect(lines.some((line) => line.msg === "heartbeat_failed")).toBe(false);
+    await daemon.shutdown();
+    handle = null;
+
+    expect(chainShape(await readVerifiedChain(dirs.chainDir, KEYS))).toEqual([
+      `arrival:${A}:1`,
+      `travel:${A}->${B}`,
+      `arrival:${B}:2`
+    ]);
+  });
+
+  it("a boot failure after arrival (control dir) unregisters signals and releases the residency", async () => {
+    const dirs = await createSoulDirs("npc-boot-control-");
+    const a = await door(A, DOOR);
+    const blocker = join(dirs.root, "not-a-dir");
+    await writeFile(blocker, "x", "utf8");
+    const counts = (): number[] =>
+      (["SIGTERM", "SIGINT", "SIGUSR2"] as const).map((signal) => process.listenerCount(signal));
+    const before = counts();
+
+    await expect(
+      startResidencyDaemon(
+        multiDoorConfig({
+          dirs,
+          doors: [a],
+          doorPublicKeys: KEYS,
+          residency: { controlDir: join(blocker, "control") }
+        }),
+        { brain: lifecycleBrain(), timer: new FakeTimer(), logger: silent, skipSignals: false }
+      )
+    ).rejects.toThrow();
+
+    expect(counts()).toEqual(before);
+    await waitFor(() => a.wsServer.getActiveClients().size === 0, "socket at A closed");
+    await expect(access(dirs.readyFilePath)).rejects.toThrow();
+    // The store was closed: the chain opens again and holds only the arrival.
+    expect(chainShape(await readVerifiedChain(dirs.chainDir, KEYS))).toEqual([`arrival:${A}:1`]);
   });
 
   it("the Door lost the session (restart): heartbeat session_invalid → travels on without memories", async () => {

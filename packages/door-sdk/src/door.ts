@@ -126,6 +126,11 @@ export class Door {
   private readonly maxIssuedAtSkewMs: number;
   private activeSession: ActiveSession | null = null;
   private sessionRetired = false;
+  /**
+   * The last accepted departure, until the next arrival: a lost-response retry of exactly
+   * this departure is co-signed again instead of answered `epoch_closed`.
+   */
+  private lastDeparture: { epoch: number; sessionPubkey: string; core: string } | null = null;
   /** Highest arrival epoch ever accepted (in-memory; lost on process restart). */
   private lastKnownEpoch: number | null = null;
   private lastHeartbeatSeq = 0;
@@ -354,11 +359,20 @@ export class Door {
         sessionPubkey: request.session_pubkey
       };
       this.sessionRetired = false;
+      this.lastDeparture = null;
       this.lastHeartbeatSeq = 0;
       this.seenOutboundMsgIds.clear();
       this.clearResidencyRecord();
       this.lastKnownEpoch = request.epoch;
       this.emitSessionLifecycle({ type: "arrived", doorId: this.doorId, epoch: request.epoch });
+    } else if (this.isDepartureRetry(request)) {
+      // Lost-response retry of the departure just accepted: co-sign the same core again.
+      if (!verify(payload, requestSig, decodePublicKey(request.session_pubkey))) {
+        throw DoorError.fromCode(
+          "signature_invalid",
+          "departure attest: invalid session signature"
+        );
+      }
     } else {
       this.assertSessionRequest(request, payload, requestSig);
       if (request.kind === "memory") {
@@ -372,6 +386,11 @@ export class Door {
         const departedEpoch = request.epoch;
         this.activeSession = null;
         this.sessionRetired = true;
+        this.lastDeparture = {
+          epoch: departedEpoch,
+          sessionPubkey: request.session_pubkey,
+          core: request.core
+        };
         this.clearResidencyRecord();
         this.emitSessionLifecycle({
           type: "retired",
@@ -402,6 +421,19 @@ export class Door {
       received_at: receivedAt,
       door_sig: doorSig
     };
+  }
+
+  /** Whether `request` repeats the departure accepted last (same epoch, session and core). */
+  private isDepartureRetry(request: AttestRequest): boolean {
+    const last = this.lastDeparture;
+    return (
+      request.kind === "departure" &&
+      this.sessionRetired &&
+      last !== null &&
+      last.epoch === request.epoch &&
+      last.sessionPubkey === request.session_pubkey &&
+      last.core === request.core
+    );
   }
 
   /** Forget the epoch's record and memory decisions (arrival, departure, supersession). */

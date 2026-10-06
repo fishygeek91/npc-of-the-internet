@@ -1,6 +1,7 @@
 // Prompts for the reference AI memory witness (`createAiWitness`). Prompts are code:
 // changing this text changes what Doors witness, so it is snapshot-tested.
 
+import { RECORD_AUTHOR_MAX } from "../residency-record.js";
 import type { WitnessInput } from "../witness.js";
 
 /** The witness rubric (system prompt). Stable text: changing it changes what gets witnessed. */
@@ -39,7 +40,7 @@ export function buildWitnessUserPrompt(input: WitnessInput, tag: string): string
                 ? { role: "wanderer", text: line.text }
                 : {
                     role: "community",
-                    author: (line.author ?? "someone").slice(0, 64),
+                    author: (line.author ?? "someone").slice(0, RECORD_AUTHOR_MAX),
                     text: line.text
                   }
             )

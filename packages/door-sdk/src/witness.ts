@@ -49,6 +49,12 @@ export type AiWitnessOptions = {
 const DEFAULT_ATTEMPTS = 2;
 
 /**
+ * Largest `DOOR_WITNESS_TIMEOUT_MS`: two witness attempts must finish inside the
+ * Wanderer's 180 s memory-attest timeout (`DEFAULT_MEMORY_ATTEST_TIMEOUT_MS`), with margin.
+ */
+export const MAX_WITNESS_TIMEOUT_MS = 85_000;
+
+/**
  * Parse a witness reply: the JSON object that **ends** the reply (reasoning models may
  * think out loud first; a closing code fence may follow). Returns null when the reply
  * does not end in a verdict object, so a truncated or malformed answer never falls back
@@ -224,7 +230,7 @@ function readKeyFile(path: string, envVar: string): string {
  * | API key | `DOOR_WITNESS_API_KEY` / `DOOR_WITNESS_API_KEY_FILE` (`NPC_BRAIN_API_KEY` / `NPC_BRAIN_API_KEY_FILE`) |
  * | model | `DOOR_WITNESS_MODEL` (`NPC_BRAIN_MODEL`) |
  * | OpenRouter allowlist | `DOOR_WITNESS_PROVIDER_ALLOWLIST` (`NPC_BRAIN_PROVIDER_ALLOWLIST`), comma-separated |
- * | timeout | `DOOR_WITNESS_TIMEOUT_MS` (default 60000) |
+ * | timeout | `DOOR_WITNESS_TIMEOUT_MS` (default 60000, at most {@link MAX_WITNESS_TIMEOUT_MS}) |
  *
  * `DOOR_WITNESS=off` turns witnessing off (the Wanderer forms no memories at this Door).
  * The Brain's API key and provider allowlist are only borrowed when the Brain's base URL
@@ -298,9 +304,14 @@ export function loadWitnessConfig(env: NodeJS.ProcessEnv = process.env): Witness
   let timeoutMs = 60_000;
   if (timeoutRaw !== undefined) {
     timeoutMs = Number.parseInt(timeoutRaw, 10);
-    if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1000 || String(timeoutMs) !== timeoutRaw) {
+    if (
+      !Number.isSafeInteger(timeoutMs) ||
+      timeoutMs < 1000 ||
+      timeoutMs > MAX_WITNESS_TIMEOUT_MS ||
+      String(timeoutMs) !== timeoutRaw
+    ) {
       throw new WitnessConfigError(
-        "DOOR_WITNESS_TIMEOUT_MS must be an integer ≥ 1000",
+        `DOOR_WITNESS_TIMEOUT_MS must be an integer from 1000 to ${String(MAX_WITNESS_TIMEOUT_MS)}`,
         "DOOR_WITNESS_TIMEOUT_MS"
       );
     }

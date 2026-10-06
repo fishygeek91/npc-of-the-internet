@@ -54,14 +54,15 @@ Environment variable names and purposes only. **Never commit values.**
 | `DOOR_WITNESS_BASE_URL` | OpenAI-compatible API origin for the Door's memory witness. Falls back to `NPC_BRAIN_BASE_URL` when `NPC_BRAIN_PROVIDER=openai-compat`. |
 | `DOOR_WITNESS_API_KEY` / `DOOR_WITNESS_API_KEY_FILE` | Witness API key (inline or in-container file path). Falls back to `NPC_BRAIN_API_KEY` / `NPC_BRAIN_API_KEY_FILE` only when the witness also uses the Brain's base URL — the Brain key is never sent to another host. `ops/compose.secrets.yml` mounts the Brain key file into both Doors. |
 | `DOOR_WITNESS_MODEL` | Witness model id. Falls back to `NPC_BRAIN_MODEL` (openai-compat). |
-| `DOOR_WITNESS_PROVIDER_ALLOWLIST` | OpenRouter `provider.only` slugs for the witness, comma-separated. Falls back to `NPC_BRAIN_PROVIDER_ALLOWLIST` (openai-compat). Not passed by Ghost compose (the fallback applies). |
-| `DOOR_WITNESS_TIMEOUT_MS` | Witness HTTP timeout, integer `≥ 1000` (default `60000`). Not passed by Ghost compose. |
+| `DOOR_WITNESS_PROVIDER_ALLOWLIST` | OpenRouter `provider.only` slugs for the witness, comma-separated. Falls back to `NPC_BRAIN_PROVIDER_ALLOWLIST` only when the witness also uses the Brain's base URL. |
+| `DOOR_WITNESS_TIMEOUT_MS` | Witness HTTP timeout per attempt, integer `1000`–`85000` (default `60000`; two attempts must finish inside the runtime's 180 s memory-attest timeout). |
 | `DOOR_WEB_ID` | door-web Door id (default `web:home`); must be bound in `ATLAS_DOOR_PUBKEYS`. |
 | `DOOR_WEB_COMMUNITY_NAME` / `DOOR_WEB_COMMUNITY_DESCRIPTION` | door-web page title/subtitle and `hello` community descriptor (public config). |
 | `DOOR_WEB_PUBLIC_HOST` / `DOOR_WEB_PUBLIC_PORT` | door-web visitor-site listener (default `0.0.0.0:8080`; Ghost compose publishes it on `127.0.0.1:8080` only). |
 | `DOOR_WEB_TRUST_PROXY` | `1` = door-web rate-limits by the last `X-Forwarded-For` hop (only behind your own proxy). Ghost compose default `1` (Caddy, `public` profile). |
 | `DOOR_WEB_GLOBAL_PER_MIN` | Visitor messages per minute for all door-web visitors together (default `30`). |
-| `DOOR_WEB_MAX_CLIENTS` | Max concurrent door-web SSE streams (default `500`). Not passed by Ghost compose. |
+| `DOOR_WEB_MAX_CLIENTS` | Max concurrent door-web SSE streams (default `200`). |
+| `DOOR_WEB_DAILY_MAX` | Visitor messages relayed to the Wanderer per UTC day (default `1500`; bounds LLM cost — beyond it the porch answers `quiet_hours`). |
 | `ATLAS_API_URL` | atlas-api base URL door-web uses to show where the Wanderer is while away (compose pins `http://atlas-api:8787`). |
 | `WEB_DOMAIN` | Public hostname for the web Door (compose profile `public`: Caddy serves `https://$WEB_DOMAIN` → door-web). Needs a DNS A/AAAA record and ports 80/443 open. Public config. |
 | `NPC_RUNTIME_READY_FILE` | Path written when the residency WebSocket is live (default `/tmp/npc-runtime.ready`). Used by compose healthcheck; optional override. |

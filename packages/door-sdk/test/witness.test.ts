@@ -8,12 +8,14 @@ import { buildWitnessUserPrompt, WITNESS_SYSTEM_PROMPT } from "../src/prompts/wi
 import {
   createAiWitness,
   loadWitnessConfig,
+  MAX_WITNESS_TIMEOUT_MS,
   openAiCompatComplete,
   parseWitnessReply,
   WitnessConfigError,
   type CompleteFn,
   type WitnessInput
 } from "../src/witness.js";
+import { DEFAULT_MEMORY_ATTEST_TIMEOUT_MS } from "../src/transports/http-client.js";
 
 const INPUT: WitnessInput = {
   doorId: "web:lantern",
@@ -471,10 +473,23 @@ describe("loadWitnessConfig", () => {
 
   it("validates DOOR_WITNESS_TIMEOUT_MS", () => {
     expect(loadWitnessConfig({ ...brain, DOOR_WITNESS_TIMEOUT_MS: "1000" })?.timeoutMs).toBe(1000);
-    expect(loadWitnessConfig({ ...brain, DOOR_WITNESS_TIMEOUT_MS: " 90000 " })?.timeoutMs).toBe(
-      90_000
+    expect(loadWitnessConfig({ ...brain, DOOR_WITNESS_TIMEOUT_MS: " 85000 " })?.timeoutMs).toBe(
+      85_000
     );
-    for (const bad of ["999", "0", "-5000", "abc", "1e4", "05000", "1500.5", "5000ms"]) {
+    // Two attempts must fit inside the Wanderer's memory-attest timeout.
+    expect(2 * MAX_WITNESS_TIMEOUT_MS).toBeLessThan(DEFAULT_MEMORY_ATTEST_TIMEOUT_MS);
+    for (const bad of [
+      "999",
+      "0",
+      "-5000",
+      "abc",
+      "1e4",
+      "05000",
+      "1500.5",
+      "5000ms",
+      "85001",
+      "90000"
+    ]) {
       expect(configError({ ...brain, DOOR_WITNESS_TIMEOUT_MS: bad }).envVar).toBe(
         "DOOR_WITNESS_TIMEOUT_MS"
       );

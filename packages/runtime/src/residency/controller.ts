@@ -1,3 +1,4 @@
+import { DoorError } from "@npc/door-sdk";
 import type { Logger } from "pino";
 
 import { DEFAULT_MIN_MEMORY_LINES, type DepartResult } from "../session/session.js";
@@ -124,6 +125,14 @@ class CycleAborted extends Error {
     super("residency cycle aborted by shutdown");
     this.name = "CycleAborted";
   }
+}
+
+/**
+ * The Door answered `epoch_closed`: this residency's epoch is closed there, so no memory
+ * can be witnessed any more and retrying depart is pointless — go straight to departBare.
+ */
+function isEpochClosed(error: unknown): boolean {
+  return error instanceof DoorError && error.code === "epoch_closed";
 }
 
 function errorMessage(error: unknown): string {
@@ -314,7 +323,8 @@ export class ResidencyController {
       const next = chooseNextDoor(available, fromDoor, this.random);
       this.options.logger.info({ fromDoor, toDoor: next, available }, "residency_next_door");
 
-      // 3. Depart (retryable); after the last attempt, departure + travel without memories.
+      // 3. Depart (retryable); after the last attempt — or at once when the Door says the
+      //    epoch is closed — departure + travel without memories.
       const request: DepartRequest = {
         ...(next === null ? {} : { toDoorId: next }),
         minMemoryLines:
@@ -330,7 +340,7 @@ export class ResidencyController {
           departed = await residency.depart(request);
           break;
         } catch (error: unknown) {
-          const delay = delays[attempt];
+          const delay = isEpochClosed(error) ? undefined : delays[attempt];
           this.options.logger.warn(
             { epoch: fromEpoch, attempt: attempt + 1, err: errorMessage(error) },
             "residency_depart_failed"

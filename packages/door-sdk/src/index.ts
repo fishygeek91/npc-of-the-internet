@@ -6,7 +6,10 @@ export type { HostPolicy } from "./policy.js";
 export {
   ResidencyRecord,
   DEFAULT_COMMUNITY_RECORD_CHARS,
-  DEFAULT_WANDERER_RECORD_CHARS
+  DEFAULT_WANDERER_RECORD_CHARS,
+  DEFAULT_COMMUNITY_RECORD_LINES,
+  DEFAULT_WANDERER_RECORD_LINES,
+  residencyLineChars
 } from "./residency-record.js";
 export type { ResidencyLine, ResidencyRecordOptions } from "./residency-record.js";
 export {
@@ -14,7 +17,8 @@ export {
   openAiCompatComplete,
   loadWitnessConfig,
   parseWitnessReply,
-  WitnessConfigError
+  WitnessConfigError,
+  MAX_WITNESS_TIMEOUT_MS
 } from "./witness.js";
 export { buildWitnessUserPrompt, WITNESS_SYSTEM_PROMPT } from "./prompts/witness.js";
 export type {

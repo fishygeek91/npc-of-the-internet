@@ -1,3 +1,4 @@
+import { DoorError } from "@npc/door-sdk";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -431,6 +432,26 @@ describe("ResidencyController cycle", () => {
     expect(world.residencies[0]?.bareCalls).toBe(1);
     expect(world.events.slice(-3)).toEqual(["depart_bare:1", "close:1", "arrive:b:2"]);
     expect(entries.some((entry) => entry.msg === "residency_depart_abandoned")).toBe(true);
+  });
+
+  it("depart answered epoch_closed: no retry — straight to departBare(next), then arrival", async () => {
+    const world = fakeWorld({
+      online: ["a", "b"],
+      depart: async () => {
+        throw DoorError.fromCode("epoch_closed", "residency already departed");
+      }
+    });
+    const { controller, delays } = controllerWith(world, {
+      departRetryDelaysMs: [30_000, 120_000],
+      bootPreference: async () => ["a"]
+    });
+    await controller.begin();
+    const outcome = await controller.requestCycle("operator");
+    expect(outcome).toMatchObject({ kind: "abandoned", fromDoor: "a", toDoor: "b", toEpoch: 2 });
+    expect(world.residencies[0]?.departRequests).toHaveLength(1);
+    expect(delays).toEqual([]);
+    expect(world.residencies[0]?.bareCalls).toBe(1);
+    expect(world.events.slice(-3)).toEqual(["depart_bare:1", "close:1", "arrive:b:2"]);
   });
 
   it("lost_session: no memory attempt — straight to departBare(next), then arrival", async () => {

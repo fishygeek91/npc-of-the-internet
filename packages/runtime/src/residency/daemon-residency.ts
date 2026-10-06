@@ -31,7 +31,8 @@ export type DaemonResidencyContext = {
   onConnectionChange: (connected: boolean) => void;
   /**
    * The Door no longer knows this attached residency (a heartbeat failed with
-   * `session_invalid` or `epoch_closed`, e.g. the Door restarted). Called at most once per
+   * `session_invalid` or `epoch_closed`, or it refused a socket re-bind — e.g. the Door
+   * restarted). Called at most once per
    * residency; the daemon moves on instead of staying mute.
    */
   onSessionLost?: (epoch: number) => void;
@@ -58,8 +59,9 @@ function isLostSessionError(error: unknown): boolean {
  *
  * If the socket cannot bind after the arrival attestation was appended, the session is
  * stopped (no departure — the next arrival supersedes it, as after a crash) and the error
- * propagates. A heartbeat the Door refuses as `session_invalid` / `epoch_closed` while
- * attached calls {@link DaemonResidencyContext.onSessionLost}.
+ * propagates. A heartbeat the Door refuses as `session_invalid` / `epoch_closed`, or a
+ * session socket reconnect whose bind the Door refuses, while attached calls
+ * {@link DaemonResidencyContext.onSessionLost}.
  */
 export async function arriveDaemonResidency(
   ctx: DaemonResidencyContext,
@@ -97,13 +99,20 @@ export async function arriveDaemonResidency(
   );
 
   let attached = true;
+  /** The session socket bound once: from here a refused bind means the Door lost us. */
+  let bound = false;
   let lost = false;
+  const sessionLost = (via: "heartbeat" | "bind"): void => {
+    if (attached && !lost) {
+      lost = true;
+      logger.warn({ doorId, epoch: session.epoch, via }, "residency_session_lost");
+      ctx.onSessionLost?.(session.epoch);
+    }
+  };
   const onHeartbeatError = (error: unknown, stage: "door" | "append"): void => {
     ctx.onHeartbeatError(error, stage);
-    if (attached && !lost && isLostSessionError(error)) {
-      lost = true;
-      logger.warn({ doorId, epoch: session.epoch }, "residency_session_lost");
-      ctx.onSessionLost?.(session.epoch);
+    if (isLostSessionError(error)) {
+      sessionLost("heartbeat");
     }
   };
 
@@ -150,6 +159,13 @@ export async function arriveDaemonResidency(
   const wsClient = new WsDoorSessionClient({
     wsBaseUrl: target.endpoint.wsBaseUrl,
     bind,
+    // A reconnect the Door refuses (e.g. it restarted): lost now, not at the next heartbeat.
+    // A refusal of the first bind is an arrival failure instead (connect() rejects).
+    onBindFailed: () => {
+      if (bound) {
+        sessionLost("bind");
+      }
+    },
     onConnectionChange: (connected) => {
       if (attached) {
         ctx.onConnectionChange(connected);
@@ -274,6 +290,7 @@ export async function arriveDaemonResidency(
     await close().catch(() => undefined);
     throw error;
   }
+  bound = true;
 
   logger.info({ doorId, epoch: session.epoch, witnessesMemories }, "residency_live");
 

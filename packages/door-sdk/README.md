@@ -50,7 +50,7 @@ Per epoch (all reset on arrival, departure and supersession), without asking the
 
 ### `ResidencyRecord`
 
-The Door's in-memory record of the active epoch — community messages relayed inbound (`createInboundFrame`) and Wanderer text accepted outbound (`handleOutbound`), oldest first. It is the witness's only input (never a transcript supplied by the Wanderer), is bounded per role to the most recent `communityChars` of community text (`DEFAULT_COMMUNITY_RECORD_CHARS` = 90 000) and `wandererChars` of the Wanderer's (`DEFAULT_WANDERER_RECORD_CHARS` = 30 000), so the Wanderer cannot evict what the community said (set via `DoorOptions.residencyRecord`); it is never persisted, and is cleared on arrival, departure and supersession.
+The Door's in-memory record of the active epoch — community messages relayed inbound (`createInboundFrame`) and Wanderer text accepted outbound (`handleOutbound`), oldest first. It is the witness's only input (never a transcript supplied by the Wanderer), is bounded per role to the most recent `communityChars` of community lines (`DEFAULT_COMMUNITY_RECORD_CHARS` = 90 000) and `wandererChars` of the Wanderer's (`DEFAULT_WANDERER_RECORD_CHARS` = 30 000) — each line charged its rendered size in the witness prompt (`residencyLineChars`: escaped text + author + fixed overhead) — and to at most `communityLines` / `wandererLines` lines (`DEFAULT_COMMUNITY_RECORD_LINES` = 2000, `DEFAULT_WANDERER_RECORD_LINES` = 1000), so the Wanderer cannot evict what the community said (set via `DoorOptions.residencyRecord`); it is never persisted, and is cleared on arrival, departure and supersession.
 
 ### Reference AI witness
 
@@ -75,7 +75,7 @@ const policy: HostPolicy = {
 | API key | `DOOR_WITNESS_API_KEY`, `DOOR_WITNESS_API_KEY_FILE` (`NPC_BRAIN_API_KEY`, `NPC_BRAIN_API_KEY_FILE`) — first set wins, in that order | required |
 | model | `DOOR_WITNESS_MODEL` (`NPC_BRAIN_MODEL`) | required |
 | OpenRouter allowlist | `DOOR_WITNESS_PROVIDER_ALLOWLIST` (`NPC_BRAIN_PROVIDER_ALLOWLIST`, only with the Brain's base URL), comma-separated | none |
-| timeout | `DOOR_WITNESS_TIMEOUT_MS` (integer ≥ 1000) | 60000 |
+| timeout | `DOOR_WITNESS_TIMEOUT_MS` (integer 1000–85000, `MAX_WITNESS_TIMEOUT_MS`: two attempts fit the Wanderer's 180 s memory-attest timeout) | 60000 |
 
 ### Wire, signing, errors
 

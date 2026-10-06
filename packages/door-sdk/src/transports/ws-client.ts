@@ -50,6 +50,12 @@ export type WsDoorSessionClientOptions = {
   onErrorFrame?: (frame: ErrorFrame) => void;
   /** Called when the session socket opens or closes (not including fatal bind failure). */
   onConnectionChange?: (connected: boolean) => void;
+  /**
+   * Called exactly once when the Door rejects the session bind (close code 4401),
+   * whether on the first `connect()`, on a reconnect attempt, or on an open socket.
+   * After this the client never reconnects; the session is lost for good.
+   */
+  onBindFailed?: () => void;
   /** Initial reconnect backoff in milliseconds; defaults to `1000`. */
   initialBackoffMs?: number;
   /** Maximum reconnect backoff in milliseconds; defaults to `30000`. */
@@ -86,6 +92,7 @@ export class WsDoorSessionClient {
   private readonly onControl: ((frame: ControlFrame) => void) | undefined;
   private readonly onErrorFrame: ((frame: ErrorFrame) => void) | undefined;
   private readonly onConnectionChange: ((connected: boolean) => void) | undefined;
+  private readonly onBindFailed: (() => void) | undefined;
   private readonly createWebSocket: WebSocketFactory;
   private readonly clock: WsClock;
   private readonly sleep: (ms: number) => Promise<void>;
@@ -109,6 +116,7 @@ export class WsDoorSessionClient {
     this.onControl = options.onControl;
     this.onErrorFrame = options.onErrorFrame;
     this.onConnectionChange = options.onConnectionChange;
+    this.onBindFailed = options.onBindFailed;
     this.createWebSocket = options.createWebSocket ?? ((url: string) => new WebSocket(url));
     this.clock = options.clock ?? defaultClock;
     this.sleep = options.sleep ?? defaultSleep;
@@ -231,9 +239,9 @@ export class WsDoorSessionClient {
           return;
         }
         settled = true;
-        this.bindFailed = true;
         this.openingSocket = null;
         this.connectPromise = null;
+        this.markBindFailed();
         reject(DoorError.fromCode("session_invalid", message));
       };
 
@@ -263,7 +271,6 @@ export class WsDoorSessionClient {
             return;
           }
           if (code === WS_SESSION_BIND_FAILED) {
-            this.bindFailed = true;
             settleBindFailure("session binding failed");
           } else {
             settled = true;
@@ -277,8 +284,8 @@ export class WsDoorSessionClient {
           }
           return;
         }
-        if (code === WS_SESSION_BIND_FAILED) {
-          this.bindFailed = true;
+        if (code === WS_SESSION_BIND_FAILED && !this.intentionallyClosed) {
+          this.markBindFailed();
         }
         this.handleDisconnect(code, socket);
       });
@@ -308,16 +315,20 @@ export class WsDoorSessionClient {
     this.connectPromise = null;
     this.onConnectionChange?.(false);
 
-    if (this.intentionallyClosed || this.bindFailed) {
-      return;
-    }
-
-    if (code === WS_SESSION_BIND_FAILED) {
-      this.bindFailed = true;
+    if (this.intentionallyClosed || this.bindFailed || code === WS_SESSION_BIND_FAILED) {
       return;
     }
 
     this.scheduleReconnect();
+  }
+
+  /** Latch the fatal bind failure and notify {@link WsDoorSessionClientOptions.onBindFailed} once. */
+  private markBindFailed(): void {
+    if (this.bindFailed) {
+      return;
+    }
+    this.bindFailed = true;
+    this.onBindFailed?.();
   }
 
   private scheduleReconnect(): void {

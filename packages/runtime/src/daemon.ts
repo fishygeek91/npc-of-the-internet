@@ -480,32 +480,43 @@ async function bootResidency(ctx: {
 
   try {
     await controller.begin();
+
+    if (residencyConfig.operatorTrigger) {
+      const watcher = await watchControlDir({
+        controlDir: residencyConfig.controlDir,
+        timer,
+        onDepartRequest: () => {
+          requestOperatorCycle("control_dir");
+        },
+        onError: (error) => {
+          const message = error instanceof Error ? error.message : String(error);
+          logger.warn({ err: message }, "control_dir_poll_failed");
+        }
+      });
+      resources.controlWatcher = watcher;
+      if (shuttingDown) {
+        // A signal released everything while the watcher was starting.
+        watcher.stop();
+      }
+    }
+
+    deps.onReady?.();
   } catch (error: unknown) {
     if (shuttingDown) {
       // A signal stopped the daemon during boot; shutdown released everything.
       return handle;
     }
+    // Boot failed after the signal handlers were registered (arrival, control dir, …):
+    // unregister them and clear the ready file; startResidencyDaemon then releases the
+    // controller (live residency), replication drain and store.
+    shuttingDown = true;
     for (const [signal, handler] of signalHandlers) {
       process.removeListener(signal, handler);
     }
+    await readyFileChain;
+    await setReadyFile(false);
     throw error;
   }
-
-  if (residencyConfig.operatorTrigger) {
-    resources.controlWatcher = await watchControlDir({
-      controlDir: residencyConfig.controlDir,
-      timer,
-      onDepartRequest: () => {
-        requestOperatorCycle("control_dir");
-      },
-      onError: (error) => {
-        const message = error instanceof Error ? error.message : String(error);
-        logger.warn({ err: message }, "control_dir_poll_failed");
-      }
-    });
-  }
-
-  deps.onReady?.();
 
   return handle;
 }
@@ -513,7 +524,7 @@ async function bootResidency(ctx: {
 /**
  * Where the chain says the Wanderer is (boot preference): the `to_door_id` of the last
  * `travel` when it comes after the last `arrival` (it left, the arrival never happened),
- * else the last arrival's Door, else `null`.
+ * else the last arrival's Door (also when that travel has no `to_door_id`), else `null`.
  */
 async function lastDoorId(store: SoulStore): Promise<string | null> {
   let doorId: string | null = null;
@@ -523,8 +534,9 @@ async function lastDoorId(store: SoulStore): Promise<string | null> {
     }
     if (record.body.kind === "arrival") {
       doorId = record.body.door_id;
-    } else if (record.body.kind === "travel") {
-      doorId = record.body.to_door_id ?? null;
+    } else if (record.body.kind === "travel" && record.body.to_door_id !== undefined) {
+      // A travel without a destination says nothing about where to go: keep the arrival's Door.
+      doorId = record.body.to_door_id;
     }
   }
   return doorId;

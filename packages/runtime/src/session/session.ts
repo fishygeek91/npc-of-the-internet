@@ -217,10 +217,17 @@ type DepartLedger = {
   journal: MemoryVerdict | "skipped" | null;
   /** Journal file once written. */
   journalPath: string | null;
+  /**
+   * Departure `at`, fixed by the first departure attest so a retry sends the same `core`
+   * and the Door co-signs it again (lost-response replay) instead of `epoch_closed`.
+   */
+  departureAt: string | null;
   /** Sealed Door co-signed departure. */
   departure: LedgerEntry | null;
   /** Sealed travel. */
   travel: LedgerEntry | null;
+  /** Travel was sealed by {@link Session.departBare}: memory forming is over for good. */
+  bare: boolean;
 };
 
 function emptyLedger(lines: readonly TranscriptLine[]): DepartLedger {
@@ -233,8 +240,10 @@ function emptyLedger(lines: readonly TranscriptLine[]): DepartLedger {
     journalText: null,
     journal: null,
     journalPath: null,
+    departureAt: null,
     departure: null,
-    travel: null
+    travel: null,
+    bare: false
   };
 }
 
@@ -720,9 +729,16 @@ export class Session {
    * `departing`; depart is then safe to retry. Every Door verdict and every sealed record
    * is kept in the in-process {@link DepartLedger} before it is appended, so a retry never
    * re-asks the Door about a decided memory: it re-appends the sealed record instead.
+   * Once {@link departBare} has sealed travel, depart refuses (`SessionError`): only
+   * departBare may finish the residency then.
    */
   async depart(options: DepartOptions): Promise<DepartResult> {
     await this.beginDepart();
+    if (this.ledger?.bare === true) {
+      // Travel is sealed against the chain as departBare left it; new memory records
+      // would orphan it. Only departBare may finish this residency now.
+      throw new SessionError("depart refused: departBare already sealed travel; retry departBare");
+    }
     const brain = options.brain ?? this.brain;
     const ledger = await this.openLedger(options.transcript);
 
@@ -757,7 +773,9 @@ export class Session {
    * failing (or the Door lost the session). When the departure cannot be attested or
    * appended (e.g. the Door answers `epoch_closed` / `session_invalid`), travel is still
    * appended — soul-signed, it needs no Door — so the chain says the Wanderer left.
-   * Throws only when travel cannot be appended.
+   * A departure append that threw is checked against the chain's actual last record (it
+   * may have landed), and travel is sealed against that record.
+   * Throws only when travel cannot be appended; retry with departBare (not depart).
    *
    * @returns whether the departure attestation is on chain.
    */
@@ -997,12 +1015,20 @@ export class Session {
   ): Promise<boolean> {
     // Once travel is sealed, the departure question is settled (appended or skipped).
     if (ledger.travel === null) {
+      let head: { seq: number; cid: string } | null = null;
       try {
-        ledger.departure ??= await this.attestDeparture();
+        ledger.departure ??= await this.attestDeparture(ledger);
         await this.appendEntry(ledger.departure);
       } catch (error) {
         if (!bestEffort) {
           throw error;
+        }
+        // The departure append may have landed and then thrown, and a store's head() can
+        // lag its disk after such a failure: settle the departure and seal travel against
+        // the chain's actual last record.
+        head = await this.actualHead();
+        if (ledger.departure !== null && head.cid === ledger.departure.cid) {
+          ledger.departure.appended = true;
         }
       }
       const travelBody: {
@@ -1022,15 +1048,25 @@ export class Session {
       if (toDoorId !== undefined) {
         travelBody.to_door_id = toDoorId;
       }
-      ledger.travel = await this.sealAtHead("attestation", travelBody);
+      ledger.travel = await this.sealAt(
+        head ?? (await this.requireHead("depart")),
+        "attestation",
+        travelBody
+      );
+      ledger.bare = bestEffort;
     }
     await this.appendEntry(ledger.travel);
     return ledger.departure?.appended === true;
   }
 
-  /** Ask the Door to co-sign this residency's departure; returns the sealed record. */
-  private async attestDeparture(): Promise<LedgerEntry> {
+  /**
+   * Ask the Door to co-sign this residency's departure; returns the sealed record. The
+   * body's `at` is kept in the ledger, so a retry after a lost answer re-sends the same
+   * `core` (the Door replays its co-signature).
+   */
+  private async attestDeparture(ledger: DepartLedger): Promise<LedgerEntry> {
     const head = await this.requireHead("departure");
+    ledger.departureAt ??= this.clock.now();
     const sealed = await this.attestAndSeal({
       kind: "departure",
       body: {
@@ -1038,7 +1074,7 @@ export class Session {
         pop_version: POP_VERSION,
         door_id: this.doorId,
         epoch: this.epochValue,
-        at: this.clock.now()
+        at: ledger.departureAt
       },
       residency: this.residency,
       seq: head.seq + 1,
@@ -1099,6 +1135,21 @@ export class Session {
     this.phase = "departed";
     this.ledger = null;
     this.onDeparted?.();
+  }
+
+  /**
+   * The chain's last record as stored (read through `iterate`), not the store's cached
+   * `head()`, which may not reflect an append that landed and then threw.
+   */
+  private async actualHead(): Promise<{ seq: number; cid: string }> {
+    let last: OspRecord | null = null;
+    for await (const record of this.store.iterate()) {
+      last = record;
+    }
+    if (last === null) {
+      throw new SessionError("depart: store has no head");
+    }
+    return { seq: last.seq, cid: await computeCid(last) };
   }
 
   private async requireHead(stage: string): Promise<{ seq: number; cid: string }> {

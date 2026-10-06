@@ -559,9 +559,13 @@ describe("WsDoorSessionClient", () => {
     await establishArrival(epoch);
 
     let connectAttempts = 0;
+    let bindFailures = 0;
     const client = new WsDoorSessionClient({
       wsBaseUrl: env.wsBaseUrl,
       bind: sessionBindParams(generateKeypair(), DOOR_ID, epoch),
+      onBindFailed: () => {
+        bindFailures += 1;
+      },
       initialBackoffMs: 20,
       maxBackoffMs: 40,
       sleep: async () => {
@@ -576,7 +580,89 @@ describe("WsDoorSessionClient", () => {
     await expect(client.connect()).rejects.toMatchObject({ code: "session_invalid" });
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect(connectAttempts).toBe(1);
+    expect(bindFailures).toBe(1);
+    await expect(client.connect()).rejects.toMatchObject({ code: "session_invalid" });
+    expect(bindFailures).toBe(1);
     await client.close();
+  });
+
+  it("calls onBindFailed once when a reconnect is refused (the Door forgot the session)", async () => {
+    const epoch = EPOCH + 14;
+    await establishArrival(epoch);
+    const bind = sessionBindParams(env.session, DOOR_ID, epoch);
+
+    let socketCount = 0;
+    let bindFailures = 0;
+    const client = new WsDoorSessionClient({
+      wsBaseUrl: env.wsBaseUrl,
+      bind,
+      initialBackoffMs: 10,
+      maxBackoffMs: 20,
+      sleep: async (ms) => {
+        await new Promise((resolve) => setTimeout(resolve, ms));
+      },
+      onBindFailed: () => {
+        bindFailures += 1;
+      },
+      createWebSocket: (url) => {
+        socketCount += 1;
+        return new WebSocket(url);
+      }
+    });
+
+    try {
+      await client.connect();
+      // A newer arrival supersedes the session; the Door drops the socket (plain close),
+      // the client reconnects with the old bind, and the Door refuses it with 4401.
+      const next = generateKeypair();
+      await env.inProcessDoor.attest(
+        signAttestRequest(
+          env.soul,
+          next,
+          {
+            protocol_version: DOOR_PROTOCOL_VERSION,
+            door_id: DOOR_ID,
+            epoch: epoch + 1,
+            kind: "arrival",
+            core: attestCore("arrival", epoch + 1),
+            session_pubkey: encodePublicKey(next.publicKey),
+            issued_at: ISSUED_AT
+          },
+          true
+        )
+      );
+      env.wsServer.closeSessionClients(DOOR_ID, epoch, "superseded");
+
+      await vi.waitFor(
+        () => {
+          expect(bindFailures).toBe(1);
+        },
+        { timeout: 2000 }
+      );
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(bindFailures).toBe(1);
+      expect(socketCount).toBe(2);
+      expect(client.isConnected()).toBe(false);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("does not call onBindFailed after an intentional close", async () => {
+    const epoch = EPOCH + 15;
+    await establishArrival(epoch);
+    let bindFailures = 0;
+    const client = new WsDoorSessionClient({
+      wsBaseUrl: env.wsBaseUrl,
+      bind: sessionBindParams(env.session, DOOR_ID, epoch),
+      onBindFailed: () => {
+        bindFailures += 1;
+      }
+    });
+    await client.connect();
+    await client.close();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(bindFailures).toBe(0);
   });
 
   it("close during in-flight connect does not leave a live socket", async () => {

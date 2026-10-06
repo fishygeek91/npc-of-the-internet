@@ -198,6 +198,32 @@ describe("parseSay", () => {
     });
   });
 
+  it("refuses the Wanderer's name disguised with default-ignorable fillers", () => {
+    for (const name of [
+      "The Wanderer\u3164",
+      "W\u3164anderer",
+      "Wanderer\u115F",
+      "Wand\uFFA0erer"
+    ]) {
+      expect(parseSay({ name, text: "hi" })).toMatchObject({ ok: false, code: "invalid_name" });
+    }
+    expect(foldName("W\u3164anderer")).toBe("wanderer");
+    // A name of fillers only is empty after cleaning.
+    expect(parseSay({ name: "\u3164\u115F", text: "hi" })).toMatchObject({
+      ok: false,
+      code: "invalid_name"
+    });
+  });
+
+  it("strips default-ignorables from text but keeps emoji joiners and variation selectors", () => {
+    expect(
+      parseSay({ name: "Ada", text: "h\u3164i \u2764\uFE0F \u{1F469}\u200D\u{1F4BB}" })
+    ).toEqual({
+      ok: true,
+      value: { name: "Ada", text: "hi \u2764\uFE0F \u{1F469}\u200D\u{1F4BB}" }
+    });
+  });
+
   it("allows names that merely contain the word", () => {
     expect(parseSay({ name: "Wanderer's friend", text: "hi" }).ok).toBe(true);
     expect(foldName(" The  Wanderer. ")).toBe("thewanderer");
