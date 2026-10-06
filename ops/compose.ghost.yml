@@ -127,6 +127,8 @@ services:
       DOOR_WITNESS_API_KEY: ${DOOR_WITNESS_API_KEY:-}
       DOOR_WITNESS_API_KEY_FILE: ${DOOR_WITNESS_API_KEY_FILE:-}
       DOOR_WITNESS_MODEL: ${DOOR_WITNESS_MODEL:-}
+      DOOR_WITNESS_PROVIDER_ALLOWLIST: ${DOOR_WITNESS_PROVIDER_ALLOWLIST:-}
+      DOOR_WITNESS_TIMEOUT_MS: ${DOOR_WITNESS_TIMEOUT_MS:-}
     volumes:
       - ${DOOR_KEY_HOST_PATH}:/run/keys/door.key:ro
     expose:
@@ -181,6 +183,7 @@ services:
       DOOR_WEB_PUBLIC_PORT: "8080"
       DOOR_WEB_TRUST_PROXY: ${DOOR_WEB_TRUST_PROXY:-1}
       DOOR_WEB_GLOBAL_PER_MIN: ${DOOR_WEB_GLOBAL_PER_MIN:-30}
+      DOOR_WEB_MAX_CLIENTS: ${DOOR_WEB_MAX_CLIENTS:-200}
       ATLAS_API_URL: http://atlas-api:8787
       # Memory witness (spec/door/api.md §Memory witnessing): an independent model call that
       # checks each memory against what this Door saw. Defaults to the Brain's provider,
@@ -196,6 +199,8 @@ services:
       DOOR_WITNESS_API_KEY: ${DOOR_WITNESS_API_KEY:-}
       DOOR_WITNESS_API_KEY_FILE: ${DOOR_WITNESS_API_KEY_FILE:-}
       DOOR_WITNESS_MODEL: ${DOOR_WITNESS_MODEL:-}
+      DOOR_WITNESS_PROVIDER_ALLOWLIST: ${DOOR_WITNESS_PROVIDER_ALLOWLIST:-}
+      DOOR_WITNESS_TIMEOUT_MS: ${DOOR_WITNESS_TIMEOUT_MS:-}
     volumes:
       - ${DOOR_KEY_HOST_PATH}:/run/keys/door.key:ro
     expose:
@@ -231,12 +236,13 @@ services:
   # ops/.env, a DNS A/AAAA record for it, and ports 80/443 open). Caddy gets and renews
   # the certificate itself.
   caddy:
-    image: caddy:2-alpine
+    image: caddy:2.10-alpine
     profiles: ["public"]
     restart: unless-stopped
     depends_on:
       - door-web
     environment:
+      # Set WEB_DOMAIN in ops/.env (unset = Caddy serves only "localhost").
       WEB_DOMAIN: ${WEB_DOMAIN:-}
     ports:
       - "80:80"
@@ -246,12 +252,29 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data
       - caddy-config:/config
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2019/config/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     mem_limit: 128m
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
+    # The only internet-facing container: same lockdown as the rest (#72), plus the one
+    # capability needed to bind 80/443.
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - "no-new-privileges:true"
+    read_only: true
+    tmpfs:
+      - /tmp
   atlas-api:
     build:
       context: ..
