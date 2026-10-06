@@ -11,16 +11,18 @@ Single-VPS Docker Compose stack for the NPC of the Internet Ghost deployment. Al
 
 ## Architecture
 
-Four services share named Docker volumes from `ops/compose.ghost.yml`:
+Five services share named Docker volumes from `ops/compose.ghost.yml` (a sixth, **caddy**, runs only with the `public` profile):
 
 | Service | Image | Role | Volume access |
 |---------|-------|------|------------------|
-| **runtime** | `ghcr.io/fishygeek91/npc-runtime` | Residency daemon (`npc-runtime`): soulchain writer, Door HTTP/WS client, live Session loop | `soulchain` + `soulchain-ipfs` + `published` (read-write) |
-| **door-discord** | `ghcr.io/fishygeek91/npc-door-discord` | Discord Door relay; HTTP REST and WebSocket coalesced on port **9090** | `door-state` (read-write; per-epoch cosign review state, §7.5) |
+| **runtime** | `ghcr.io/fishygeek91/npc-runtime` | Residency daemon (`npc-runtime`): soulchain writer, live Session loop; travels between the Doors in `NPC_DOOR_URLS` ([§7](#7-residency-lifecycle)) | `soulchain` + `soulchain-ipfs` + `published` (read-write) |
+| **door-discord** | `ghcr.io/fishygeek91/npc-door-discord` | Discord Door relay + memory witness; HTTP REST and WebSocket coalesced on port **9090** (internal) | none (door key bind mount only) |
+| **door-web** | `ghcr.io/fishygeek91/npc-door-web` | Web Door + memory witness: Door protocol on **9091** (internal), visitor site on **127.0.0.1:8080**; elsewhere shows where the Wanderer is (via atlas-api) | none (door key bind mount only) |
 | **atlas-api** | `ghcr.io/fishygeek91/npc-atlas-api` | Read-only Atlas API on **127.0.0.1:8787** only (Docker published ports bypass ufw — see [RUNBOOK.ghost §6](RUNBOOK.ghost.md#6-keep-atlas-off-the-public-internet)) | `soulchain` + `published` (read-only) |
 | **backup** | `ghcr.io/fishygeek91/npc-backup` | Append-triggered `rclone` backup to remote storage | `soulchain` only (read-only) |
+| **caddy** (profile `public`) | `caddy:2-alpine` | HTTPS for the web Door: `$WEB_DOMAIN` → `door-web:8080` on ports 80/443 ([§7.7](#77-web-door-and-public-https)) | `caddy-data` + `caddy-config` |
 
-Named volumes: `soulchain` (`/data/soulchain`), `soulchain-ipfs` (`/data/soulchain-ipfs`), `published` (`/data/published`), and `door-state` (`/data/door-state`, door-discord only). Host-mounted secrets (paths configured in `ops/.env`): soul private key, door private key, and `rclone.conf`. Only **runtime** writes the chain; **backup** backs up the file `soulchain` volume only (not the IPFS or published volumes).
+Named volumes: `soulchain` (`/data/soulchain`), `soulchain-ipfs` (`/data/soulchain-ipfs`), `published` (`/data/published`), and `caddy-data` / `caddy-config` (Caddy certificates and state). Host-mounted secrets (paths configured in `ops/.env`): soul private key, door private key (shared by door-discord and door-web), and `rclone.conf`. Only **runtime** writes the chain; **backup** backs up the file `soulchain` volume only (not the IPFS or published volumes).
 
 Ghost compose always sets `NPC_SOULCHAIN_IPFS_DIR=/data/soulchain-ipfs`, so runtime opens `DualSoulStore` (file store authoritative, IPFS mirror). Compose also sets `NPC_PUBLISHED_CAR_PATH` and `NPC_MANIFEST_CID_PATH` under `/data/published` for Atlas CAR/manifest hooks. **Outbound** IPFS replication stays disabled by default (`NPC_REPLICATION_ENABLED` unset) — enabling is Gate 2; see [RUNBOOK.ghost §10a](RUNBOOK.ghost.md#10a-ipfs-replication-optional-gate-2-for-live-push) and `ops/SECRETS.md` for env names.
 
@@ -131,7 +133,7 @@ chmod 700 /tmp/npc-ghost/keys /tmp/npc-ghost/rclone
 Docker Desktop on macOS remaps ownership and often works without this step;
 on Linux it is required.
 
-Set `SOUL_PUBLIC_KEY` in `ops/.env` to the base64url public key that matches `soul.key`. Set `ATLAS_DOOR_PUBKEYS` to `doorId=base64url` bindings that match `door.key` (comma-separated if multiple doors; door id must match `CURRENT_DOOR_ID` for the active residency).
+Set `SOUL_PUBLIC_KEY` in `ops/.env` to the base64url public key that matches `soul.key`. Set `ATLAS_DOOR_PUBKEYS` to one `doorId=base64url` binding per Door, comma-separated. Both Ghost Doors use `door.key`, so both entries carry its public key: `discord:<DISCORD_GUILD_ID>=<door pubkey>,web:home=<door pubkey>`.
 
 Configure `BACKUP_RCLONE_REMOTE` to point at the remote defined in `rclone.conf` (for example `ghost-remote:npc/soulchain`).
 
@@ -143,8 +145,9 @@ docker compose --env-file ops/.env -f ops/compose.ghost.yml up -d --build
 
 **Expected behavior after start:**
 
-- **runtime** runs `node dist/daemon.js` (image `CMD`; `pnpm deploy` does not emit an `npc-runtime` bin shim). It opens the soulchain, connects to door-discord on the compose network (`DOOR_HTTP_HOST` / `DOOR_HTTP_PORT`), arrives at the Door, and binds the session WebSocket. Logs `residency_live` after the first successful bind. Requires a valid soulchain (genesis or restored) and matching `SOUL_PUBLIC_KEY` / `ATLAS_DOOR_PUBKEYS` / `CURRENT_DOOR_ID`.
+- **runtime** runs `node dist/daemon.js` (image `CMD`; `pnpm deploy` does not emit an `npc-runtime` bin shim). It opens the soulchain, `hello`s every Door in `NPC_DOOR_URLS` on the compose network, arrives at one — the Door of its last arrival when reachable, else `CURRENT_DOOR_ID`, else a random online Door — and binds the session WebSocket. Logs `residency_live` after the first successful bind. Requires a valid soulchain (genesis or restored) and matching `SOUL_PUBLIC_KEY` / `ATLAS_DOOR_PUBKEYS`.
 - **door-discord** runs `node dist/server.js` (image `CMD`; `pnpm deploy` does not emit a `door-discord` bin shim). It requires a real `DISCORD_BOT_TOKEN` and valid guild/channel IDs to stay healthy. Without them the container will crash-loop.
+- **door-web** runs `node dist/server.js` (same own-bin trap). Healthy once `/healthz` answers on `127.0.0.1:8080`; `curl -s http://127.0.0.1:8080/api/state` shows whether the Wanderer is here.
 - **atlas-api** runs `node dist/server.js` (image `CMD`; same `pnpm deploy` own-bin trap). Compose publishes it on `127.0.0.1:8787` only (not all interfaces). It serves on `http://127.0.0.1:8787` once the soulchain volume contains a valid chain (empty volume returns errors until genesis).
 - **backup** watches the soulchain volume and backs up to `BACKUP_RCLONE_REMOTE` when changes are detected.
 
@@ -156,7 +159,7 @@ docker compose --env-file ops/.env -f ops/compose.ghost.yml up -d --build
 
 The runtime healthcheck probes `/tmp/npc-runtime.ready` (override with `NPC_RUNTIME_READY_FILE`). The file is present only while the session WebSocket is connected (cleared on disconnect/reconnect backoff, rewritten on rebind). Compose allows up to 90s start period before marking unhealthy.
 
-**SIGTERM / graceful stop:** `docker compose stop runtime` (or `down`) sends SIGTERM. The daemon removes the ready file, closes the WebSocket, calls `session.stop()`, drains pending soulchain appends, releases the writer lock, and exits (even if shutdown steps throw). It does **not** run ceremonial depart (no distill, cosign, or departure attestation). On-chain, the chain therefore shows no departure record — the stop looks like an abrupt crash. The next boot assigns a **new epoch** and arrives without distill/shard cosign. Use `wanderer move` for a deliberate handover.
+**SIGTERM / graceful stop:** `docker compose stop runtime` (or `down`) sends SIGTERM. The daemon removes the ready file, closes the WebSocket, calls `session.stop()`, drains pending soulchain appends, releases the writer lock, and exits (even if shutdown steps throw). It does **not** run ceremonial depart (no distill, witness, or departure attestation). On-chain, the chain therefore shows no departure record — the stop looks like an abrupt crash, and that residency's conversation forms no memories. The next boot assigns a **new epoch**, at the Door of the last arrival when it is reachable. Use `depart` ([§7.3](#73-move-it-now-operator-depart)) for a deliberate handover.
 
 ### 1.4 Soulchain volume writability smoke test
 
@@ -205,6 +208,7 @@ Use `-v` only when you intend to destroy all soulchain data on this host.
 ```bash
 docker compose --env-file ops/.env -f ops/compose.ghost.yml logs -f runtime
 docker compose --env-file ops/.env -f ops/compose.ghost.yml logs -f door-discord
+docker compose --env-file ops/.env -f ops/compose.ghost.yml logs -f door-web
 docker compose --env-file ops/.env -f ops/compose.ghost.yml logs -f atlas-api
 docker compose --env-file ops/.env -f ops/compose.ghost.yml logs -f backup
 ```
@@ -243,7 +247,13 @@ door-discord listens on a **single** port for both REST and WebSocket (`DOOR_HTT
 docker compose --env-file ops/.env -f ops/compose.ghost.yml logs door-discord 2>&1 | grep -E 'door_http_listening|door_ws_listening'
 ```
 
-You should see `door_http_listening` and `door_ws_listening` both reporting port **9090**. The port is not published to the host in the default compose file; runtime reaches it on the internal Docker network.
+You should see `door_http_listening` and `door_ws_listening` both reporting port **9090**. door-web serves the same protocol on **9091** (`door_http_listening`) and its visitor site on **8080** (`door_web_public_listening`):
+
+```bash
+docker compose --env-file ops/.env -f ops/compose.ghost.yml logs door-web 2>&1 | grep -E 'door_http_listening|door_web_public_listening|door_witness_config'
+```
+
+The protocol ports are not published to the host; runtime reaches them on the internal Docker network (`NPC_DOOR_URLS`). Only 8080 is published, on `127.0.0.1`.
 
 ### 3.5 Backup activity
 
@@ -289,14 +299,14 @@ docker cp "${RUNTIME_CID}:/data/soulchain/." ./_soulchain-snapshot/
 
 ### 4.3 Pre-upgrade verify
 
-Pass door public key bindings from `ATLAS_DOOR_PUBKEYS` in `ops/.env` (each `doorId=base64url` value is one `--door-key` flag):
+Pass every door public key binding from `ATLAS_DOOR_PUBKEYS` in `ops/.env` — each `doorId=base64url` value becomes one `--door-key=` flag (the `=` form: base64url keys may start with `-`). A chain with records co-signed by a Door whose binding is missing fails `missing_cosigner`:
 
 ```bash
 node packages/osp-cli/dist/cli.js verify ./_soulchain-snapshot \
-  --door-key "$(grep '^ATLAS_DOOR_PUBKEYS=' ops/.env | cut -d= -f2- | cut -d, -f1)"
+  $(grep '^ATLAS_DOOR_PUBKEYS=' ops/.env | cut -d= -f2- | tr ',' '\n' | sed 's/^/--door-key=/')
 ```
 
-If you have multiple door keys, repeat `--door-key` for each binding in `ATLAS_DOOR_PUBKEYS`. For the offline fixture chain used by the restore drill, read bindings from `packages/atlas/test/fixtures/multi-residency/fixture-meta.json` (`doorPublicKeys` object) — those are TEST-ONLY fill-byte keys, not production secrets.
+Keep a Door's binding in `ATLAS_DOOR_PUBKEYS` after you stop using that Door — its co-signatures stay on the chain. For the offline fixture chain used by the restore drill, read bindings from `packages/atlas/test/fixtures/multi-residency/fixture-meta.json` (`doorPublicKeys` object) — those are TEST-ONLY fill-byte keys, not production secrets.
 
 Exit code `0` means the chain is valid. Exit code `1` means verification failed (printed rule failures). Exit code `2` means corruption or I/O error — see [Crash recovery](#6-crash-recovery) before proceeding.
 
@@ -318,6 +328,8 @@ ghostc pull && ghostc up -d
 
 That is the **only** production upgrade path. Do not use a separate `docker compose pull` / `up -d --build` procedure for releases — it diverges from the host runbook.
 
+Upgrading from v0.5.x or earlier to witnessed memory needs `ops/.env` changes first — see [§8](#8-upgrading-to-witnessed-memory-v06).
+
 **Dev smoke only (not an upgrade path):** when iterating on local images, set `NPC_IMAGE_TAG=local` in `ops/.env` and build/tag images yourself; still run §4.2–4.3 / §4.5 verify around any chain-touching restart.
 
 ### 4.5 Post-upgrade verify
@@ -333,7 +345,7 @@ docker compose --env-file ops/.env -f ops/compose.ghost.yml run --rm --no-deps \
   runtime -c "cp -a /data/soulchain/. /work/_soulchain-snapshot/"
 
 node packages/osp-cli/dist/cli.js verify ./_soulchain-snapshot \
-  --door-key "$(grep '^ATLAS_DOOR_PUBKEYS=' ops/.env | cut -d= -f2- | cut -d, -f1)"
+  $(grep '^ATLAS_DOOR_PUBKEYS=' ops/.env | cut -d= -f2- | tr ',' '\n' | sed 's/^/--door-key=/')
 ```
 
 Confirm Atlas responds:
@@ -399,7 +411,7 @@ Still pull `blobs/` from the live remote (content-addressed; unchanged across ti
 
 ```bash
 node packages/osp-cli/dist/cli.js verify "${RESTORE_DIR}" \
-  --door-key "$(grep '^ATLAS_DOOR_PUBKEYS=' ops/.env | cut -d= -f2- | cut -d, -f1)"
+  $(grep '^ATLAS_DOOR_PUBKEYS=' ops/.env | cut -d= -f2- | tr ',' '\n' | sed 's/^/--door-key=/')
 ```
 
 If verification fails with exit code `2` and mentions a torn trailing line, run recovery (section 6) on `${RESTORE_DIR}` first, then verify again.
@@ -461,7 +473,7 @@ If `truncatedBytes > 0`, a torn or blank tail was removed. A stale lock is remov
 
 ```bash
 node packages/osp-cli/dist/cli.js verify ./_soulchain-snapshot \
-  --door-key "$(grep '^ATLAS_DOOR_PUBKEYS=' ops/.env | cut -d= -f2- | cut -d, -f1)"
+  $(grep '^ATLAS_DOOR_PUBKEYS=' ops/.env | cut -d= -f2- | tr ',' '\n' | sed 's/^/--door-key=/')
 ```
 
 ### 6.3 Write recovered data back and restart
@@ -481,185 +493,266 @@ docker compose --env-file ops/.env -f ops/compose.ghost.yml up -d
 
 ---
 
+
 ## 7. Residency lifecycle
 
-The core loop **reside → distill → publish → move** runs inside the runtime daemon. In v0.1
-there is one Door, so "move" means: leave the Discord Door and **re-arrive at the same Door
-under the next epoch**. Nothing happens on its own: **every trigger is off by default**, and
-turning one on is an operator decision (Gate 2 — see [`LIFECYCLE.md`](../LIFECYCLE.md)).
+The core loop **reside → distill → witness → travel** runs inside the runtime daemon. The
+Wanderer lives at **one Door at a time** and travels between the Doors listed in
+`NPC_DOOR_URLS` (Ghost: Discord and the web Door). It moves on about once a day by default.
+No human approves memories: the Door where a memory formed co-signs it only after its AI
+**witness** has checked it, and a witnessed memory is final as soon as it is appended.
 
 ### 7.1 What one cycle does
 
-1. **Detach.** The runtime closes its session WebSocket. From here until re-arrival the
-   Wanderer hears nothing: Discord messages in the travel gap are **dropped, not queued**
-   (they belong to neither residency). `ghostc ps` shows runtime `unhealthy` for the gap —
-   expected: the ready file means "session socket connected".
-2. **Distill.** The in-memory transcript of this residency (never on disk) is screened,
-   distilled into 5–20 candidate memory shards by the Brain, then destroyed.
-3. **Host review in Discord.** door-discord posts one `**Cosign review** — shard …` message
-   per candidate in `DISCORD_REVIEW_CHANNEL_ID` (or the residency channel). An operator from
-   `DISCORD_OPERATOR_IDS` reacts ✅ / ❌ (or `/wanderer approve|reject <shard_id>`). No
-   decision within `DISCORD_REVIEW_TIMEOUT_MS` (default 4 min) **rejects** the shard.
-4. **Journal.** The Wanderer writes its residency journal from the **approved** shards only
-   (rejected prose never reaches it) to `NPC_JOURNAL_DIR`
-   (`/data/published/journals/journal-<door>-epoch-<n>.md`). Atlas does not read this file —
-   Atlas `/journals` shows a journal only once it is on chain (step 7).
-5. **Records.** Appended to the soulchain: `memory` `kind: rejected` (immune-screen drops,
-   host rejections — category only), `memory` `kind: candidate` per approved shard,
-   then `attestation` `departure` (Door co-signed) and `travel` (`to_door_id` = same Door).
-   Atlas `/state` reports `traveling`.
-6. **Re-arrive** — right away; the Wanderer does not wait out the quarantine window
-   (door-discord keeps the epoch's review per epoch, in its `door-state` volume, so the
-   candidates can be committed later while the next residency is live — 7.5). `hello` → `arrival` at `epoch + 1` (the Door retired the old epoch at
-   departure and accepts any epoch above the last it saw) → new session socket → `residency_live`
-   and `ws_session_ready` in the logs, runtime `healthy` again. The new residency starts with an
-   empty transcript and no conversation history.
-7. **Commit sweep (optional, off by default).** With `NPC_QUARANTINE_COMMIT_INTERVAL_MS` set,
-   the live runtime checks on that timer for candidates of past epochs that have ripened
-   (`NPC_QUARANTINE_WINDOW_MS`, default 24 h) and promotes them to `memory` `kind: shard` with
-   Door co-signatures; the first shard of a residency carries its journal (side blob, read back
-   from `NPC_JOURNAL_DIR`), which is what makes it appear on Atlas. See 7.5.
+1. **Detach.** The runtime closes its session WebSocket. From here until arrival the
+   Wanderer hears nothing: messages at the old Door in the travel gap are **dropped, not
+   queued**. `ghostc ps` shows runtime `unhealthy` for the gap — expected: the ready file
+   means "session socket connected".
+2. **Choose the next Door.** The runtime `hello`s every URL in `NPC_DOOR_URLS` and keeps the
+   Doors that answer with a signed `hello` whose `door_id` and pubkey match
+   `ATLAS_DOOR_PUBKEYS` (others log `door_probe_failed` / `door_rejected`). It picks one at
+   random, never the current Door unless it is the only one online (`residency_next_door`).
+3. **Distill.** The in-memory transcript (never on disk) is screened, distilled into 1–20
+   memory shards by the Brain, then destroyed. Immune-screen drops become `memory/rejected`
+   (category only). No distill — the Wanderer travels without memories — when the departing
+   Door has no witness (no `attest.memory` in its `hello`) or a timer-triggered stay had fewer
+   than `NPC_RESIDENCY_MIN_LINES` transcript lines.
+4. **Witness.** Each shard goes to the departing Door (`attest` kind `memory`). Its witness —
+   an independent model call with a fixed rubric (`packages/door-sdk/src/prompts/witness.ts`)
+   — judges it against the Door's own record of this residency (in memory, discarded at
+   departure). Witnessed → `memory/shard` co-signed by the Door. Declined →
+   `memory/rejected` with category `witness_<reason>`; the declined text is never stored.
+5. **Journal.** Written from the witnessed shards only and witnessed the same way →
+   `memory/journal` (what Atlas `/journals` shows), plus a file in `NPC_JOURNAL_DIR`
+   (`/data/published/journals/journal-<door>-epoch-<n>.md`, `:` in the door id becomes `_`).
+6. **Depart.** `attestation/departure` (Door co-signed) and `attestation/travel` (`to_door_id`
+   = the next Door). Atlas `/state` reports `traveling`.
+7. **Arrive** at the next Door at `epoch + 1`: `hello` → `arrival` → new session socket →
+   `residency_live` and `ws_session_ready`, runtime `healthy` again. The new residency starts
+   with an empty transcript. Discord posts "✨ The Wanderer has arrived." / "🌫️ The Wanderer
+   has moved on." (`DISCORD_PRESENCE_NOTICES=0` turns that off); the web page flips between
+   the open room and "it is elsewhere".
 
-**Failure handling.** A failed depart (Brain error, too few shards, Door/review timeout) is
-retried twice (after 30 s and 120 s; Bug #69 retry semantics: the cosign review is joined or
-replayed, never re-posted). If it still fails the residency is **abandoned**: no departure
-records, the next arrival supersedes it — the same chain shape as a crash, and that
-conversation's memories are lost (`residency_depart_abandoned` at `error`). Re-arrival retries
-with backoff (5 s → 5 min) until the Door answers. `SIGTERM` during a cycle (e.g.
-`ghostc restart runtime`) aborts it cleanly: no re-arrival from the dying process, appended
-records stay valid, and the next boot arrives at a fresh epoch as after any restart
-(candidates appended before the stop are still committed by the next boot's sweep — the Door
-retains their review, also across its own restarts thanks to the `door-state` volume).
+**Failure handling.** A failed depart (Brain error, `witness_unavailable`, Door unreachable)
+is retried after 30 s and 120 s; a retry never re-witnesses or re-appends what is already on
+chain. If it still fails (`residency_depart_abandoned`), the runtime appends departure +
+travel **without memories** and arrives anyway — outcome `abandoned`, that stay's memories
+are lost. Arrival retries with backoff (5 s → 5 min) at any online Door until one answers
+(`residency_no_door_available` while none does). `SIGTERM` during a cycle (e.g.
+`ghostc restart runtime`) aborts it cleanly (`aborted`): appended records stay valid and the
+next boot arrives at a fresh epoch.
 
-### 7.2 Run a cycle by hand (operator trigger)
+### 7.2 Triggers and defaults
 
-Enable it once in `ops/.env`, then recreate runtime:
+Both triggers are **on** by default (compose defaults; override in `ops/.env`, then
+`ghostc up -d runtime`):
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `NPC_RESIDENCY_MAX_MS` | `86400000` | Travel once the residency is this old (checked every minute; the clock restarts at each arrival and at boot). `0` = only on operator request; otherwise `≥ 3600000`. |
+| `NPC_RESIDENCY_OPERATOR_TRIGGER` | `1` | `depart` (control-dir request) and `SIGUSR2` start a cycle; `0` = off. |
+| `NPC_RESIDENCY_MIN_LINES` | `10` | A timer-triggered stay with fewer transcript lines still travels but forms no memories. Operator departs need one line. |
+| `NPC_DOOR_URLS` | `http://door-discord:9090,http://door-web:9091` | Doors to travel between ([§7.6](#76-adding-a-door)). |
+
+`CURRENT_DOOR_ID` is a boot preference only: at boot the Door of the last arrival on chain
+wins when it is online.
 
 ```bash
-# ops/.env
-NPC_RESIDENCY_OPERATOR_TRIGGER=1
+ghostc logs runtime 2>&1 | grep residency_lifecycle_config
+# doors: [...], maxResidencyMs: 86400000, minLines: 10, operatorTrigger: true
 ```
 
-```bash
-ghostc up -d runtime
-ghostc logs runtime 2>&1 | grep residency_lifecycle_config   # operatorTrigger: true
-```
-
-Trigger a cycle (have an operator ready in Discord for the review posts):
+### 7.3 Move it now (operator depart)
 
 ```bash
 ghostc exec runtime node dist/cli.js depart
 # Depart requested: the daemon accepted the request.
-ghostc logs -f runtime 2>&1 | grep -E 'residency_|ws_session_'
+ghostc logs -f runtime 2>&1 | grep -E 'residency_|door_'
 ```
 
 `depart` drops a request into `NPC_CONTROL_DIR` (`/tmp/npc-control`, tmpfs) and waits up to
 15 s for the daemon to pick it up. Exit `1` ("No running daemon picked up …") means the
-runtime is down or the trigger is off; the request is withdrawn so it can never fire later.
-The cycle itself takes the review time (≤ `DISCORD_REVIEW_TIMEOUT_MS`) plus two Brain calls.
-
-**Only depart after a real conversation.** The operator trigger needs just one transcript line,
-but distillation must produce several usable shards. The first depart attempt consumes (and
-destroys) the transcript; if a short conversation yields too few shards, the cycle retries twice
-(~2.5 min) and then ends `abandoned` — the Wanderer re-arrives, but those lines are gone and no
-memories were formed from them. Check `residency_cycle_*` logs after the cycle.
-Equivalent without the CLI: `ghostc kill -s SIGUSR2 runtime` (tini forwards it).
+runtime is down or `NPC_RESIDENCY_OPERATOR_TRIGGER=0`; the request is withdrawn so it can
+never fire later. Equivalent without the CLI: `ghostc kill -s SIGUSR2 runtime` (tini
+forwards it). The cycle takes one distill call, one witness call per memory, the journal,
+and the arrival — typically a minute or two.
 
 Log events, in order: `residency_cycle_requested` → `residency_cycle_started` →
-`residency_departed` (approved/rejected/candidates/journalPath) →
-[`residency_commit_deferred_to_live_sweep`] → `door_hello` → `residency_live` →
-[`residency_live_sweep_armed`] → `residency_cycle_complete` → `residency_cycle_outcome`
-(`kind: cycled | abandoned | skipped | busy | aborted`); later, once candidates ripen,
-`residency_live_commit_sweep` (committed / ripening / stranded counts). `skipped` = the transcript was empty
-(nothing to distill); `busy` = a cycle was already running.
-
-### 7.3 Automatic cycles (timer)
-
-```bash
-# ops/.env — e.g. one residency per day
-NPC_RESIDENCY_MAX_MS=86400000
-NPC_RESIDENCY_MIN_LINES=10
-```
-
-Checked every minute. Minimum `3600000` (1 h): every cycle costs a human review and Brain
-calls. The timer waits (logging `residency_cycle_skipped` once) until the transcript holds
-`NPC_RESIDENCY_MIN_LINES` lines — a near-silent residency cannot distill the 5 shards the
-review requires. Someone must be around to review: unanswered shards are rejected.
+`residency_next_door` (`fromDoor`, `toDoor`, `available`) → `residency_departed`
+(`witnessed`, `declined`, `screened`, `journalPath`) → `door_hello` → `residency_live` →
+`residency_cycle_outcome` (`kind: cycled | abandoned | busy | aborted | shutting_down`,
+`fromDoor`, `toDoor`, `fromEpoch`, `toEpoch`). `busy` = a cycle was already running.
 
 ### 7.4 Verify a cycle on the chain
 
-Snapshot the volume ([§4.2](#42-snapshot-the-soulchain-volume-for-verification)), then:
+Snapshot the volume ([§4.2](#42-snapshot-the-soulchain-volume-for-verification)), then pass
+**every** Door binding — after a trip to the web Door the chain carries `web:home`
+co-signatures:
 
 ```bash
-DOOR_KEY="$(grep '^ATLAS_DOOR_PUBKEYS=' ops/.env | cut -d= -f2- | cut -d, -f1)"
-node packages/osp-cli/dist/cli.js log ./_soulchain-snapshot --door-key="$DOOR_KEY"
-node packages/osp-cli/dist/cli.js verify ./_soulchain-snapshot --door-key="$DOOR_KEY"
+DOOR_KEYS=$(grep '^ATLAS_DOOR_PUBKEYS=' ops/.env | cut -d= -f2- | tr ',' '\n' | sed 's/^/--door-key=/')
+node packages/osp-cli/dist/cli.js log ./_soulchain-snapshot $DOOR_KEYS
+node packages/osp-cli/dist/cli.js verify ./_soulchain-snapshot $DOOR_KEYS   # exit 0
 ```
 
-Expect, after the old residency's heartbeats: `memory/candidate` (one per ✅),
-`memory/rejected` (per ❌ / timeout / screen category), `attestation/departure epoch=N`,
-`attestation/travel from=… epoch=N`, then `attestation/arrival epoch=N+1` and its heartbeats;
-with the commit sweep on, `memory/shard` × approved (residency `…/epoch:N`) appear among epoch
-N+1's heartbeats once the window has passed; `verify` exits 0. Use the `=` form of
-`--door-key` (base64url keys may start with `-`). `curl -sS http://127.0.0.1:8787/state`
-returns `present` with the new epoch.
+Expect, after the old residency's heartbeats:
 
-### 7.5 Commit sweep and Door review retention (read before enabling)
+```
+… memory/rejected …   screened out (pii.email)            # immune screen, if any
+… memory/shard …                                          # one per witnessed shard
+… memory/rejected …   declined by the witness (private)   # one per declined memory
+… memory/journal …    journal for discord:123… epoch 7
+… attestation/departure …
+… attestation/travel …
+… attestation/arrival …                                   # then the new heartbeats
+```
 
-Promoting a candidate needs a Door co-signature over the commit envelope, and the Door only
-co-signs for an epoch whose review it still holds. door-discord advertises `cosign.past_epochs`:
-it keeps every completed review **per epoch** — not reset on arrival — for the last
-`DOOR_COSIGN_RETAIN_EPOCHS` (default 64; keep it above `NPC_QUARANTINE_WINDOW_MS / NPC_RESIDENCY_MAX_MS` with margin) reviewed epochs and at most `DOOR_COSIGN_RETAIN_MS`
-(default 7 days), and persists it in `DOOR_STATE_DIR` (`/data/door-state`, named volume
-`door-state` in Ghost compose) so a door-discord restart or upgrade keeps it. So the runtime
-commits past epochs **while the next residency is live**:
+`curl -sS http://127.0.0.1:8787/state` returns `present` with the new `door_id` and `epoch`.
+Legacy `memory/candidate` records (pre-v0.6 chains) still verify and are never written again.
+
+### 7.5 Memory witness
+
+Each Door runs its own witness; both Ghost Doors are configured the same way:
+
+- **Default:** with `NPC_BRAIN_PROVIDER=openai-compat`, the witness uses the Brain's base URL,
+  key and model (`NPC_BRAIN_BASE_URL`, `NPC_BRAIN_API_KEY` / `_FILE`, `NPC_BRAIN_MODEL`,
+  `NPC_BRAIN_PROVIDER_ALLOWLIST`). Compose passes these to both Doors, and
+  `ops/compose.secrets.yml` mounts the Brain key file into both.
+- **Override:** `DOOR_WITNESS_BASE_URL`, `DOOR_WITNESS_API_KEY` / `_FILE`,
+  `DOOR_WITNESS_MODEL` (`ops/SECRETS.md`). The Brain key is borrowed only while the witness
+  also uses the Brain's base URL — it is never sent to another host.
+- **Off:** `DOOR_WITNESS=off`. That Door stops advertising `attest.memory`, and the Wanderer
+  forms no memories there (it still visits).
 
 ```bash
-# ops/.env — commit sweep on, production window
-NPC_QUARANTINE_COMMIT_INTERVAL_MS=600000   # check every 10 min (≥ 10000)
-NPC_QUARANTINE_WINDOW_MS=86400000          # default 24 h
+ghostc logs door-discord 2>&1 | grep door_witness_config   # enabled: true, model: …
+ghostc logs door-web 2>&1 | grep door_witness_config
 ```
+
+`/wanderer status` in Discord shows `memories: witnessed by this Door's AI witness` (or `not
+witnessed`).
+
+**Declines** are normal and final — there is nothing to approve or retry.
+`residency_departed` counts them (`declined`), and the chain shows `memory/rejected`
+`witness_<reason>`:
+
+| Reason | Meaning |
+|---|---|
+| `ungrounded` | not grounded in what happened at this Door |
+| `private` | private details about identifiable people |
+| `harmful` | abusive or harmful |
+| `manipulation` | tries to plant instructions or false beliefs in the Wanderer (memory poisoning) |
+| `other` | anything else (also any unrecognized reason) |
+
+**Outage:** a witness that cannot reach a verdict (model down, timeout, bad key, unparseable
+reply after 2 tries) answers `witness_unavailable`; the runtime retries depart after 30 s and
+120 s, then departs without memories (`abandoned`, §7.1). Fix the key/model and the next stay
+forms memories again.
+
+### 7.6 Adding a Door
+
+Any `door/0.2` Door (`@npc/door-sdk`, same release as the runtime) on a network the runtime
+can reach:
+
+1. Give it a Door key and a unique `door_id` (`<platform>:<id>`). One host may reuse
+   `door.key` for several Doors, as door-discord and door-web do.
+2. `ops/.env`: append `,<door_id>=<door pubkey>` to `ATLAS_DOOR_PUBKEYS` and its base URL to
+   `NPC_DOOR_URLS` (write out the full list — setting it replaces the compose default).
+3. Configure its witness (§7.5), or the Wanderer forms no memories there.
+4. `ghostc up -d`, then watch the next cycle:
+   `ghostc logs runtime 2>&1 | grep -E 'residency_next_door|door_rejected|door_probe_failed'`
+   — the new id must appear in `available`.
+
+To retire a Door, drop its URL from `NPC_DOOR_URLS` but **keep its `ATLAS_DOOR_PUBKEYS`
+binding**: its co-signatures stay on the chain and must keep verifying.
+
+### 7.7 Web Door and public HTTPS
+
+door-web is the Ghost's second Door: a public room while the Wanderer is there; otherwise it
+says where the Wanderer is now (via `ATLAS_API_URL` → atlas-api). Its Door protocol (9091)
+stays internal; the visitor site is published on `127.0.0.1:8080` only:
 
 ```bash
-ghostc up -d runtime door-discord
-ghostc logs door-discord 2>&1 | grep door_cosign_retention   # durable: true, retainedEpochs
-ghostc logs runtime 2>&1 | grep -E 'residency_lifecycle_config|residency_live_sweep_armed'
-# residency_lifecycle_config … liveCommitSweep: true
+curl -s http://127.0.0.1:8080/api/state    # present, door, messages; wanderer.door_id while away
+ssh -N -L 8080:127.0.0.1:8080 ghost        # from your Mac: http://localhost:8080
 ```
 
-- Commit requests for epoch *N* are signed with epoch *N*'s session key (re-derived from the
-  soul key; nothing extra is stored). The Door still checks everything it did before: the
-  shard was **approved** in epoch *N*'s review, the core is bound to epoch *N*'s residency and
-  the reviewed text, one co-signature per chain position.
-- **Upgrade in lockstep.** A runtime older than this change rejects a `hello` listing
-  `cosign.past_epochs`; deploy runtime and door-discord from the same release.
-- **Legacy Door** (no `cosign.past_epochs`): the runtime falls back to the old travel-gap sweep,
-  and refuses to boot (`NPC_QUARANTINE_WINDOW_MS must be ≤ 3600000 …`, before any chain write)
-  if the window is over 1 h while the sweep is on.
-- **Stranded candidates.** A candidate whose review the Door no longer holds — evicted by the
-  retention bound, reviewed before this change, an abandoned residency, or a door-discord
-  restart **without** `DOOR_STATE_DIR` — gets `review_not_retained`; the runtime logs
-  `quarantine_candidates_stranded_review_not_retained` once per process and stops asking. It
-  stays `memory.candidate` (on chain, never composed, never on Atlas). Keep the retention
-  bound well above the window (default 7 days vs 24 h).
-- **Door state volume.** `door-state` holds, per retained epoch, the **approved** shard texts
-  (rejected text is never written), the review's session public key and the commit
-  co-signatures already issued — no secrets. Back it up only if you care about committing
-  candidates after a host loss; deleting it strands candidates still ripening. If door-discord
-  refuses to start with `invalid persisted cosign review state` (or a state file for another
-  `door_id` after a guild change), move `cosign-state.json` aside — that strands ripening
-  candidates, nothing else:
+Routes and env: [`packages/door-web/README.md`](../packages/door-web/README.md). To serve it on
+the internet, the compose profile `public` adds Caddy (`ops/Caddyfile`: `$WEB_DOMAIN` →
+`door-web:8080`, SSE unbuffered) with automatic certificates. It needs `WEB_DOMAIN` in
+`ops/.env`, a DNS A/AAAA record, and ports 80/443 open in **both** ufw and the Hetzner cloud
+firewall ([RUNBOOK.ghost §8a](RUNBOOK.ghost.md#8a-public-web-door-optional-caddy-on-80443)):
 
-  ```bash
-  ghostc run --rm --no-deps --entrypoint sh door-discord -c \
-    'mv /data/door-state/cosign-state.json /data/door-state/cosign-state.json.bad'
-  ```
+```bash
+ghostc --profile public up -d
+ghostc logs caddy 2>&1 | grep -i certificate
+```
 
-- Fresh volume ownership: the image pre-creates `/data/door-state` as `npc` (uid 10001), same as
-  the runtime volumes (§1.4). Smoke test:
-  `ghostc run --rm --no-deps --entrypoint sh door-discord -c "touch /data/door-state/.w && rm /data/door-state/.w"`.
-- There is no production path to flag a candidate during the window yet (`wanderer quarantine
-  flag` is still test-only); the host review in Discord is the veto. The window is a delay,
-  not a second review.
-- With the sweep off (default) **journals never reach Atlas** — they exist only as files in
-  `NPC_JOURNAL_DIR`, and candidates stay candidates.
+Set `COMPOSE_PROFILES=public` in `ops/.env` so plain `ghostc pull` / `ghostc up -d` keep
+Caddy in the stack.
+
+---
+
+## 8. Upgrading to witnessed memory (v0.6)
+
+Production (Ghost VPS, user `ghost`, repo at `~/npc`). Runtime and **both** Doors must come
+from the same release: `door/0.2` is strict, and an older runtime or Door refuses the other's
+`hello`. Run the pre-upgrade verify (§4.2–4.3) first, as for any release.
+
+1. Pull the repo and pin the release:
+
+   ```bash
+   cd ~/npc && git pull
+   nano ops/.env      # NPC_IMAGE_TAG=v0.6.x
+   ```
+
+2. In `ops/.env`:
+   - append `,web:home=<door pubkey>` to `ATLAS_DOOR_PUBKEYS` — the same pubkey as the
+     `discord:` entry;
+   - remove obsolete lines (`DISCORD_REVIEW_*`, `DOOR_COSIGN_RETAIN_*`, `NPC_QUARANTINE_*`) —
+     harmless if left, they are ignored;
+   - confirm `NPC_BRAIN_PROVIDER=openai-compat` (the witness reuses the Brain settings);
+   - **delete** `NPC_RESIDENCY_OPERATOR_TRIGGER=0` and `NPC_RESIDENCY_MAX_MS=0` if your `.env`
+     came from an older `.env.example` — they override the new defaults and the Wanderer would
+     never move (`grep -n NPC_RESIDENCY ops/.env`).
+
+   Note: the daily move and the operator trigger are now **on** by default; set
+   `NPC_RESIDENCY_MAX_MS=0` to keep the Wanderer put until you move it.
+
+3. Deploy all services at once:
+
+   ```bash
+   ghostc pull && ghostc up -d
+   ```
+
+4. Verify:
+
+   ```bash
+   ghostc ps                                                   # all healthy
+   ghostc logs door-discord 2>&1 | grep door_witness_config    # enabled: true
+   ghostc logs door-web 2>&1 | grep door_witness_config        # enabled: true
+   ghostc logs runtime 2>&1 | grep -E 'residency_lifecycle_config|residency_live'
+   curl -s http://127.0.0.1:8080/api/state
+   ```
+
+5. Optional — trigger the first move and watch it ([§7.3](#73-move-it-now-operator-depart)):
+
+   ```bash
+   ghostc exec runtime node dist/cli.js depart
+   ghostc logs -f runtime 2>&1 | grep -E 'residency_|door_'
+   ```
+
+   Then verify the chain with every Door binding (§7.4).
+
+6. Optional — public web Door: `WEB_DOMAIN`, DNS, `sudo ufw allow 80,443/tcp` (+
+   `sudo ufw allow 443/udp`), Hetzner firewall, `ghostc --profile public up -d` (§7.7).
+
+7. Optional cleanup — the old Discord review state volume is unused:
+
+   ```bash
+   sudo docker volume rm npc-ghost_door-state
+   ```
+
+No chain migration: witnessed memory adds record kinds without changing old ones, and legacy
+`memory/candidate` records keep verifying. (The production chain had no memory records as of
+2026-10-06.)

@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="referrer" content="no-referrer" />
+    <title>The Wanderer</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="/app.css" />
+    <script src="/app.js" defer></script>
+  </head>
+  <body class="absent">
+    <div class="page">
+      <header class="top">
+        <h1 id="door-name">The Wanderer's front porch</h1>
+        <p id="door-desc" class="desc"></p>
+        <div class="status" role="status" aria-live="polite">
+          <span class="dot" aria-hidden="true"></span>
+          <div>
+            <p id="status-text" class="status-text">Looking for the Wanderer…</p>
+            <p id="status-detail" class="status-detail"></p>
+          </div>
+        </div>
+      </header>
+
+      <main class="room">
+        <ol id="messages" class="messages" aria-label="Conversation"></ol>
+        <p id="empty" class="empty">Nothing has been said here yet.</p>
+      </main>
+
+      <form id="say" class="say" autocomplete="off" novalidate>
+        <p id="absent-note" class="note" hidden>
+          The Wanderer isn't here right now. It travels between places and comes back now and then —
+          you can read along until it does.
+        </p>
+        <div class="fields">
+          <label for="name" class="sr-only">Your name</label>
+          <input
+            id="name"
+            name="name"
+            maxlength="32"
+            placeholder="Your name"
+            autocomplete="nickname"
+            required
+          />
+          <label for="text" class="sr-only">Your message</label>
+          <textarea
+            id="text"
+            name="text"
+            maxlength="500"
+            rows="2"
+            placeholder="Say something to the porch…"
+            required
+          ></textarea>
+          <button id="send" type="submit">Send</button>
+        </div>
+        <p id="form-error" class="form-error" role="alert"></p>
+      </form>
+
+      <footer class="foot">
+        Messages here are public and kept only in memory. No cookies, no analytics.
+      </footer>
+    </div>
+  </body>
+</html>

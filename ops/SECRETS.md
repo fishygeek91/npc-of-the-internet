@@ -16,25 +16,24 @@ Environment variable names and purposes only. **Never commit values.**
 | `NPC_BRAIN_MAX_TOKENS` | Default max output tokens per Brain completion (default: `1024`). |
 | `NPC_BRAIN_TIMEOUT_MS` | HTTP timeout in milliseconds for Brain API requests (default: `60000`). |
 | `NPC_BRAIN_PROVIDER_ALLOWLIST` | Comma-separated OpenRouter provider slugs. **Required and non-empty** when `NPC_BRAIN_BASE_URL` host is `openrouter.ai`. Documented Ghost example: `fireworks,together,deepinfra`. |
-| `NPC_QUARANTINE_WINDOW_MS` | Milliseconds a distillation candidate must ripen before commit to `memory.shard` (default: `86400000` — 24 hours). Ghost compose passes it through. With the commit sweep on, any value works against a Door advertising `cosign.past_epochs` (door-discord); against a legacy Door the runtime refuses to boot with a window over `3600000` (RUNBOOK §7.5). |
-| `NPC_RESIDENCY_OPERATOR_TRIGGER` | `1`/`true` lets an operator start a residency cycle with `wanderer depart` (control-dir request) or `SIGUSR2` to the daemon. Default `0` (off). Public config, not secret. |
-| `NPC_RESIDENCY_MAX_MS` | Automatic residency cycle once the live residency is older than this (checked every minute). `0`/unset = off (default); otherwise `≥ 3600000`. |
-| `NPC_RESIDENCY_MIN_LINES` | Timer trigger waits until the live transcript holds at least this many lines (default `10`); the operator trigger needs one. |
-| `NPC_QUARANTINE_COMMIT_INTERVAL_MS` | Interval of the commit sweep that promotes ripe candidates of past epochs to `memory.shard` (and publishes each residency's journal on chain). Runs on a timer during live residency when the Door advertises `cosign.past_epochs`; otherwise polls in the travel gap. `0`/unset = off (default); otherwise `≥ 10000`. Suggested `600000`. |
+| `NPC_DOOR_URLS` | Comma-separated base URLs of every Door the Wanderer may travel between (public config). Ghost compose default: `http://door-discord:9090,http://door-web:9091`. Door ids come from each Door's verified `hello` and must be bound in `ATLAS_DOOR_PUBKEYS`. Unset = the single Door at `DOOR_HTTP_HOST:DOOR_HTTP_PORT` (legacy). |
+| `NPC_RESIDENCY_OPERATOR_TRIGGER` | `1`/`true` (default) lets an operator start a residency cycle with `wanderer depart` (control-dir request) or `SIGUSR2` to the daemon; `0` turns it off. Public config, not secret. |
+| `NPC_RESIDENCY_MAX_MS` | Travel once the live residency is older than this (checked every minute). Default `86400000` (daily); `0` = only on operator request; otherwise `≥ 3600000`. |
+| `NPC_RESIDENCY_MIN_LINES` | A timer-triggered departure forms memories only when the stay's transcript holds at least this many lines (default `10`); a quieter stay still travels, without memories. Operator-requested departures need one line. |
 | `NPC_CONTROL_DIR` | Directory the daemon polls for `wanderer depart` requests (default `/tmp/npc-control`; Ghost compose pins it on the `/tmp` tmpfs). |
 | `NPC_JOURNAL_DIR` | Directory for residency journal markdown files written at departure (default `/data/published/journals`; Ghost compose pins it on the `published` volume). |
 | `NPC_IMAGE_TAG` | Docker image tag for all Ghost stack services (default: `latest`). Set to `local` when using locally built images. |
 | `NPC_CONTAINER_UID` | Container user id for `npc` in all Ghost images (fixed `10001`). Host `keys/` and `rclone/` bind mounts must be owned by this uid. Not a secret — documented constant. |
 | `NPC_CONTAINER_GID` | Container group id for `npc` in all Ghost images (fixed `10001`). Same ownership requirement for host bind mounts. Not a secret — documented constant. |
 | `SOUL_KEY_HOST_PATH` | Host filesystem path to the soul private key file mounted read-only into runtime at `/run/keys/soul.key`. |
-| `DOOR_KEY_HOST_PATH` | Host filesystem path to the door private key file mounted read-only into door-discord at `/run/keys/door.key`. |
+| `DOOR_KEY_HOST_PATH` | Host filesystem path to the door private key file mounted read-only into door-discord **and** door-web at `/run/keys/door.key`. |
 | `RCLONE_CONFIG_HOST_PATH` | Host directory containing `rclone.conf`, mounted read-only into the backup sidecar at `/config/rclone`. |
 | `SOUL_KEY_PATH` | In-container path to the Wanderer soul private key (compose sets `/run/keys/soul.key`). |
 | `SOULCHAIN_DIR` | In-container soulchain directory for runtime (compose sets `/data/soulchain`). |
 | `ATLAS_CHAIN_DIR` | Filesystem path to the soulchain directory read by the Atlas API (`chain.jsonl` + `blobs/`). |
 | `ATLAS_PORT` | TCP port for the Atlas read API HTTP server (default: `8787`). |
-| `ATLAS_DOOR_PUBKEYS` | Comma-separated `doorId=base64url` Ed25519 **public** door key bindings for cosignature verification (public config, not secret). Example: `discord:123456789012345678=keyB64`. Passed to runtime for chain verify and to atlas-api. |
-| `CURRENT_DOOR_ID` | Door id of the active residency (public config, not secret). Ghost compose derives `discord:${DISCORD_GUILD_ID}`; must match the Door hello response. |
+| `ATLAS_DOOR_PUBKEYS` | Comma-separated `doorId=base64url` Ed25519 **public** door key bindings (public config, not secret): the Doors the Wanderer trusts and whose co-signatures verify. One entry per Door id — Ghost needs both `discord:<guild id>=<door pubkey>` and `web:home=<same door pubkey>` (both Doors use `DOOR_KEY_HOST_PATH`). A Door whose `hello` is not bound here is skipped (`door_rejected`). Passed to runtime and atlas-api. |
+| `CURRENT_DOOR_ID` | Boot preference only (public config): the Door to arrive at first when the chain names no last arrival or that Door is offline. Ghost compose derives `discord:${DISCORD_GUILD_ID}`. |
 | `DISCORD_BOT_TOKEN` | Discord bot token for `@npc/door-discord`. Exactly one of this or `DISCORD_BOT_TOKEN_FILE`. |
 | `DISCORD_BOT_TOKEN_FILE` | In-container path to a file containing the Discord bot token (trimmed). |
 | `DISCORD_BOT_TOKEN_HOST_PATH` | Host path bind-mounted read-only to `/run/secrets/discord_bot_token` when using file-based secrets. |
@@ -42,19 +41,30 @@ Environment variable names and purposes only. **Never commit values.**
 | `SOUL_PUBLIC_KEY` | Wanderer soul Ed25519 public key (base64url) for Door session verification (public config). |
 | `DISCORD_GUILD_ID` | Discord guild snowflake bound to this Door (public config). |
 | `DISCORD_CHANNEL_ID` | Discord channel snowflake for residency relay (public config). |
-| `DISCORD_OPERATOR_IDS` | Comma-separated Discord user snowflakes allowed to cosign/status (public config). |
-| `DISCORD_REVIEW_TIMEOUT_MS` | Cosign review wait; timeout rejects shards (default `240000`; keep well under the runtime's 290 s review-request timeout so the review answers within one HTTP call). |
-| `DISCORD_REVIEW_CHANNEL_ID` | Optional Discord channel snowflake for cosign review posts; when unset, falls back to `DISCORD_CHANNEL_ID`. |
+| `DISCORD_OPERATOR_IDS` | Comma-separated Discord user snowflakes allowed to use operator slash commands such as `/wanderer status` (public config). |
+| `DISCORD_PRESENCE_NOTICES` | `1` (default) posts "✨ The Wanderer has arrived." / "🌫️ The Wanderer has moved on." in the residency channel; `0` disables. Public config. |
 | `DISCORD_USER_RATE_PER_MIN` | Per-user message rate limit (messages per minute, default `20`). |
 | `DISCORD_USER_BURST` | Per-user burst allowance before rate limiting (default `5`). |
 | `DISCORD_CHANNEL_RATE_PER_MIN` | Per-channel message rate limit (messages per minute, default `60`). |
 | `DISCORD_CHANNEL_BURST` | Per-channel burst allowance before rate limiting (default `15`). |
 | `DISCORD_COMMUNITY_NAME` | Human-readable community name advertised by the Door (public config). |
 | `DISCORD_COMMUNITY_DESCRIPTION` | Short community description for the Door (public config). |
-| `DOOR_STATE_DIR` | Directory where door-discord persists per-epoch cosign review state (`cosign-state.json`: approved shard texts, review session public keys, issued commit co-signatures — no secrets). Unset = in memory only (lost on restart). Ghost compose pins `/data/door-state` on the `door-state` volume. Public config. |
-| `DOOR_COSIGN_RETAIN_EPOCHS` | Reviewed epochs whose cosign review door-discord retains for past-epoch commits (default `64`). Must exceed `NPC_QUARANTINE_WINDOW_MS / NPC_RESIDENCY_MAX_MS` with margin, or ripening candidates are evicted before they can commit. |
-| `DOOR_COSIGN_RETAIN_MS` | Max age of a retained cosign review in ms (default `604800000` — 7 days). Keep well above `NPC_QUARANTINE_WINDOW_MS`. |
-| `DOOR_HTTP_HOST` / `DOOR_HTTP_PORT` | Door **listen** address for REST + WebSocket on a single coalesced port. door-discord binds `0.0.0.0:9090` in Ghost compose. runtime **connects** to `door-discord:9090` on the internal Docker network. Not published to the host by default. |
+| `DOOR_HTTP_HOST` / `DOOR_HTTP_PORT` | Door protocol **listen** address for REST + WebSocket on a single coalesced port: door-discord `0.0.0.0:9090`, door-web `0.0.0.0:9091` in Ghost compose (internal network only, never published). The runtime reaches them via `NPC_DOOR_URLS`; it uses `DOOR_HTTP_HOST`/`DOOR_HTTP_PORT` itself only when `NPC_DOOR_URLS` is unset. |
+| `DOOR_WITNESS` | `off` (or `0`/`false`) disables a Door's memory witness: it stops advertising `attest.memory` and the Wanderer forms no memories there. Unset = on when configured. Both Doors. |
+| `DOOR_WITNESS_BASE_URL` | OpenAI-compatible API origin for the Door's memory witness. Falls back to `NPC_BRAIN_BASE_URL` when `NPC_BRAIN_PROVIDER=openai-compat`. |
+| `DOOR_WITNESS_API_KEY` / `DOOR_WITNESS_API_KEY_FILE` | Witness API key (inline or in-container file path). Falls back to `NPC_BRAIN_API_KEY` / `NPC_BRAIN_API_KEY_FILE` only when the witness also uses the Brain's base URL — the Brain key is never sent to another host. `ops/compose.secrets.yml` mounts the Brain key file into both Doors. |
+| `DOOR_WITNESS_MODEL` | Witness model id. Falls back to `NPC_BRAIN_MODEL` (openai-compat). |
+| `DOOR_WITNESS_PROVIDER_ALLOWLIST` | OpenRouter `provider.only` slugs for the witness, comma-separated. Falls back to `NPC_BRAIN_PROVIDER_ALLOWLIST` only when the witness also uses the Brain's base URL. |
+| `DOOR_WITNESS_TIMEOUT_MS` | Witness HTTP timeout per attempt, integer `1000`–`85000` (default `60000`; two attempts must finish inside the runtime's 180 s memory-attest timeout). |
+| `DOOR_WEB_ID` | door-web Door id (default `web:home`); must be bound in `ATLAS_DOOR_PUBKEYS`. |
+| `DOOR_WEB_COMMUNITY_NAME` / `DOOR_WEB_COMMUNITY_DESCRIPTION` | door-web page title/subtitle and `hello` community descriptor (public config). |
+| `DOOR_WEB_PUBLIC_HOST` / `DOOR_WEB_PUBLIC_PORT` | door-web visitor-site listener (default `0.0.0.0:8080`; Ghost compose publishes it on `127.0.0.1:8080` only). |
+| `DOOR_WEB_TRUST_PROXY` | `1` = door-web rate-limits by the last `X-Forwarded-For` hop (only behind your own proxy). Ghost compose default `1` (Caddy, `public` profile). |
+| `DOOR_WEB_GLOBAL_PER_MIN` | Visitor messages per minute for all door-web visitors together (default `30`). |
+| `DOOR_WEB_MAX_CLIENTS` | Max concurrent door-web SSE streams (default `200`). |
+| `DOOR_WEB_DAILY_MAX` | Visitor messages relayed to the Wanderer per UTC day (default `1500`; bounds LLM cost — beyond it the porch answers `quiet_hours`). |
+| `ATLAS_API_URL` | atlas-api base URL door-web uses to show where the Wanderer is while away (compose pins `http://atlas-api:8787`). |
+| `WEB_DOMAIN` | Public hostname for the web Door (compose profile `public`: Caddy serves `https://$WEB_DOMAIN` → door-web). Needs a DNS A/AAAA record and ports 80/443 open. Public config. |
 | `NPC_RUNTIME_READY_FILE` | Path written when the residency WebSocket is live (default `/tmp/npc-runtime.ready`). Used by compose healthcheck; optional override. |
 | `NPC_REPLICATION_ENABLED` | Set to `1` or `true` to enable outbound IPFS replication drain in runtime. Default unset (disabled). Empty target set is safe — no push until targets are configured. Gate 2 before live tokens. |
 | `NPC_REPLICATION_TARGETS` | JSON array of replication targets: `{name, kind: "car-upload", endpoint, tokenEnv}`. Default `[]`. Names match `[a-z0-9_-]+`. |
@@ -84,7 +94,7 @@ Environment variable names and purposes only. **Never commit values.**
 | `KEY_BACKUP_RCLONE_REMOTE` | rclone remote path for encrypted key backup (e.g. `ghost-keys:npc/keys`). **Must differ** from `BACKUP_RCLONE_REMOTE`. |
 | `KEY_BACKUP_RCLONE_CONFIG` | Optional path to a separate `rclone.conf` (different B2 app key) for key backup. |
 | `NPC_KEY_DRILL_LIVE` | Set to `1` to force live key-backup drill (decrypt remote `latest/` and cmp host keys). Set to `0` to force offline fixture mode even if `AGE_IDENTITY_PATH` is set. |
-| `NPC_COMPOSE_SECRETS` | `1`: `ghostc` also loads `ops/compose.secrets.yml` (production openai-compat: bind-mounts `NPC_BRAIN_API_KEY_HOST_PATH` + `DISCORD_BOT_TOKEN_HOST_PATH`). `anthropic`: loads `ops/compose.secrets.anthropic.yml` (`ANTHROPIC_API_KEY_HOST_PATH` + `DISCORD_BOT_TOKEN_HOST_PATH`). Each overlay fails fast if one of its host paths is unset. |
+| `NPC_COMPOSE_SECRETS` | `1`: `ghostc` also loads `ops/compose.secrets.yml` (production openai-compat: bind-mounts `NPC_BRAIN_API_KEY_HOST_PATH` into runtime and both Doors' witnesses, + `DISCORD_BOT_TOKEN_HOST_PATH`). `anthropic`: loads `ops/compose.secrets.anthropic.yml` (`ANTHROPIC_API_KEY_HOST_PATH` + `DISCORD_BOT_TOKEN_HOST_PATH`). Each overlay fails fast if one of its host paths is unset. |
 
 ## OpenRouter account hardening
 

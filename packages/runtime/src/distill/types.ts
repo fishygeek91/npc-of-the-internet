@@ -1,7 +1,7 @@
 import type { ScreenCategory } from "@npc/immune";
 
+/** One distilled memory proposed for witnessing at departure. */
 export type CandidateShard = {
-  shard_id: string;
   text: string;
   tags?: string[];
 };

@@ -2,7 +2,15 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { computeCid, type SoulStore } from "@npc/osp-core";
+import {
+  OSP_SPEC_V02,
+  computeCid,
+  contentAddressSideBlob,
+  createRecord,
+  encodeJournalBlob,
+  signCore,
+  type SoulStore
+} from "@npc/osp-core";
 import { describe, expect, it } from "vitest";
 
 import { composeSelf } from "../src/compose/compose-self.js";
@@ -96,6 +104,46 @@ describe("composeSelf", () => {
     expect(systemPrompt).not.toContain(CANDIDATE_TEXT);
     expect(systemPrompt).not.toContain(REJECTED_CATEGORY);
     expect(systemPrompt).not.toContain(JOURNAL_TEXT);
+  });
+
+  it("never composes witnessed journal records into the self", async () => {
+    const store = new MemorySoulStore();
+    const genesis = await createGenesisRecord(SOUL);
+    await store.append(genesis.record);
+    const arrival = await createArrivalRecord(SOUL, DOOR, SESSION, 1, genesis.cid);
+    await store.append(arrival.record);
+    const shard = await createShardRecord(SOUL, DOOR, 2, arrival.cid, SHARD_A_TEXT, { store });
+    await store.append(shard.record);
+    const bytes = encodeJournalBlob(JOURNAL_TEXT);
+    const { cid, hash } = await contentAddressSideBlob(bytes);
+    await store.putSideBlob(bytes);
+    const fields = {
+      spec: OSP_SPEC_V02,
+      seq: 3,
+      prev: shard.cid,
+      type: "memory" as const,
+      body: {
+        kind: "journal" as const,
+        journal_cid: cid,
+        journal_hash: hash,
+        written_at: "2026-01-02T02:00:00.000Z"
+      },
+      residency: "door:discord:g/epoch:1"
+    };
+    const journal = await createRecord({
+      ...fields,
+      cosigners: [signCore(fields, DOOR.privateKey)],
+      soulPrivateKey: SOUL.privateKey
+    });
+    await store.append(journal.record);
+
+    const composed = await composeSelf(store, {
+      doorPublicKeys: doorPublicKeyFor(DOOR_ID, DOOR.publicKey)
+    });
+
+    expect(composed.systemPrompt).toContain(SHARD_A_TEXT);
+    expect(composed.systemPrompt).not.toContain(JOURNAL_TEXT);
+    expect(composed.memoryIndex.map((entry) => entry.text)).toEqual([SHARD_A_TEXT]);
   });
 
   it("throws ComposeError when the soulchain has a tampered signature", async () => {

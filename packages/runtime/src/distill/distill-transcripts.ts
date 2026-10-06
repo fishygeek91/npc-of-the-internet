@@ -3,17 +3,15 @@ import type { ScreenCategory } from "@npc/immune";
 import type { Brain, BrainMessage } from "../brain/types.js";
 import { DISTILLER_RETRY } from "../prompts/distiller/retry.js";
 import { DISTILLER_SYSTEM } from "../prompts/distiller/system.js";
-import { assignShardIds } from "../quarantine/shard-id.js";
 import { DistillError } from "./errors.js";
 import { parseBrainShards } from "./parse.js";
 import type { CandidateShard, DistillOptions, TranscriptLine, TranscriptSource } from "./types.js";
 
-const MIN_SHARDS = 5;
+const MIN_SHARDS = 1;
 const MAX_SHARDS = 20;
 /**
- * Max shard length in UTF-16 code units — the unit `String.length` and the Door's
- * `CandidateShardSchema.text.max(500)` measure. Counting code points instead would let an
- * emoji-heavy shard pass here and then fail the Door's review schema, aborting departure.
+ * Max shard length in UTF-16 code units (`String.length`). Stricter than the side-blob
+ * limit of 500 code points, so every shard that passes here encodes as a shard blob.
  */
 const MAX_SHARD_UTF16_UNITS = 500;
 
@@ -163,28 +161,27 @@ function applyImmuneScreen(
 }
 
 /**
- * Assign content-derived shard ids to screened shards.
+ * Drop repeated shard texts (first wins): each memory is witnessed and recorded once.
  */
-function toCandidateShards(shards: readonly ParsedShard[]): CandidateShard[] {
-  const shardIds = assignShardIds(shards.map((shard) => shard.text));
-  return shards.map((shard, index) => {
-    const shardId = shardIds[index];
-    if (shardId === undefined) {
-      throw new DistillError("internal error: shard id assignment mismatch", "malformed_output");
+function dedupeShards(shards: readonly ParsedShard[]): CandidateShard[] {
+  const seen = new Set<string>();
+  const unique: CandidateShard[] = [];
+  for (const shard of shards) {
+    if (seen.has(shard.text)) {
+      continue;
     }
-    const candidate: CandidateShard = {
-      shard_id: shardId,
-      text: shard.text
-    };
-    if (shard.tags !== undefined) {
-      candidate.tags = shard.tags;
-    }
-    return candidate;
-  });
+    seen.add(shard.text);
+    unique.push(
+      shard.tags === undefined ? { text: shard.text } : { text: shard.text, tags: shard.tags }
+    );
+  }
+  return unique;
 }
 
 /**
- * Distill a residency transcript into 5–20 immune-screened candidate memory shards.
+ * Distill a residency transcript into 1–20 immune-screened, distinct candidate memory
+ * shards (short stays yield few). Throws {@link DistillError} (`too_few_shards` /
+ * `screen_reject`) when none survive, `invalid_transcript` when the screen drops every line.
  * Screens each transcript line before the Brain call; destroys the source after read
  * (success or failure) so raw transcripts do not linger on disk.
  */
@@ -224,8 +221,7 @@ export async function distillTranscripts(
       throw new DistillError(message, reason);
     }
 
-    const clamped = screenFiltered.slice(0, MAX_SHARDS);
-    return toCandidateShards(clamped);
+    return dedupeShards(screenFiltered).slice(0, MAX_SHARDS);
   } finally {
     // Privacy: always attempt destroy after a successful read (ENOENT-safe for files).
     await source.destroy();

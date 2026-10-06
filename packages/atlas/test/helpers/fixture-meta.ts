@@ -8,12 +8,15 @@ import {
   DOOR_PUBLIC_KEY_B64,
   JOURNAL_EPOCH_1,
   JOURNAL_EPOCH_2,
+  JOURNAL_EPOCH_3,
   LEAK_SHARD_TEXT,
   OTHER_DOOR_ID,
-  OTHER_DOOR_PUBLIC_KEY_B64
+  OTHER_DOOR_PUBLIC_KEY_B64,
+  WEB_DOOR_ID,
+  WEB_DOOR_PUBLIC_KEY_B64
 } from "./fixed-keys.js";
 
-export { JOURNAL_EPOCH_1, JOURNAL_EPOCH_2, LEAK_SHARD_TEXT };
+export { JOURNAL_EPOCH_1, JOURNAL_EPOCH_2, JOURNAL_EPOCH_3, LEAK_SHARD_TEXT };
 
 export const MULTI_RESIDENCY_FIXTURE_DIR = join(
   import.meta.dirname,
@@ -37,7 +40,8 @@ export async function loadFixtureMeta(
 /** Door public keys for verifying the multi-residency fixture chain. */
 export const FIXTURE_DOOR_PUBLIC_KEYS_B64: Record<string, string> = {
   [DOOR_ID]: DOOR_PUBLIC_KEY_B64,
-  [OTHER_DOOR_ID]: OTHER_DOOR_PUBLIC_KEY_B64
+  [OTHER_DOOR_ID]: OTHER_DOOR_PUBLIC_KEY_B64,
+  [WEB_DOOR_ID]: WEB_DOOR_PUBLIC_KEY_B64
 };
 
 /** Decode fixture door public keys into a doorId → key map. */

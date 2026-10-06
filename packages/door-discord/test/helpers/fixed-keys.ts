@@ -19,3 +19,6 @@ export const SOUL = testKeypair(7);
 
 /** TEST-ONLY door key (fill 8). */
 export const DOOR = testKeypair(8);
+
+/** TEST-ONLY second door key (fill 9), for multi-Door travel. */
+export const DOOR_B = testKeypair(9);

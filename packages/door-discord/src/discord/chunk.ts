@@ -40,7 +40,7 @@ export function chunkDiscordMessage(text: string, limit = DISCORD_MESSAGE_MAX_CH
 
 /**
  * Clamp content to `limit` UTF-16 units without splitting a surrogate pair
- * (last-resort guard for host notices / review posts; relay text is chunked instead).
+ * (last-resort guard for host notices; relay text is chunked instead).
  */
 export function clampDiscordMessage(text: string, limit = DISCORD_MESSAGE_MAX_CHARS): string {
   if (text.length <= limit) {

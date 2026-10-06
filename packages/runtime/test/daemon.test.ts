@@ -38,7 +38,7 @@ const defaultPolicy: HostPolicy = {
     platform: "discord",
     invitation_required: false
   },
-  capabilities: ["session.text", "session.reactions", "heartbeat", "attest", "cosign.manual"]
+  capabilities: ["session.text", "session.reactions", "heartbeat", "attest"]
 };
 
 type DaemonTestEnv = {
@@ -101,9 +101,8 @@ async function createDaemonTestEnv(): Promise<DaemonTestEnv> {
   const config: DaemonConfig = {
     soulKeyPath,
     soulchainDir: chainDir,
-    doorHttpHost: httpHost,
-    doorHttpPort: httpPort,
-    doorId: DOOR_ID,
+    doorUrls: [httpInfo.baseUrl],
+    preferredDoorId: DOOR_ID,
     doorPublicKeys: { [DOOR_ID]: DOOR.publicKey },
     brain: {
       apiKey: "test-api-key",
@@ -115,8 +114,11 @@ async function createDaemonTestEnv(): Promise<DaemonTestEnv> {
     replication: loadReplicationConfig({}),
     // Legacy door/0.1 behaviour for the existing echo tests; selective mode has its own test.
     attentionMode: "always",
-    // Residency lifecycle defaults: every trigger off.
-    residency: loadResidencyConfig({})
+    // No automatic travel in these tests.
+    residency: {
+      ...loadResidencyConfig({ NPC_RESIDENCY_MAX_MS: "0", NPC_RESIDENCY_OPERATOR_TRIGGER: "0" }),
+      controlDir: join(chainDir, "control")
+    }
   };
 
   return {
@@ -367,34 +369,47 @@ describe("startResidencyDaemon", () => {
 
     await handle.shutdown();
   });
-  it("closes the store when boot fails at Door hello (door id mismatch)", async () => {
+  it("closes the store when boot fails on a local (fatal) error", async () => {
     const closed = { count: 0 };
-    await expect(
-      startResidencyDaemon(
-        { ...env.config, doorId: "discord:someone-else" },
-        {
-          brain: new FakeBrain([]),
-          logger: pino({ level: "silent" }),
-          skipSignals: true,
-          openStore: countingOpenStore(closed)
-        }
-      )
-    ).rejects.toThrow(/mismatch/);
-    expect(closed.count).toBe(1);
-  });
-
-  it("stops the session and closes the store when the session WebSocket cannot connect", async () => {
-    await env.wsServer.stop();
-    const closed = { count: 0 };
+    const opener = countingOpenStore(closed);
     await expect(
       startResidencyDaemon(env.config, {
         brain: new FakeBrain([]),
         logger: pino({ level: "silent" }),
         skipSignals: true,
-        openStore: countingOpenStore(closed)
+        openStore: async (dir, options) => {
+          const opened = await opener(dir, options);
+          opened.store.append = async () => {
+            throw new Error("disk full");
+          };
+          return opened;
+        }
       })
-    ).rejects.toThrow();
+    ).rejects.toThrow(/disk full/);
     expect(closed.count).toBe(1);
     await expect(readFile(env.readyFilePath, "utf8")).rejects.toThrow();
+  });
+
+  it("retries boot while the session WebSocket cannot connect (Door trouble is not fatal)", async () => {
+    await env.wsServer.stop();
+    const sleeps: number[] = [];
+    let wsServer: WsDoorSessionServer | null = null;
+    const handle = await startResidencyDaemon(env.config, {
+      brain: new FakeBrain([]),
+      logger: pino({ level: "silent" }),
+      skipSignals: true,
+      sleep: async (ms) => {
+        sleeps.push(ms);
+        wsServer = new WsDoorSessionServer({ door: env.door, server: env.httpServer.nodeServer });
+        await wsServer.start();
+      }
+    });
+    expect(sleeps).toEqual([5_000]);
+    // Retry arrived at the next epoch (the failed bind's arrival was superseded).
+    expect(handle.currentEpoch()).toBe(2);
+    expect(handle.currentDoorId()).toBe(DOOR_ID);
+    await waitForReadyFile(env.readyFilePath);
+    await handle.shutdown();
+    await (wsServer as WsDoorSessionServer | null)?.stop();
   });
 });

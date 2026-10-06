@@ -15,27 +15,14 @@ export type GatewayMessage = {
 };
 
 /**
- * Reaction event used for cosign review (✅ / ❌).
+ * Slash-command invocation from an operator (`/wanderer status`).
  */
-export type GatewayReaction = {
-  messageId: string;
-  channelId: string;
+export type GatewayCommand = {
+  kind: "status";
+  interactionId: string;
   userId: string;
-  emoji: string;
+  ephemeral: true;
 };
-
-/**
- * Slash-command invocation from an operator.
- */
-export type GatewayCommand =
-  | { kind: "status"; interactionId: string; userId: string; ephemeral: true }
-  | {
-      kind: "approve" | "reject";
-      interactionId: string;
-      userId: string;
-      shardId: string;
-      ephemeral: true;
-    };
 
 /**
  * Thin seam between the adapter and discord.js.
@@ -61,6 +48,5 @@ export interface DiscordGateway {
   /** Reply ephemerally to a slash-command interaction. */
   replyEphemeral(interactionId: string, content: string): Promise<void>;
   onMessage(handler: (message: GatewayMessage) => void | Promise<void>): void;
-  onReaction(handler: (reaction: GatewayReaction) => void | Promise<void>): void;
   onCommand(handler: (command: GatewayCommand) => void | Promise<void>): void;
 }

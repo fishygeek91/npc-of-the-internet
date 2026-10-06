@@ -13,9 +13,8 @@ const daemonConfigSchema = z.object({
   soulKeyPath: z.string().min(1),
   soulchainDir: z.string().min(1),
   soulchainIpfsDir: z.string().min(1).optional(),
-  doorHttpHost: z.string().min(1),
-  doorHttpPort: z.number().int().positive(),
-  doorId: z.string().min(1),
+  doorUrls: z.array(z.string().url()).min(1),
+  preferredDoorId: z.string().min(1).optional(),
   doorPublicKeys: z
     .record(z.string(), z.instanceof(Uint8Array))
     .refine((map) => Object.keys(map).length >= 1, {
@@ -69,6 +68,38 @@ function parsePositiveInt(value: string, name: string): number {
   return parsed;
 }
 
+/**
+ * Door base URLs from `NPC_DOOR_URLS` (comma-separated, deduped), else the single legacy
+ * `http://${DOOR_HTTP_HOST}:${DOOR_HTTP_PORT}`. Each must be an `http(s)` URL.
+ */
+function parseDoorUrls(env: NodeJS.ProcessEnv): string[] {
+  const listed = (env.NPC_DOOR_URLS ?? "")
+    .split(",")
+    .map((entry) => entry.trim().replace(/\/+$/u, ""))
+    .filter((entry) => entry !== "");
+  if (listed.length === 0) {
+    const host = requireEnv(env, "DOOR_HTTP_HOST");
+    const port = parsePositiveInt(requireEnv(env, "DOOR_HTTP_PORT"), "DOOR_HTTP_PORT");
+    return [`http://${host}:${String(port)}`];
+  }
+  for (const url of listed) {
+    let protocol: string;
+    try {
+      protocol = new URL(url).protocol;
+    } catch {
+      protocol = "";
+    }
+    if (protocol !== "http:" && protocol !== "https:") {
+      throw new DaemonError(
+        `NPC_DOOR_URLS entries must be http(s) URLs (got ${url})`,
+        "invalid_config",
+        "NPC_DOOR_URLS"
+      );
+    }
+  }
+  return [...new Set(listed)];
+}
+
 function parseDoorPublicKeys(value: string): Readonly<Record<string, Uint8Array>> {
   try {
     const map = parseDoorPublicKeyMap(value);
@@ -95,18 +126,21 @@ function parseDoorPublicKeys(value: string): Readonly<Record<string, Uint8Array>
 /**
  * Load and validate residency daemon configuration from environment variables.
  *
- * Required: `SOUL_KEY_PATH`, `SOULCHAIN_DIR`, `DOOR_HTTP_HOST`, `DOOR_HTTP_PORT`,
- * `CURRENT_DOOR_ID`, `ATLAS_DOOR_PUBKEYS`, and Brain vars via {@link loadBrainConfig}.
- * Optional: `NPC_RUNTIME_READY_FILE` (defaults to `/tmp/npc-runtime.ready`),
- * `NPC_ATTENTION_MODE` (`selective` default | `always`), and the residency lifecycle
- * vars of {@link loadResidencyConfig} (every trigger defaults off).
+ * Required: `SOUL_KEY_PATH`, `SOULCHAIN_DIR`, `ATLAS_DOOR_PUBKEYS` (the Doors the
+ * Wanderer trusts: `doorId=pubkey,…`), the Doors to reach — `NPC_DOOR_URLS`
+ * (comma-separated base URLs) or, for one Door, `DOOR_HTTP_HOST` + `DOOR_HTTP_PORT` — and
+ * Brain vars via {@link loadBrainConfig}.
+ * Optional: `CURRENT_DOOR_ID` (boot preference when the chain names no last Door),
+ * `NPC_RUNTIME_READY_FILE` (defaults to `/tmp/npc-runtime.ready`), `NPC_ATTENTION_MODE`
+ * (`selective` default | `always`), and the residency lifecycle vars of
+ * {@link loadResidencyConfig}.
  */
 export function loadDaemonConfig(env: NodeJS.ProcessEnv = process.env): DaemonConfig {
   const soulKeyPath = requireEnv(env, "SOUL_KEY_PATH");
   const soulchainDir = requireEnv(env, "SOULCHAIN_DIR");
-  const doorHttpHost = requireEnv(env, "DOOR_HTTP_HOST");
-  const doorHttpPort = parsePositiveInt(requireEnv(env, "DOOR_HTTP_PORT"), "DOOR_HTTP_PORT");
-  const doorId = requireEnv(env, "CURRENT_DOOR_ID");
+  const doorUrls = parseDoorUrls(env);
+  const preferredRaw = env.CURRENT_DOOR_ID?.trim() ?? "";
+  const preferredDoorId = preferredRaw === "" ? undefined : preferredRaw;
   const doorPublicKeysRaw = requireEnv(env, "ATLAS_DOOR_PUBKEYS");
   const doorPublicKeys = parseDoorPublicKeys(doorPublicKeysRaw);
 
@@ -147,9 +181,8 @@ export function loadDaemonConfig(env: NodeJS.ProcessEnv = process.env): DaemonCo
     soulKeyPath,
     soulchainDir,
     soulchainIpfsDir,
-    doorHttpHost,
-    doorHttpPort,
-    doorId,
+    doorUrls,
+    preferredDoorId,
     doorPublicKeys,
     brain,
     readyFilePath,

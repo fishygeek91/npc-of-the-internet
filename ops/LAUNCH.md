@@ -45,7 +45,7 @@ Internally the script runs: `osp init` → `launch-first-residency.mjs` → `osp
 
 | Concern | Dry-run | Real launch |
 |---|---|---|
-| Residency transport | In-process Session + door-sdk `Door` (`ops/scripts/launch-first-residency.mjs`) | `npc-runtime` daemon ↔ door-discord over compose HTTP/WS `:9090` |
+| Residency transport | In-process Session + door-sdk `Door` with an offline stand-in memory witness (`ops/scripts/launch-first-residency.mjs`) | `npc-runtime` daemon ↔ door-discord (`:9090`) and door-web (`:9091`) over compose HTTP/WS; each Door's AI witness calls a model |
 | Brain | FakeBrain (no API key) | `createBrain` from env (`NPC_BRAIN_PROVIDER=openai-compat` / OpenRouter recommended; Anthropic still supported) |
 | Heartbeats | FakeTimer ticks (CI-fast) | Real daemon timer (default 10 minutes) |
 | Discord | None | Real bot + guild/channel ([`MANUAL_TEST.md`](../packages/door-discord/MANUAL_TEST.md)) |
@@ -142,7 +142,7 @@ The Wanderer's **soul private key is created only by `osp init`** — not by `op
 - Never commit `soul.key`, never copy it into `blobs/` or `chain.jsonl`, never leave it as the only copy on an unbacked-up scratch path.
 - After init, the canonical private key lives at `SOUL_KEY_HOST_PATH` (mode `0600`). The Docker soulchain volume holds **only** `chain.jsonl` and `blobs/`.
 
-**Door key (separate from soul):** the Discord Door has its own Ed25519 keypair. Generate the door private key now; the soul key arrives in section 2.
+**Door key (separate from soul):** the Doors have their own Ed25519 keypair — one `door.key`, shared by door-discord and door-web. Generate the door private key now; the soul key arrives in section 2.
 
 **Option A — raw 32 bytes (matches compose mount):**
 
@@ -173,12 +173,13 @@ node --input-type=module -e "
 import { loadDoorKeypairFromPath } from \"./packages/door-discord/dist/load-door-key.js\";
 import { encodePublicKey } from \"./packages/osp-core/dist/index.js\";
 const kp = loadDoorKeypairFromPath(process.argv[1]);
-const doorId = process.argv[2] ?? \"discord:YOUR_GUILD_ID\";
-process.stdout.write(doorId + \"=\" + encodePublicKey(kp.publicKey) + \"\\n\");
-" /var/lib/npc-ghost/keys/door.key
+const pub = encodePublicKey(kp.publicKey);
+const guild = process.argv[2] ?? \"YOUR_GUILD_ID\";
+process.stdout.write(\"discord:\" + guild + \"=\" + pub + \",web:home=\" + pub + \"\\n\");
+" /var/lib/npc-ghost/keys/door.key YOUR_GUILD_ID
 ```
 
-Set `DOOR_KEY_HOST_PATH=/var/lib/npc-ghost/keys/door.key` (or your persistent path from §0) and paste the printed `doorId=base64url` binding into `ATLAS_DOOR_PUBKEYS` in `ops/.env` (door id must match `CURRENT_DOOR_ID`).
+Set `DOOR_KEY_HOST_PATH=/var/lib/npc-ghost/keys/door.key` (or your persistent path from §0) and paste the printed bindings into `ATLAS_DOOR_PUBKEYS` in `ops/.env` — one per Door id, both with the same pubkey (`discord:<DISCORD_GUILD_ID>` must match the guild door-discord serves; `web:home` is door-web's default `DOOR_WEB_ID`).
 
 ---
 
@@ -212,7 +213,7 @@ Genesis CID: <cid>
 
    ```bash
    node packages/osp-cli/dist/cli.js verify "$STAGING" \
-     --door-key "$(grep '^ATLAS_DOOR_PUBKEYS=' ops/.env | cut -d= -f2- | cut -d, -f1)"
+     $(grep '^ATLAS_DOOR_PUBKEYS=' ops/.env | cut -d= -f2- | tr ',' '\n' | sed 's/^/--door-key=/')
    ```
 
 5. **Seed the Docker soulchain volume** with **only** `chain.jsonl` and `blobs/` (never `soul.key`). Ensure the stack is not writing to the volume yet:
@@ -260,7 +261,7 @@ Delegate to [RUNBOOK §1](RUNBOOK.md#1-start). From repository root, with `ops/.
      runtime -c "touch /data/soulchain/.wtest && rm /data/soulchain/.wtest"
    ```
 
-3. **Service health** — [RUNBOOK §3](RUNBOOK.md#3-logs-and-health): runtime logs, atlas `/state`, door listeners on `:9090`, backup sidecar.
+3. **Service health** — [RUNBOOK §3](RUNBOOK.md#3-logs-and-health): runtime logs, atlas `/state`, door listeners on `:9090` / `:9091`, `door_witness_config` `enabled: true` on both Doors, backup sidecar.
 
 Expected after first bind: runtime logs `residency_live`; `docker compose … ps runtime` shows `healthy` while the session WebSocket is connected.
 
@@ -272,9 +273,9 @@ Delegate bot creation, intents, invite URL, and env vars to [`packages/door-disc
 
 - `DISCORD_BOT_TOKEN`, `DISCORD_GUILD_ID`, `DISCORD_CHANNEL_ID`, `DISCORD_OPERATOR_IDS`
 - `SOUL_PUBLIC_KEY`, `ATLAS_DOOR_PUBKEYS` (from sections 1–2)
-- `DOOR_KEY_HOST_PATH` mounted into door-discord
+- `DOOR_KEY_HOST_PATH` mounted into door-discord and door-web
 
-`CURRENT_DOOR_ID` is derived in compose as `discord:${DISCORD_GUILD_ID}` — it must match the Door hello response ([`SECRETS.md`](SECRETS.md)).
+`CURRENT_DOOR_ID` is derived in compose as `discord:${DISCORD_GUILD_ID}` — a boot preference only: on a fresh chain the Wanderer arrives in Discord first when door-discord is online ([`SECRETS.md`](SECRETS.md)).
 
 Cross-container Session checks (runtime ↔ door-discord, Discord round-trip, reconnect behavior): [`MANUAL_TEST.md` §7](../packages/door-discord/MANUAL_TEST.md#7-cross-container-session-compose).
 
@@ -296,12 +297,12 @@ docker compose --env-file ops/.env -f ops/compose.ghost.yml run --rm --no-deps \
 |---|--------|------------------|
 | 1 | Runtime live | `docker compose --env-file ops/.env -f ops/compose.ghost.yml logs runtime 2>&1 \| grep residency_live` |
 | 2 | Runtime healthy | `docker compose --env-file ops/.env -f ops/compose.ghost.yml ps runtime` → `healthy` |
-| 3 | Arrival on chain | `node packages/osp-cli/dist/cli.js log ./_soulchain-snapshot --door-key "$(grep '^ATLAS_DOOR_PUBKEYS=' ops/.env \| cut -d= -f2- \| cut -d, -f1)"` — contains an `attestation` with kind `arrival` (without `--door-key` the listing still prints but warns that verification failed) |
+| 3 | Arrival on chain | `node packages/osp-cli/dist/cli.js log ./_soulchain-snapshot $(grep '^ATLAS_DOOR_PUBKEYS=' ops/.env \| cut -d= -f2- \| tr ',' '\n' \| sed 's/^/--door-key=/')` — contains an `attestation` with kind `arrival` (without `--door-key` the listing still prints but warns that verification failed) |
 | 4 | Discord presence | In the bound guild channel, `/wanderer status` → `presence: present` |
 | 5 | Human round-trip | Post a normal (non-bot) message in the channel; Wanderer replies via runtime → door-discord → Discord ([§7 reconnect note](../packages/door-discord/MANUAL_TEST.md#7-cross-container-session-compose) if WS was down) |
-| 6 | Heartbeats | `node packages/osp-cli/dist/cli.js log ./_soulchain-snapshot --door-key "$(grep '^ATLAS_DOOR_PUBKEYS=' ops/.env \| cut -d= -f2- \| cut -d, -f1)"` — at least one `attestation` with kind `heartbeat` (daemon default interval ~10 minutes; allow time) |
+| 6 | Heartbeats | `node packages/osp-cli/dist/cli.js log ./_soulchain-snapshot $(grep '^ATLAS_DOOR_PUBKEYS=' ops/.env \| cut -d= -f2- \| tr ',' '\n' \| sed 's/^/--door-key=/')` — at least one `attestation` with kind `heartbeat` (daemon default interval ~10 minutes; allow time) |
 | 7 | Atlas API state | `curl -sS http://127.0.0.1:8787/state` — JSON `status` is `present` |
-| 8 | Chain verifies | `node packages/osp-cli/dist/cli.js verify ./_soulchain-snapshot --door-key "$(grep '^ATLAS_DOOR_PUBKEYS=' ops/.env \| cut -d= -f2- \| cut -d, -f1)"` → exit 0 |
+| 8 | Chain verifies | `node packages/osp-cli/dist/cli.js verify ./_soulchain-snapshot $(grep '^ATLAS_DOOR_PUBKEYS=' ops/.env \| cut -d= -f2- \| tr ',' '\n' \| sed 's/^/--door-key=/')` → exit 0 |
 | 9 | Atlas site banner (local) | Build static site against the live snapshot (Gate 2 for public Pages deploy): |
 
 ```bash
@@ -321,11 +322,11 @@ curl -sS http://127.0.0.1:8787/chain/head
 
 Note the `cid` field as **Head CID**. Genesis CID came from section 2 init stdout (or the first record in `osp log`).
 
-**Residency cycles stay off at launch.** The daemon never departs unless
-`NPC_RESIDENCY_OPERATOR_TRIGGER`, `NPC_RESIDENCY_MAX_MS` or `NPC_QUARANTINE_COMMIT_INTERVAL_MS`
-is set (all default off in `ops/.env.example`). The first manual cycle — `ghostc exec runtime
-node dist/cli.js depart`, with an operator approving the Discord review posts — is its own
-Gate 2 step after this checklist passes; procedure and chain checks in
+**Residency cycles are on by default.** The Wanderer travels about once a day
+(`NPC_RESIDENCY_MAX_MS=86400000`) to a random other online Door, and `ghostc exec runtime
+node dist/cli.js depart` moves it now. Memories are witnessed by each Door's AI witness — no
+operator review. To hold it in place through the launch window, set `NPC_RESIDENCY_MAX_MS=0`
+in `ops/.env` before `up`; procedure and chain checks in
 [RUNBOOK §7](RUNBOOK.md#7-residency-lifecycle).
 
 ---
@@ -367,7 +368,7 @@ Delegate to [RUNBOOK §5](RUNBOOK.md#5-restore-from-backup).
      --config "${RCLONE_CONFIG}"
 
    node packages/osp-cli/dist/cli.js verify "${LIVE_RESTORE}" \
-     --door-key "$(grep '^ATLAS_DOOR_PUBKEYS=' ops/.env | cut -d= -f2- | cut -d, -f1)"
+     $(grep '^ATLAS_DOOR_PUBKEYS=' ops/.env | cut -d= -f2- | tr ',' '\n' | sed 's/^/--door-key=/')
    ```
 
    Exit code `0` proves the remote matches a verifiable chain. Restart the stack when finished:

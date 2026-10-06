@@ -85,8 +85,10 @@ export class WsDoorSessionServer {
     this.port = options.port ?? 0;
     this.externalServer = options.server;
     // Close WS clients when Door retires or supersedes an epoch.
-    this.door.setSessionLifecycleListener((event) => {
-      this.closeSessionClients(event.doorId, event.epoch, event.type);
+    this.door.addSessionLifecycleListener((event) => {
+      if (event.type !== "arrived") {
+        this.closeSessionClients(event.doorId, event.epoch, event.type);
+      }
     });
   }
 
@@ -228,15 +230,26 @@ export class WsDoorSessionServer {
   }
 
   /**
-   * Broadcast a Door-originated inbound frame to bound clients for the active epoch only.
-   * Used by tests / host relays to simulate community-originated traffic.
+   * Create (via {@link Door.createInboundFrame}, which also records the line in the Door's
+   * residency record) and send an inbound frame to bound clients of the active epoch.
    */
   broadcastInbound(body: InboundFrame["body"], msg_id: string): void {
-    const activeEpoch = this.door.getActiveEpoch();
-    if (activeEpoch === null) {
+    if (this.door.getActiveEpoch() === null) {
       throw DoorError.fromCode("session_invalid", "session_invalid: no active session");
     }
-    const frame = this.door.createInboundFrame({ body, msg_id });
+    this.sendInbound(this.door.createInboundFrame({ body, msg_id }));
+  }
+
+  /**
+   * Send an inbound frame already created by {@link Door.createInboundFrame} to bound
+   * clients of its epoch (no second residency-record entry). Frames for an epoch that is
+   * no longer active are dropped.
+   */
+  sendInbound(frame: InboundFrame): void {
+    const activeEpoch = this.door.getActiveEpoch();
+    if (activeEpoch === null || frame.epoch !== activeEpoch) {
+      return;
+    }
     const payload = JSON.stringify(frame);
     for (const client of this.clients) {
       if (

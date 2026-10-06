@@ -53,9 +53,11 @@ async function tamperMidChainSignature(copyDir: string): Promise<number> {
   if (sig.length < 2) {
     throw new Error("sig too short to tamper");
   }
-  const last = sig[sig.length - 1];
-  const flipped = last === "A" ? "B" : "A";
-  record.sig = `${sig.slice(0, -1)}${flipped}`;
+  // Flip a leading character: the final base64url character of a 64-byte signature
+  // carries padding bits, so changing it can make the envelope schema-invalid instead.
+  const first = sig[0];
+  const flipped = first === "A" ? "B" : "A";
+  record.sig = `${flipped}${sig.slice(1)}`;
 
   const tamperedBytes = canonicalize(record);
   const tamperedCid = await computeCidFromCanonicalBytes(tamperedBytes);
@@ -79,7 +81,8 @@ describe("loadSiteData with tampered chain", () => {
 
     expect(data.chainVerified).toBe(false);
     expect(data.state.verified).toBe(false);
-    expect(data.state.status).toBe("present");
+    // Truncation drops the final travel record; the departure before it still says traveling.
+    expect(data.state.status).toBe("traveling");
 
     const verifiedCount = data.records.filter((record) => record.verified).length;
     const unverifiedCount = data.records.filter((record) => !record.verified).length;

@@ -5,8 +5,6 @@ import { join } from "node:path";
 import { OSP_SPEC_V02, createRecord, encodePublicKey } from "@npc/osp-core";
 
 import type { DiscordDoorConfig } from "../../src/config.js";
-import { APPROVE_EMOJI } from "../../src/review-gate.js";
-import type { FakeGateway } from "./fake-gateway.js";
 import { DOOR, SOUL } from "./fixed-keys.js";
 import { MemorySoulStore } from "./memory-soul-store.js";
 
@@ -58,15 +56,14 @@ export async function testConfig(
     soulPublicKey: SOUL.publicKey,
     httpHost: "127.0.0.1",
     httpPort: 9090,
-    reviewTimeoutMs: 5_000,
     userRatePerMinute: 100,
     userBurst: 20,
     channelRatePerMinute: 200,
     channelBurst: 40,
     communityName: "Test Guild",
     communityDescription: "Integration test community",
-    cosignRetainEpochs: 16,
-    cosignRetainMs: 7 * 24 * 60 * 60 * 1000,
+    presenceNotices: false,
+    witness: null,
     ...overrides
   };
 }
@@ -90,38 +87,4 @@ export async function genesisStore(): Promise<MemorySoulStore> {
   });
   await store.append(genesis.record);
   return store;
-}
-
-/**
- * While `depart` awaits cosign review, approve every posted review message.
- * Stops when `done` resolves or after maxAttempts.
- */
-export async function autoApproveReviews(
-  gateway: FakeGateway,
-  done: Promise<unknown>,
-  maxAttempts = 400
-): Promise<void> {
-  const seen = new Set<string>();
-  let finished = false;
-  void done.finally(() => {
-    finished = true;
-  });
-
-  for (let attempt = 0; attempt < maxAttempts && !finished; attempt += 1) {
-    for (const msg of gateway.sent) {
-      if (!msg.content.includes("**Cosign review**") || seen.has(msg.id)) {
-        continue;
-      }
-      seen.add(msg.id);
-      await gateway.emitReaction({
-        messageId: msg.id,
-        channelId: msg.channelId,
-        userId: OPERATOR_ID,
-        emoji: APPROVE_EMOJI
-      });
-    }
-    await new Promise<void>((resolve) => {
-      setTimeout(resolve, 5);
-    });
-  }
 }

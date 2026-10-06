@@ -65,7 +65,10 @@ async function migrateMemoryBody(
     };
   }
 
-  // shard
+  // shard (journal bodies are osp/0.2-only, so they never appear on an osp/0.1 chain)
+  if (body.kind === "journal") {
+    return { ...body };
+  }
   if ("text_cid" in body) {
     const next: Extract<OspRecord, { type: "memory" }>["body"] = { ...body };
     if (body.candidate_cid !== undefined && "candidate_cid" in next) {

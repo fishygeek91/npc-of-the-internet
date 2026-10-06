@@ -172,6 +172,28 @@
                   "properties": {
                     "kind": {
                       "type": "string",
+                      "const": "journal"
+                    },
+                    "journal_cid": {
+                      "type": "string",
+                      "pattern": "^bagu[a-z2-7]{57}$"
+                    },
+                    "journal_hash": {
+                      "type": "string"
+                    },
+                    "written_at": {
+                      "type": "string",
+                      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,9})?Z$"
+                    }
+                  },
+                  "required": ["kind", "journal_cid", "journal_hash", "written_at"],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
                       "const": "candidate"
                     },
                     "text": {

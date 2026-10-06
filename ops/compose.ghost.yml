@@ -3,7 +3,8 @@
 #
 # Optional secret-file mounts (set in ops/.env, then add exactly one overlay):
 #   ops/compose.secrets.yml (production, openai-compat; NPC_COMPOSE_SECRETS=1):
-#     NPC_BRAIN_API_KEY_HOST_PATH → /run/secrets/brain_api_key (runtime)
+#     NPC_BRAIN_API_KEY_HOST_PATH → /run/secrets/brain_api_key (runtime, and both Doors'
+#       memory witness)
 #     DISCORD_BOT_TOKEN_HOST_PATH → /run/secrets/discord_bot_token (door-discord)
 #   ops/compose.secrets.anthropic.yml (Anthropic provider; NPC_COMPOSE_SECRETS=anthropic):
 #     ANTHROPIC_API_KEY_HOST_PATH → /run/secrets/anthropic_api_key (runtime)
@@ -36,8 +37,9 @@ services:
       NPC_SOULCHAIN_IPFS_DIR: /data/soulchain-ipfs
       NPC_PUBLISHED_CAR_PATH: /data/published/soulchain-latest.car
       NPC_MANIFEST_CID_PATH: /data/published/manifest-cid.txt
-      DOOR_HTTP_HOST: door-discord
-      DOOR_HTTP_PORT: "9090"
+      # Every Door the Wanderer may travel between (it lives in one at a time).
+      NPC_DOOR_URLS: ${NPC_DOOR_URLS:-http://door-discord:9090,http://door-web:9091}
+      # Boot preference only (the Door of its last arrival wins when reachable).
       CURRENT_DOOR_ID: discord:${DISCORD_GUILD_ID}
       ATLAS_DOOR_PUBKEYS: ${ATLAS_DOOR_PUBKEYS:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
@@ -51,14 +53,12 @@ services:
       NPC_BRAIN_MAX_TOKENS: ${NPC_BRAIN_MAX_TOKENS:-1024}
       NPC_BRAIN_TIMEOUT_MS: ${NPC_BRAIN_TIMEOUT_MS:-60000}
       NPC_ATTENTION_MODE: ${NPC_ATTENTION_MODE:-selective}
-      # Residency lifecycle (reside → distill → publish → move). Every trigger is OFF
-      # unless set in ops/.env — enabling is an operator decision (Gate 2). See
-      # ops/RUNBOOK.md §7 "Residency lifecycle".
-      NPC_RESIDENCY_OPERATOR_TRIGGER: ${NPC_RESIDENCY_OPERATOR_TRIGGER:-0}
-      NPC_RESIDENCY_MAX_MS: ${NPC_RESIDENCY_MAX_MS:-0}
+      # Residency lifecycle (reside → witnessed memories → travel), ops/RUNBOOK.md §7.
+      # Moves on about once a day (0 = only when an operator triggers it); a stay with
+      # fewer than NPC_RESIDENCY_MIN_LINES lines still travels but forms no memories.
+      NPC_RESIDENCY_OPERATOR_TRIGGER: ${NPC_RESIDENCY_OPERATOR_TRIGGER:-1}
+      NPC_RESIDENCY_MAX_MS: ${NPC_RESIDENCY_MAX_MS:-86400000}
       NPC_RESIDENCY_MIN_LINES: ${NPC_RESIDENCY_MIN_LINES:-10}
-      NPC_QUARANTINE_COMMIT_INTERVAL_MS: ${NPC_QUARANTINE_COMMIT_INTERVAL_MS:-0}
-      NPC_QUARANTINE_WINDOW_MS: ${NPC_QUARANTINE_WINDOW_MS:-86400000}
       # Fixed paths: control requests live on the /tmp tmpfs (cleared on restart, so a
       # stale request never fires later); journals go to the shared `published` volume.
       NPC_CONTROL_DIR: /tmp/npc-control
@@ -102,8 +102,7 @@ services:
       DISCORD_GUILD_ID: ${DISCORD_GUILD_ID}
       DISCORD_CHANNEL_ID: ${DISCORD_CHANNEL_ID}
       DISCORD_OPERATOR_IDS: ${DISCORD_OPERATOR_IDS}
-      DISCORD_REVIEW_TIMEOUT_MS: ${DISCORD_REVIEW_TIMEOUT_MS:-240000}
-      DISCORD_REVIEW_CHANNEL_ID: ${DISCORD_REVIEW_CHANNEL_ID:-}
+      DISCORD_PRESENCE_NOTICES: ${DISCORD_PRESENCE_NOTICES:-1}
       DISCORD_USER_RATE_PER_MIN: ${DISCORD_USER_RATE_PER_MIN:-20}
       DISCORD_USER_BURST: ${DISCORD_USER_BURST:-5}
       DISCORD_CHANNEL_RATE_PER_MIN: ${DISCORD_CHANNEL_RATE_PER_MIN:-60}
@@ -114,15 +113,24 @@ services:
       SOUL_PUBLIC_KEY: ${SOUL_PUBLIC_KEY}
       DOOR_HTTP_HOST: "0.0.0.0"
       DOOR_HTTP_PORT: "9090"
-      # Completed cosign reviews are retained per epoch (bounded) and persisted here, so
-      # the runtime can commit a past epoch's quarantined shards while a later residency
-      # is live, across door-discord restarts (ops/RUNBOOK.md §7.5).
-      DOOR_STATE_DIR: /data/door-state
-      DOOR_COSIGN_RETAIN_EPOCHS: ${DOOR_COSIGN_RETAIN_EPOCHS:-64}
-      DOOR_COSIGN_RETAIN_MS: ${DOOR_COSIGN_RETAIN_MS:-604800000}
+      # Memory witness (spec/door/api.md §Memory witnessing): an independent model call that
+      # checks each memory against what this Door saw. Defaults to the Brain's provider,
+      # key and model; override with DOOR_WITNESS_* or turn off with DOOR_WITNESS=off.
+      NPC_BRAIN_PROVIDER: ${NPC_BRAIN_PROVIDER:-}
+      NPC_BRAIN_BASE_URL: ${NPC_BRAIN_BASE_URL:-}
+      NPC_BRAIN_API_KEY: ${NPC_BRAIN_API_KEY:-}
+      NPC_BRAIN_API_KEY_FILE: ${NPC_BRAIN_API_KEY_FILE:-}
+      NPC_BRAIN_PROVIDER_ALLOWLIST: ${NPC_BRAIN_PROVIDER_ALLOWLIST:-}
+      NPC_BRAIN_MODEL: ${NPC_BRAIN_MODEL:-}
+      DOOR_WITNESS: ${DOOR_WITNESS:-}
+      DOOR_WITNESS_BASE_URL: ${DOOR_WITNESS_BASE_URL:-}
+      DOOR_WITNESS_API_KEY: ${DOOR_WITNESS_API_KEY:-}
+      DOOR_WITNESS_API_KEY_FILE: ${DOOR_WITNESS_API_KEY_FILE:-}
+      DOOR_WITNESS_MODEL: ${DOOR_WITNESS_MODEL:-}
+      DOOR_WITNESS_PROVIDER_ALLOWLIST: ${DOOR_WITNESS_PROVIDER_ALLOWLIST:-}
+      DOOR_WITNESS_TIMEOUT_MS: ${DOOR_WITNESS_TIMEOUT_MS:-}
     volumes:
       - ${DOOR_KEY_HOST_PATH}:/run/keys/door.key:ro
-      - door-state:/data/door-state
     expose:
       - "9090"
     healthcheck:
@@ -151,6 +159,123 @@ services:
     tmpfs:
       - /tmp
 
+  door-web:
+    build:
+      context: ..
+      dockerfile: ops/Dockerfile.door-web
+    image: ghcr.io/fishygeek91/npc-door-web:${NPC_IMAGE_TAG:-latest}
+    restart: unless-stopped
+    init: true
+    environment:
+      DOOR_WEB_ID: ${DOOR_WEB_ID:-web:home}
+      DOOR_WEB_COMMUNITY_NAME: ${DOOR_WEB_COMMUNITY_NAME:-The Wanderer's front porch}
+      DOOR_WEB_COMMUNITY_DESCRIPTION: ${DOOR_WEB_COMMUNITY_DESCRIPTION:-A public web room where anyone can talk with the Wanderer while it is here.}
+      # Same Door key as door-discord: one host, two Doors (add web:home=<door pubkey> to
+      # ATLAS_DOOR_PUBKEYS).
+      DOOR_KEY_PATH: /run/keys/door.key
+      SOUL_PUBLIC_KEY: ${SOUL_PUBLIC_KEY}
+      # Door protocol for the runtime (internal network only).
+      DOOR_HTTP_HOST: "0.0.0.0"
+      DOOR_HTTP_PORT: "9091"
+      # Visitor site. Published on 127.0.0.1 only; the `public` profile puts Caddy (TLS) in
+      # front, which is why the last X-Forwarded-For hop is trusted.
+      DOOR_WEB_PUBLIC_HOST: "0.0.0.0"
+      DOOR_WEB_PUBLIC_PORT: "8080"
+      DOOR_WEB_TRUST_PROXY: ${DOOR_WEB_TRUST_PROXY:-1}
+      DOOR_WEB_GLOBAL_PER_MIN: ${DOOR_WEB_GLOBAL_PER_MIN:-30}
+      DOOR_WEB_MAX_CLIENTS: ${DOOR_WEB_MAX_CLIENTS:-200}
+      DOOR_WEB_DAILY_MAX: ${DOOR_WEB_DAILY_MAX:-1500}
+      ATLAS_API_URL: http://atlas-api:8787
+      # Memory witness (spec/door/api.md §Memory witnessing): an independent model call that
+      # checks each memory against what this Door saw. Defaults to the Brain's provider,
+      # key and model; override with DOOR_WITNESS_* or turn off with DOOR_WITNESS=off.
+      NPC_BRAIN_PROVIDER: ${NPC_BRAIN_PROVIDER:-}
+      NPC_BRAIN_BASE_URL: ${NPC_BRAIN_BASE_URL:-}
+      NPC_BRAIN_API_KEY: ${NPC_BRAIN_API_KEY:-}
+      NPC_BRAIN_API_KEY_FILE: ${NPC_BRAIN_API_KEY_FILE:-}
+      NPC_BRAIN_PROVIDER_ALLOWLIST: ${NPC_BRAIN_PROVIDER_ALLOWLIST:-}
+      NPC_BRAIN_MODEL: ${NPC_BRAIN_MODEL:-}
+      DOOR_WITNESS: ${DOOR_WITNESS:-}
+      DOOR_WITNESS_BASE_URL: ${DOOR_WITNESS_BASE_URL:-}
+      DOOR_WITNESS_API_KEY: ${DOOR_WITNESS_API_KEY:-}
+      DOOR_WITNESS_API_KEY_FILE: ${DOOR_WITNESS_API_KEY_FILE:-}
+      DOOR_WITNESS_MODEL: ${DOOR_WITNESS_MODEL:-}
+      DOOR_WITNESS_PROVIDER_ALLOWLIST: ${DOOR_WITNESS_PROVIDER_ALLOWLIST:-}
+      DOOR_WITNESS_TIMEOUT_MS: ${DOOR_WITNESS_TIMEOUT_MS:-}
+    volumes:
+      - ${DOOR_KEY_HOST_PATH}:/run/keys/door.key:ro
+    expose:
+      - "9091"
+    ports:
+      - "127.0.0.1:8080:8080"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8080/healthz').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+    mem_limit: 256m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    cap_drop:
+      - ALL
+    security_opt:
+      - "no-new-privileges:true"
+    read_only: true
+    tmpfs:
+      - /tmp
+  # Public HTTPS for the web Door: `ghostc --profile public up -d` (needs WEB_DOMAIN in
+  # ops/.env, a DNS A/AAAA record for it, and ports 80/443 open). Caddy gets and renews
+  # the certificate itself.
+  caddy:
+    image: caddy:2.10-alpine
+    profiles: ["public"]
+    restart: unless-stopped
+    depends_on:
+      - door-web
+    environment:
+      # Set WEB_DOMAIN in ops/.env (unset = Caddy serves only "localhost").
+      WEB_DOMAIN: ${WEB_DOMAIN:-}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2019/config/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    mem_limit: 128m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    # The only internet-facing container: same lockdown as the rest (#72), plus the one
+    # capability needed to bind 80/443.
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - "no-new-privileges:true"
+    read_only: true
+    tmpfs:
+      - /tmp
   atlas-api:
     build:
       context: ..
@@ -251,4 +376,5 @@ volumes:
   soulchain:
   soulchain-ipfs:
   published:
-  door-state:
+  caddy-data:
+  caddy-config:

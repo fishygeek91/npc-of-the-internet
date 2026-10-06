@@ -2,28 +2,23 @@ import {
   Client,
   Events,
   GatewayIntentBits,
-  Partials,
   REST,
   Routes,
   SlashCommandBuilder,
   type ChatInputCommandInteraction,
   type Message,
-  type MessageMentionOptions,
-  type MessageReaction,
-  type PartialMessageReaction,
-  type PartialUser,
-  type User
+  type MessageMentionOptions
 } from "discord.js";
 
 import { DiscordDoorError } from "../errors.js";
 import { clampDiscordMessage } from "./chunk.js";
-import type { DiscordGateway, GatewayCommand, GatewayMessage, GatewayReaction } from "./gateway.js";
+import type { DiscordGateway, GatewayCommand, GatewayMessage } from "./gateway.js";
 
 export type DiscordJsGatewayOptions = {
   token: string;
   guildId: string;
   /**
-   * Called when a Discord event handler fails (message / reaction / command dispatch).
+   * Called when a Discord event handler fails (message / command dispatch).
    * Errors never propagate into discord.js as unhandled rejections.
    */
   onError?: (event: string, error: unknown) => void;
@@ -97,7 +92,6 @@ export class DiscordJsGateway implements DiscordGateway {
   private readonly options: DiscordJsGatewayOptions;
   private readyBotId: string | null = null;
   private messageHandler: ((message: GatewayMessage) => void | Promise<void>) | null = null;
-  private reactionHandler: ((reaction: GatewayReaction) => void | Promise<void>) | null = null;
   private commandHandler: ((command: GatewayCommand) => void | Promise<void>) | null = null;
   private readonly pendingEphemeral = new Map<string, ChatInputCommandInteraction>();
 
@@ -107,10 +101,8 @@ export class DiscordJsGateway implements DiscordGateway {
       intents: [
         GatewayIntentBits.Guilds,
         GatewayIntentBits.GuildMessages,
-        GatewayIntentBits.MessageContent,
-        GatewayIntentBits.GuildMessageReactions
+        GatewayIntentBits.MessageContent
       ],
-      partials: [Partials.Message, Partials.Channel, Partials.Reaction],
       // Client-wide default; every send also passes allowedMentions explicitly.
       allowedMentions: noPingAllowedMentions(),
       failIfNotExists: false
@@ -118,9 +110,6 @@ export class DiscordJsGateway implements DiscordGateway {
     // Wired once here (events only flow after login in start()).
     this.client.on(Events.MessageCreate, (message) => {
       this.guard("message", () => this.dispatchMessage(message));
-    });
-    this.client.on(Events.MessageReactionAdd, (reaction, user) => {
-      this.guard("reaction", () => this.dispatchReaction(reaction, user));
     });
     this.client.on(Events.InteractionCreate, (interaction) => {
       if (!interaction.isChatInputCommand()) {
@@ -136,10 +125,6 @@ export class DiscordJsGateway implements DiscordGateway {
 
   onMessage(handler: (message: GatewayMessage) => void | Promise<void>): void {
     this.messageHandler = handler;
-  }
-
-  onReaction(handler: (reaction: GatewayReaction) => void | Promise<void>): void {
-    this.reactionHandler = handler;
   }
 
   onCommand(handler: (command: GatewayCommand) => void | Promise<void>): void {
@@ -273,22 +258,6 @@ export class DiscordJsGateway implements DiscordGateway {
         .setName("wanderer")
         .setDescription("Wanderer host operator commands")
         .addSubcommand((sub) => sub.setName("status").setDescription("Show residency status"))
-        .addSubcommand((sub) =>
-          sub
-            .setName("approve")
-            .setDescription("Approve a candidate shard")
-            .addStringOption((opt) =>
-              opt.setName("shard_id").setDescription("Shard id").setRequired(true)
-            )
-        )
-        .addSubcommand((sub) =>
-          sub
-            .setName("reject")
-            .setDescription("Reject a candidate shard")
-            .addStringOption((opt) =>
-              opt.setName("shard_id").setDescription("Shard id").setRequired(true)
-            )
-        )
         .toJSON()
     ];
 
@@ -326,36 +295,6 @@ export class DiscordJsGateway implements DiscordGateway {
     await handler(mapped);
   }
 
-  private async dispatchReaction(
-    reaction: MessageReaction | PartialMessageReaction,
-    user: User | PartialUser
-  ): Promise<void> {
-    if (user.bot === true) {
-      return;
-    }
-    const handler = this.reactionHandler;
-    if (handler === null) {
-      return;
-    }
-    const full =
-      reaction.partial || user.partial ? await reaction.fetch().catch(() => null) : reaction;
-    if (full === null) {
-      return;
-    }
-    const message = full.message.partial ? await full.message.fetch() : full.message;
-    const emoji = full.emoji.name;
-    if (emoji === null) {
-      return;
-    }
-    const mapped: GatewayReaction = {
-      messageId: message.id,
-      channelId: message.channelId,
-      userId: user.id,
-      emoji
-    };
-    await handler(mapped);
-  }
-
   private async dispatchCommand(interaction: ChatInputCommandInteraction): Promise<void> {
     if (interaction.commandName !== "wanderer") {
       return;
@@ -364,27 +303,15 @@ export class DiscordJsGateway implements DiscordGateway {
     if (handler === null) {
       return;
     }
-    const sub = interaction.options.getSubcommand();
-    if (sub === "status") {
-      this.pendingEphemeral.set(interaction.id, interaction);
-      await handler({
-        kind: "status",
-        interactionId: interaction.id,
-        userId: interaction.user.id,
-        ephemeral: true
-      });
+    if (interaction.options.getSubcommand() !== "status") {
       return;
     }
-    if (sub === "approve" || sub === "reject") {
-      this.pendingEphemeral.set(interaction.id, interaction);
-      const shardId = interaction.options.getString("shard_id", true);
-      await handler({
-        kind: sub,
-        interactionId: interaction.id,
-        userId: interaction.user.id,
-        shardId,
-        ephemeral: true
-      });
-    }
+    this.pendingEphemeral.set(interaction.id, interaction);
+    await handler({
+      kind: "status",
+      interactionId: interaction.id,
+      userId: interaction.user.id,
+      ephemeral: true
+    });
   }
 }

@@ -1,14 +1,16 @@
 /**
  * Full residency cycle, production wiring end to end: the REAL runtime daemon
- * (`startResidencyDaemon`, env-loaded config) against the REAL `startDiscordDoor`
- * (HTTP + WebSocket servers, `ReviewGatedDoor`) with a fake Discord gateway.
+ * (`startResidencyDaemon`, env-loaded config, `NPC_DOOR_URLS`) against TWO REAL
+ * `startDiscordDoor` instances (HTTP + WebSocket servers, memory witness) with fake
+ * Discord gateways and fake witnesses.
  *
- * Discord message → Wanderer reply → operator cycle → cosign review posted to Discord
- * and approved by reaction → candidates + departure + travel → re-arrival at epoch 2 →
- * the community talks to the new residency → chain verifies with the Door key.
+ * Discord message at Door A → Wanderer reply → operator cycle → Door A's witness
+ * co-signs the memories (no human) → departure + travel → arrival at Door B (epoch 2) →
+ * presence notices on both → B's community talks to the Wanderer → chain verifies.
  */
 import { createServer } from "node:net";
 import { writeFile } from "node:fs/promises";
+
 import { join } from "node:path";
 
 import {
@@ -30,11 +32,15 @@ import pino from "pino";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { doorIdForGuild } from "../src/config.js";
-import { startDiscordDoor, type DiscordDoorHandle } from "../src/start.js";
-import { FakeGateway } from "./helpers/fake-gateway.js";
-import { DOOR, SOUL } from "./helpers/fixed-keys.js";
 import {
-  autoApproveReviews,
+  ARRIVED_NOTICE,
+  MOVED_ON_NOTICE,
+  startDiscordDoor,
+  type DiscordDoorHandle
+} from "../src/start.js";
+import { FakeGateway } from "./helpers/fake-gateway.js";
+import { DOOR, DOOR_B, SOUL } from "./helpers/fixed-keys.js";
+import {
   CHANNEL_ID,
   cleanupTempDirs,
   GUILD_ID,
@@ -43,14 +49,18 @@ import {
   USER_ID
 } from "./helpers/harness.js";
 
+const GUILD_B = "10011";
+const CHANNEL_B = "10012";
+
 let daemon: ResidencyDaemonHandle | null = null;
-let doorHandle: DiscordDoorHandle | null = null;
+const doorHandles: DiscordDoorHandle[] = [];
 
 afterEach(async () => {
   await daemon?.shutdown();
   daemon = null;
-  await doorHandle?.stop();
-  doorHandle = null;
+  while (doorHandles.length > 0) {
+    await doorHandles.pop()?.stop();
+  }
   await cleanupTempDirs();
 });
 
@@ -83,22 +93,51 @@ const SHARDS_JSON = JSON.stringify({
   }))
 });
 
-describe("E2E runtime daemon <-> door-discord: one full residency cycle", () => {
-  it("reside → distill → Discord review → depart → re-arrive at epoch 2; chain verifies", async () => {
-    const port = await freePort();
-    const gateway = new FakeGateway();
-    const doorId = doorIdForGuild(GUILD_ID);
-    doorHandle = await startDiscordDoor({
-      config: await testConfig({ httpHost: "127.0.0.1", httpPort: port, reviewTimeoutMs: 10_000 }),
-      gateway,
-      logger: pino({ level: "silent" })
+describe("E2E runtime daemon <-> two Discord Doors: one full residency cycle", () => {
+  it("reside at A → witnessed depart → travel → arrive at B (epoch 2); chain verifies", async () => {
+    const root = await makeTempDir("daemon-cycle-");
+    const doorIdA = doorIdForGuild(GUILD_ID);
+    const doorIdB = doorIdForGuild(GUILD_B);
+    const gatewayA = new FakeGateway();
+    const gatewayB = new FakeGateway();
+    const witnessedAt: string[] = [];
+
+    const startDoor = async (
+      gateway: FakeGateway,
+      overrides: Parameters<typeof testConfig>[0]
+    ): Promise<{ handle: DiscordDoorHandle; url: string }> => {
+      const port = await freePort();
+      const handle = await startDiscordDoor({
+        config: await testConfig({
+          httpHost: "127.0.0.1",
+          httpPort: port,
+          presenceNotices: true,
+          ...overrides
+        }),
+        gateway,
+        logger: pino({ level: "silent" }),
+        witness: async (input) => {
+          witnessedAt.push(`${input.doorId}:${input.kind}`);
+          return { witnessed: true };
+        }
+      });
+      doorHandles.push(handle);
+      return { handle, url: `http://127.0.0.1:${String(port)}` };
+    };
+
+    const doorKeyB = join(root, "door-b.key");
+    await writeFile(doorKeyB, Buffer.from(DOOR_B.privateKey));
+    const a = await startDoor(gatewayA, {});
+    const b = await startDoor(gatewayB, {
+      guildId: GUILD_B,
+      channelId: CHANNEL_B,
+      doorKeyPath: doorKeyB
     });
 
-    const root = await makeTempDir("daemon-cycle-");
     const chainDir = join(root, "chain");
     const soulKeyPath = join(root, "soul.key");
     await writeFile(soulKeyPath, encodeBase64Url(SOUL.privateKey), "utf8");
-    const doorKeys = { [doorId]: DOOR.publicKey };
+    const doorKeys = { [doorIdA]: DOOR.publicKey, [doorIdB]: DOOR_B.publicKey };
     const seed = await FileSoulStore.open(chainDir, { doorPublicKeys: doorKeys });
     const genesis = await createRecord({
       spec: OSP_SPEC_V02,
@@ -120,10 +159,12 @@ describe("E2E runtime daemon <-> door-discord: one full residency cycle", () => 
     const config = loadDaemonConfig({
       SOUL_KEY_PATH: soulKeyPath,
       SOULCHAIN_DIR: chainDir,
-      DOOR_HTTP_HOST: "127.0.0.1",
-      DOOR_HTTP_PORT: String(port),
-      CURRENT_DOOR_ID: doorId,
-      ATLAS_DOOR_PUBKEYS: `${doorId}=${encodePublicKey(DOOR.publicKey)}`,
+      NPC_DOOR_URLS: `${a.url},${b.url}`,
+      CURRENT_DOOR_ID: doorIdA,
+      ATLAS_DOOR_PUBKEYS: [
+        `${doorIdA}=${encodePublicKey(DOOR.publicKey)}`,
+        `${doorIdB}=${encodePublicKey(DOOR_B.publicKey)}`
+      ].join(","),
       ANTHROPIC_API_KEY: "unused-fake-brain-injected",
       NPC_ATTENTION_MODE: "always",
       NPC_RUNTIME_READY_FILE: join(root, "ready"),
@@ -149,13 +190,20 @@ describe("E2E runtime daemon <-> door-discord: one full residency cycle", () => 
     });
     const handle = daemon;
     expect(handle.currentEpoch()).toBe(1);
-    await waitFor(() => doorHandle?.status().present === true, "door present");
+    await waitFor(() => a.handle.status().present, "present at A");
+    expect(b.handle.status().present).toBe(false);
 
-    const say = async (id: string, content: string): Promise<void> => {
+    const say = async (
+      gateway: FakeGateway,
+      guildId: string,
+      channelId: string,
+      id: string,
+      content: string
+    ): Promise<void> => {
       await gateway.emitMessage({
         id,
-        guildId: GUILD_ID,
-        channelId: CHANNEL_ID,
+        guildId,
+        channelId,
         authorId: USER_ID,
         authorDisplay: "T",
         content,
@@ -163,28 +211,39 @@ describe("E2E runtime daemon <-> door-discord: one full residency cycle", () => 
         replyToId: undefined
       });
     };
-    const replies = (): number =>
+    const replies = (gateway: FakeGateway): number =>
       gateway.sent.filter((message) => message.content === "glad to be here").length;
 
-    await say("20001", "hello wanderer");
-    await waitFor(() => replies() === 1, "reply in epoch 1");
+    await say(gatewayA, GUILD_ID, CHANNEL_ID, "20001", "hello wanderer");
+    await waitFor(() => replies(gatewayA) === 1, "reply at A");
 
-    // Operator cycle; the host approves every review post by reaction.
-    const cycle: Promise<CycleOutcome> = handle.requestCycle("operator");
-    await autoApproveReviews(
-      gateway,
-      cycle.then(() => undefined)
-    );
-    const outcome = await cycle;
-    expect(outcome).toMatchObject({ kind: "cycled", fromEpoch: 1, toEpoch: 2, candidateCount: 5 });
-    expect(
-      gateway.sent.filter((message) => message.content.includes("**Cosign review**"))
-    ).toHaveLength(5);
-    expect(doorHandle.door.getActiveEpoch()).toBe(2);
+    const outcome: CycleOutcome = await handle.requestCycle("operator");
+    expect(outcome).toMatchObject({
+      kind: "cycled",
+      fromDoor: doorIdA,
+      toDoor: doorIdB,
+      fromEpoch: 1,
+      toEpoch: 2,
+      witnessed: 5,
+      declined: 0
+    });
+    // Only Door A witnessed: five shards and the journal.
+    expect(witnessedAt).toEqual([
+      ...Array.from({ length: 5 }, () => `${doorIdA}:shard`),
+      `${doorIdA}:journal`
+    ]);
+    await waitFor(() => b.handle.status().present, "present at B");
+    expect(a.handle.status().present).toBe(false);
 
-    await waitFor(() => doorHandle?.status().present === true, "present again");
-    await say("20002", "welcome back");
-    await waitFor(() => replies() === 2, "reply in epoch 2");
+    await say(gatewayB, GUILD_B, CHANNEL_B, "20002", "welcome");
+    await waitFor(() => replies(gatewayB) === 1, "reply at B");
+
+    const notices = (gateway: FakeGateway): string[] =>
+      gateway.sent
+        .map((message) => message.content)
+        .filter((content) => content === ARRIVED_NOTICE || content === MOVED_ON_NOTICE);
+    expect(notices(gatewayA)).toEqual([ARRIVED_NOTICE, MOVED_ON_NOTICE]);
+    expect(notices(gatewayB)).toEqual([ARRIVED_NOTICE]);
 
     await handle.shutdown();
     daemon = null;
@@ -201,11 +260,12 @@ describe("E2E runtime daemon <-> door-discord: one full residency cycle", () => 
     }
     expect(kinds).toEqual([
       "arrival:1",
-      "candidate",
-      "candidate",
-      "candidate",
-      "candidate",
-      "candidate",
+      "shard",
+      "shard",
+      "shard",
+      "shard",
+      "shard",
+      "journal",
       "departure:1",
       "travel:1",
       "arrival:2"

@@ -36,7 +36,10 @@ type PresenceState = {
 
 /** Returns true when the record type requires a non-empty Door cosignature. */
 function requiresCosigner(record: OspRecord): boolean {
-  if (record.type === "memory" && record.body.kind === "shard") {
+  if (
+    record.type === "memory" &&
+    (record.body.kind === "shard" || record.body.kind === "journal")
+  ) {
     return true;
   }
   if (record.type === "attestation") {

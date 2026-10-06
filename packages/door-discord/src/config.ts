@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 
-import { DEFAULT_COSIGN_RETAIN_EPOCHS, DEFAULT_COSIGN_RETAIN_MS } from "@npc/door-sdk";
+import { loadWitnessConfig, WitnessConfigError, type WitnessConfig } from "@npc/door-sdk";
 import { decodePublicKey } from "@npc/osp-core";
 import { z } from "zod";
 
@@ -8,12 +8,6 @@ import { DiscordDoorError } from "./errors.js";
 
 const DEFAULT_HTTP_HOST = "127.0.0.1";
 const DEFAULT_HTTP_PORT = 9090;
-/**
- * Default host review wait. Kept below the Wanderer's HTTP review-call timeout
- * (`DEFAULT_COSIGN_REVIEW_TIMEOUT_MS`, 290 s — itself under Node fetch's 300 s headers
- * timeout) so a review normally answers within one request; see `spec/door/api.md`.
- */
-const DEFAULT_REVIEW_TIMEOUT_MS = 240_000;
 const DEFAULT_USER_RATE_PER_MIN = 20;
 const DEFAULT_USER_BURST = 5;
 const DEFAULT_CHANNEL_RATE_PER_MIN = 60;
@@ -32,21 +26,20 @@ const discordDoorConfigSchema = z.object({
   soulPublicKey: z.instanceof(Uint8Array),
   httpHost: z.string().min(1),
   httpPort: z.number().int().positive(),
-  reviewTimeoutMs: z.number().int().positive(),
-  reviewChannelId: snowflakeSchema.optional(),
   userRatePerMinute: z.number().int().positive(),
   userBurst: z.number().int().positive(),
   channelRatePerMinute: z.number().int().positive(),
   channelBurst: z.number().int().positive(),
   communityName: z.string().min(1).max(200),
   communityDescription: z.string().min(1).max(2000),
-  stateDir: z.string().min(1).optional(),
-  cosignRetainEpochs: z.number().int().positive(),
-  cosignRetainMs: z.number().int().positive()
+  presenceNotices: z.boolean()
 });
 
 /** Validated Discord Door configuration loaded from environment variables. */
-export type DiscordDoorConfig = z.infer<typeof discordDoorConfigSchema>;
+export type DiscordDoorConfig = z.infer<typeof discordDoorConfigSchema> & {
+  /** Memory witness model settings (`loadWitnessConfig`); `null` = this Door witnesses no memories. */
+  witness: WitnessConfig;
+};
 
 /**
  * Door id on the wire for this guild (`discord:<guild-id>`, no `door:` prefix).
@@ -135,6 +128,32 @@ function parsePositiveInt(value: string | undefined, fallback: number, name: str
   return parsed;
 }
 
+function parseFlag(value: string | undefined, fallback: boolean, name: string): boolean {
+  const normalized = value?.trim().toLowerCase() ?? "";
+  if (normalized === "") {
+    return fallback;
+  }
+  if (normalized === "1" || normalized === "true" || normalized === "on") {
+    return true;
+  }
+  if (normalized === "0" || normalized === "false" || normalized === "off") {
+    return false;
+  }
+  throw new DiscordDoorError("invalid_config", `${name} must be 0 or 1 (got ${value ?? ""})`);
+}
+
+/** Witness settings via door-sdk; a partial/invalid witness config is a config error. */
+function loadWitness(env: NodeJS.ProcessEnv): WitnessConfig {
+  try {
+    return loadWitnessConfig(env);
+  } catch (error: unknown) {
+    if (error instanceof WitnessConfigError) {
+      throw new DiscordDoorError("invalid_config", error.message, error);
+    }
+    throw error;
+  }
+}
+
 function parseOperatorIds(raw: string): string[] {
   const ids = raw
     .split(",")
@@ -170,12 +189,12 @@ function parseSoulPublicKey(raw: string): Uint8Array {
  * `DISCORD_GUILD_ID`, `DISCORD_CHANNEL_ID`,
  * `DISCORD_OPERATOR_IDS`, `DOOR_KEY_PATH`, `SOUL_PUBLIC_KEY`.
  *
- * Review timeout default rejects on expiry (safe default — a host who ignores
- * review must not silently endorse memories).
+ * Memory witness: `DOOR_WITNESS_*` (falling back to `NPC_BRAIN_*`; `DOOR_WITNESS=off`
+ * disables) via door-sdk `loadWitnessConfig`. Unconfigured = no witness, so the Wanderer
+ * forms no memories here; a partial or invalid witness config throws `invalid_config`.
  *
- * Cosign review retention: `DOOR_STATE_DIR` (optional; when set, completed reviews are
- * persisted there and survive a restart), `DOOR_COSIGN_RETAIN_EPOCHS` (default 64),
- * `DOOR_COSIGN_RETAIN_MS` (default 7 days).
+ * Presence notices: `DISCORD_PRESENCE_NOTICES` (default on; `0` disables the
+ * arrived / moved-on posts in the residency channel).
  *
  * @param env - Environment map; defaults to `process.env`. Inject a plain object in tests.
  */
@@ -192,16 +211,6 @@ export function loadDiscordDoorConfig(env: NodeJS.ProcessEnv = process.env): Dis
       ? DEFAULT_HTTP_HOST
       : env.DOOR_HTTP_HOST;
   const httpPort = parsePositiveInt(env.DOOR_HTTP_PORT, DEFAULT_HTTP_PORT, "DOOR_HTTP_PORT");
-  const reviewTimeoutMs = parsePositiveInt(
-    env.DISCORD_REVIEW_TIMEOUT_MS,
-    DEFAULT_REVIEW_TIMEOUT_MS,
-    "DISCORD_REVIEW_TIMEOUT_MS"
-  );
-
-  const reviewChannelRaw = env.DISCORD_REVIEW_CHANNEL_ID;
-  const reviewChannelId =
-    reviewChannelRaw === undefined || reviewChannelRaw === "" ? undefined : reviewChannelRaw;
-
   const communityName =
     env.DISCORD_COMMUNITY_NAME === undefined || env.DISCORD_COMMUNITY_NAME === ""
       ? DEFAULT_COMMUNITY_NAME
@@ -211,8 +220,7 @@ export function loadDiscordDoorConfig(env: NodeJS.ProcessEnv = process.env): Dis
       ? DEFAULT_COMMUNITY_DESCRIPTION
       : env.DISCORD_COMMUNITY_DESCRIPTION;
 
-  const stateDirRaw = env.DOOR_STATE_DIR?.trim() ?? "";
-  const stateDir = stateDirRaw === "" ? undefined : stateDirRaw;
+  const witness = loadWitness(env);
 
   const result = discordDoorConfigSchema.safeParse({
     botToken,
@@ -223,8 +231,6 @@ export function loadDiscordDoorConfig(env: NodeJS.ProcessEnv = process.env): Dis
     soulPublicKey,
     httpHost,
     httpPort,
-    reviewTimeoutMs,
-    ...(reviewChannelId === undefined ? {} : { reviewChannelId }),
     userRatePerMinute: parsePositiveInt(
       env.DISCORD_USER_RATE_PER_MIN,
       DEFAULT_USER_RATE_PER_MIN,
@@ -243,17 +249,7 @@ export function loadDiscordDoorConfig(env: NodeJS.ProcessEnv = process.env): Dis
     ),
     communityName,
     communityDescription,
-    ...(stateDir === undefined ? {} : { stateDir }),
-    cosignRetainEpochs: parsePositiveInt(
-      env.DOOR_COSIGN_RETAIN_EPOCHS,
-      DEFAULT_COSIGN_RETAIN_EPOCHS,
-      "DOOR_COSIGN_RETAIN_EPOCHS"
-    ),
-    cosignRetainMs: parsePositiveInt(
-      env.DOOR_COSIGN_RETAIN_MS,
-      DEFAULT_COSIGN_RETAIN_MS,
-      "DOOR_COSIGN_RETAIN_MS"
-    )
+    presenceNotices: parseFlag(env.DISCORD_PRESENCE_NOTICES, true, "DISCORD_PRESENCE_NOTICES")
   });
 
   if (!result.success) {
@@ -261,5 +257,5 @@ export function loadDiscordDoorConfig(env: NodeJS.ProcessEnv = process.env): Dis
     throw new DiscordDoorError("invalid_config", `Invalid Discord Door configuration: ${detail}`);
   }
 
-  return result.data;
+  return { ...result.data, witness };
 }

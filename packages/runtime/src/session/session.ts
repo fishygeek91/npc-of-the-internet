@@ -1,11 +1,16 @@
 import { screenText, type ScreenCategory, type ScreenLogger } from "@npc/immune";
 import {
+  DoorError,
+  MEMORY_ATTEST_TEXT_MAX,
+  WitnessReasonSchema,
+  type WitnessReason
+} from "@npc/door-sdk";
+import {
   OSP_SPEC_V02,
   RecordSchema,
   canonicalize,
   computeCid,
   corePayload,
-  decodeShardTextBlob,
   encodePublicKey,
   encodeSignature,
   soulPayload,
@@ -27,13 +32,19 @@ import { BrainError } from "../brain/errors.js";
 import { composeSelf } from "../compose/compose-self.js";
 import { assertRuntimeWritableChain } from "../osp-spec.js";
 import { distillTranscripts } from "../distill/distill-transcripts.js";
+import { DistillError } from "../distill/errors.js";
 import { MemoryTranscriptSource } from "../distill/memory-transcript-source.js";
 import type { ResidencyTranscript } from "../distill/residency-transcript.js";
-import type { CandidateShard, TranscriptLine, TranscriptSource } from "../distill/types.js";
+import type { TranscriptLine, TranscriptSource } from "../distill/types.js";
 import { generateJournal } from "../journal/generate-journal.js";
 import { writeJournalFile } from "../journal/write-journal-file.js";
 import type { Keyring, SessionSigner } from "../keyring/types.js";
-import { storeShardTextBlob } from "../memory-side-blobs.js";
+import {
+  addressJournalBlob,
+  addressShardTextBlob,
+  putAddressedBlob,
+  type AddressedBlob
+} from "../memory-side-blobs.js";
 import {
   ATTENTION_REACTIONS_OFF,
   ATTENTION_REACTIONS_ON,
@@ -45,15 +56,12 @@ import {
   DOOR_PROTOCOL_VERSION,
   InboundFrameSchema,
   attestSigningPayload,
-  cosignReviewSigningPayload,
   type AttestRequest,
   type Clock,
-  type CosignRequest,
   type DoorConnection,
   type HeartbeatRequest,
   type InboundFrame,
   type OutboundFrame,
-  type ReviewDecision,
   type Timer
 } from "./types.js";
 
@@ -105,6 +113,11 @@ export type SessionOptions = {
   transcript?: ResidencyTranscript;
   /** Selective-attention tuning for {@link Session.observe}; defaults apply per field. */
   attention?: Partial<AttentionPolicy>;
+  /**
+   * The Door advertised `attest.memory` in `hello`: it witnesses memories, so depart may
+   * form them. Default `false` — no memories are formed at a Door that does not witness.
+   */
+  witnessesMemories?: boolean;
 };
 
 /** Result of {@link Session.handleInbound}. */
@@ -143,19 +156,96 @@ export type DepartOptions = {
   journalDir: string;
   /** Brain for distill + journal; defaults to session brain if omitted */
   brain?: Brain;
+  /** Next Door, recorded as the travel attestation's `to_door_id`. */
   toDoorId?: string;
-  farewell?: string;
+  /**
+   * A stay with fewer transcript lines forms no memories (no distill call). Default
+   * {@link DEFAULT_MIN_MEMORY_LINES}; operator-requested departs pass 1.
+   */
+  minMemoryLines?: number;
 };
 
-/** Result of {@link Session.depart}. */
+/** Default {@link DepartOptions.minMemoryLines}. */
+export const DEFAULT_MIN_MEMORY_LINES = 10;
+
+/** Result of {@link Session.depart} (counts cover the whole residency, retries included). */
 export type DepartResult = {
-  journalPath: string;
-  journalMarkdown: string;
-  approvedShardIds: string[];
-  rejectedShardIds: string[];
-  /** CIDs of appended `memory` records with `kind: "candidate"`. */
-  candidateCids: string[];
+  /** Witnessed `shard` records on chain for this residency. */
+  witnessed: number;
+  /** `rejected` records with a `witness_<reason>` category (declined shards and journal). */
+  declined: number;
+  /** `rejected` records for immune-screen categories. */
+  screened: number;
+  /** Journal file written under `journalDir`, or `null` when no journal was witnessed. */
+  journalPath: string | null;
 };
+
+/** One sealed depart record and whether it is on chain yet. */
+type LedgerEntry = {
+  record: OspRecord;
+  cid: string;
+  /** A witnessed memory's side blob, stored immediately before the record is appended. */
+  blob: AddressedBlob | null;
+  appended: boolean;
+};
+
+/** The Door's verdict on one memory text, with the record it seals (never re-asked). */
+type MemoryVerdict =
+  | { kind: "witnessed"; entry: LedgerEntry }
+  | { kind: "declined"; reason: WitnessReason; entry: LedgerEntry };
+
+/**
+ * In-process depart ledger: everything one residency's depart has read, decided and
+ * sealed. The transcript lives only in this process's memory, so a depart can only ever
+ * be retried here; the ledger makes a retry re-append sealed records instead of asking
+ * the Brain or the Door again. Declined prose is never stored (it stays in memory only).
+ */
+type DepartLedger = {
+  /** Transcript lines, read (and the source destroyed) on the first attempt. */
+  readonly lines: readonly TranscriptLine[];
+  /** Distilled candidate shard texts; `null` before the distill. */
+  candidates: readonly string[] | null;
+  /** Immune-screen categories seen by the distill. */
+  screenCategories: readonly ScreenCategory[];
+  /** Sealed `rejected` record per screen category. */
+  readonly screened: Map<ScreenCategory, LedgerEntry>;
+  /** Verdict per candidate shard text. */
+  readonly shards: Map<string, MemoryVerdict>;
+  /** Journal markdown, generated once. */
+  journalText: string | null;
+  /** Journal verdict; `"skipped"` when too long to attest; `null` before. */
+  journal: MemoryVerdict | "skipped" | null;
+  /** Journal file once written. */
+  journalPath: string | null;
+  /**
+   * Departure `at`, fixed by the first departure attest so a retry sends the same `core`
+   * and the Door co-signs it again (lost-response replay) instead of `epoch_closed`.
+   */
+  departureAt: string | null;
+  /** Sealed Door co-signed departure. */
+  departure: LedgerEntry | null;
+  /** Sealed travel. */
+  travel: LedgerEntry | null;
+  /** Travel was sealed by {@link Session.departBare}: memory forming is over for good. */
+  bare: boolean;
+};
+
+function emptyLedger(lines: readonly TranscriptLine[]): DepartLedger {
+  return {
+    lines,
+    candidates: null,
+    screenCategories: [],
+    screened: new Map(),
+    shards: new Map(),
+    journalText: null,
+    journal: null,
+    journalPath: null,
+    departureAt: null,
+    departure: null,
+    travel: null,
+    bare: false
+  };
+}
 
 type BrainHistoryMessage = {
   role: "user" | "assistant";
@@ -193,6 +283,7 @@ export class Session {
   private readonly residency: string;
   private readonly epochValue: number;
   private readonly sessionPublicKeyValue: Uint8Array;
+  private readonly witnessesMemories: boolean;
   private phase: SessionPhase = "live";
   private heartbeatTimerId: unknown = null;
   private heartbeatSeq = 0;
@@ -201,16 +292,8 @@ export class Session {
   private appendChain: Promise<unknown> = Promise.resolve();
   private inboundChain: Promise<unknown> = Promise.resolve();
   private lastHeartbeatErrorValue: unknown = null;
-  /** Cached transcript lines after first depart read (file destroyed for privacy). */
-  private departTranscriptLines: readonly TranscriptLine[] | null = null;
-  /** Cached distill output across depart retries. */
-  private departCandidates: CandidateShard[] | null = null;
-  /** Immune screen categories observed during the first successful distill. */
-  private departScreenCategories: readonly ScreenCategory[] | null = null;
-  /** Cached journal across depart retries. */
-  private departJournal: { path: string; markdown: string } | null = null;
-  /** Cached filtered Door review decisions across depart retries. */
-  private departReviewDecisions: ReviewDecision[] | null = null;
+  /** Depart state across retries; created by the first depart attempt. */
+  private ledger: DepartLedger | null = null;
 
   private constructor(
     options: SessionOptions,
@@ -239,6 +322,7 @@ export class Session {
     if (options.transcript !== undefined) {
       this.liveTranscript = options.transcript;
     }
+    this.witnessesMemories = options.witnessesMemories ?? false;
     this.attentionPolicy = { ...DEFAULT_ATTENTION_POLICY, ...options.attention };
     this.roomLog = new RoomLog(this.maxHistoryMessages);
     this.systemPromptValue = composed.systemPrompt;
@@ -308,7 +392,7 @@ export class Session {
     const session = new Session(options, composed, newEpoch, sessionSigner);
 
     await session.enqueueAppend(async () => {
-      await session.appendAttestation({
+      const { record } = await session.attestAndSeal({
         kind: "arrival",
         body: arrivalBody,
         residency,
@@ -319,6 +403,7 @@ export class Session {
           return encodeSignature(options.keyring.signWithSoulKey(bytes));
         }
       });
+      await options.store.append(record);
     });
 
     session.heartbeatTimerId = options.timer.setInterval(() => {
@@ -627,29 +712,87 @@ export class Session {
   }
 
   /**
-   * Run `fn` on this session's append queue, serialized with heartbeat appends (and
-   * drained by {@link depart} / {@link drainAppends}). Used by the residency daemon's
-   * live commit sweep so a commit append never races a heartbeat for the same `seq`.
+   * End a residency with witnessed memory (`spec/door/api.md` §Memory witnessing):
+   *
+   * 1. Stop inbound and heartbeats; read and destroy the transcript once.
+   * 2. Unless the Door does not witness memories ({@link SessionOptions.witnessesMemories})
+   *    or the stay was quiet (fewer than `minMemoryLines` lines — no distill call), distill
+   *    candidate shards and append one `rejected` record per immune-screen category.
+   * 3. Ask the Door to witness each shard (`attest` kind `memory`). Witnessed → side blob +
+   *    Door co-signed `shard` record, final immediately. Declined → `rejected`
+   *    `witness_<reason>`; the declined prose never reaches the store.
+   * 4. With ≥ 1 witnessed shard: a journal written from the witnessed shards only, witnessed
+   *    the same way (`journal` record), then written to `journalDir`.
+   * 5. Departure (Door co-signed) and travel (`to_door_id`) attestations.
+   *
+   * Any other failure (including `witness_unavailable`) throws and leaves the session
+   * `departing`; depart is then safe to retry. Every Door verdict and every sealed record
+   * is kept in the in-process {@link DepartLedger} before it is appended, so a retry never
+   * re-asks the Door about a decided memory: it re-appends the sealed record instead.
+   * Once {@link departBare} has sealed travel, depart refuses (`SessionError`): only
+   * departBare may finish the residency then.
    */
-  withAppendLock<T>(fn: () => Promise<T>): Promise<T> {
-    return this.enqueueAppend(fn);
+  async depart(options: DepartOptions): Promise<DepartResult> {
+    await this.beginDepart();
+    if (this.ledger?.bare === true) {
+      // Travel is sealed against the chain as departBare left it; new memory records
+      // would orphan it. Only departBare may finish this residency now.
+      throw new SessionError("depart refused: departBare already sealed travel; retry departBare");
+    }
+    const brain = options.brain ?? this.brain;
+    const ledger = await this.openLedger(options.transcript);
+
+    // Departure closes the epoch at the Door, for memories too.
+    if (ledger.departure === null) {
+      await this.formMemories(
+        ledger,
+        brain,
+        options.minMemoryLines ?? DEFAULT_MIN_MEMORY_LINES,
+        options.journalDir
+      );
+    }
+    await this.departAndTravel(ledger, options.toDoorId, false);
+
+    const verdicts = [...ledger.shards.values()];
+    const journal = ledger.journal === "skipped" ? null : ledger.journal;
+    const result: DepartResult = {
+      witnessed: verdicts.filter((verdict) => verdict.kind === "witnessed").length,
+      declined:
+        verdicts.filter((verdict) => verdict.kind === "declined").length +
+        (journal?.kind === "declined" ? 1 : 0),
+      screened: ledger.screened.size,
+      journalPath: ledger.journalPath
+    };
+    this.finishDepart();
+    return result;
   }
 
   /**
-   * End a residency: distill transcripts, cosign shard review, append quarantine
-   * memory records (`rejected` for immune screen drops and host rejections,
-   * `candidate` for host-approved shards), then departure and travel attestations.
+   * End a residency without forming memories: destroy the transcript, then departure and
+   * travel attestations. The controller's best-effort path after {@link depart} kept
+   * failing (or the Door lost the session). When the departure cannot be attested or
+   * appended (e.g. the Door answers `epoch_closed` / `session_invalid`), travel is still
+   * appended — soul-signed, it needs no Door — so the chain says the Wanderer left.
+   * A departure append that threw is checked against the chain's actual last record (it
+   * may have landed), and travel is sealed against that record.
+   * Throws only when travel cannot be appended; retry with departBare (not depart).
    *
-   * Enters `departing` immediately (stops inbound/heartbeats). Safe to retry after
-   * mid-pipeline failure: transcript lines/candidates/journal/review are cached
-   * in-process, and already-appended chain records for this residency are skipped.
-   *
-   * The journal is generated after host review from the **approved** shards only and
-   * is always written to disk; it is not embedded on chain until a later commit step
-   * promotes candidates to `kind: "shard"`. Departure and travel append even when
-   * every shard is rejected.
+   * @returns whether the departure attestation is on chain.
    */
-  async depart(options: DepartOptions): Promise<DepartResult> {
+  async departBare(toDoorId?: string): Promise<{ departure: boolean }> {
+    await this.beginDepart();
+    if (this.ledger === null) {
+      // Privacy: the raw conversation never outlives the residency.
+      await this.liveTranscript?.destroy();
+      this.ledger = emptyLedger([]);
+    }
+    const departure = await this.departAndTravel(this.ledger, toDoorId, true);
+    this.finishDepart();
+    return { departure };
+  }
+
+  /** Enter (or resume) `departing`: stop heartbeats, drain appends and inbound. */
+  private async beginDepart(): Promise<void> {
     if (this.phase === "departed") {
       throw new SessionError("session has already departed");
     }
@@ -661,172 +804,233 @@ export class Session {
     // call and bails) before the transcript is read and destroyed. Also covers a caller
     // that ran stop() itself before depart.
     await this.inboundChain;
-    // Remaining phase is `departing` (retry after mid-pipeline failure).
+  }
 
-    const brain = options.brain ?? this.brain;
-    const transcript = options.transcript ?? this.liveTranscript;
-    if (
-      transcript === undefined &&
-      this.departCandidates === null &&
-      this.departTranscriptLines === null
-    ) {
+  /** The depart ledger; created on the first attempt, which reads and destroys the transcript. */
+  private async openLedger(transcript: TranscriptSource | undefined): Promise<DepartLedger> {
+    if (this.ledger !== null) {
+      return this.ledger;
+    }
+    const source = transcript ?? this.liveTranscript;
+    if (source === undefined) {
       throw new SessionError("depart requires a transcript (none passed and no live transcript)");
     }
-    const candidates = await this.ensureDepartCandidates(
-      transcript ?? new MemoryTranscriptSource([]),
-      brain
-    );
-    // One rejected record per unique screen category (v0.1: count of drops is not preserved).
-    const screenCategories = new Set<ScreenCategory>(this.departScreenCategories ?? []);
-
-    const decisions = await this.ensureDepartReviewDecisions(candidates, options);
-
-    const approvedSet = new Set<string>();
-    const rejectedShardIds: string[] = [];
-    for (const decision of decisions) {
-      if (decision.status === "approved") {
-        approvedSet.add(decision.shard_id);
-      } else {
-        rejectedShardIds.push(decision.shard_id);
-      }
+    const lines = await source.read();
+    await source.destroy();
+    if (this.liveTranscript !== undefined && this.liveTranscript !== source) {
+      await this.liveTranscript.destroy();
     }
+    this.ledger = emptyLedger(lines);
+    return this.ledger;
+  }
 
-    // Privacy: the journal is written from host-approved shards only. It is published
-    // on chain with the first committed shard, so prose the host rejected must never
-    // reach it (it would otherwise leak through the journal's paraphrase).
-    const journal = await this.ensureDepartJournal(
-      brain,
-      candidates.filter((shard) => approvedSet.has(shard.shard_id)),
-      options.journalDir
-    );
+  /** Steps 2–4 of {@link depart}: screen rejections, witnessed shards, journal. */
+  private async formMemories(
+    ledger: DepartLedger,
+    brain: Brain,
+    minMemoryLines: number,
+    journalDir: string
+  ): Promise<void> {
+    const candidates = await this.distillOnce(ledger, brain, minMemoryLines);
 
-    const progress = await this.scanDepartChainProgress();
-    const approvedShardIds: string[] = [];
-
-    for (const category of screenCategories) {
-      if (progress.screenCategories.has(category)) {
-        continue;
-      }
-      const head = await this.store.head();
-      if (head === null) {
-        throw new SessionError("depart: store has no head");
-      }
-      await this.appendMemoryRecord({
-        seq: head.seq + 1,
-        prev: head.cid,
-        body: {
+    for (const category of ledger.screenCategories) {
+      let entry = ledger.screened.get(category);
+      if (entry === undefined) {
+        entry = await this.sealAtHead("memory", {
           kind: "rejected",
           category,
           rejected_at: this.clock.now()
-        },
-        cosigners: []
-      });
-      progress.screenCategories.add(category);
+        });
+        ledger.screened.set(category, entry);
+      }
+      await this.appendEntry(entry);
     }
 
-    // Contract: host_rejected appends are all-or-nothing per residency. A crash
-    // mid-batch leaves hasHostRejected true and under-records the rest until a
-    // future RejectedBody schema carries per-shard shard_id for individual dedupe.
-    if (!progress.hasHostRejected) {
-      for (const decision of decisions) {
-        if (decision.status !== "rejected") {
-          continue;
+    for (const text of candidates) {
+      let verdict = ledger.shards.get(text);
+      if (verdict === undefined) {
+        verdict = await this.askWitness("shard", text);
+        ledger.shards.set(text, verdict);
+      }
+      await this.appendEntry(verdict.entry);
+    }
+
+    await this.journalStep(ledger, brain, journalDir);
+  }
+
+  /**
+   * Distill once. No distill when the Door does not witness memories or the stay has fewer
+   * than `minMemoryLines` lines; a distill that leaves no usable shard yields none.
+   */
+  private async distillOnce(
+    ledger: DepartLedger,
+    brain: Brain,
+    minMemoryLines: number
+  ): Promise<readonly string[]> {
+    if (ledger.candidates !== null) {
+      return ledger.candidates;
+    }
+    if (!this.witnessesMemories || ledger.lines.length < minMemoryLines) {
+      ledger.candidates = [];
+      return ledger.candidates;
+    }
+
+    const screenCategories = new Set<ScreenCategory>();
+    let texts: string[];
+    try {
+      const shards = await distillTranscripts(new MemoryTranscriptSource(ledger.lines), brain, {
+        onScreenReject: (category) => {
+          screenCategories.add(category);
         }
-        const head = await this.store.head();
-        if (head === null) {
-          throw new SessionError("depart: store has no head");
-        }
-        await this.appendMemoryRecord({
+      });
+      texts = shards.map((shard) => shard.text);
+    } catch (error) {
+      // Nothing usable survived (too few shards / screened out): no memories, not a failure.
+      if (!(error instanceof DistillError) || error.reason === "malformed_output") {
+        throw error;
+      }
+      texts = [];
+    }
+    ledger.screenCategories = [...screenCategories];
+    ledger.candidates = texts;
+    return texts;
+  }
+
+  /**
+   * Journal: generated once from the witnessed shards only, witnessed like a shard (one
+   * verdict, kept in the ledger), appended, then written to `journalDir` once.
+   */
+  private async journalStep(ledger: DepartLedger, brain: Brain, journalDir: string): Promise<void> {
+    if (ledger.journal === null) {
+      const shardTexts = [...ledger.shards]
+        .filter(([, verdict]) => verdict.kind === "witnessed")
+        .map(([text]) => text);
+      if (shardTexts.length === 0) {
+        return;
+      }
+      ledger.journalText ??= await generateJournal(
+        { doorId: this.doorId, epoch: this.epochValue, shardTexts },
+        brain
+      );
+      ledger.journal =
+        [...ledger.journalText].length > MEMORY_ATTEST_TEXT_MAX
+          ? "skipped" // Too long for a memory attest: keep the shards, skip the journal.
+          : await this.askWitness("journal", ledger.journalText);
+    }
+    if (ledger.journal === "skipped") {
+      return;
+    }
+    await this.appendEntry(ledger.journal.entry);
+    if (
+      ledger.journal.kind === "witnessed" &&
+      ledger.journalPath === null &&
+      ledger.journalText !== null
+    ) {
+      ledger.journalPath = await writeJournalFile(
+        journalDir,
+        this.doorId,
+        this.epochValue,
+        ledger.journalText
+      );
+    }
+  }
+
+  /**
+   * Ask the Door to witness one memory (`attest` kind `memory`, session-signed; `core`
+   * binds `text` by side-blob hash) and seal the resulting record — nothing is appended or
+   * stored here. Witnessed → the co-signed record plus its side blob. `witness_declined` →
+   * a `rejected` `witness_<reason>` record with no blob. Any other error propagates.
+   */
+  private async askWitness(kind: "shard" | "journal", text: string): Promise<MemoryVerdict> {
+    const blob =
+      kind === "shard" ? await addressShardTextBlob(text) : await addressJournalBlob(text);
+    const head = await this.requireHead("depart");
+    const at = this.clock.now();
+    const body: CreateRecordFields["body"] =
+      kind === "shard"
+        ? { kind: "shard", text_cid: blob.cid, text_hash: blob.hash, distilled_at: at }
+        : { kind: "journal", journal_cid: blob.cid, journal_hash: blob.hash, written_at: at };
+    const core = new TextDecoder().decode(
+      canonicalize(
+        corePayload({
+          spec: OSP_SPEC_V02,
           seq: head.seq + 1,
           prev: head.cid,
-          body: {
-            kind: "rejected",
-            category: "host_rejected",
-            rejected_at: this.clock.now()
-          },
-          cosigners: []
-        });
-      }
-      if (rejectedShardIds.length > 0) {
-        progress.hasHostRejected = true;
-      }
-    }
+          type: "memory",
+          body,
+          residency: this.residency
+        })
+      )
+    );
+    const unsignedAttest: Omit<AttestRequest, "sig"> = {
+      protocol_version: DOOR_PROTOCOL_VERSION,
+      door_id: this.doorId,
+      epoch: this.epochValue,
+      kind: "memory",
+      core,
+      session_pubkey: encodePublicKey(this.sessionPublicKeyValue),
+      text,
+      issued_at: this.clock.now()
+    };
 
-    for (const shard of candidates) {
-      if (!approvedSet.has(shard.shard_id)) {
-        continue;
-      }
-      approvedShardIds.push(shard.shard_id);
-
-      if (progress.candidateCidsByText.has(shard.text)) {
-        continue;
-      }
-
-      const head = await this.store.head();
-      if (head === null) {
-        throw new SessionError("depart: store has no head");
-      }
-
-      const textBlob = await storeShardTextBlob(this.store, shard.text);
-      const { cid } = await this.appendMemoryRecord({
-        seq: head.seq + 1,
-        prev: head.cid,
-        body: {
-          kind: "candidate",
-          text_cid: textBlob.text_cid,
-          text_hash: textBlob.text_hash,
-          proposed_at: this.clock.now()
-        },
-        cosigners: []
+    let doorCosig: string;
+    try {
+      const response = await this.door.attest({
+        ...unsignedAttest,
+        sig: encodeSignature(this.sessionSigner.sign(attestSigningPayload(unsignedAttest)))
       });
-      progress.candidateCidsByText.set(shard.text, cid);
-    }
-
-    const candidateCids: string[] = [];
-    for (const shard of candidates) {
-      if (!approvedSet.has(shard.shard_id)) {
-        continue;
+      doorCosig = response.door_cosig;
+    } catch (error) {
+      if (!(error instanceof DoorError) || error.code !== "witness_declined") {
+        throw error;
       }
-      const cid = progress.candidateCidsByText.get(shard.text);
-      if (cid !== undefined) {
-        candidateCids.push(cid);
-      }
-    }
-
-    if (!progress.hasDeparture) {
-      const chainHead = await this.store.head();
-      if (chainHead === null) {
-        throw new SessionError("depart: store has no head before departure");
-      }
-
-      const departureBody = {
-        kind: "departure" as const,
-        pop_version: POP_VERSION,
-        door_id: this.doorId,
-        epoch: this.epochValue,
-        at: this.clock.now()
+      const parsed = WitnessReasonSchema.safeParse(error.details?.reason);
+      const reason = parsed.success ? parsed.data : "other";
+      return {
+        kind: "declined",
+        reason,
+        entry: await this.sealAt(head, "memory", {
+          kind: "rejected",
+          category: `witness_${reason}`,
+          rejected_at: this.clock.now()
+        })
       };
-
-      await this.appendAttestation({
-        kind: "departure",
-        body: departureBody,
-        residency: this.residency,
-        seq: chainHead.seq + 1,
-        prev: chainHead.cid,
-        signAttest: (unsigned) => {
-          const bytes = attestSigningPayload(unsigned);
-          return encodeSignature(this.sessionSigner.sign(bytes));
-        }
-      });
-      progress.hasDeparture = true;
     }
+    return {
+      kind: "witnessed",
+      entry: { ...(await this.sealAt(head, "memory", body, [doorCosig])), blob }
+    };
+  }
 
-    if (!progress.hasTravel) {
-      const chainHead = await this.store.head();
-      if (chainHead === null) {
-        throw new SessionError("depart: store has no head before travel");
+  /**
+   * Step 5: departure (Door co-signed, sealed into the ledger before it is appended, so a
+   * retry re-appends it instead of re-attesting) then travel (soul-signed). With
+   * `bestEffort`, a departure that cannot be attested or appended is skipped and travel
+   * is appended anyway. Returns whether the departure is on chain.
+   */
+  private async departAndTravel(
+    ledger: DepartLedger,
+    toDoorId: string | undefined,
+    bestEffort: boolean
+  ): Promise<boolean> {
+    // Once travel is sealed, the departure question is settled (appended or skipped).
+    if (ledger.travel === null) {
+      let head: { seq: number; cid: string } | null = null;
+      try {
+        ledger.departure ??= await this.attestDeparture(ledger);
+        await this.appendEntry(ledger.departure);
+      } catch (error) {
+        if (!bestEffort) {
+          throw error;
+        }
+        // The departure append may have landed and then thrown, and a store's head() can
+        // lag its disk after such a failure: settle the departure and seal travel against
+        // the chain's actual last record.
+        head = await this.actualHead();
+        if (ledger.departure !== null && head.cid === ledger.departure.cid) {
+          ledger.departure.appended = true;
+        }
       }
-
       const travelBody: {
         kind: "travel";
         pop_version: typeof POP_VERSION;
@@ -841,226 +1045,119 @@ export class Session {
         from_epoch: this.epochValue,
         at: this.clock.now()
       };
-      if (options.toDoorId !== undefined) {
-        travelBody.to_door_id = options.toDoorId;
+      if (toDoorId !== undefined) {
+        travelBody.to_door_id = toDoorId;
       }
-
-      const { record: travelRecord } = await sealRecord(this.keyring, {
-        seq: chainHead.seq + 1,
-        prev: chainHead.cid,
-        type: "attestation",
-        body: travelBody,
-        residency: this.residency,
-        cosigners: []
-      });
-      await this.store.append(travelRecord);
+      ledger.travel = await this.sealAt(
+        head ?? (await this.requireHead("depart")),
+        "attestation",
+        travelBody
+      );
+      ledger.bare = bestEffort;
     }
-
-    this.phase = "departed";
-    this.clearDepartCaches();
-    this.onDeparted?.();
-
-    return {
-      journalPath: journal.path,
-      journalMarkdown: journal.markdown,
-      approvedShardIds,
-      rejectedShardIds,
-      candidateCids
-    };
+    await this.appendEntry(ledger.travel);
+    return ledger.departure?.appended === true;
   }
 
   /**
-   * Read+destroy transcript once, then distill (or reuse cached candidates).
+   * Ask the Door to co-sign this residency's departure; returns the sealed record. The
+   * body's `at` is kept in the ledger, so a retry after a lost answer re-sends the same
+   * `core` (the Door replays its co-signature).
    */
-  private async ensureDepartCandidates(
-    transcript: TranscriptSource,
-    brain: Brain
-  ): Promise<CandidateShard[]> {
-    if (this.departCandidates !== null) {
-      return this.departCandidates;
-    }
-
-    if (this.departTranscriptLines === null) {
-      const lines = await transcript.read();
-      await transcript.destroy();
-      this.departTranscriptLines = lines;
-    }
-
-    const screenCategories = new Set<ScreenCategory>();
-    const candidates = await distillTranscripts(
-      new MemoryTranscriptSource(this.departTranscriptLines),
-      brain,
-      {
-        onScreenReject: (category) => {
-          screenCategories.add(category);
-        }
-      }
-    );
-    this.departCandidates = candidates;
-    this.departScreenCategories = [...screenCategories];
-    return candidates;
-  }
-
-  /**
-   * Generate and write the journal once; reuse path/markdown on retry.
-   */
-  private async ensureDepartJournal(
-    brain: Brain,
-    candidates: readonly CandidateShard[],
-    journalDir: string
-  ): Promise<{ path: string; markdown: string }> {
-    if (this.departJournal !== null) {
-      return this.departJournal;
-    }
-
-    const shardTexts = candidates.map((shard) => shard.text);
-    const markdown = await generateJournal(
-      { doorId: this.doorId, epoch: this.epochValue, shardTexts },
-      brain
-    );
-    const path = await writeJournalFile(journalDir, this.doorId, this.epochValue, markdown);
-    this.departJournal = { path, markdown };
-    return this.departJournal;
-  }
-
-  /**
-   * Cosign review once; filter/dedupe Door decisions to the proposed shard set.
-   * After departure is on chain, reconstruct decisions from candidates vs chain
-   * (Door may refuse a second review).
-   */
-  private async ensureDepartReviewDecisions(
-    candidates: readonly CandidateShard[],
-    options: DepartOptions
-  ): Promise<ReviewDecision[]> {
-    if (this.departReviewDecisions !== null) {
-      return this.departReviewDecisions;
-    }
-
-    const progress = await this.scanDepartChainProgress();
-    if (progress.hasDeparture) {
-      const reconstructed: ReviewDecision[] = candidates.map((shard) => ({
-        shard_id: shard.shard_id,
-        status: progress.candidateCidsByText.has(shard.text)
-          ? ("approved" as const)
-          : ("rejected" as const)
-      }));
-      this.departReviewDecisions = reconstructed;
-      return reconstructed;
-    }
-
-    const sessionPubkeyEncoded = encodePublicKey(this.sessionPublicKeyValue);
-    const unsignedReview: Omit<Extract<CosignRequest, { phase: "review" }>, "sig"> = {
-      protocol_version: DOOR_PROTOCOL_VERSION,
-      phase: "review",
-      door_id: this.doorId,
-      epoch: this.epochValue,
-      session_pubkey: sessionPubkeyEncoded,
-      shards: [...candidates],
-      issued_at: this.clock.now(),
-      ...(options.farewell !== undefined ? { farewell: options.farewell } : {})
-    };
-    const reviewSig = encodeSignature(
-      this.sessionSigner.sign(cosignReviewSigningPayload(unsignedReview))
-    );
-    const reviewResponse = await this.door.cosign({
-      ...unsignedReview,
-      sig: reviewSig
+  private async attestDeparture(ledger: DepartLedger): Promise<LedgerEntry> {
+    const head = await this.requireHead("departure");
+    ledger.departureAt ??= this.clock.now();
+    const sealed = await this.attestAndSeal({
+      kind: "departure",
+      body: {
+        kind: "departure",
+        pop_version: POP_VERSION,
+        door_id: this.doorId,
+        epoch: this.epochValue,
+        at: ledger.departureAt
+      },
+      residency: this.residency,
+      seq: head.seq + 1,
+      prev: head.cid,
+      signAttest: (unsigned) =>
+        encodeSignature(this.sessionSigner.sign(attestSigningPayload(unsigned)))
     });
+    return { ...sealed, blob: null, appended: false };
+  }
 
-    if (reviewResponse.phase !== "review") {
-      throw new SessionError("unexpected cosign response phase");
-    }
+  /** Seal a record of this residency at the current chain head (not appended). */
+  private async sealAtHead(
+    type: "memory" | "attestation",
+    body: CreateRecordFields["body"]
+  ): Promise<LedgerEntry> {
+    return this.sealAt(await this.requireHead("depart"), type, body);
+  }
 
-    const filtered = filterReviewDecisions(candidates, reviewResponse.decisions);
-    this.departReviewDecisions = filtered;
-    return filtered;
+  /** Seal a record of this residency after `head` (not appended). */
+  private async sealAt(
+    head: { seq: number; cid: string },
+    type: "memory" | "attestation",
+    body: CreateRecordFields["body"],
+    cosigners: readonly string[] = []
+  ): Promise<LedgerEntry> {
+    const sealed = await sealRecord(this.keyring, {
+      seq: head.seq + 1,
+      prev: head.cid,
+      type,
+      body,
+      residency: this.residency,
+      cosigners: [...cosigners]
+    });
+    return { ...sealed, blob: null, appended: false };
   }
 
   /**
-   * Scan this residency for depart-stage records already on the soulchain.
+   * Append a sealed ledger record once. A record already at the head is an append that
+   * landed and then threw: it counts as appended. A witnessed side blob is stored only
+   * immediately before its record is appended.
    */
-  private async scanDepartChainProgress(): Promise<{
-    screenCategories: Set<ScreenCategory>;
-    hasHostRejected: boolean;
-    candidateCidsByText: Map<string, string>;
-    hasDeparture: boolean;
-    hasTravel: boolean;
-  }> {
-    const screenCategories = new Set<ScreenCategory>();
-    let hasHostRejected = false;
-    const candidateCidsByText = new Map<string, string>();
-    let hasDeparture = false;
-    let hasTravel = false;
-
-    for await (const record of this.store.iterate()) {
-      if (record.residency !== this.residency) {
-        continue;
-      }
-
-      if (record.type === "memory") {
-        const body = record.body;
-        if (body.kind === "candidate") {
-          if ("text" in body) {
-            candidateCidsByText.set(body.text, await computeCid(record));
-          } else if ("text_cid" in body) {
-            // osp/0.2: resolve side-blob text for depart retry dedupe by content.
-            try {
-              const bytes = await this.store.getSideBlob(body.text_cid);
-              candidateCidsByText.set(decodeShardTextBlob(bytes), await computeCid(record));
-            } catch {
-              // Tombstoned/missing blob: cannot dedupe by content. A later depart may
-              // re-append a duplicate candidate for the same prose (edge case after
-              // erasure); acceptable — commit/scan treat the prior candidate as
-              // committed or skip-erased rather than re-promoting erased prose.
-            }
-          }
-          continue;
-        }
-        if (body.kind === "rejected") {
-          if (body.category === "host_rejected") {
-            hasHostRejected = true;
-          } else if (isScreenCategory(body.category)) {
-            screenCategories.add(body.category);
-          }
-        }
-        continue;
-      }
-
-      if (record.type === "attestation") {
-        const body = record.body;
-        if (
-          body.kind === "departure" &&
-          body.door_id === this.doorId &&
-          body.epoch === this.epochValue
-        ) {
-          hasDeparture = true;
-        }
-        if (
-          body.kind === "travel" &&
-          body.from_door_id === this.doorId &&
-          body.from_epoch === this.epochValue
-        ) {
-          hasTravel = true;
-        }
-      }
+  private async appendEntry(entry: LedgerEntry): Promise<void> {
+    if (entry.appended) {
+      return;
     }
-
-    return {
-      screenCategories,
-      hasHostRejected,
-      candidateCidsByText,
-      hasDeparture,
-      hasTravel
-    };
+    const head = await this.requireHead("depart");
+    if (head.cid !== entry.cid) {
+      if (entry.blob !== null) {
+        await putAddressedBlob(this.store, entry.blob);
+      }
+      await this.store.append(entry.record);
+    }
+    entry.appended = true;
   }
 
-  /** Drop in-process depart caches after a successful depart. */
-  private clearDepartCaches(): void {
-    this.departTranscriptLines = null;
-    this.departCandidates = null;
-    this.departScreenCategories = null;
-    this.departJournal = null;
-    this.departReviewDecisions = null;
+  /** Mark departed, drop the depart ledger, notify. */
+  private finishDepart(): void {
+    this.phase = "departed";
+    this.ledger = null;
+    this.onDeparted?.();
+  }
+
+  /**
+   * The chain's last record as stored (read through `iterate`), not the store's cached
+   * `head()`, which may not reflect an append that landed and then threw.
+   */
+  private async actualHead(): Promise<{ seq: number; cid: string }> {
+    let last: OspRecord | null = null;
+    for await (const record of this.store.iterate()) {
+      last = record;
+    }
+    if (last === null) {
+      throw new SessionError("depart: store has no head");
+    }
+    return { seq: last.seq, cid: await computeCid(last) };
+  }
+
+  private async requireHead(stage: string): Promise<{ seq: number; cid: string }> {
+    const head = await this.store.head();
+    if (head === null) {
+      throw new SessionError(`${stage}: store has no head`);
+    }
+    return head;
   }
 
   private pushHistory(message: BrainHistoryMessage): void {
@@ -1227,32 +1324,15 @@ export class Session {
     }
   }
 
-  private async appendMemoryRecord(params: {
-    seq: number;
-    prev: string;
-    body: CreateRecordFields["body"];
-    cosigners: readonly string[];
-  }): Promise<{ cid: string }> {
-    const { record, cid } = await sealRecord(this.keyring, {
-      seq: params.seq,
-      prev: params.prev,
-      type: "memory",
-      body: params.body,
-      residency: this.residency,
-      cosigners: [...params.cosigners]
-    });
-    await this.store.append(record);
-    return { cid };
-  }
-
-  private async appendAttestation(params: {
-    kind: "arrival" | "heartbeat" | "departure";
+  /** Ask the Door to co-sign an attestation (`core` bound) and seal it; not appended. */
+  private async attestAndSeal(params: {
+    kind: "arrival" | "departure";
     body: CreateRecordFields["body"];
     residency: string;
     seq: number;
     prev: string;
     signAttest: (unsigned: Omit<AttestRequest, "sig">) => string;
-  }): Promise<void> {
+  }): Promise<{ record: OspRecord; cid: string }> {
     const core = new TextDecoder().decode(
       canonicalize(
         corePayload({
@@ -1285,7 +1365,7 @@ export class Session {
       sig: attestSig
     });
 
-    const { record } = await sealRecord(this.keyring, {
+    return sealRecord(this.keyring, {
       seq: params.seq,
       prev: params.prev,
       type: "attestation",
@@ -1293,50 +1373,7 @@ export class Session {
       residency: params.residency,
       cosigners: [attestResponse.door_cosig]
     });
-
-    await this.store.append(record);
   }
-}
-
-const SCREEN_CATEGORY_VALUES: readonly ScreenCategory[] = [
-  "pii.email",
-  "pii.phone",
-  "pii.handle",
-  "injection.instruction",
-  "injection.role_marker",
-  "injection.url_payload"
-];
-
-/**
- * Narrow a rejection category string to a known immune {@link ScreenCategory}.
- */
-function isScreenCategory(category: string): category is ScreenCategory {
-  return (SCREEN_CATEGORY_VALUES as readonly string[]).includes(category);
-}
-
-/**
- * Keep Door review decisions that name a proposed shard_id; first decision wins per id.
- */
-function filterReviewDecisions(
-  candidates: readonly CandidateShard[],
-  decisions: readonly ReviewDecision[]
-): ReviewDecision[] {
-  const proposedIds = new Set(candidates.map((shard) => shard.shard_id));
-  const seen = new Set<string>();
-  const filtered: ReviewDecision[] = [];
-
-  for (const decision of decisions) {
-    if (!proposedIds.has(decision.shard_id)) {
-      continue;
-    }
-    if (seen.has(decision.shard_id)) {
-      continue;
-    }
-    seen.add(decision.shard_id);
-    filtered.push(decision);
-  }
-
-  return filtered;
 }
 
 /** Scan the chain for the maximum global epoch on attestation records. */

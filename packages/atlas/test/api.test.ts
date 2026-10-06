@@ -23,9 +23,11 @@ import {
   fixtureDoorPublicKeys,
   JOURNAL_EPOCH_1,
   JOURNAL_EPOCH_2,
+  JOURNAL_EPOCH_3,
   LEAK_SHARD_TEXT,
   MULTI_RESIDENCY_FIXTURE_DIR
 } from "./helpers/fixture-meta.js";
+import { WEB_DOOR_ID } from "./helpers/fixed-keys.js";
 import { snapshotDirectory } from "./helpers/hash-snapshot.js";
 
 const tempDirs: string[] = [];
@@ -63,7 +65,7 @@ describe("atlas API read-only guarantees", () => {
     const before = await snapshotDirectory(MULTI_RESIDENCY_FIXTURE_DIR);
     const app = await openServer(MULTI_RESIDENCY_FIXTURE_DIR);
     try {
-      const endpoints = ["/state", "/chain/head", "/records", "/journals"];
+      const endpoints = ["/state", "/chain/head", "/records", "/journals", "/residencies"];
       for (const url of endpoints) {
         const response = await app.inject({ method: "GET", url });
         expect(response.statusCode).toBe(200);
@@ -89,7 +91,8 @@ describe("atlas API read-only guarantees", () => {
       const response = await app.inject({ method: "GET", url: "/state" });
       expect(response.statusCode).toBe(200);
       const body = response.json() as { status: string; verified: boolean };
-      expect(body.status).toBe("present");
+      // The fixture ends with a travel record out of web:home.
+      expect(body.status).toBe("traveling");
       expect(body.verified).toBe(true);
     } finally {
       await app.close();
@@ -125,6 +128,7 @@ describe("GET /state derivation branches", () => {
         status: "sleeping",
         door_id: null,
         epoch: null,
+        since: null,
         last_record_at: "2026-01-01T00:00:00.000Z",
         verified: true
       });
@@ -143,6 +147,7 @@ describe("GET /state derivation branches", () => {
         status: "present",
         door_id: DEFAULT_DOOR_ID,
         epoch: 1,
+        since: "2026-01-02T00:00:00.000Z",
         verified: true
       });
     } finally {
@@ -154,10 +159,13 @@ describe("GET /state derivation branches", () => {
     const heartbeatApp = await openServer(heartbeatDir);
     try {
       const heartbeatResponse = await heartbeatApp.inject({ method: "GET", url: "/state" });
+      // `since` is the arrival time, not the latest heartbeat.
       expect(heartbeatResponse.json()).toMatchObject({
         status: "present",
         door_id: DEFAULT_DOOR_ID,
         epoch: 1,
+        since: "2026-01-02T00:00:00.000Z",
+        last_record_at: "2026-01-02T01:00:00.000Z",
         verified: true
       });
     } finally {
@@ -175,6 +183,7 @@ describe("GET /state derivation branches", () => {
         status: "traveling",
         door_id: null,
         epoch: 1,
+        since: "2026-01-02T02:00:00.000Z",
         verified: true
       });
     } finally {
@@ -190,6 +199,7 @@ describe("GET /state derivation branches", () => {
         status: "traveling",
         door_id: null,
         epoch: 1,
+        since: "2026-01-02T02:30:00.000Z",
         verified: true
       });
     } finally {
@@ -334,7 +344,8 @@ describe("torn tail policy", () => {
       expect(response.statusCode).toBe(200);
       const body = response.json() as { verified: boolean; status: string };
       expect(body.verified).toBe(false);
-      expect(body.status).toBe("present");
+      // Truncation drops the final travel record; the departure before it still says traveling.
+      expect(body.status).toBe("traveling");
     } finally {
       await app.close();
     }
@@ -368,7 +379,7 @@ describe("schema-invalid mid-chain records", () => {
 
     const app = await openServer(copyDir);
     try {
-      for (const url of ["/state", "/chain/head", "/records", "/journals"]) {
+      for (const url of ["/state", "/chain/head", "/records", "/journals", "/residencies"]) {
         const response = await app.inject({ method: "GET", url });
         expect(response.statusCode).toBe(503);
         expect(response.json()).toEqual({
@@ -412,7 +423,7 @@ describe("unreadable snapshot cache", () => {
 
       const recovered = await app.inject({ method: "GET", url: "/state" });
       expect(recovered.statusCode).toBe(200);
-      expect(recovered.json()).toMatchObject({ status: "present", verified: true });
+      expect(recovered.json()).toMatchObject({ status: "traveling", verified: true });
     } finally {
       await app.close();
     }
@@ -529,7 +540,7 @@ describe("GET /records pagination", () => {
 });
 
 describe("GET /journals", () => {
-  it("returns journals newest first, paginates, and skips shards without journal", async () => {
+  it("returns journal records and legacy shard journals newest first, and paginates", async () => {
     const app = await openServer(MULTI_RESIDENCY_FIXTURE_DIR);
     try {
       const response = await app.inject({ method: "GET", url: "/journals" });
@@ -544,16 +555,14 @@ describe("GET /journals", () => {
       expect(body.verified).toBe(true);
       expect(body.page).toBe(1);
       expect(body.per_page).toBe(50);
-      expect(body.total).toBeGreaterThanOrEqual(2);
-      expect(body.journals.length).toBeGreaterThanOrEqual(2);
-      expect(body.journals[0]?.journal).toBe(JOURNAL_EPOCH_2);
-      expect(body.journals[1]?.journal).toBe(JOURNAL_EPOCH_1);
-      expect(body.journals[0]?.epoch).toBe(2);
-      expect(body.journals[1]?.epoch).toBe(1);
-      expect(body.journals[0]?.door_id).toBe(DEFAULT_OTHER_DOOR_ID);
-      expect(body.journals[1]?.door_id).toBe(DEFAULT_DOOR_ID);
+      expect(body.total).toBe(3);
+      expect(body.journals.map((entry) => [entry.door_id, entry.epoch, entry.journal])).toEqual([
+        [WEB_DOOR_ID, 3, JOURNAL_EPOCH_3],
+        [DEFAULT_OTHER_DOOR_ID, 2, JOURNAL_EPOCH_2],
+        [DEFAULT_DOOR_ID, 1, JOURNAL_EPOCH_1]
+      ]);
 
-      const paged = await app.inject({ method: "GET", url: "/journals?per_page=1&page=1" });
+      const paged = await app.inject({ method: "GET", url: "/journals?per_page=1&page=2" });
       const pagedBody = paged.json() as {
         journals: Array<{ journal: string }>;
         per_page: number;
@@ -566,6 +575,77 @@ describe("GET /journals", () => {
 
       const clamped = await app.inject({ method: "GET", url: "/journals?per_page=999" });
       expect(clamped.json()).toMatchObject({ per_page: 200, total: body.total });
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+describe("GET /residencies", () => {
+  it("lists each residency newest first with door, times, counts, journal and travel", async () => {
+    const app = await openServer(MULTI_RESIDENCY_FIXTURE_DIR);
+    try {
+      const response = await app.inject({ method: "GET", url: "/residencies" });
+      expect(response.statusCode).toBe(200);
+      const body = response.json() as {
+        verified: boolean;
+        total: number;
+        residencies: Array<Record<string, unknown>>;
+      };
+      expect(body.verified).toBe(true);
+      expect(body.total).toBe(3);
+      expect(body.residencies[0]).toMatchObject({
+        residency: "door:web:home/epoch:3",
+        door_id: WEB_DOOR_ID,
+        epoch: 3,
+        arrived_at: "2026-01-04T00:00:00.000Z",
+        departed_at: "2026-01-04T05:02:00.000Z",
+        traveled_to: DEFAULT_DOOR_ID,
+        counts: { witnessed: 1, declined: 1, screened: 1 },
+        declined_reasons: ["private"],
+        journal: { journal: JOURNAL_EPOCH_3 }
+      });
+      expect(body.residencies[1]).toMatchObject({
+        door_id: DEFAULT_OTHER_DOOR_ID,
+        epoch: 2,
+        traveled_to: WEB_DOOR_ID,
+        counts: { witnessed: 1, declined: 0, screened: 0 },
+        journal: { journal: JOURNAL_EPOCH_2 }
+      });
+      // Residency 1: two shards plus a legacy candidate (counted in none of the buckets).
+      expect(body.residencies[2]).toMatchObject({
+        door_id: DEFAULT_DOOR_ID,
+        epoch: 1,
+        arrived_at: "2026-01-02T00:00:00.000Z",
+        departed_at: "2026-01-02T02:00:00.000Z",
+        traveled_to: DEFAULT_OTHER_DOOR_ID,
+        counts: { witnessed: 2, declined: 0, screened: 0 },
+        declined_reasons: [],
+        journal: { journal: JOURNAL_EPOCH_1 }
+      });
+      expect(response.body.includes(LEAK_SHARD_TEXT)).toBe(false);
+
+      const paged = await app.inject({ method: "GET", url: "/residencies?per_page=1&page=3" });
+      expect(paged.json()).toMatchObject({
+        page: 3,
+        per_page: 1,
+        total: 3,
+        residencies: [{ epoch: 1 }]
+      });
+
+      const invalid = await app.inject({ method: "GET", url: "/residencies?page=abc" });
+      expect(invalid.statusCode).toBe(400);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("returns 503 when the chain is unreadable", async () => {
+    const dir = await makeTempDir("atlas-residencies-missing-");
+    const app = await openServer(dir);
+    try {
+      const response = await app.inject({ method: "GET", url: "/residencies" });
+      expect(response.statusCode).toBe(503);
     } finally {
       await app.close();
     }

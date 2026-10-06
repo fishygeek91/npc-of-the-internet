@@ -27,11 +27,11 @@ This project is built end to end by AI agents:
 
 ## Status
 
-Pre-v0.1 ("Ghost"). Current milestone: a single Discord Door running the core loop — reside → distill memories → publish journal → move on.
+Ghost (v0.1) is live, and the loop now runs across more than one Door: the Wanderer travels — about once a day, one place at a time — between a Discord server and its own web porch (`door-web`), and each outlet shows when it is elsewhere. At every departure it distills memories, and keeps only those the Door where they formed has **witnessed**: the Door's independent witness checks each memory against the Door's own record of what happened before co-signing it. Witnessed memories are final; there is no approval queue.
 
 ## Principles
 
-Open source (MIT/Apache). No token. No raw conversation storage — only distilled, host-co-signed memories. Honest about what it is: a character and a protocol experiment, raised by the internet.
+Open source (MIT/Apache). No token. No raw conversation storage — only distilled memories, each witnessed by the community where it formed. Honest about what it is: a character and a protocol experiment, raised by the internet.
 
 ## Contributing
 

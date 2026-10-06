@@ -1,113 +1,110 @@
+import { DoorError } from "@npc/door-sdk";
 import type { Logger } from "pino";
 
-import type { CommitQuarantineResult } from "../quarantine/commit.js";
-import type { DepartResult } from "../session/session.js";
+import { DEFAULT_MIN_MEMORY_LINES, type DepartResult } from "../session/session.js";
 import type { Timer } from "../session/types.js";
-import { MAX_COMMIT_WINDOW_MS } from "./config.js";
 
-/** What started a residency cycle. */
-export type CycleTrigger = "operator" | "timer";
+/**
+ * What started a residency cycle. `lost_session`: the Door no longer knows this residency
+ * (heartbeat `session_invalid` / `epoch_closed`), so no memory can be witnessed there —
+ * the cycle goes straight to departure + travel without memories.
+ */
+export type CycleTrigger = "operator" | "timer" | "lost_session";
 
 /**
  * Outcome of {@link ResidencyController.requestCycle}.
  *
- * - `cycled`: departed (distill → review → records → journal) and re-arrived at `toEpoch`.
- * - `abandoned`: depart kept failing; the residency was dropped without departure
- *   records (same chain shape as a crash) and the Wanderer re-arrived at `toEpoch`.
- * - `skipped`: nothing to distill yet (transcript below the trigger's minimum).
+ * - `cycled`: departed (witnessed memories → journal → departure + travel) and arrived at
+ *   `toDoor` / `toEpoch`.
+ * - `abandoned`: depart kept failing (or the session was lost); departure + travel were
+ *   attempted without memories (best effort) and the Wanderer arrived at `toDoor` /
+ *   `toEpoch` anyway.
  * - `busy`: another cycle is already running (single-flight).
  * - `shutting_down`: the daemon is stopping; no cycle started.
- * - `aborted`: shutdown interrupted the cycle; no re-arrival (next boot re-arrives).
+ * - `aborted`: shutdown interrupted the cycle; no arrival (next boot arrives).
  */
 export type CycleOutcome =
   | {
       kind: "cycled";
       trigger: CycleTrigger;
+      fromDoor: string;
+      toDoor: string;
       fromEpoch: number;
       toEpoch: number;
-      candidateCount: number;
-      committedCount: number;
-      journalPath: string;
+      witnessed: number;
+      declined: number;
+      journalPath: string | null;
     }
-  | { kind: "abandoned"; trigger: CycleTrigger; fromEpoch: number; toEpoch: number; error: string }
-  | { kind: "skipped"; trigger: CycleTrigger; reason: "transcript_too_short"; lines: number }
+  | {
+      kind: "abandoned";
+      trigger: CycleTrigger;
+      fromDoor: string;
+      toDoor: string;
+      fromEpoch: number;
+      toEpoch: number;
+      error: string;
+    }
   | { kind: "busy"; trigger: CycleTrigger }
   | { kind: "shutting_down"; trigger: CycleTrigger }
   | { kind: "aborted"; trigger: CycleTrigger; fromEpoch: number };
 
+/** Arguments for {@link LiveResidency.depart}. */
+export type DepartRequest = {
+  /** Next Door (travel `to_door_id`); omitted when no Door was available. */
+  toDoorId?: string;
+  /** Fewer transcript lines than this form no memories. */
+  minMemoryLines: number;
+};
+
 /** One live residency (Session + its Door session socket) as seen by the controller. */
 export interface LiveResidency {
+  /** Door hosting this residency. */
+  readonly doorId: string;
   /** Global residency epoch. */
   readonly epoch: number;
-  /** Lines currently held by the live in-memory transcript. */
-  transcriptSize(): number;
   /**
    * Stop delivering Door session traffic to this residency (close its WebSocket client;
    * later inbound frames are dropped). Idempotent.
    */
   detach(): Promise<void>;
   /** End the residency via `Session.depart` (retryable after a mid-pipeline failure). */
-  depart(): Promise<DepartResult>;
+  depart(request: DepartRequest): Promise<DepartResult>;
+  /**
+   * Departure + travel without memories (`Session.departBare`), after depart gave up.
+   * Resolves whether the departure is on chain (travel is appended either way).
+   */
+  departBare(toDoorId?: string): Promise<{ departure: boolean }>;
   /** Release without departure (shutdown): stop heartbeats, drain appends, detach. */
   close(): Promise<void>;
-  /**
-   * The Door advertised `cosign.past_epochs` in this residency's `hello`: it retains
-   * completed reviews per epoch, so past epochs' candidates can be committed while this
-   * residency is live. Absent/false = legacy Door (commits only in the travel gap).
-   */
-  readonly pastEpochCommits?: boolean;
-  /** Run `fn` serialized with this residency's chain appends (heartbeats). */
-  withAppendLock?<T>(fn: () => Promise<T>): Promise<T>;
 }
-
-/** Commit hook: promote the departed epoch's ripe candidates (scoped to that residency). */
-export type CommitDepartedEpoch = (args: {
-  epoch: number;
-  journalMarkdown?: string;
-}) => Promise<CommitQuarantineResult>;
-
-/**
- * Live commit hook: promote every ripe candidate of this Door's past epochs (the Door
- * advertised `cosign.past_epochs`). Runs on a timer while a residency is live.
- */
-export type CommitPendingEpochs = () => Promise<CommitQuarantineResult>;
 
 /** Abortable sleep; must reject (or resolve) promptly when `signal` aborts. */
 export type AbortableSleep = (ms: number, signal: AbortSignal) => Promise<void>;
 
 /** Options for {@link ResidencyController}. */
 export type ResidencyControllerOptions = {
-  /** Begin a residency at the Door (Session.start + WS bind). */
-  arrive: () => Promise<LiveResidency>;
-  /**
-   * Travel-gap commit sweep for a legacy Door (no `cosign.past_epochs`): runs between
-   * departure and re-arrival, only while `quarantineWindowMs` ≤ {@link MAX_COMMIT_WINDOW_MS}.
-   * Omit to disable (candidates stay candidates).
-   */
-  commit?: CommitDepartedEpoch;
-  /**
-   * Live commit sweep for a Door that advertises `cosign.past_epochs`: every
-   * `commitIntervalMs` while a residency is live (serialized with its appends).
-   */
-  commitPending?: CommitPendingEpochs;
-  /** Interval of the commit sweeps (required when `commit` or `commitPending` is set). */
-  commitIntervalMs?: number;
-  /** Quarantine window; bounds the travel-gap sweep (window + 5 polls). */
-  quarantineWindowMs?: number;
-  /** Cycle when the residency is older than this; `0` disables the timer trigger. */
+  /** Door ids that are online and trusted right now (never throws). */
+  probe: () => Promise<readonly string[]>;
+  /** Begin a residency at that Door (hello → Session.start → WS bind). */
+  arrive: (doorId: string) => Promise<LiveResidency>;
+  /** Boot preference, best first (e.g. the chain's last Door, then `CURRENT_DOOR_ID`). */
+  bootPreference?: () => Promise<readonly string[]>;
+  /** Boot arrival errors that must fail boot instead of being retried (default none). */
+  isFatalBootError?: (error: unknown) => boolean;
+  /** Uniform `[0, 1)` source for choosing the next Door (default `Math.random`). */
+  random?: () => number;
+  /** Travel when the residency is older than this; `0` disables the timer trigger. */
   maxResidencyMs: number;
-  /** Timer trigger skips residencies with fewer transcript lines (default 10). */
-  timerMinTranscriptLines?: number;
+  /** Timer-triggered departs form memories from this many lines (default 10). */
+  minMemoryLines?: number;
   /** Residency-age check cadence (default 60 s). */
   ageCheckIntervalMs?: number;
   /** Backoff between depart attempts; attempts = length + 1 (default 30 s, 120 s). */
   departRetryDelaysMs?: readonly number[];
-  /** First re-arrival retry delay, doubling up to {@link arriveRetryMaxMs} (default 5 s). */
+  /** First arrival retry delay, doubling up to {@link arriveRetryMaxMs} (default 5 s). */
   arriveRetryBaseMs?: number;
-  /** Re-arrival retry ceiling (default 5 min). */
+  /** Arrival retry ceiling (default 5 min). */
   arriveRetryMaxMs?: number;
-  /** Consecutive commit-sweep failures before giving up (default 3). */
-  commitMaxFailures?: number;
   /** How long {@link ResidencyController.shutdown} waits for an in-flight cycle (default 5 s). */
   shutdownGraceMs?: number;
   nowMs: () => number;
@@ -116,12 +113,10 @@ export type ResidencyControllerOptions = {
   logger: Pick<Logger, "info" | "warn" | "error">;
 };
 
-const DEFAULT_TIMER_MIN_LINES = 10;
 const DEFAULT_AGE_CHECK_MS = 60_000;
 const DEFAULT_DEPART_RETRY_DELAYS_MS = [30_000, 120_000] as const;
 const DEFAULT_ARRIVE_RETRY_BASE_MS = 5_000;
 const DEFAULT_ARRIVE_RETRY_MAX_MS = 300_000;
-const DEFAULT_COMMIT_MAX_FAILURES = 3;
 const DEFAULT_SHUTDOWN_GRACE_MS = 5_000;
 
 /** Thrown internally when shutdown aborts a cycle step. */
@@ -132,47 +127,59 @@ class CycleAborted extends Error {
   }
 }
 
+/**
+ * The Door answered `epoch_closed`: this residency's epoch is closed there, so no memory
+ * can be witnessed any more and retrying depart is pointless — go straight to departBare.
+ */
+function isEpochClosed(error: unknown): boolean {
+  return error instanceof DoorError && error.code === "epoch_closed";
+}
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
 /**
- * Owns the daemon's live residency and runs the core loop
- * **reside → distill → publish → move** at the same Door:
+ * Next Door: uniformly random among `available` excluding `current`; `current` itself
+ * only when it is the only one available; `null` when none is.
+ */
+export function chooseNextDoor(
+  available: readonly string[],
+  current: string | null,
+  random: () => number
+): string | null {
+  const others = available.filter((doorId) => doorId !== current);
+  if (others.length === 0) {
+    return available[0] ?? null;
+  }
+  const index = Math.min(others.length - 1, Math.floor(random() * others.length));
+  return others[index] ?? null;
+}
+
+/**
+ * Owns the daemon's live residency and runs the core loop **reside → depart → travel**:
  *
- * `cycle` = detach the session socket → `Session.depart` (distill the live transcript,
- * host cosign review, candidate/rejected records, journal, departure + travel
- * attestations) → [legacy Door only: commit sweep of the departed epoch while
- * traveling] → `Session.start` at the next epoch (re-arrival supersedes nothing: the
- * Door retired the old epoch at departure and accepts `epoch > lastKnownEpoch`).
+ * `cycle` = detach the session socket → choose the next Door (random online Door, never
+ * the current one if another is available) → `Session.depart` (witnessed memories,
+ * journal, departure + travel to that Door) with retries → arrive there (re-probing and
+ * retrying with backoff, at any online Door, until it works).
  *
- * With a Door that advertises `cosign.past_epochs`, quarantined candidates are instead
- * committed by a **live sweep** (`commitPending`, every `commitIntervalMs`) while the
- * next residency is live, so the quarantine window does not keep the Wanderer away.
- *
- * Triggers are external ({@link requestCycle}) plus an optional residency-age timer.
- * At most one cycle runs at a time; shutdown aborts waits and never re-arrives.
+ * Triggers are external ({@link requestCycle}) plus the residency-age timer. At most one
+ * cycle runs at a time; shutdown aborts waits and never re-arrives.
  */
 export class ResidencyController {
   private readonly options: ResidencyControllerOptions;
+  private readonly random: () => number;
   private live: LiveResidency | null = null;
   private arrivedAtMs = 0;
   private inFlight: Promise<CycleOutcome> | null = null;
   private shuttingDown = false;
   private readonly abort = new AbortController();
   private ageTimerId: unknown = null;
-  private liveSweepTimerId: unknown = null;
-  private liveSweepRunning: Promise<void> | null = null;
-  private timerSkipLogged = false;
 
   constructor(options: ResidencyControllerOptions) {
-    if (
-      (options.commit !== undefined || options.commitPending !== undefined) &&
-      (options.commitIntervalMs ?? 0) <= 0
-    ) {
-      throw new Error("ResidencyController: commitIntervalMs must be > 0 when commit is set");
-    }
     this.options = options;
+    this.random = options.random ?? Math.random;
   }
 
   /** The current live residency, or `null` while traveling / after shutdown. */
@@ -186,14 +193,28 @@ export class ResidencyController {
   }
 
   /**
-   * First arrival at boot (errors propagate — boot fails as before). Arms the
-   * residency-age timer only when `maxResidencyMs > 0`.
+   * First arrival at boot: the first {@link ResidencyControllerOptions.bootPreference} Door
+   * that is online, else a random online Door. With no Door online (or a failed arrival)
+   * it retries with backoff — it never gives up, except on an
+   * {@link ResidencyControllerOptions.isFatalBootError}. Arms the residency-age timer when
+   * `maxResidencyMs > 0`. Rejects when {@link shutdown} interrupts it (an arrival that
+   * lands after shutdown is closed, without departure).
    */
   async begin(): Promise<LiveResidency> {
-    const residency = await this.options.arrive();
+    const preferences = (await this.options.bootPreference?.()) ?? [];
+    const residency = await this.arriveWithRetry(
+      (available, failures) =>
+        (failures === 0 ? preferences.find((doorId) => available.includes(doorId)) : undefined) ??
+        chooseNextDoor(available, null, this.random),
+      true
+    );
+    if (this.shuttingDown) {
+      // Shutdown landed while the boot arrival was in flight: release it (no departure).
+      await residency.close();
+      throw new CycleAborted();
+    }
     this.live = residency;
     this.arrivedAtMs = this.options.nowMs();
-    this.armLiveSweep(residency);
     if (this.options.maxResidencyMs > 0) {
       this.ageTimerId = this.options.timer.setInterval(() => {
         this.checkResidencyAge();
@@ -203,14 +224,12 @@ export class ResidencyController {
   }
 
   /**
-   * Timer trigger: start a cycle once the live residency is older than
-   * `maxResidencyMs` and its transcript holds enough lines to distill. No-op when the
-   * timer is disabled, a cycle is running, or the daemon is stopping.
+   * Timer trigger: start a cycle once the live residency is older than `maxResidencyMs`.
+   * No-op when the timer is disabled, a cycle is running, or the daemon is stopping.
    */
   checkResidencyAge(): void {
     const max = this.options.maxResidencyMs;
-    const live = this.live;
-    if (max <= 0 || live === null || this.inFlight !== null || this.shuttingDown) {
+    if (max <= 0 || this.live === null || this.inFlight !== null || this.shuttingDown) {
       return;
     }
     if (this.options.nowMs() - this.arrivedAtMs < max) {
@@ -245,9 +264,9 @@ export class ResidencyController {
   }
 
   /**
-   * Stop triggers, abort any cycle wait (backoff, commit sweep, re-arrival retry), give
-   * an in-flight step up to `shutdownGraceMs` to settle, then release the live residency
-   * without departure. Idempotent.
+   * Stop triggers, abort any cycle wait (backoff, arrival retry), give an in-flight step up
+   * to `shutdownGraceMs` to settle, then release the live residency without departure.
+   * Idempotent.
    */
   async shutdown(): Promise<void> {
     if (this.shuttingDown) {
@@ -258,7 +277,6 @@ export class ResidencyController {
       this.options.timer.clearInterval(this.ageTimerId);
       this.ageTimerId = null;
     }
-    this.disarmLiveSweep();
     this.abort.abort();
     const inFlight = this.inFlight;
     if (inFlight !== null) {
@@ -287,43 +305,42 @@ export class ResidencyController {
       // Only reachable mid-travel, which is inside a cycle (busy) — defensive.
       return { kind: "busy", trigger };
     }
+    const fromDoor = residency.doorId;
     const fromEpoch = residency.epoch;
-    const lines = residency.transcriptSize();
-    const minLines =
-      trigger === "timer" ? (this.options.timerMinTranscriptLines ?? DEFAULT_TIMER_MIN_LINES) : 1;
-    if (lines < minLines) {
-      if (trigger !== "timer" || !this.timerSkipLogged) {
-        this.options.logger.info(
-          { trigger, epoch: fromEpoch, lines, minLines },
-          "residency_cycle_skipped"
-        );
-      }
-      if (trigger === "timer") {
-        this.timerSkipLogged = true;
-      }
-      return { kind: "skipped", trigger, reason: "transcript_too_short", lines };
-    }
-
-    this.options.logger.info({ trigger, epoch: fromEpoch, lines }, "residency_cycle_started");
-    // No live sweep while traveling; an in-flight one is drained by depart (append queue).
-    this.disarmLiveSweep();
+    this.options.logger.info(
+      { trigger, doorId: fromDoor, epoch: fromEpoch },
+      "residency_cycle_started"
+    );
     try {
       // 1. Travel gap starts: no inbound reaches the departing session from here on.
       //    (A failed socket close is logged, not fatal: Session.depart stops the session
       //    first, so a straggler frame is rejected by the Session itself.)
       await this.bestEffort(() => residency.detach(), "residency_detach_failed", fromEpoch);
 
-      // 2. Depart (retryable per Bug #69); abandon after the last attempt.
+      // 2. Where next: a random online Door, never this one if another is online.
+      this.throwIfShuttingDown();
+      const available = await this.options.probe();
+      const next = chooseNextDoor(available, fromDoor, this.random);
+      this.options.logger.info({ fromDoor, toDoor: next, available }, "residency_next_door");
+
+      // 3. Depart (retryable); after the last attempt — or at once when the Door says the
+      //    epoch is closed — departure + travel without memories.
+      const request: DepartRequest = {
+        ...(next === null ? {} : { toDoorId: next }),
+        minMemoryLines:
+          trigger === "operator" ? 1 : (this.options.minMemoryLines ?? DEFAULT_MIN_MEMORY_LINES)
+      };
       let departed: DepartResult | null = null;
-      let departError: unknown = null;
+      let departError: unknown =
+        trigger === "lost_session" ? new Error("the Door lost the session") : null;
       const delays = this.options.departRetryDelaysMs ?? DEFAULT_DEPART_RETRY_DELAYS_MS;
-      for (let attempt = 0; ; attempt += 1) {
+      for (let attempt = 0; departError === null; attempt += 1) {
         this.throwIfShuttingDown();
         try {
-          departed = await residency.depart();
+          departed = await residency.depart(request);
           break;
         } catch (error: unknown) {
-          const delay = delays[attempt];
+          const delay = isEpochClosed(error) ? undefined : delays[attempt];
           this.options.logger.warn(
             { epoch: fromEpoch, attempt: attempt + 1, err: errorMessage(error) },
             "residency_depart_failed"
@@ -337,66 +354,69 @@ export class ResidencyController {
       }
       this.throwIfShuttingDown();
 
-      // The old residency is over either way (departed, or abandoned crash-style).
-      this.live = null;
-      await this.bestEffort(() => residency.close(), "residency_close_failed", fromEpoch);
-
-      let committedCount = 0;
-      if (departed !== null) {
-        this.options.logger.info(
-          {
-            epoch: fromEpoch,
-            approved: departed.approvedShardIds.length,
-            rejected: departed.rejectedShardIds.length,
-            candidates: departed.candidateCids.length,
-            journalPath: departed.journalPath
-          },
-          "residency_departed"
-        );
-        if (departed.candidateCids.length > 0) {
-          committedCount = await this.travelGapCommit(residency, fromEpoch, departed);
-        }
-      } else {
+      if (departed === null) {
         this.options.logger.error(
           { epoch: fromEpoch, err: errorMessage(departError) },
           "residency_depart_abandoned"
         );
+        try {
+          const bare = await residency.departBare(next ?? undefined);
+          this.options.logger.info({ epoch: fromEpoch, ...bare }, "residency_departed_bare");
+        } catch (error: unknown) {
+          this.options.logger.warn(
+            { epoch: fromEpoch, err: errorMessage(error) },
+            "residency_depart_bare_failed"
+          );
+        }
+      } else {
+        this.options.logger.info({ epoch: fromEpoch, ...departed }, "residency_departed");
       }
 
-      // 3. Re-arrive at the same Door (next epoch).
-      const next = await this.arriveWithRetry();
-      this.live = next;
+      // The old residency is over either way.
+      this.live = null;
+      await this.bestEffort(() => residency.close(), "residency_close_failed", fromEpoch);
+
+      // 4. Arrive at the chosen Door (any online Door if that keeps failing).
+      const arrived = await this.arriveWithRetry(
+        (online, failures) =>
+          failures === 0 && next !== null && online.includes(next)
+            ? next
+            : chooseNextDoor(online, fromDoor, this.random),
+        false
+      );
+      this.live = arrived;
       this.arrivedAtMs = this.options.nowMs();
-      this.timerSkipLogged = false;
       if (this.shuttingDown) {
         // Shutdown landed while arrival was in flight: release it (no departure).
         this.live = null;
-        await next.close();
+        await arrived.close();
         throw new CycleAborted();
       }
-      this.armLiveSweep(next);
-      this.options.logger.info(
-        { trigger, fromEpoch, toEpoch: next.epoch, committed: committedCount },
-        "residency_cycle_complete"
-      );
-      if (departed === null) {
-        return {
-          kind: "abandoned",
-          trigger,
-          fromEpoch,
-          toEpoch: next.epoch,
-          error: errorMessage(departError)
-        };
-      }
-      return {
-        kind: "cycled",
-        trigger,
-        fromEpoch,
-        toEpoch: next.epoch,
-        candidateCount: departed.candidateCids.length,
-        committedCount,
-        journalPath: departed.journalPath
-      };
+
+      const outcome: CycleOutcome =
+        departed === null
+          ? {
+              kind: "abandoned",
+              trigger,
+              fromDoor,
+              toDoor: arrived.doorId,
+              fromEpoch,
+              toEpoch: arrived.epoch,
+              error: errorMessage(departError)
+            }
+          : {
+              kind: "cycled",
+              trigger,
+              fromDoor,
+              toDoor: arrived.doorId,
+              fromEpoch,
+              toEpoch: arrived.epoch,
+              witnessed: departed.witnessed,
+              declined: departed.declined,
+              journalPath: departed.journalPath
+            };
+      this.options.logger.info(outcome, "residency_cycle_outcome");
+      return outcome;
     } catch (error: unknown) {
       if (error instanceof CycleAborted) {
         this.options.logger.warn({ trigger, epoch: fromEpoch }, "residency_cycle_aborted");
@@ -407,184 +427,38 @@ export class ResidencyController {
   }
 
   /**
-   * Decide the departed epoch's commit path. A Door with `cosign.past_epochs` keeps the
-   * review across the next arrival, so nothing runs here: the live sweep of the next
-   * residency commits the candidates once they ripen (the default 24 h window works).
-   * A legacy Door forgets the review on arrival, so its candidates can only be committed
-   * now — and only while the window is short (≤ {@link MAX_COMMIT_WINDOW_MS}); otherwise
-   * they stay candidates. Returns the number of shards committed.
+   * Arrive with capped exponential backoff until success or shutdown: probe, pick a Door
+   * via `choose(online, failedArrivals)`, arrive. At boot, errors matching
+   * `isFatalBootError` propagate.
    */
-  private async travelGapCommit(
-    residency: LiveResidency,
-    epoch: number,
-    departed: DepartResult
-  ): Promise<number> {
-    if (residency.pastEpochCommits === true && this.options.commitPending !== undefined) {
-      this.options.logger.info(
-        { epoch, candidates: departed.candidateCids.length },
-        "residency_commit_deferred_to_live_sweep"
-      );
-      return 0;
-    }
-    if (this.options.commit === undefined) {
-      return 0;
-    }
-    const windowMs = this.options.quarantineWindowMs ?? 0;
-    if (windowMs > MAX_COMMIT_WINDOW_MS) {
-      this.options.logger.error(
-        { epoch, quarantineWindowMs: windowMs, maxTravelGapWindowMs: MAX_COMMIT_WINDOW_MS },
-        "residency_commit_sweep_unsupported"
-      );
-      return 0;
-    }
-    return this.commitSweep(epoch, departed);
-  }
-
-  /** Start the live commit sweep timer for `residency` when its Door supports it. */
-  private armLiveSweep(residency: LiveResidency): void {
-    this.disarmLiveSweep();
-    const commitPending = this.options.commitPending;
-    const intervalMs = this.options.commitIntervalMs ?? 0;
-    if (commitPending === undefined || intervalMs <= 0 || residency.pastEpochCommits !== true) {
-      return;
-    }
-    this.liveSweepTimerId = this.options.timer.setInterval(() => {
-      this.runLiveSweep(residency);
-    }, intervalMs);
-    this.options.logger.info({ epoch: residency.epoch, intervalMs }, "residency_live_sweep_armed");
-  }
-
-  private disarmLiveSweep(): void {
-    if (this.liveSweepTimerId !== null) {
-      this.options.timer.clearInterval(this.liveSweepTimerId);
-      this.liveSweepTimerId = null;
-    }
-  }
-
-  /**
-   * One live sweep tick: commit ripe candidates of past epochs, serialized with the live
-   * residency's appends. Skips while a cycle runs, a sweep is still running, or the
-   * residency is no longer live. Failures are logged and retried on the next tick.
-   */
-  private runLiveSweep(residency: LiveResidency): void {
-    const commitPending = this.options.commitPending;
-    if (
-      commitPending === undefined ||
-      this.shuttingDown ||
-      this.inFlight !== null ||
-      this.live !== residency ||
-      this.liveSweepRunning !== null
-    ) {
-      return;
-    }
-    const run = (
-      residency.withAppendLock !== undefined
-        ? residency.withAppendLock(commitPending)
-        : commitPending()
-    )
-      .then((result) => {
-        if (result.committedCids.length > 0 || result.strandedCids.length > 0) {
-          this.options.logger.info(
-            {
-              epoch: residency.epoch,
-              committed: result.committedCids.length,
-              ripening: result.ripeningCids.length,
-              stranded: result.strandedCids.length,
-              journalAttached: result.journalAttached
-            },
-            "residency_live_commit_sweep"
-          );
-        }
-      })
-      .catch((error: unknown) => {
-        this.options.logger.warn(
-          { epoch: residency.epoch, err: errorMessage(error) },
-          "residency_live_commit_sweep_failed"
-        );
-      })
-      .finally(() => {
-        this.liveSweepRunning = null;
-      });
-    this.liveSweepRunning = run;
-  }
-
-  /**
-   * Commit sweep for the departed epoch at a legacy Door, run **between departure and
-   * re-arrival** — the only time such a Door still holds that epoch's review.
-   * Polls until no candidate is ripening, the bound (window + 5 polls) passes, or
-   * `commitMaxFailures` consecutive sweeps fail. Returns the number of shards committed.
-   */
-  private async commitSweep(epoch: number, departed: DepartResult): Promise<number> {
-    const commit = this.options.commit;
-    const intervalMs = this.options.commitIntervalMs ?? 0;
-    if (commit === undefined || intervalMs <= 0) {
-      return 0;
-    }
-    const maxFailures = this.options.commitMaxFailures ?? DEFAULT_COMMIT_MAX_FAILURES;
-    const deadline = this.options.nowMs() + (this.options.quarantineWindowMs ?? 0) + intervalMs * 5;
-    let committed = 0;
-    let journalPending = true;
-    let failures = 0;
-    this.options.logger.info(
-      { epoch, candidates: departed.candidateCids.length, intervalMs },
-      "residency_commit_sweep_started"
-    );
-    for (;;) {
-      await this.pause(intervalMs);
-      try {
-        const result = await commit({
-          epoch,
-          ...(journalPending ? { journalMarkdown: departed.journalMarkdown } : {})
-        });
-        failures = 0;
-        committed += result.committedCids.length;
-        if (result.journalAttached) {
-          journalPending = false;
-        }
-        this.options.logger.info(
-          {
-            epoch,
-            committed: result.committedCids.length,
-            ripening: result.ripeningCids.length,
-            journalAttached: result.journalAttached
-          },
-          "residency_commit_sweep"
-        );
-        if (result.ripeningCids.length === 0) {
-          return committed;
-        }
-      } catch (error: unknown) {
-        failures += 1;
-        this.options.logger.warn(
-          { epoch, failures, err: errorMessage(error) },
-          "residency_commit_sweep_failed"
-        );
-        if (failures >= maxFailures) {
-          this.options.logger.error({ epoch, committed }, "residency_commit_sweep_abandoned");
-          return committed;
-        }
-      }
-      if (this.options.nowMs() >= deadline) {
-        this.options.logger.warn({ epoch, committed }, "residency_commit_sweep_deadline");
-        return committed;
-      }
-    }
-  }
-
-  /** Re-arrive with capped exponential backoff until success or shutdown. */
-  private async arriveWithRetry(): Promise<LiveResidency> {
+  private async arriveWithRetry(
+    choose: (online: readonly string[], failures: number) => string | null,
+    boot: boolean
+  ): Promise<LiveResidency> {
     const base = this.options.arriveRetryBaseMs ?? DEFAULT_ARRIVE_RETRY_BASE_MS;
     const max = this.options.arriveRetryMaxMs ?? DEFAULT_ARRIVE_RETRY_MAX_MS;
     let delay = base;
+    let failures = 0;
     for (let attempt = 1; ; attempt += 1) {
       this.throwIfShuttingDown();
-      try {
-        return await this.options.arrive();
-      } catch (error: unknown) {
-        this.options.logger.warn(
-          { attempt, retryInMs: delay, err: errorMessage(error) },
-          "residency_arrive_failed"
-        );
+      const online = await this.options.probe();
+      this.throwIfShuttingDown();
+      const doorId = choose(online, failures);
+      if (doorId === null) {
+        this.options.logger.warn({ attempt, retryInMs: delay }, "residency_no_door_available");
+      } else {
+        try {
+          return await this.options.arrive(doorId);
+        } catch (error: unknown) {
+          if (boot && this.options.isFatalBootError?.(error) === true) {
+            throw error;
+          }
+          failures += 1;
+          this.options.logger.warn(
+            { doorId, attempt, retryInMs: delay, err: errorMessage(error) },
+            "residency_arrive_failed"
+          );
+        }
       }
       await this.pause(delay);
       delay = Math.min(delay * 2, max);

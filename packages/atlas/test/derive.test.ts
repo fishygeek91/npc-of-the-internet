@@ -10,16 +10,28 @@ import {
   signCore
 } from "@npc/osp-core";
 
-import { deriveJournals, deriveRecordsPage, deriveState } from "../src/derive.js";
+import {
+  deriveJournals,
+  deriveRecordsPage,
+  deriveResidencies,
+  deriveState,
+  recordSummary
+} from "../src/derive.js";
 import {
   createArrivalRecord,
   createDepartureRecord,
   createGenesisRecord,
+  createHeartbeatRecord,
+  createJournalRecord,
+  createRejectedRecord,
   createShardRecord,
+  createShardRecordV02,
   createSleepRecord,
+  createTombstoneRecord,
   createTravelRecord,
   DEFAULT_DOOR,
   DEFAULT_DOOR_ID,
+  DEFAULT_OTHER_DOOR,
   DEFAULT_RESIDENCY,
   DEFAULT_SESSION,
   DEFAULT_SOUL
@@ -98,7 +110,8 @@ describe("deriveState", () => {
     expect(deriveState([genesis.record, arrival.record, sleep.record], true)).toMatchObject({
       status: "sleeping",
       door_id: null,
-      epoch: null
+      epoch: null,
+      since: "2026-01-02T03:00:00.000Z"
     });
   });
 
@@ -128,7 +141,15 @@ describe("deriveState", () => {
     expect(deriveState([genesis.record, handover.record], true)).toMatchObject({
       status: "traveling",
       door_id: null,
-      epoch: 1
+      epoch: 1,
+      since: "2026-01-03T00:00:00.000Z"
+    });
+
+    const residencies = await deriveResidencies([genesis.record, handover.record], true);
+    expect(residencies.residencies[0]).toMatchObject({
+      door_id: DEFAULT_DOOR_ID,
+      departed_at: "2026-01-03T00:00:00.000Z",
+      traveled_to: "irc:libera-wanderer"
     });
   });
 });
@@ -262,5 +283,358 @@ describe("deriveJournals", () => {
     const result = await deriveJournals([genesis.record, shard.record], true);
     expect(result.total).toBe(1);
     expect(result.journals[0]?.journal).toBe("[journal unavailable]");
+  });
+});
+
+/** Build a witnessed (door/0.2) residency: two shards, declines, screen drop and a journal. */
+async function buildWitnessedChain() {
+  const genesis = await createGenesisRecord(DEFAULT_SOUL, OSP_SPEC_V02);
+  const arrival = await createArrivalRecord(
+    DEFAULT_SOUL,
+    DEFAULT_DOOR,
+    DEFAULT_SESSION,
+    1,
+    genesis.cid,
+    DEFAULT_DOOR_ID,
+    1,
+    DEFAULT_RESIDENCY,
+    "2026-01-02T00:00:00.000Z",
+    OSP_SPEC_V02
+  );
+  const screened = await createRejectedRecord(
+    DEFAULT_SOUL,
+    2,
+    arrival.cid,
+    "pii.email",
+    DEFAULT_RESIDENCY,
+    "2026-01-02T05:00:00.000Z"
+  );
+  const textAddr = await contentAddressSideBlob(encodeShardTextBlob("a witnessed shard"));
+  const shard = await createShardRecordV02(
+    DEFAULT_SOUL,
+    DEFAULT_DOOR,
+    3,
+    screened.cid,
+    textAddr,
+    DEFAULT_RESIDENCY
+  );
+  const declinedPrivate = await createRejectedRecord(
+    DEFAULT_SOUL,
+    4,
+    shard.cid,
+    "witness_private",
+    DEFAULT_RESIDENCY,
+    "2026-01-02T05:00:00.000Z"
+  );
+  const declinedAgain = await createRejectedRecord(
+    DEFAULT_SOUL,
+    5,
+    declinedPrivate.cid,
+    "witness_private",
+    DEFAULT_RESIDENCY,
+    "2026-01-02T05:00:00.000Z"
+  );
+  const declinedUngrounded = await createRejectedRecord(
+    DEFAULT_SOUL,
+    6,
+    declinedAgain.cid,
+    "witness_ungrounded",
+    DEFAULT_RESIDENCY,
+    "2026-01-02T05:00:00.000Z"
+  );
+  const journalBytes = encodeJournalBlob("# At the door\n\nI was witnessed.");
+  const journalAddr = await contentAddressSideBlob(journalBytes);
+  const journal = await createJournalRecord(
+    DEFAULT_SOUL,
+    DEFAULT_DOOR,
+    7,
+    declinedUngrounded.cid,
+    journalAddr,
+    DEFAULT_RESIDENCY,
+    "2026-01-02T05:01:00.000Z"
+  );
+  const travel = await createTravelRecord(
+    DEFAULT_SOUL,
+    8,
+    journal.cid,
+    DEFAULT_DOOR_ID,
+    1,
+    DEFAULT_RESIDENCY,
+    "2026-01-02T05:03:00.000Z",
+    "web:home",
+    OSP_SPEC_V02
+  );
+  const records = [
+    genesis.record,
+    arrival.record,
+    screened.record,
+    shard.record,
+    declinedPrivate.record,
+    declinedAgain.record,
+    declinedUngrounded.record,
+    journal.record,
+    travel.record
+  ];
+  return { records, journal, journalAddr, journalBytes };
+}
+
+describe("witnessed memory", () => {
+  it("derives journals from journal records via the side-blob resolver", async () => {
+    const { records, journal, journalAddr, journalBytes } = await buildWitnessedChain();
+    const getSideBlob = async (cid: string): Promise<Uint8Array> => {
+      if (cid !== journalAddr.cid) {
+        throw new Error("missing");
+      }
+      return journalBytes;
+    };
+
+    const result = await deriveJournals(records, true, undefined, { getSideBlob });
+    expect(result.journals).toEqual([
+      {
+        epoch: 1,
+        door_id: DEFAULT_DOOR_ID,
+        cid: journal.cid,
+        journal: "# At the door\n\nI was witnessed."
+      }
+    ]);
+  });
+
+  it("shows the erased marker for a tombstoned journal record blob", async () => {
+    const { records, journal, journalAddr, journalBytes } = await buildWitnessedChain();
+    const last = records.length;
+    const tombstone = await createTombstoneRecord(
+      DEFAULT_SOUL,
+      last,
+      journal.cid,
+      journal.cid,
+      journalAddr.cid,
+      "2026-01-05T00:00:00.000Z"
+    );
+    const chain = [...records, tombstone.record];
+    // Even if the bytes are still around, the tombstone wins.
+    const options = { getSideBlob: async (): Promise<Uint8Array> => journalBytes };
+
+    const journals = await deriveJournals(chain, true, undefined, options);
+    expect(journals.journals[0]?.journal).toBe("[journal erased]");
+    const residencies = await deriveResidencies(chain, true, undefined, options);
+    expect(residencies.residencies[0]?.journal).toEqual({
+      cid: journal.cid,
+      journal: "[journal erased]"
+    });
+  });
+
+  it("counts witnessed, declined and screened memories per residency", async () => {
+    const { records, journal } = await buildWitnessedChain();
+    const result = await deriveResidencies(records, true);
+    expect(result.total).toBe(1);
+    expect(result.residencies[0]).toEqual({
+      residency: DEFAULT_RESIDENCY,
+      door_id: DEFAULT_DOOR_ID,
+      epoch: 1,
+      arrived_at: "2026-01-02T00:00:00.000Z",
+      departed_at: "2026-01-02T05:03:00.000Z",
+      traveled_to: "web:home",
+      ended: "departed",
+      counts: { witnessed: 1, declined: 3, screened: 1 },
+      declined_reasons: ["private", "ungrounded"],
+      journal: { cid: journal.cid, journal: "[journal unavailable]" }
+    });
+  });
+
+  it("summarizes rejected categories and travel destinations without payloads", async () => {
+    const { records } = await buildWitnessedChain();
+    const summaries = records.map((record) => recordSummary(record));
+    expect(summaries).toContain("memory/rejected category=witness_private");
+    expect(summaries).toContain("memory/rejected category=pii.email");
+    expect(summaries).toContain("memory/journal");
+    expect(summaries).toContain("attestation/travel from=discord:g epoch=1 to=web:home");
+  });
+});
+
+const RESTART_RESIDENCY_2 = `door:${DEFAULT_DOOR_ID}/epoch:2`;
+const WEB_RESIDENCY_3 = "door:web:home/epoch:3";
+
+/**
+ * Synthetic restart chain: arrive at discord:g (epoch 1), the Door restarts and the
+ * Wanderer re-arrives at discord:g (epoch 2, no departure in between), heartbeats,
+ * then travels to web:home (epoch 3).
+ */
+async function buildRestartChain() {
+  const genesis = await createGenesisRecord(DEFAULT_SOUL);
+  const arrival1 = await createArrivalRecord(
+    DEFAULT_SOUL,
+    DEFAULT_DOOR,
+    DEFAULT_SESSION,
+    1,
+    genesis.cid,
+    DEFAULT_DOOR_ID,
+    1,
+    DEFAULT_RESIDENCY,
+    "2026-01-02T00:00:00.000Z"
+  );
+  const arrival2 = await createArrivalRecord(
+    DEFAULT_SOUL,
+    DEFAULT_DOOR,
+    DEFAULT_SESSION,
+    2,
+    arrival1.cid,
+    DEFAULT_DOOR_ID,
+    2,
+    RESTART_RESIDENCY_2,
+    "2026-01-02T03:00:00.000Z"
+  );
+  const heartbeat = await createHeartbeatRecord(
+    DEFAULT_SOUL,
+    DEFAULT_DOOR,
+    DEFAULT_SESSION,
+    3,
+    arrival2.cid,
+    DEFAULT_DOOR_ID,
+    2,
+    RESTART_RESIDENCY_2,
+    "2026-01-02T04:00:00.000Z"
+  );
+  const travel = await createTravelRecord(
+    DEFAULT_SOUL,
+    4,
+    heartbeat.cid,
+    DEFAULT_DOOR_ID,
+    2,
+    RESTART_RESIDENCY_2,
+    "2026-01-02T05:00:00.000Z",
+    "web:home"
+  );
+  const arrival3 = await createArrivalRecord(
+    DEFAULT_SOUL,
+    DEFAULT_OTHER_DOOR,
+    DEFAULT_SESSION,
+    5,
+    travel.cid,
+    "web:home",
+    3,
+    WEB_RESIDENCY_3,
+    "2026-01-02T06:00:00.000Z"
+  );
+  return {
+    restarted: [genesis.record, arrival1.record, arrival2.record, heartbeat.record],
+    traveled: [
+      genesis.record,
+      arrival1.record,
+      arrival2.record,
+      heartbeat.record,
+      travel.record,
+      arrival3.record
+    ],
+    genesis,
+    arrival1
+  };
+}
+
+describe("Door restarts", () => {
+  it("keeps state.since at the start of the uninterrupted stay across a restart", async () => {
+    const { restarted, traveled } = await buildRestartChain();
+    expect(deriveState(restarted, true)).toMatchObject({
+      status: "present",
+      door_id: DEFAULT_DOOR_ID,
+      epoch: 2,
+      since: "2026-01-02T00:00:00.000Z"
+    });
+    // Restarted stay without its heartbeat: the head is the re-arrival itself.
+    expect(deriveState(restarted.slice(0, 3), true).since).toBe("2026-01-02T00:00:00.000Z");
+    // After a real move, since is the new Door's arrival.
+    expect(deriveState(traveled, true)).toMatchObject({
+      status: "present",
+      door_id: "web:home",
+      epoch: 3,
+      since: "2026-01-02T06:00:00.000Z"
+    });
+  });
+
+  it("starts a new stay when a departure or travel separates same-Door arrivals", async () => {
+    const { genesis, arrival1 } = await buildRestartChain();
+    const travel = await createTravelRecord(
+      DEFAULT_SOUL,
+      2,
+      arrival1.cid,
+      DEFAULT_DOOR_ID,
+      1,
+      DEFAULT_RESIDENCY,
+      "2026-01-02T01:00:00.000Z",
+      DEFAULT_DOOR_ID
+    );
+    const back = await createArrivalRecord(
+      DEFAULT_SOUL,
+      DEFAULT_DOOR,
+      DEFAULT_SESSION,
+      3,
+      travel.cid,
+      DEFAULT_DOOR_ID,
+      2,
+      RESTART_RESIDENCY_2,
+      "2026-01-02T02:00:00.000Z"
+    );
+    const chain = [genesis.record, arrival1.record, travel.record, back.record];
+    expect(deriveState(chain, true).since).toBe("2026-01-02T02:00:00.000Z");
+  });
+
+  it("closes a superseded residency at the next arrival", async () => {
+    const { traveled } = await buildRestartChain();
+    const result = await deriveResidencies(traveled, true);
+    expect(
+      result.residencies.map(({ residency, arrived_at, departed_at, traveled_to, ended }) => ({
+        residency,
+        arrived_at,
+        departed_at,
+        traveled_to,
+        ended
+      }))
+    ).toEqual([
+      {
+        residency: WEB_RESIDENCY_3,
+        arrived_at: "2026-01-02T06:00:00.000Z",
+        departed_at: null,
+        traveled_to: null,
+        ended: null
+      },
+      {
+        residency: RESTART_RESIDENCY_2,
+        arrived_at: "2026-01-02T03:00:00.000Z",
+        departed_at: "2026-01-02T05:00:00.000Z",
+        traveled_to: "web:home",
+        ended: "departed"
+      },
+      {
+        residency: DEFAULT_RESIDENCY,
+        arrived_at: "2026-01-02T00:00:00.000Z",
+        departed_at: "2026-01-02T03:00:00.000Z",
+        traveled_to: null,
+        ended: "superseded"
+      }
+    ]);
+  });
+
+  it("closes every earlier open residency, whichever Door the new arrival is at", async () => {
+    const { genesis, arrival1 } = await buildRestartChain();
+    const elsewhere = await createArrivalRecord(
+      DEFAULT_SOUL,
+      DEFAULT_OTHER_DOOR,
+      DEFAULT_SESSION,
+      2,
+      arrival1.cid,
+      "web:home",
+      3,
+      WEB_RESIDENCY_3,
+      "2026-01-02T02:00:00.000Z"
+    );
+    const result = await deriveResidencies(
+      [genesis.record, arrival1.record, elsewhere.record],
+      true
+    );
+    expect(result.residencies[1]).toMatchObject({
+      residency: DEFAULT_RESIDENCY,
+      departed_at: "2026-01-02T02:00:00.000Z",
+      ended: "superseded"
+    });
+    expect(result.residencies[0]?.ended).toBeNull();
   });
 });

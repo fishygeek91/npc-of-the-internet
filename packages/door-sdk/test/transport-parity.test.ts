@@ -57,7 +57,7 @@ const defaultPolicy: HostPolicy = {
     platform: "discord",
     invitation_required: false
   },
-  capabilities: ["session.text", "heartbeat", "attest", "cosign.manual"]
+  capabilities: ["session.text", "heartbeat", "attest"]
 };
 
 type TransportTestEnv = {

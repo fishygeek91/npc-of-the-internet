@@ -13,7 +13,9 @@ import {
   deriveHead,
   deriveJournals,
   deriveRecordsPage,
+  deriveResidencies,
   deriveState,
+  type DeriveJournalsOptions,
   type JournalsQuery,
   type RecordsQuery
 } from "./derive.js";
@@ -112,32 +114,23 @@ export async function createAtlasServer(config: AtlasConfig): Promise<FastifyIns
     if (replyIfUnreadable(snap, reply)) {
       return;
     }
+    const query = parsePageQuery(request.query);
+    void reply.send(
+      await deriveJournals(snap.records, snap.verified, query, sideBlobOptions(snap))
+    );
+  });
 
-    const page = parseOptionalInt(request.query.page);
-    const perPage = parseOptionalInt(request.query.per_page);
-
-    const journalsQuery: JournalsQuery = {};
-    if (page !== undefined) {
-      journalsQuery.page = page;
+  app.get<{
+    Querystring: { page?: string; per_page?: string };
+  }>("/residencies", async (request, reply) => {
+    const snap = await chainView.snapshot();
+    if (replyIfUnreadable(snap, reply)) {
+      return;
     }
-    if (perPage !== undefined) {
-      journalsQuery.per_page = perPage;
-    }
-
-    const sideBlobs = snap.sideBlobs;
-    const result =
-      sideBlobs === undefined
-        ? await deriveJournals(snap.records, snap.verified, journalsQuery)
-        : await deriveJournals(snap.records, snap.verified, journalsQuery, {
-            getSideBlob: async (cid: string): Promise<Uint8Array> => {
-              const bytes = sideBlobs.get(cid);
-              if (bytes === undefined) {
-                throw new Error(`side blob not found for CID ${cid}`);
-              }
-              return bytes;
-            }
-          });
-    void reply.send(result);
+    const query = parsePageQuery(request.query);
+    void reply.send(
+      await deriveResidencies(snap.records, snap.verified, query, sideBlobOptions(snap))
+    );
   });
 
   if (config.publishedCarPath !== undefined) {
@@ -207,6 +200,37 @@ function replyIfUnreadable(snap: ChainSnapshot, reply: FastifyReply): boolean {
     .status(503)
     .send(atlasErrorToBody(new AtlasError("chain_unreadable", "chain is unreadable", 503)));
   return true;
+}
+
+/** Parse `page` / `per_page` query strings for paginated journal-style routes. */
+function parsePageQuery(query: { page?: string; per_page?: string }): JournalsQuery {
+  const page = parseOptionalInt(query.page);
+  const perPage = parseOptionalInt(query.per_page);
+  const parsed: JournalsQuery = {};
+  if (page !== undefined) {
+    parsed.page = page;
+  }
+  if (perPage !== undefined) {
+    parsed.per_page = perPage;
+  }
+  return parsed;
+}
+
+/** Journal blob resolver backed by the snapshot's eagerly loaded side blobs. */
+function sideBlobOptions(snap: ChainSnapshot): DeriveJournalsOptions {
+  const sideBlobs = snap.sideBlobs;
+  if (sideBlobs === undefined) {
+    return {};
+  }
+  return {
+    getSideBlob: async (cid: string): Promise<Uint8Array> => {
+      const bytes = sideBlobs.get(cid);
+      if (bytes === undefined) {
+        throw new Error(`side blob not found for CID ${cid}`);
+      }
+      return bytes;
+    }
+  };
 }
 
 function parseOptionalInt(value: string | undefined): number | undefined {

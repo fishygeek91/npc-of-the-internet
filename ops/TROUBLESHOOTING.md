@@ -110,7 +110,7 @@ almost always one of these, checked in order:
    right-click → Copy Channel ID (Developer Mode on).
 2. **Missing channel permissions.** Discord does not deliver message events for channels
    the bot cannot view. The bot role needs at least: View Channels, Send Messages, Read
-   Message History, Add Reactions (cosign ✅/❌ reactions), Create Public Threads + Send
+   Message History, Add Reactions (the Wanderer's own emoji reactions, `session.reactions`), Create Public Threads + Send
    Messages in Threads (`session.threads`). Symptom of missing View: bot absent from the
    channel's member sidebar while online in the server.
 3. **Message Content Intent** off in the developer portal (bot receives events with empty
@@ -126,11 +126,49 @@ Inbound-processing logs are **debug-level** and the door's pino level is hardcod
 reply sends or an error fires. Absence of log lines does not distinguish deaf from working
 — use the checks above, not the logs.
 
-### Review gate ≠ reply approval
+### Silent because the Wanderer is at another Door
 
-`review-gate.ts` gates **memory-shard cosigning** (✅/❌ reactions in
-`DISCORD_REVIEW_CHANNEL_ID`, defaulting to the main channel; ignore = reject). Chat
-replies post immediately and are not held for review.
+The Wanderer lives at one Door at a time and travels about daily (RUNBOOK §7). While it is
+at the web Door, Discord gets no replies — that is not an outage. The channel shows
+"🌫️ The Wanderer has moved on." when it leaves (unless `DISCORD_PRESENCE_NOTICES=0`), and
+`/wanderer status` says `presence: absent`. Where it is now:
+
+```bash
+ghostc logs runtime 2>&1 | grep -E 'residency_live|residency_cycle_outcome' | tail -3
+curl -s http://127.0.0.1:8080/api/state    # door-web: present / wanderer.door_id
+```
+
+## Doors and memories
+
+### A Door is never visited (`door_rejected` / `door_probe_failed`)
+
+The runtime `hello`s every URL in `NPC_DOOR_URLS` before each arrival. `door_rejected`
+with `door_id is not in ATLAS_DOOR_PUBKEYS` or `door_pubkey differs …` means the binding is
+missing or wrong — door-web (`web:home`) needs its own entry, with the **same** pubkey as the
+Discord entry (one `DOOR_KEY_HOST_PATH`). `door_probe_failed` means unreachable (container
+down, wrong URL) or a protocol mismatch: runtime and every Door must run the same release
+(`door/0.2`). `residency_no_door_available` = no listed Door answered; the runtime retries
+with backoff (5 s → 5 min).
+
+### No memories formed
+
+Check, in order:
+
+1. **Witness off.** `ghostc logs <door> 2>&1 | grep door_witness_config` → `enabled:false`
+   means that Door does not witness, so the Wanderer forms no memories there (`/wanderer
+   status` → `memories: not witnessed`). The witness reuses the Brain's settings only with
+   `NPC_BRAIN_PROVIDER=openai-compat`; otherwise set `DOOR_WITNESS_*`.
+2. **Quiet stay.** A timer departure after fewer than `NPC_RESIDENCY_MIN_LINES` (default 10)
+   transcript lines travels without distilling (`residency_departed` `witnessed:0,
+   declined:0`).
+3. **Declined.** `residency_departed` `declined:N` — the witness found the memory not
+   grounded in what it saw, private, harmful, or manipulative. On chain:
+   `memory/rejected … declined by the witness (<reason>)`. Working as designed; nothing to
+   approve or retry.
+4. **Witness outage.** `residency_depart_failed` with `witness_unavailable` (model down,
+   timeout, bad key): depart retries after 30 s and 120 s, then `residency_depart_abandoned`
+   — the Wanderer travels without memories (`residency_cycle_outcome` `kind: abandoned`).
+   Fix the witness's model/key; the next stay forms memories again.
 
 ## OpenRouter brain
 

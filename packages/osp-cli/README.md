@@ -17,7 +17,7 @@ The `osp` command-line tool for initializing and inspecting a local soulchain.
 | `osp verify --from-ipfs <head-cid> [--gateway <url>]` | Fetch head→genesis via trustless gateway raw blocks, then verify (no CI network) |
 | `osp manifest <dir>` | Build/sign a pin manifest for an `IpfsSoulStore` directory; print manifest CID |
 | `osp export-car <dir> --out <path>` | Build/sign manifest and write a CARv1 rooted at the manifest CID |
-| `osp log <dir> [--door-key …]` | Human-readable listing of chain records (read-only; warns on stderr if verification fails) |
+| `osp log <dir> [--door-key …]` | Human-readable listing of chain records, one line each: `seq type/kind cid… timestamp`, plus a note for memory outcomes — `journal for web:home epoch 3`, `declined by the witness (private)`, `screened out (pii.email)`, `legacy candidate` (read-only; warns on stderr if verification fails) |
 | `osp show <cid> --dir <dir> [--door-key …]` | Pretty-print one verified record by CID (read-only) |
 
 ### Pin manifest / CAR (`IpfsSoulStore` layout)
@@ -34,7 +34,7 @@ The `osp` command-line tool for initializing and inspecting a local soulchain.
 
 ### Door keys
 
-Pass repeatable `--door-key <doorId=base64url>` (or `--door-key=<doorId=base64url>`) flags to `verify`, `log` and `show` to supply Door public keys for cosignature verification. Without the binding, `log` still lists a cosigned chain but warns that verification failed; `show` of a cosigned record exits `2`.
+Pass repeatable `--door-key <doorId=base64url>` (or `--door-key=<doorId=base64url>`) flags to `verify`, `log` and `show` to supply Door public keys for cosignature verification (presence attestations and witnessed memories — `shard` and `journal` — are co-signed by the residency's Door). Without the binding, `log` still lists a cosigned chain but warns that verification failed; `show` of a cosigned record exits `2`.
 
 ## Walkthrough
 

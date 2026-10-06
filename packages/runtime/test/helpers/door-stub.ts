@@ -1,25 +1,51 @@
-import { Door, DoorError, type CosignRetention, type HostPolicy } from "@npc/door-sdk";
+import {
+  Door,
+  type HelloResponse,
+  type HostPolicy,
+  type WitnessInput,
+  type WitnessMemory,
+  type WitnessVerdict
+} from "@npc/door-sdk";
 import type { Ed25519Keypair } from "@npc/osp-core";
 
-import { SessionError } from "../../src/session/errors.js";
 import type {
   AttestRequest,
   AttestResponse,
   Clock,
-  CosignCandidateShard,
-  CosignRequest,
-  CosignResponse,
   DoorConnection,
   HeartbeatRequest,
   HeartbeatResponse,
   OutboundFrame
 } from "../../src/session/types.js";
 
-/** Thrown by `DoorStub` when a Door contract check fails in tests. */
-export class DoorStubError extends SessionError {
-  constructor(message: string, cause?: unknown) {
-    super(message, cause);
-    this.name = "DoorStubError";
+/** A witness decision, or `"unavailable"` to make the witness throw (→ `witness_unavailable`). */
+export type WitnessDecision = WitnessVerdict | "unavailable";
+
+/**
+ * Scriptable memory witness for tests: records every input and answers with `decide`
+ * (default: witness everything). `decide` may be swapped between depart attempts.
+ */
+export class ScriptedWitness {
+  readonly calls: WitnessInput[] = [];
+  decide: (input: WitnessInput) => WitnessDecision;
+
+  constructor(decide: (input: WitnessInput) => WitnessDecision = () => ({ witnessed: true })) {
+    this.decide = decide;
+  }
+
+  /** The `HostPolicy.witnessMemory` hook. */
+  readonly witness: WitnessMemory = async (input) => {
+    this.calls.push(input);
+    const decision = this.decide(input);
+    if (decision === "unavailable") {
+      throw new Error("witness model unreachable");
+    }
+    return decision;
+  };
+
+  /** Texts of every memory the Door was asked to witness, in order. */
+  texts(kind?: "shard" | "journal"): string[] {
+    return this.calls.filter((call) => kind === undefined || call.kind === kind).map((c) => c.text);
   }
 }
 
@@ -28,22 +54,24 @@ export type DoorStubOptions = {
   doorKeypair: Ed25519Keypair;
   soulPublicKey: Uint8Array;
   clock: Clock;
-  /** Per-shard approve/reject during cosign review; defaults to approve all. */
-  decide?: (shard: CosignCandidateShard) => "approved" | "rejected";
-  /** Reject these shard ids during cosign review when `decide` is not set. */
-  rejectShardIds?: ReadonlySet<string>;
-  /** Per-epoch cosign review retention (door-sdk defaults when unset). */
-  cosignRetention?: CosignRetention;
+  /**
+   * Memory witness. Default: a {@link ScriptedWitness} that witnesses everything;
+   * `null` = the Door does not witness memories (no `attest.memory`).
+   */
+  witness?: ScriptedWitness | null;
 };
 
 /**
- * In-process Door implementation for integration tests.
- * Thin wrapper around `@npc/door-sdk` `Door` with `DoorStubError` mapping.
+ * In-process Door for integration tests: a thin wrapper around `@npc/door-sdk` `Door`
+ * (real signatures, real core binding). Door errors propagate as `DoorError`.
  */
 export class DoorStub implements DoorConnection {
   private readonly door: Door;
+  /** The scripted witness, or `null` when this Door does not witness memories. */
+  readonly witness: ScriptedWitness | null;
 
   constructor(options: DoorStubOptions) {
+    this.witness = options.witness === undefined ? new ScriptedWitness() : options.witness;
     const policy: HostPolicy = {
       community: {
         name: "test",
@@ -51,16 +79,8 @@ export class DoorStub implements DoorConnection {
         platform: "test",
         invitation_required: false
       },
-      capabilities: ["session.text", "heartbeat", "attest", "cosign.manual"],
-      decideShard: (shard) => {
-        if (options.decide !== undefined) {
-          return options.decide(shard);
-        }
-        if (options.rejectShardIds?.has(shard.shard_id)) {
-          return "rejected";
-        }
-        return "approved";
-      }
+      capabilities: ["session.text", "heartbeat", "attest"],
+      ...(this.witness === null ? {} : { witnessMemory: this.witness.witness })
     };
 
     this.door = new Door({
@@ -68,9 +88,18 @@ export class DoorStub implements DoorConnection {
       doorKeypair: options.doorKeypair,
       soulPublicKey: options.soulPublicKey,
       clock: options.clock,
-      policy,
-      ...(options.cosignRetention !== undefined ? { cosignRetention: options.cosignRetention } : {})
+      policy
     });
+  }
+
+  /** True when this Door advertises `attest.memory`. */
+  get witnessesMemories(): boolean {
+    return this.door.witnessesMemories();
+  }
+
+  /** Underlying Door core (inbound frames, residency record, lifecycle listeners). */
+  get core(): Door {
+    return this.door;
   }
 
   /** Active session public key after a successful arrival attest, if any. */
@@ -78,16 +107,16 @@ export class DoorStub implements DoorConnection {
     return this.door.getActiveSessionPubkey();
   }
 
-  async attest(request: AttestRequest): Promise<AttestResponse> {
-    return this.wrap(() => this.door.attest(request));
+  hello(request: unknown): Promise<HelloResponse> {
+    return this.door.hello(request);
   }
 
-  async heartbeat(request: HeartbeatRequest): Promise<HeartbeatResponse> {
-    return this.wrap(() => this.door.heartbeat(request));
+  attest(request: AttestRequest): Promise<AttestResponse> {
+    return this.door.attest(request);
   }
 
-  async cosign(request: CosignRequest): Promise<CosignResponse> {
-    return this.wrap(() => this.door.cosign(request));
+  heartbeat(request: HeartbeatRequest): Promise<HeartbeatResponse> {
+    return this.door.heartbeat(request);
   }
 
   /**
@@ -96,16 +125,5 @@ export class DoorStub implements DoorConnection {
    */
   verifyOutbound(frame: OutboundFrame): boolean {
     return this.door.verifyOutbound(frame);
-  }
-
-  private async wrap<T>(fn: () => Promise<T>): Promise<T> {
-    try {
-      return await fn();
-    } catch (error) {
-      if (error instanceof DoorError) {
-        throw new DoorStubError(error.message, error);
-      }
-      throw error;
-    }
   }
 }

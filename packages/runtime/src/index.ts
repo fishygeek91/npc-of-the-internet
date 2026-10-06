@@ -10,20 +10,21 @@ export type { ResidencyConfig } from "./residency/config.js";
 export {
   DEFAULT_CONTROL_DIR,
   DEFAULT_JOURNAL_DIR,
+  DEFAULT_MAX_RESIDENCY_MS,
   loadResidencyConfig,
-  MAX_COMMIT_WINDOW_MS,
   MIN_RESIDENCY_MAX_MS
 } from "./residency/config.js";
 export type {
   AbortableSleep,
-  CommitDepartedEpoch,
-  CommitPendingEpochs,
   CycleOutcome,
   CycleTrigger,
+  DepartRequest,
   LiveResidency,
   ResidencyControllerOptions
 } from "./residency/controller.js";
-export { abortableSleep, ResidencyController } from "./residency/controller.js";
+export { abortableSleep, chooseNextDoor, ResidencyController } from "./residency/controller.js";
+export type { AvailableDoor, DoorEndpoint, ProbeDoorsOptions } from "./residency/doors.js";
+export { doorEndpoint, probeDoors, verifyDoorHello } from "./residency/doors.js";
 export type {
   ControlDirWatcher,
   RequestDaemonDepartOptions,
@@ -69,8 +70,6 @@ export { generateJournal } from "./journal/generate-journal.js";
 export { JournalError } from "./journal/errors.js";
 export type { JournalErrorReason } from "./journal/errors.js";
 export { writeJournalFile } from "./journal/write-journal-file.js";
-export { move } from "./handover/move.js";
-export type { MoveOptions, MoveResult } from "./handover/move.js";
 export { distillTranscripts } from "./distill/distill-transcripts.js";
 export { DistillError } from "./distill/errors.js";
 export type { DistillErrorReason } from "./distill/errors.js";
@@ -83,37 +82,13 @@ export type {
   TranscriptSource
 } from "./distill/types.js";
 export type { ScreenCategory } from "@npc/immune";
-export type { QuarantineConfig } from "./quarantine/config.js";
-export { loadQuarantineConfig } from "./quarantine/config.js";
-export { QuarantineError } from "./quarantine/errors.js";
-export type { QuarantineErrorReason } from "./quarantine/errors.js";
-export { resolveJournalPath } from "./quarantine/resolve-journal-path.js";
-export {
-  isCandidateRipe,
-  scanQuarantineState,
-  scanRejectedCandidateCidsSince
-} from "./quarantine/scan.js";
-export type { QuarantineCandidate, QuarantineScan } from "./quarantine/scan.js";
-export { assignShardIds, shardIdFromText } from "./quarantine/shard-id.js";
-export {
-  commitQuarantinedShards,
-  residencyEpochAtDoor,
-  REVIEW_NOT_RETAINED
-} from "./quarantine/commit.js";
-export { PAST_EPOCH_COMMITS_CAPABILITY } from "./residency/daemon-residency.js";
-export type {
-  CommitQuarantineResult,
-  CommitQuarantinedShardsOptions
-} from "./quarantine/commit.js";
-export { flagCandidate } from "./quarantine/flag.js";
-export type { FlagCandidateOptions } from "./quarantine/flag.js";
 export { KeyringError } from "./keyring/errors.js";
 export { buildSessionKeyInfo, SESSION_KEY_DERIVATION_SALT } from "./keyring/derive-session-key.js";
 export { loadSoulPrivateKeyFromPath } from "./keyring/load-soul-key.js";
 export { SingleKeyKeyring } from "./keyring/single-key-keyring.js";
 export type { Keyring, SessionSigner } from "./keyring/types.js";
 export { SessionError } from "./session/errors.js";
-export { Session } from "./session/session.js";
+export { DEFAULT_MIN_MEMORY_LINES, Session } from "./session/session.js";
 export type {
   DepartOptions,
   DepartResult,
@@ -145,31 +120,21 @@ export type { ResidencyTranscriptOptions } from "./distill/residency-transcript.
 export {
   AttestRequestSchema,
   AttestResponseSchema,
-  CandidateShardSchema,
-  CosignRequestSchema,
-  CosignResponseSchema,
   DOOR_PROTOCOL_VERSION,
   HeartbeatRequestSchema,
   HeartbeatResponseSchema,
   InboundFrameSchema,
   OutboundFrameSchema,
-  cosignCommitSigningPayload,
-  cosignReviewSigningPayload
+  attestSigningPayload
 } from "./session/types.js";
 export type {
   AttestRequest,
   AttestResponse,
   Clock,
-  CosignCandidateShard,
-  CosignCommitSigningFields,
-  CosignRequest,
-  CosignResponse,
-  CosignReviewSigningFields,
   DoorConnection,
   HeartbeatRequest,
   HeartbeatResponse,
   InboundFrame,
   OutboundFrame,
-  ReviewDecision,
   Timer
 } from "./session/types.js";

@@ -1,4 +1,5 @@
 import { DaemonError } from "../daemon-errors.js";
+import { DEFAULT_MIN_MEMORY_LINES } from "../session/session.js";
 
 /** Default directory the daemon polls for operator control requests (tmpfs in Ghost). */
 export const DEFAULT_CONTROL_DIR = "/tmp/npc-control";
@@ -6,61 +7,37 @@ export const DEFAULT_CONTROL_DIR = "/tmp/npc-control";
 /** Default directory for residency journal markdown files (Ghost `published` volume). */
 export const DEFAULT_JOURNAL_DIR = "/data/published/journals";
 
-/** Default quarantine window (24 h) — same default as `loadQuarantineConfig`. */
-export const DEFAULT_QUARANTINE_WINDOW_MS = 86_400_000;
+/** Default `NPC_RESIDENCY_MAX_MS`: travel about once a day. */
+export const DEFAULT_MAX_RESIDENCY_MS = 86_400_000;
 
-/**
- * Smallest accepted `NPC_RESIDENCY_MAX_MS` (1 h). Every cycle costs a host review in
- * Discord and Brain calls; shorter residencies would also leave too little conversation
- * to distill 5+ shards.
- */
+/** Smallest accepted non-zero `NPC_RESIDENCY_MAX_MS` (1 h). */
 export const MIN_RESIDENCY_MAX_MS = 3_600_000;
 
-/** Default `NPC_RESIDENCY_MIN_LINES`: the timer trigger waits for this much conversation. */
-export const DEFAULT_TIMER_MIN_TRANSCRIPT_LINES = 10;
-
-/** Smallest accepted `NPC_QUARANTINE_COMMIT_INTERVAL_MS` (10 s). */
-export const MIN_COMMIT_INTERVAL_MS = 10_000;
-
-/**
- * Largest `NPC_QUARANTINE_WINDOW_MS` usable with a **legacy** Door (one that does not
- * advertise `cosign.past_epochs`) while the commit sweep is enabled (1 h). Such a Door
- * forgets an epoch's review on the next arrival, so the Wanderer must wait out the
- * window *between* residencies (absent from its Door). The daemon refuses to boot
- * against a legacy Door with a longer window; a Door with `cosign.past_epochs` has no
- * such limit (the sweep runs while the next residency is live).
- */
-export const MAX_COMMIT_WINDOW_MS = 3_600_000;
-
-/** Residency lifecycle configuration (all automatic behavior defaults off). */
+/** Residency lifecycle configuration. */
 export type ResidencyConfig = {
   /** `NPC_RESIDENCY_OPERATOR_TRIGGER`: SIGUSR2 + control-dir depart requests start a cycle. */
   operatorTrigger: boolean;
   /** `NPC_CONTROL_DIR`: directory polled for `wanderer depart` request files. */
   controlDir: string;
-  /** `NPC_RESIDENCY_MAX_MS`: cycle once the residency is older than this; `0` = disabled. */
+  /** `NPC_RESIDENCY_MAX_MS`: travel once the residency is older than this; `0` = never. */
   maxResidencyMs: number;
   /**
-   * `NPC_RESIDENCY_MIN_LINES`: the timer trigger skips (and re-checks later) while the
-   * live transcript holds fewer lines — too little conversation cannot distill the 5
-   * shards host review requires. The operator trigger only needs one line.
+   * `NPC_RESIDENCY_MIN_LINES`: a timer-triggered departure forms memories only when the
+   * stay's transcript holds at least this many lines (a quiet stay still travels).
+   * Operator-requested departures need one line.
    */
-  timerMinTranscriptLines: number;
-  /** `NPC_JOURNAL_DIR`: where depart writes the residency journal markdown. */
+  minMemoryLines: number;
+  /** `NPC_JOURNAL_DIR`: where depart writes witnessed residency journals. */
   journalDir: string;
-  /**
-   * `NPC_QUARANTINE_COMMIT_INTERVAL_MS`: interval of the commit sweep — on a timer during
-   * live residency (Door with `cosign.past_epochs`), or polling in the travel gap (legacy
-   * Door); `0` = disabled (candidates stay candidates).
-   */
-  commitIntervalMs: number;
-  /** `NPC_QUARANTINE_WINDOW_MS`: how long a candidate ripens before it may commit. */
-  quarantineWindowMs: number;
 };
 
-function parseFlag(env: NodeJS.ProcessEnv, name: string): boolean {
+/** Parse a boolean flag; unset/empty → `fallback`. */
+function parseFlag(env: NodeJS.ProcessEnv, name: string, fallback: boolean): boolean {
   const raw = env[name]?.trim().toLowerCase() ?? "";
-  if (raw === "" || raw === "0" || raw === "false") {
+  if (raw === "") {
+    return fallback;
+  }
+  if (raw === "0" || raw === "false") {
     return false;
   }
   if (raw === "1" || raw === "true") {
@@ -97,20 +74,19 @@ function parsePath(env: NodeJS.ProcessEnv, name: string, fallback: string): stri
 /**
  * Load and validate the residency lifecycle configuration.
  *
- * Every trigger is **off** unless explicitly enabled: `NPC_RESIDENCY_OPERATOR_TRIGGER`
- * (default off), `NPC_RESIDENCY_MAX_MS` (default `0` = off, else ≥ 1 h; with
- * `NPC_RESIDENCY_MIN_LINES`, default 10) and
- * `NPC_QUARANTINE_COMMIT_INTERVAL_MS` (default `0` = off, else ≥ 10 s; against a legacy
- * Door without `cosign.past_epochs` the daemon additionally requires
- * `NPC_QUARANTINE_WINDOW_MS` ≤ 1 h at boot). Paths: `NPC_CONTROL_DIR`
- * (default `/tmp/npc-control`), `NPC_JOURNAL_DIR` (default `/data/published/journals`).
+ * - `NPC_RESIDENCY_MAX_MS` — travel timer, default `86400000` (a day); `0` disables, else
+ *   ≥ `3600000`.
+ * - `NPC_RESIDENCY_MIN_LINES` — default `10`, ≥ 1: fewer lines form no memories.
+ * - `NPC_RESIDENCY_OPERATOR_TRIGGER` — default on; `0` disables SIGUSR2 / `wanderer depart`.
+ * - `NPC_CONTROL_DIR` (default `/tmp/npc-control`), `NPC_JOURNAL_DIR`
+ *   (default `/data/published/journals`).
  */
 export function loadResidencyConfig(env: NodeJS.ProcessEnv = process.env): ResidencyConfig {
-  const operatorTrigger = parseFlag(env, "NPC_RESIDENCY_OPERATOR_TRIGGER");
+  const operatorTrigger = parseFlag(env, "NPC_RESIDENCY_OPERATOR_TRIGGER", true);
   const controlDir = parsePath(env, "NPC_CONTROL_DIR", DEFAULT_CONTROL_DIR);
   const journalDir = parsePath(env, "NPC_JOURNAL_DIR", DEFAULT_JOURNAL_DIR);
 
-  const maxResidencyMs = parseNonNegativeInt(env, "NPC_RESIDENCY_MAX_MS", 0);
+  const maxResidencyMs = parseNonNegativeInt(env, "NPC_RESIDENCY_MAX_MS", DEFAULT_MAX_RESIDENCY_MS);
   if (maxResidencyMs !== 0 && maxResidencyMs < MIN_RESIDENCY_MAX_MS) {
     throw new DaemonError(
       `NPC_RESIDENCY_MAX_MS must be 0 (disabled) or ≥ ${String(MIN_RESIDENCY_MAX_MS)} (got ${String(maxResidencyMs)})`,
@@ -119,12 +95,12 @@ export function loadResidencyConfig(env: NodeJS.ProcessEnv = process.env): Resid
     );
   }
 
-  const timerMinTranscriptLines = parseNonNegativeInt(
+  const minMemoryLines = parseNonNegativeInt(
     env,
     "NPC_RESIDENCY_MIN_LINES",
-    DEFAULT_TIMER_MIN_TRANSCRIPT_LINES
+    DEFAULT_MIN_MEMORY_LINES
   );
-  if (timerMinTranscriptLines < 1) {
+  if (minMemoryLines < 1) {
     throw new DaemonError(
       "NPC_RESIDENCY_MIN_LINES must be ≥ 1",
       "invalid_config",
@@ -132,35 +108,5 @@ export function loadResidencyConfig(env: NodeJS.ProcessEnv = process.env): Resid
     );
   }
 
-  const commitIntervalMs = parseNonNegativeInt(env, "NPC_QUARANTINE_COMMIT_INTERVAL_MS", 0);
-  if (commitIntervalMs !== 0 && commitIntervalMs < MIN_COMMIT_INTERVAL_MS) {
-    throw new DaemonError(
-      `NPC_QUARANTINE_COMMIT_INTERVAL_MS must be 0 (disabled) or ≥ ${String(MIN_COMMIT_INTERVAL_MS)} (got ${String(commitIntervalMs)})`,
-      "invalid_config",
-      "NPC_QUARANTINE_COMMIT_INTERVAL_MS"
-    );
-  }
-
-  const quarantineWindowMs = parseNonNegativeInt(
-    env,
-    "NPC_QUARANTINE_WINDOW_MS",
-    DEFAULT_QUARANTINE_WINDOW_MS
-  );
-  if (quarantineWindowMs <= 0) {
-    throw new DaemonError(
-      "NPC_QUARANTINE_WINDOW_MS must be a positive integer",
-      "invalid_config",
-      "NPC_QUARANTINE_WINDOW_MS"
-    );
-  }
-
-  return {
-    operatorTrigger,
-    controlDir,
-    maxResidencyMs,
-    timerMinTranscriptLines,
-    journalDir,
-    commitIntervalMs,
-    quarantineWindowMs
-  };
+  return { operatorTrigger, controlDir, maxResidencyMs, minMemoryLines, journalDir };
 }

@@ -2,17 +2,18 @@
 
 /**
  * Ghost-era manual residency harness: live Discord + in-process Session.
- * Uses FakeBrain (no API key). See MANUAL_TEST.md.
+ * Uses FakeBrain for the Wanderer (no Brain key); memories are judged by the Door's real
+ * AI witness (`DOOR_WITNESS_*` / `NPC_BRAIN_*`). See MANUAL_TEST.md.
  */
 
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 
 import { OSP_SPEC_V02, createRecord, encodePublicKey, FileSoulStore } from "@npc/osp-core";
 import {
   FakeBrain,
-  FileTranscriptSource,
   loadSoulPrivateKeyFromPath,
+  ResidencyTranscript,
   Session,
   SingleKeyKeyring
 } from "@npc/runtime";
@@ -111,11 +112,13 @@ async function main(): Promise<void> {
         }
       }
     },
-    doorPublicKeys: { [doorId]: doorKeypair.publicKey }
+    doorPublicKeys: { [doorId]: doorKeypair.publicKey },
+    transcript: new ResidencyTranscript(),
+    witnessesMemories: handle.door.witnessesMemories()
   });
 
   logger.info({ doorId, status: handle.status() }, "arrived — chat in the bound channel");
-  logger.info("Press Ctrl+C when ready to depart (approve candidate shards in Discord)");
+  logger.info("Press Ctrl+C when ready to depart (the Door's witness judges the memories)");
 
   await new Promise<void>((resolve) => {
     const onStop = (): void => {
@@ -125,42 +128,25 @@ async function main(): Promise<void> {
     process.on("SIGINT", onStop);
   });
 
-  const transcriptPath = join(chainDir, "transcript.jsonl");
-  await writeFile(
-    transcriptPath,
-    [
-      JSON.stringify({ role: "user", text: "What do you see here?" }),
-      JSON.stringify({ role: "assistant", text: "A channel that will not keep me forever." }),
-      JSON.stringify({ role: "user", text: "Will you remember us?" }),
-      JSON.stringify({ role: "assistant", text: "Only if the host endorses the shards." }),
-      JSON.stringify({ role: "user", text: "Safe travels." }),
-      JSON.stringify({ role: "assistant", text: "And patience on the review." }),
-      JSON.stringify({ role: "user", text: "Anything else?" }),
-      JSON.stringify({ role: "assistant", text: "Gratitude for the noise and the silence." }),
-      JSON.stringify({ role: "user", text: "Go well." }),
-      JSON.stringify({ role: "assistant", text: "I leave as I arrived — curious." })
-    ].join("\n") + "\n",
-    "utf8"
-  );
-
+  // Canned shards: the witness co-signs only what the channel's record supports.
   const shardTexts = Array.from(
     { length: 5 },
     (_, i) => `I remember a brief stay and question ${String(i + 1)}.`
   );
   const distillBrain = new FakeBrain([
     JSON.stringify({ shards: shardTexts.map((text) => ({ text })) }),
-    `# Leaving ${doorId}\n\nI remember the channel and the wait for host endorsement.\n`
+    `# Leaving ${doorId}\n\nI remember the channel and the people who spoke to me.\n`
   ]);
 
-  logger.info("departing — approve or reject candidate shards in Discord (timeout rejects)");
-  await session.depart({
+  logger.info("departing — the Door's witness decides each memory");
+  const departed = await session.depart({
     brain: distillBrain,
-    transcript: new FileTranscriptSource(transcriptPath),
     journalDir: join(chainDir, "journals"),
-    nextDoorId: "irc:manual-elsewhere"
+    toDoorId: "irc:manual-elsewhere",
+    minMemoryLines: 1
   });
 
-  logger.info({ chainDir }, "departed — run: osp verify --dir <SOULCHAIN_DIR>");
+  logger.info({ chainDir, ...departed }, "departed — run: osp verify --dir <SOULCHAIN_DIR>");
   await handle.stop();
 }
 

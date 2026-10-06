@@ -34,7 +34,7 @@ jobs:
           fi
       - name: "Rule 3: OpenSoul extractability (no inward imports)"
         run: |
-          if grep -rE "@npc/(runtime|immune|door-sdk|door-discord|atlas)" packages/osp-core/src packages/osp-cli/src spec/ 2>/dev/null; then
+          if grep -rE "@npc/(runtime|immune|door-sdk|door-discord|door-web|atlas)" packages/osp-core/src packages/osp-cli/src spec/ 2>/dev/null; then
             echo "::error::osp-core/osp-cli/spec must not depend on other workspace packages (ENGINEERING.md D1 extractability)."
             exit 1
           fi
