@@ -41,3 +41,7 @@ Chains written under door/0.1 may hold `memory` records of kind `candidate`, and
 ## Deployables — more than three processes
 
 ENGINEERING.md D8 says deployables are three processes. Ghost compose now runs `runtime`, `door-discord`, `door-web` and `atlas-api` (plus the backup sidecar, and Caddy under the optional `public` profile). This follows D1, which already lists `door-web` as the second Door: a Door is one process per platform, not a new service tier. No microservices, databases or queues were added.
+
+## Audit — two unpatchable advisories ignored (2026-10-06)
+
+`pnpm audit --prod` ignores (root `package.json` → `pnpm.auditConfig.ignoreGhsas`) two advisories that have **no patched release**: GHSA-vfj7-8cjw-p6xm (`braces` ≤ 3.0.3, deep-nesting DoS; reached via `osp-core → blockstore-fs → it-glob → fast-glob → micromatch`, which only expands the store's own fixed glob patterns, never untrusted input) and GHSA-ch52-4w7c-c8xp (`http-cache-semantics` ≤ 4.2.0; reached via `astro`, used only to build the static Atlas site in CI — no server, no shared cache). Re-check and drop each ignore as soon as a fixed version exists. The rest of the Astro advisory set was fixed by upgrading `atlas-site` to Astro 7 (no source changes needed) and overriding `source-map-js` to ≥ 1.2.2.

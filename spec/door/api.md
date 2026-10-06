@@ -437,4 +437,4 @@ A conforming Door needs:
 3. `POST /door/heartbeat` — transport ack.
 4. `POST /door/attest` — core binding per `kind`, sign raw `core` bytes; for `memory`, a witness policy fed by the Door's own residency record.
 
-The reference implementation is `@npc/door-sdk` (`Door` + HTTP/WS transports + `createAiWitness`); `door-discord` and `door-web` are thin platform adapters around it.
+The reference implementation is the `door-sdk` package in the project repository (`Door` + HTTP/WS transports + `createAiWitness`); the Discord and web Doors are thin platform adapters around it.
