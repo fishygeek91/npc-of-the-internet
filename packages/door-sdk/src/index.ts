@@ -1,22 +1,36 @@
 export const packageName = "@npc/door-sdk";
 
-export {
-  Door,
-  DEFAULT_MAX_ISSUED_AT_SKEW_MS,
-  DEFAULT_COSIGN_RETAIN_EPOCHS,
-  DEFAULT_COSIGN_RETAIN_MS
-} from "./door.js";
-export type { CosignRetention, DoorOptions, SessionLifecycleEvent } from "./door.js";
-export {
-  COSIGN_STATE_FILE,
-  FileCosignStateStore,
-  PersistedCosignStateSchema
-} from "./cosign-state-store.js";
-export type { CosignStateStore, PersistedCosignState } from "./cosign-state-store.js";
+export { Door, DEFAULT_MAX_ISSUED_AT_SKEW_MS } from "./door.js";
+export type { DoorOptions, SessionLifecycleEvent } from "./door.js";
 export type { HostPolicy } from "./policy.js";
+export {
+  ResidencyRecord,
+  DEFAULT_RESIDENCY_RECORD_CHARS
+} from "./residency-record.js";
+export type { ResidencyLine, ResidencyRecordOptions } from "./residency-record.js";
+export {
+  createAiWitness,
+  openAiCompatComplete,
+  loadWitnessConfig,
+  buildWitnessUserPrompt,
+  parseWitnessReply,
+  WitnessConfigError,
+  WITNESS_SYSTEM_PROMPT
+} from "./witness.js";
+export type {
+  AiWitnessOptions,
+  CompleteFn,
+  MemoryKind,
+  OpenAiCompatSettings,
+  WitnessConfig,
+  WitnessInput,
+  WitnessMemory,
+  WitnessVerdict
+} from "./witness.js";
 
 export {
   DOOR_PROTOCOL_VERSION,
+  MEMORY_ATTEST_TEXT_MAX,
   CoreStringSchema,
   CommunityDescriptorSchema,
   CapabilitySchema,
@@ -27,10 +41,7 @@ export {
   AttestResponseSchema,
   HeartbeatRequestSchema,
   HeartbeatResponseSchema,
-  CandidateShardSchema,
-  CosignRequestSchema,
-  CosignResponseSchema,
-  CosignCommitResponseSchema,
+  WitnessReasonSchema,
   InboundFrameSchema,
   OutboundFrameSchema,
   OutboundReactionSchema,
@@ -46,15 +57,12 @@ export type {
   DoorErrorBody,
   HelloRequest,
   HelloResponse,
+  AttestKind,
   AttestRequest,
   AttestResponse,
   HeartbeatRequest,
   HeartbeatResponse,
-  CandidateShard,
-  CosignCandidateShard,
-  CosignRequest,
-  CosignResponse,
-  ReviewDecision,
+  WitnessReason,
   InboundFrame,
   OutboundFrame,
   OutboundReaction,
@@ -68,16 +76,12 @@ export type {
 export {
   signingPayload,
   attestSigningPayload,
-  cosignReviewSigningPayload,
-  cosignCommitSigningPayload,
   heartbeatSigningPayload,
   outboundSigningPayload,
   sessionBindSigningPayload,
   helloResponseSigningPayload,
   attestResponseSigningPayload,
   heartbeatResponseSigningPayload,
-  cosignReviewResponseSigningPayload,
-  cosignCommitResponseSigningPayload,
   signDoorCosig,
   verifyDoorCosig,
   signCanonical,
@@ -85,18 +89,14 @@ export {
   generateDoorKeypair
 } from "./signing.js";
 
-export type {
-  AttestSigningFields,
-  CosignReviewSigningFields,
-  CosignCommitSigningFields
-} from "./signing.js";
+export type { AttestSigningFields } from "./signing.js";
 
 export { DoorError, defaultHttpStatusForDoorError, doorErrorToBody } from "./errors.js";
 
 export { InProcessDoorConnection } from "./transports/in-process.js";
 export { HttpDoorServer, MAX_HTTP_BODY_BYTES } from "./transports/http.js";
 export type { HttpDoorServerOptions } from "./transports/http.js";
-export { HttpDoorConnection, DEFAULT_COSIGN_REVIEW_TIMEOUT_MS } from "./transports/http-client.js";
+export { HttpDoorConnection } from "./transports/http-client.js";
 export type { HttpDoorConnectionOptions } from "./transports/http-client.js";
 export { WsDoorSessionServer, WS_SESSION_BIND_FAILED } from "./transports/ws.js";
 export type { WsDoorSessionServerOptions } from "./transports/ws.js";

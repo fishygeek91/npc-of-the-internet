@@ -11,14 +11,10 @@ import {
 import type {
   AttestRequest,
   AttestResponse,
-  CandidateShard,
-  CosignRequest,
-  CosignResponse,
   HeartbeatRequest,
   HeartbeatResponse,
   HelloResponse,
-  OutboundFrame,
-  ReviewDecision
+  OutboundFrame
 } from "./schemas.js";
 
 /** Fields covered by `/door/attest` request `sig` (excludes `protocol_version`). */
@@ -28,28 +24,6 @@ export type AttestSigningFields = {
   kind: AttestRequest["kind"];
   core: string;
   session_pubkey: string;
-  issued_at: string;
-};
-
-/** Fields covered by `/door/cosign` review request `sig` (excludes `protocol_version`). */
-export type CosignReviewSigningFields = {
-  door_id: string;
-  epoch: number;
-  phase: "review";
-  session_pubkey: string;
-  shards: CandidateShard[];
-  issued_at: string;
-  farewell?: string;
-};
-
-/** Fields covered by `/door/cosign` commit request `sig` (excludes `protocol_version`). */
-export type CosignCommitSigningFields = {
-  door_id: string;
-  epoch: number;
-  phase: "commit";
-  session_pubkey: string;
-  shard_id: string;
-  core: string;
   issued_at: string;
 };
 
@@ -66,40 +40,6 @@ export function attestSigningPayload(request: Omit<AttestRequest, "sig">): Uint8
     kind: request.kind,
     core: request.core,
     session_pubkey: request.session_pubkey,
-    issued_at: request.issued_at
-  };
-  return canonicalize(fields);
-}
-
-/** Canonical bytes for `/door/cosign` review request signatures per `spec/door/api.md`. */
-export function cosignReviewSigningPayload(
-  request: Omit<Extract<CosignRequest, { phase: "review" }>, "sig">
-): Uint8Array {
-  const fields: CosignReviewSigningFields = {
-    door_id: request.door_id,
-    epoch: request.epoch,
-    phase: request.phase,
-    session_pubkey: request.session_pubkey,
-    shards: request.shards,
-    issued_at: request.issued_at
-  };
-  if (request.farewell !== undefined) {
-    fields.farewell = request.farewell;
-  }
-  return canonicalize(fields);
-}
-
-/** Canonical bytes for `/door/cosign` commit request signatures per `spec/door/api.md`. */
-export function cosignCommitSigningPayload(
-  request: Omit<Extract<CosignRequest, { phase: "commit" }>, "sig">
-): Uint8Array {
-  const fields: CosignCommitSigningFields = {
-    door_id: request.door_id,
-    epoch: request.epoch,
-    phase: request.phase,
-    session_pubkey: request.session_pubkey,
-    shard_id: request.shard_id,
-    core: request.core,
     issued_at: request.issued_at
   };
   return canonicalize(fields);
@@ -151,31 +91,6 @@ export function heartbeatResponseSigningPayload(
     epoch: response.epoch,
     seq: response.seq,
     accepted: response.accepted,
-    received_at: response.received_at
-  });
-}
-
-/** Canonical bytes for `/door/cosign` review response `door_sig`. */
-export function cosignReviewResponseSigningPayload(fields: {
-  door_id: string;
-  epoch: number;
-  phase: "review";
-  decisions: ReviewDecision[];
-  received_at: string;
-}): Uint8Array {
-  return canonicalize(fields);
-}
-
-/** Canonical bytes for `/door/cosign` commit response `door_sig`. */
-export function cosignCommitResponseSigningPayload(
-  response: Omit<Extract<CosignResponse, { phase: "commit" }>, "door_sig">
-): Uint8Array {
-  return canonicalize({
-    door_id: response.door_id,
-    epoch: response.epoch,
-    phase: response.phase,
-    shard_id: response.shard_id,
-    door_cosig: response.door_cosig,
     received_at: response.received_at
   });
 }

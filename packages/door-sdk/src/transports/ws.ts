@@ -85,8 +85,10 @@ export class WsDoorSessionServer {
     this.port = options.port ?? 0;
     this.externalServer = options.server;
     // Close WS clients when Door retires or supersedes an epoch.
-    this.door.setSessionLifecycleListener((event) => {
-      this.closeSessionClients(event.doorId, event.epoch, event.type);
+    this.door.addSessionLifecycleListener((event) => {
+      if (event.type !== "arrived") {
+        this.closeSessionClients(event.doorId, event.epoch, event.type);
+      }
     });
   }
 

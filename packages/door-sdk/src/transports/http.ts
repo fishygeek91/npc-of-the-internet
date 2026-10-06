@@ -5,10 +5,8 @@ import type { Door } from "../door.js";
 import { DoorError, doorErrorToBody } from "../errors.js";
 import {
   AttestRequestSchema,
-  CosignRequestSchema,
   HeartbeatRequestSchema,
   type AttestRequest,
-  type CosignRequest,
   type HeartbeatRequest
 } from "../schemas.js";
 
@@ -23,7 +21,7 @@ export type HttpDoorServerOptions = {
 
 const JSON_CONTENT_TYPE = "application/json";
 /** Max accumulated HTTP JSON body size before rejecting with 413. */
-export const MAX_HTTP_BODY_BYTES = 128 * 1024;
+export const MAX_HTTP_BODY_BYTES = 256 * 1024;
 
 type RouteHandler = (body: unknown) => Promise<unknown>;
 
@@ -37,7 +35,7 @@ class PayloadTooLargeError extends Error {
 
 /**
  * Minimal `node:http` server exposing the Door REST endpoints:
- * `POST /door/hello`, `/door/heartbeat`, `/door/attest`, `/door/cosign`.
+ * `POST /door/hello`, `/door/heartbeat`, `/door/attest`.
  */
 export class HttpDoorServer {
   private readonly door: Door;
@@ -67,10 +65,6 @@ export class HttpDoorServer {
       "/door/attest": async (body) => {
         const request = parseWithSchema<AttestRequest>(AttestRequestSchema, body);
         return this.door.attest(request);
-      },
-      "/door/cosign": async (body) => {
-        const request = parseWithSchema<CosignRequest>(CosignRequestSchema, body);
-        return this.door.cosign(request);
       }
     };
 
