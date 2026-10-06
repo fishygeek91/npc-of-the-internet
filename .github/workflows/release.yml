@@ -224,6 +224,8 @@ jobs:
             file: ops/Dockerfile.runtime
           - name: door-discord
             file: ops/Dockerfile.door-discord
+          - name: door-web
+            file: ops/Dockerfile.door-web
           - name: atlas-api
             file: ops/Dockerfile.atlas-api
           - name: backup

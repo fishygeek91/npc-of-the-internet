@@ -11,6 +11,7 @@ COPY packages/atlas/package.json packages/atlas/
 COPY packages/atlas-site/package.json packages/atlas-site/
 COPY packages/door-discord/package.json packages/door-discord/
 COPY packages/door-sdk/package.json packages/door-sdk/
+COPY packages/door-web/package.json packages/door-web/
 COPY packages/immune/package.json packages/immune/
 COPY packages/osp-cli/package.json packages/osp-cli/
 COPY packages/osp-core/package.json packages/osp-core/
@@ -46,11 +47,6 @@ RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack 
   && rm -f /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack
 
 COPY --from=build /out /app
-
-# Pre-create the cosign review state mountpoint as npc so a fresh `door-state` named
-# volume inherits npc:npc ownership (Docker copy-on-first-use) — same pattern as the
-# runtime's /data volumes (#53). DOOR_STATE_DIR points here in Ghost compose.
-RUN mkdir -p /data/door-state && chown npc:npc /data/door-state
 
 WORKDIR /app
 USER npc

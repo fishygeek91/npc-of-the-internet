@@ -1,0 +1,8 @@
+# Public HTTPS for the web Door (compose profile `public`). WEB_DOMAIN comes from ops/.env.
+{$WEB_DOMAIN} {
+	encode zstd gzip
+	reverse_proxy door-web:8080 {
+		# Server-Sent Events: stream, don't buffer.
+		flush_interval -1
+	}
+}

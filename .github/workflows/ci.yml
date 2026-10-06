@@ -48,7 +48,8 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Validate Ghost compose file
         run: |
-          # #64: every published port must bind 127.0.0.1 (Docker bypasses ufw).
+          # #64: every published port must bind 127.0.0.1 (Docker bypasses ufw). The opt-in
+          # `public` profile (Caddy on 80/443) is not rendered here.
           # #72: mem limits, logging rotation, lockdown, healthchecks, depends_on healthy.
           docker compose --env-file ops/.env.example -f ops/compose.ghost.yml config --format json \
             | python3 -c '
@@ -58,6 +59,7 @@ jobs:
           expected_mem = {
               "runtime": 1073741824,
               "door-discord": 536870912,
+              "door-web": 268435456,
               "atlas-api": 536870912,
               "backup": 268435456,
           }

@@ -11,6 +11,7 @@ COPY packages/atlas/package.json packages/atlas/
 COPY packages/atlas-site/package.json packages/atlas-site/
 COPY packages/door-discord/package.json packages/door-discord/
 COPY packages/door-sdk/package.json packages/door-sdk/
+COPY packages/door-web/package.json packages/door-web/
 COPY packages/immune/package.json packages/immune/
 COPY packages/osp-cli/package.json packages/osp-cli/
 COPY packages/osp-core/package.json packages/osp-core/

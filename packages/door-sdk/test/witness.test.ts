@@ -274,6 +274,7 @@ describe("loadWitnessConfig", () => {
   }
 
   const brain = {
+    NPC_BRAIN_PROVIDER: "openai-compat",
     NPC_BRAIN_BASE_URL: "https://brain.example/v1",
     NPC_BRAIN_API_KEY: "brain-key",
     NPC_BRAIN_MODEL: "brain-model"
@@ -317,6 +318,18 @@ describe("loadWitnessConfig", () => {
     });
   });
 
+  it("never sends the Brain's key to a witness host the operator configured separately", () => {
+    const error = configError({ ...brain, DOOR_WITNESS_BASE_URL: "https://elsewhere.example/v1" });
+    expect(error.envVar).toBe("DOOR_WITNESS_API_KEY");
+    expect(error.message).not.toContain("brain-key");
+  });
+
+  it("falls back to NPC_BRAIN_* only for an openai-compat Brain", () => {
+    const { NPC_BRAIN_PROVIDER: _provider, ...noProvider } = brain;
+    expect(loadWitnessConfig(noProvider)).toBeNull();
+    expect(loadWitnessConfig({ ...brain, NPC_BRAIN_PROVIDER: "anthropic" })).toBeNull();
+  });
+
   it("DOOR_WITNESS=off (or 0 / false) turns witnessing off even when configured", () => {
     for (const value of ["off", "OFF", " off ", "0", "false"]) {
       expect(loadWitnessConfig({ ...brain, DOOR_WITNESS: value })).toBeNull();
@@ -327,7 +340,11 @@ describe("loadWitnessConfig", () => {
   it("reads key files (trimmed), in precedence order", () => {
     const own = keyFile("own.key", "own-file-key\n");
     const brainFile = keyFile("brain.key", "brain-file-key\n");
-    const base = { NPC_BRAIN_BASE_URL: brain.NPC_BRAIN_BASE_URL, NPC_BRAIN_MODEL: "m" };
+    const base = {
+      NPC_BRAIN_PROVIDER: "openai-compat",
+      NPC_BRAIN_BASE_URL: brain.NPC_BRAIN_BASE_URL,
+      NPC_BRAIN_MODEL: "m"
+    };
 
     expect(loadWitnessConfig({ ...base, NPC_BRAIN_API_KEY_FILE: brainFile })?.apiKey).toBe(
       "brain-file-key"
@@ -351,7 +368,11 @@ describe("loadWitnessConfig", () => {
 
   it("unreadable or empty key files are config errors that name the variable", () => {
     const empty = keyFile("empty.key", " \n");
-    const base = { NPC_BRAIN_BASE_URL: brain.NPC_BRAIN_BASE_URL, NPC_BRAIN_MODEL: "m" };
+    const base = {
+      NPC_BRAIN_PROVIDER: "openai-compat",
+      NPC_BRAIN_BASE_URL: brain.NPC_BRAIN_BASE_URL,
+      NPC_BRAIN_MODEL: "m"
+    };
     expect(configError({ ...base, DOOR_WITNESS_API_KEY_FILE: empty }).envVar).toBe(
       "DOOR_WITNESS_API_KEY_FILE"
     );
@@ -361,7 +382,10 @@ describe("loadWitnessConfig", () => {
   });
 
   it("partial configuration is an error naming what is missing (never the key)", () => {
-    const noKey = configError({ DOOR_WITNESS_BASE_URL: "https://w.example", NPC_BRAIN_MODEL: "m" });
+    const noKey = configError({
+      DOOR_WITNESS_BASE_URL: "https://w.example",
+      DOOR_WITNESS_MODEL: "m"
+    });
     expect(noKey.envVar).toBe("DOOR_WITNESS_API_KEY");
     const noModel = configError({
       DOOR_WITNESS_BASE_URL: "https://w",
@@ -369,7 +393,11 @@ describe("loadWitnessConfig", () => {
     });
     expect(noModel.envVar).toBe("DOOR_WITNESS_MODEL");
     expect(noModel.message).not.toContain("sk-secret");
-    const noBase = configError({ NPC_BRAIN_API_KEY: "sk-secret", NPC_BRAIN_MODEL: "m" });
+    const noBase = configError({
+      NPC_BRAIN_PROVIDER: "openai-compat",
+      NPC_BRAIN_API_KEY: "sk-secret",
+      NPC_BRAIN_MODEL: "m"
+    });
     expect(noBase.envVar).toBe("DOOR_WITNESS_BASE_URL");
     expect(noBase.message).not.toContain("sk-secret");
   });

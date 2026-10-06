@@ -56,6 +56,7 @@ describe("loadDiscordDoorConfig", () => {
 
     const brain = loadDiscordDoorConfig({
       ...baseEnv(),
+      NPC_BRAIN_PROVIDER: "openai-compat",
       NPC_BRAIN_BASE_URL: "https://brain.test/v1",
       NPC_BRAIN_API_KEY: "brain-key",
       NPC_BRAIN_MODEL: "brain-model"
@@ -65,6 +66,7 @@ describe("loadDiscordDoorConfig", () => {
     const off = loadDiscordDoorConfig({
       ...baseEnv(),
       DOOR_WITNESS: "off",
+      NPC_BRAIN_PROVIDER: "openai-compat",
       NPC_BRAIN_BASE_URL: "https://brain.test/v1",
       NPC_BRAIN_API_KEY: "brain-key",
       NPC_BRAIN_MODEL: "brain-model"

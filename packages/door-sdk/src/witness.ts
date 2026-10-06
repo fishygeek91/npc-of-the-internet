@@ -209,9 +209,9 @@ function readKeyFile(path: string, envVar: string): string {
 }
 
 /**
- * Witness settings from the environment. Each `DOOR_WITNESS_*` value falls back to the
- * matching `NPC_BRAIN_*` value, so a Door that runs beside the Wanderer's runtime needs no
- * extra setup:
+ * Witness settings from the environment. When `NPC_BRAIN_PROVIDER=openai-compat`, each
+ * `DOOR_WITNESS_*` value falls back to the matching `NPC_BRAIN_*` value, so a Door that runs
+ * beside the Wanderer's runtime needs no extra setup:
  *
  * | Setting | Env (fallback) |
  * |---|---|
@@ -231,12 +231,15 @@ export function loadWitnessConfig(env: NodeJS.ProcessEnv = process.env): Witness
   if (mode === "off" || mode === "0" || mode === "false") {
     return null;
   }
+  // The Brain's settings are only a usable fallback when the Brain speaks the same
+  // (OpenAI-compatible) protocol as the witness client.
+  const brainFallback = envValue(env, "NPC_BRAIN_PROVIDER") === "openai-compat";
   const pick = (own: string, fallback: string): { value?: string; name: string } => {
     const value = envValue(env, own);
     if (value !== undefined) {
       return { value, name: own };
     }
-    const fallbackValue = envValue(env, fallback);
+    const fallbackValue = brainFallback ? envValue(env, fallback) : undefined;
     return fallbackValue !== undefined ? { value: fallbackValue, name: fallback } : { name: own };
   };
   const baseUrl = pick("DOOR_WITNESS_BASE_URL", "NPC_BRAIN_BASE_URL");
