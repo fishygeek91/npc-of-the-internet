@@ -12,6 +12,7 @@ import {
 import { afterEach, describe, expect, it } from "vitest";
 
 import { DoorError } from "../src/errors.js";
+import { DEFAULT_MAX_MEMORY_ATTESTS } from "../src/door.js";
 import { DOOR_PROTOCOL_VERSION, HelloResponseSchema } from "../src/schemas.js";
 import { attestResponseSigningPayload, verifyDoorCosig } from "../src/signing.js";
 import { HttpDoorConnection } from "../src/transports/http-client.js";
@@ -94,7 +95,8 @@ describe("memory attest — witnessed memories", () => {
           at: NOW
         },
         { role: "wanderer", text: "I will remember those birds.", at: NOW }
-      ]
+      ],
+      witnessedShards: []
     });
 
     // The cosig makes a valid osp/0.2 soulchain memory record.
@@ -115,9 +117,10 @@ describe("memory attest — witnessed memories", () => {
     expect(verified.record.type).toBe("memory");
   });
 
-  it("witnesses a journal longer than a shard may be", async () => {
+  it("witnesses a journal longer than a shard may be, judged against the witnessed shards", async () => {
     const h = createHarness();
     await arrive(h);
+    await h.door.attest(memoryRequest(h, await shardCoreFields(SHARD_TEXT), SHARD_TEXT));
     const journal = `# Lantern\n\n${"I stayed a while and listened. ".repeat(60)}`;
     expect([...journal].length).toBeGreaterThan(500);
 
@@ -126,7 +129,11 @@ describe("memory attest — witnessed memories", () => {
     const response = await h.door.attest(request);
 
     expect(verifyDoorCosig(request.core, response.door_cosig, h.doorKeypair.publicKey)).toBe(true);
-    expect(h.witnessCalls.map((call) => [call.kind, call.text])).toEqual([["journal", journal]]);
+    expect(h.witnessCalls.map((call) => [call.kind, call.text])).toEqual([
+      ["shard", SHARD_TEXT],
+      ["journal", journal]
+    ]);
+    expect(h.witnessCalls[1]?.witnessedShards).toEqual([SHARD_TEXT]);
     // Empty record: the witness still gets asked (it decides; the Door does not pre-judge).
     expect(h.witnessCalls[0]?.transcript).toEqual([]);
   });
@@ -456,6 +463,250 @@ describe("memory attest — witnessed memories", () => {
     });
   });
 
+  describe("decisions are final for the epoch", () => {
+    const declineAll: WitnessMemory = async () => ({ witnessed: false, reason: "private" });
+
+    it("a repeat of a declined text gets the same decline without asking the witness", async () => {
+      const h = createHarness({ witness: declineAll });
+      await arrive(h);
+      const fields = await shardCoreFields(SHARD_TEXT);
+      await expect(h.door.attest(memoryRequest(h, fields, SHARD_TEXT))).rejects.toMatchObject({
+        code: "witness_declined",
+        details: { reason: "private" }
+      });
+      // Same text under another record position (a retry after a crash) — still declined.
+      for (const core of [fields, { ...fields, seq: fields.seq + 3 }]) {
+        await expect(h.door.attest(memoryRequest(h, core, SHARD_TEXT))).rejects.toMatchObject({
+          code: "witness_declined",
+          httpStatus: 422,
+          details: { reason: "private" }
+        });
+      }
+      expect(h.witnessCalls).toHaveLength(1);
+    });
+
+    it("a repeat of a witnessed text is co-signed again without asking (no duplicate shard)", async () => {
+      const h = createHarness();
+      await arrive(h);
+      const request = memoryRequest(h, await shardCoreFields(SHARD_TEXT), SHARD_TEXT);
+      await h.door.attest(request);
+      const again = await h.door.attest(request);
+      expect(verifyDoorCosig(request.core, again.door_cosig, h.doorKeypair.publicKey)).toBe(true);
+      expect(h.witnessCalls).toHaveLength(1);
+      const journal = "I learned three night birds.";
+      await h.door.attest(memoryRequest(h, await journalCoreFields(journal), journal));
+      expect(h.witnessCalls[1]?.witnessedShards).toEqual([SHARD_TEXT]);
+    });
+
+    it("the same text as shard and as journal is two decisions", async () => {
+      const h = createHarness({
+        witness: async (input) =>
+          input.kind === "shard" ? { witnessed: true } : { witnessed: false, reason: "other" }
+      });
+      await arrive(h);
+      await h.door.attest(memoryRequest(h, await shardCoreFields(SHARD_TEXT), SHARD_TEXT));
+      await expect(
+        h.door.attest(memoryRequest(h, await journalCoreFields(SHARD_TEXT), SHARD_TEXT))
+      ).rejects.toMatchObject({ code: "witness_declined", details: { reason: "other" } });
+      expect(h.witnessCalls.map((call) => call.kind)).toEqual(["shard", "journal"]);
+    });
+
+    it("an outage is not a decision: the text is asked again", async () => {
+      let calls = 0;
+      const h = createHarness({
+        witness: async () => {
+          calls += 1;
+          if (calls === 1) {
+            throw new Error("model timeout");
+          }
+          return { witnessed: true };
+        }
+      });
+      await arrive(h);
+      const request = memoryRequest(h, await shardCoreFields(SHARD_TEXT), SHARD_TEXT);
+      await expect(h.door.attest(request)).rejects.toMatchObject({ code: "witness_unavailable" });
+      await expect(h.door.attest(request)).resolves.toMatchObject({ kind: "memory" });
+      expect(h.witnessCalls).toHaveLength(2);
+    });
+
+    it("decisions end with the epoch (departure and supersession)", async () => {
+      const h = createHarness({ witness: declineAll });
+      await arrive(h);
+      const declined = { code: "witness_declined" };
+      await expect(
+        h.door.attest(memoryRequest(h, await shardCoreFields(SHARD_TEXT), SHARD_TEXT))
+      ).rejects.toMatchObject(declined);
+      await h.door.attest(departureRequest(h));
+      await arrive(h, EPOCH + 1);
+      await expect(
+        h.door.attest(
+          memoryRequest(h, await shardCoreFields(SHARD_TEXT, EPOCH + 1), SHARD_TEXT, EPOCH + 1)
+        )
+      ).rejects.toMatchObject(declined);
+      await arrive(h, EPOCH + 2);
+      await expect(
+        h.door.attest(
+          memoryRequest(h, await shardCoreFields(SHARD_TEXT, EPOCH + 2), SHARD_TEXT, EPOCH + 2)
+        )
+      ).rejects.toMatchObject(declined);
+      expect(h.witnessCalls.map((call) => call.epoch)).toEqual([EPOCH, EPOCH + 1, EPOCH + 2]);
+    });
+
+    it("a verdict that arrives after the epoch ended is not carried into the next one", async () => {
+      const gate = deferred<WitnessVerdict>();
+      let first = true;
+      const h = createHarness({
+        witness: () => {
+          if (first) {
+            first = false;
+            return gate.promise;
+          }
+          return Promise.resolve({ witnessed: true });
+        }
+      });
+      await arrive(h);
+      const pending = h.door.attest(
+        memoryRequest(h, await shardCoreFields(SHARD_TEXT), SHARD_TEXT)
+      );
+      await waitFor(() => h.witnessCalls.length === 1);
+      await arrive(h, EPOCH + 1);
+      gate.resolve({ witnessed: true });
+      await expect(pending).rejects.toBeInstanceOf(DoorError);
+      // The new epoch has no witnessed shard, so a journal is not grounded.
+      const journal = "I learned three night birds.";
+      await expect(
+        h.door.attest(
+          memoryRequest(h, await journalCoreFields(journal, EPOCH + 1), journal, EPOCH + 1)
+        )
+      ).rejects.toMatchObject({ code: "witness_declined", details: { reason: "ungrounded" } });
+      expect(h.witnessCalls).toHaveLength(1);
+    });
+  });
+
+  describe("per-epoch witness budget", () => {
+    async function attestShard(h: Harness, index: number, epoch = EPOCH): Promise<unknown> {
+      const text = `Memory number ${String(index)}.`;
+      return h.door.attest(memoryRequest(h, await shardCoreFields(text, epoch), text, epoch));
+    }
+
+    it(`defaults to ${String(DEFAULT_MAX_MEMORY_ATTESTS)} witness calls; past it, declined other without a call`, async () => {
+      expect(DEFAULT_MAX_MEMORY_ATTESTS).toBe(32);
+      const h = createHarness();
+      await arrive(h);
+      for (let index = 0; index < DEFAULT_MAX_MEMORY_ATTESTS; index += 1) {
+        await attestShard(h, index);
+      }
+      await expect(attestShard(h, DEFAULT_MAX_MEMORY_ATTESTS)).rejects.toMatchObject({
+        code: "witness_declined",
+        httpStatus: 422,
+        details: { reason: "other" },
+        message: expect.stringContaining("memory budget exhausted") as unknown as string
+      });
+      expect(h.witnessCalls).toHaveLength(DEFAULT_MAX_MEMORY_ATTESTS);
+      // Decided texts are still answered (no call needed).
+      await expect(attestShard(h, 0)).resolves.toMatchObject({ kind: "memory" });
+    });
+
+    it("counts every witness call (outages and declines too), and resets each epoch", async () => {
+      let calls = 0;
+      const h = createHarness({
+        maxMemoryAttests: 2,
+        witness: async () => {
+          calls += 1;
+          if (calls === 1) {
+            throw new Error("model timeout");
+          }
+          return { witnessed: false, reason: "ungrounded" };
+        }
+      });
+      await arrive(h);
+      await expect(attestShard(h, 1)).rejects.toMatchObject({ code: "witness_unavailable" });
+      await expect(attestShard(h, 2)).rejects.toMatchObject({ details: { reason: "ungrounded" } });
+      await expect(attestShard(h, 1)).rejects.toMatchObject({
+        message: expect.stringContaining("memory budget exhausted") as unknown as string
+      });
+      expect(h.witnessCalls).toHaveLength(2);
+
+      await h.door.attest(departureRequest(h));
+      await arrive(h, EPOCH + 1);
+      await expect(attestShard(h, 1, EPOCH + 1)).rejects.toMatchObject({
+        details: { reason: "ungrounded" }
+      });
+      expect(h.witnessCalls).toHaveLength(3);
+    });
+
+    it("maxMemoryAttests must be a non-negative integer (0 = no witness calls)", async () => {
+      for (const bad of [-1, 1.5, Number.NaN]) {
+        expect(() => createHarness({ maxMemoryAttests: bad })).toThrow(RangeError);
+      }
+      const h = createHarness({ maxMemoryAttests: 0 });
+      await arrive(h);
+      await expect(attestShard(h, 1)).rejects.toMatchObject({ details: { reason: "other" } });
+      expect(h.witnessCalls).toEqual([]);
+    });
+  });
+
+  describe("journal rules", () => {
+    const JOURNAL = "# Lantern\n\nI learned three night birds here.";
+
+    it("needs a witnessed shard first: otherwise declined ungrounded without a call", async () => {
+      const h = createHarness({
+        witness: async (input) =>
+          input.kind === "shard" ? { witnessed: false, reason: "private" } : { witnessed: true }
+      });
+      await arrive(h);
+      const journal = memoryRequest(h, await journalCoreFields(JOURNAL), JOURNAL);
+      await expect(h.door.attest(journal)).rejects.toMatchObject({
+        code: "witness_declined",
+        details: { reason: "ungrounded" }
+      });
+      // A declined shard does not count.
+      await expect(
+        h.door.attest(memoryRequest(h, await shardCoreFields(SHARD_TEXT), SHARD_TEXT))
+      ).rejects.toMatchObject({ details: { reason: "private" } });
+      await expect(h.door.attest(journal)).rejects.toMatchObject({
+        details: { reason: "ungrounded" }
+      });
+      expect(h.witnessCalls.map((call) => call.kind)).toEqual(["shard"]);
+    });
+
+    it("at most one journal is witnessed per epoch: another is declined other without a call", async () => {
+      const h = createHarness();
+      await arrive(h);
+      await h.door.attest(memoryRequest(h, await shardCoreFields(SHARD_TEXT), SHARD_TEXT));
+      const first = memoryRequest(h, await journalCoreFields(JOURNAL), JOURNAL);
+      await h.door.attest(first);
+      const other = `${JOURNAL}\n\nAnd one more thing.`;
+      await expect(
+        h.door.attest(memoryRequest(h, await journalCoreFields(other), other))
+      ).rejects.toMatchObject({ code: "witness_declined", details: { reason: "other" } });
+      // Retrying the witnessed journal is fine (lost response).
+      await expect(h.door.attest(first)).resolves.toMatchObject({ kind: "memory" });
+      expect(h.witnessCalls.map((call) => call.kind)).toEqual(["shard", "journal"]);
+    });
+
+    it("two journals racing: only one is witnessed", async () => {
+      const gate = deferred<WitnessVerdict>();
+      const h = createHarness({
+        witness: (input) =>
+          input.kind === "journal" ? gate.promise : Promise.resolve({ witnessed: true })
+      });
+      await arrive(h);
+      await h.door.attest(memoryRequest(h, await shardCoreFields(SHARD_TEXT), SHARD_TEXT));
+      const other = `${JOURNAL} Again.`;
+      const results = Promise.allSettled([
+        h.door.attest(memoryRequest(h, await journalCoreFields(JOURNAL), JOURNAL)),
+        h.door.attest(memoryRequest(h, await journalCoreFields(other), other))
+      ]);
+      await waitFor(() => h.witnessCalls.length === 3);
+      gate.resolve({ witnessed: true });
+      const settled = await results;
+      expect(settled.map((result) => result.status).sort()).toEqual(["fulfilled", "rejected"]);
+      const rejected = settled.find((result) => result.status === "rejected");
+      expect(rejected?.reason).toMatchObject({ details: { reason: "other" } });
+    });
+  });
+
   describe("session checks around the witness", () => {
     it("before any arrival → session_invalid; witness not asked", async () => {
       const h = createHarness();
@@ -577,8 +828,8 @@ describe("memory attest — witnessed memories", () => {
       expect(h.door.residencyRecordSize()).toBe(1);
     });
 
-    it("honours DoorOptions.residencyRecord.maxChars (most recent kept)", async () => {
-      const h = createHarness({ residencyRecord: { maxChars: 10 } });
+    it("honours DoorOptions.residencyRecord budgets (most recent kept)", async () => {
+      const h = createHarness({ residencyRecord: { communityChars: 10 } });
       await arrive(h);
       h.door.createInboundFrame({ msg_id: "a", body: { text: "aaaaaa", author_id: "u" } });
       h.door.createInboundFrame({ msg_id: "b", body: { text: "bbbbbb", author_id: "u" } });

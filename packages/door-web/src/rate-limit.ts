@@ -84,3 +84,44 @@ function waitFor(history: readonly number[], rule: RateRule, now: number): numbe
   const oldestBlocking = recent[recent.length - rule.max] ?? now;
   return Math.max(1, oldestBlocking + rule.windowMs - now);
 }
+
+const DAY_MS = 86_400_000;
+
+/**
+ * At most `max` events per UTC day (bounds what visitors can cost in Wanderer model calls).
+ * Check with {@link DailyBudget.check} first and {@link DailyBudget.record} only what was
+ * actually spent.
+ */
+export class DailyBudget {
+  private day = -1;
+  private used = 0;
+
+  constructor(
+    private readonly max: number,
+    private readonly clock: MsClock
+  ) {}
+
+  /** `ok` while today's budget has room; otherwise how long until the next UTC day. */
+  check(): RateDecision {
+    const now = this.clock.nowMs();
+    this.roll(now);
+    if (this.used < this.max) {
+      return { ok: true };
+    }
+    return { ok: false, retryAfterMs: (this.day + 1) * DAY_MS - now };
+  }
+
+  /** Count one spent event against today. */
+  record(): void {
+    this.roll(this.clock.nowMs());
+    this.used += 1;
+  }
+
+  private roll(now: number): void {
+    const day = Math.floor(now / DAY_MS);
+    if (day !== this.day) {
+      this.day = day;
+      this.used = 0;
+    }
+  }
+}

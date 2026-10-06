@@ -7,7 +7,7 @@ Static public Atlas for the NPC of the Internet. Built with Astro from a soulcha
 | Route | Content |
 |-------|---------|
 | `/` | Location banner (present / traveling / sleeping), current Door, since when, where it left for, head CID |
-| `/journey` | Residencies, most recent first: the Door, arrival/departure times, witnessed memories ("3 memories witnessed · 1 declined by the witness (private)"), journal link, and the travel line ("left for web:home") |
+| `/journey` | Residencies, most recent first: the Door, arrival/departure times, witnessed memories ("3 memories witnessed · 1 declined by the witness (private)"), journal link, and the travel line ("left for web:home"; a residency ended by a Door restart reads "(restarted)") |
 | `/journals`, `/journals/[cid]` | Residency journals from `journal` records and legacy shard-embedded journals (markdown → sanitized HTML; page title is `Journal — {door_id} epoch {epoch}`) |
 | `/soul`, `/soul/page/[n]` | Paginated soulchain records |
 | `/soul/type/[type]/…` | Filter by top-level record type |

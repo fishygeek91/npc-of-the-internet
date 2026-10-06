@@ -29,7 +29,21 @@ export type DaemonResidencyContext = {
   onHeartbeatError: (error: unknown, stage: "door" | "append") => void;
   /** Ready-file hook: `true` once this residency's socket is connected, `false` on drop. */
   onConnectionChange: (connected: boolean) => void;
+  /**
+   * The Door no longer knows this attached residency (a heartbeat failed with
+   * `session_invalid` or `epoch_closed`, e.g. the Door restarted). Called at most once per
+   * residency; the daemon moves on instead of staying mute.
+   */
+  onSessionLost?: (epoch: number) => void;
 };
+
+/** Door errors meaning the Door has no live session for this residency any more. */
+function isLostSessionError(error: unknown): boolean {
+  return (
+    error instanceof DoorError &&
+    (error.code === "session_invalid" || error.code === "epoch_closed")
+  );
+}
 
 /**
  * Arrive at one Door for one residency: `hello` on a fresh connection (identity pinned:
@@ -44,7 +58,8 @@ export type DaemonResidencyContext = {
  *
  * If the socket cannot bind after the arrival attestation was appended, the session is
  * stopped (no departure — the next arrival supersedes it, as after a crash) and the error
- * propagates.
+ * propagates. A heartbeat the Door refuses as `session_invalid` / `epoch_closed` while
+ * attached calls {@link DaemonResidencyContext.onSessionLost}.
  */
 export async function arriveDaemonResidency(
   ctx: DaemonResidencyContext,
@@ -81,6 +96,17 @@ export async function arriveDaemonResidency(
     "attention_config"
   );
 
+  let attached = true;
+  let lost = false;
+  const onHeartbeatError = (error: unknown, stage: "door" | "append"): void => {
+    ctx.onHeartbeatError(error, stage);
+    if (attached && !lost && isLostSessionError(error)) {
+      lost = true;
+      logger.warn({ doorId, epoch: session.epoch }, "residency_session_lost");
+      ctx.onSessionLost?.(session.epoch);
+    }
+  };
+
   const session = await Session.start({
     store: ctx.store,
     transcript,
@@ -94,7 +120,7 @@ export async function arriveDaemonResidency(
     timer: ctx.timer,
     doorPublicKeys: ctx.doorPublicKeys,
     activeEpoch: hello.active_epoch,
-    onHeartbeatError: ctx.onHeartbeatError,
+    onHeartbeatError,
     ...(ctx.heartbeatIntervalMs !== undefined
       ? { heartbeatIntervalMs: ctx.heartbeatIntervalMs }
       : {}),
@@ -118,7 +144,6 @@ export async function arriveDaemonResidency(
     )
   };
 
-  let attached = true;
   let droppedInbound = 0;
 
   // onInbound runs after construction, so `const` is safe for the closed-over client.

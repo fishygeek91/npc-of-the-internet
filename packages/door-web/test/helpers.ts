@@ -60,6 +60,7 @@ export function testConfig(
     communityDescription: "A porch for tests.",
     maxClients: 10,
     globalPerMinute: 30,
+    dailyMax: 1500,
     trustProxy: false,
     ...overrides
   };
@@ -176,9 +177,9 @@ export class SseReader {
   }
 
   /** Open `GET url`; resolves once response headers arrive. */
-  static async open(url: string): Promise<SseReader> {
+  static async open(url: string, headers: Record<string, string> = {}): Promise<SseReader> {
     const controller = new AbortController();
-    const response = await fetch(url, { signal: controller.signal });
+    const response = await fetch(url, { signal: controller.signal, headers });
     const reader = new SseReader(response.status, controller);
     if (response.body !== null && response.ok) {
       void reader.pump(response.body);

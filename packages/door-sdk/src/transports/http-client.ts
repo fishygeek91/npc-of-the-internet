@@ -26,10 +26,24 @@ const JSON_CONTENT_TYPE = "application/json";
 /** Max characters of a non-Door error body retained in {@link DoorError.details}. */
 const MAX_ERROR_BODY_CHARS = 512;
 
+/** Default client timeout for hello, heartbeat and presence attests (30 s). */
+export const DEFAULT_HTTP_TIMEOUT_MS = 30_000;
+
+/**
+ * Default client timeout for a `memory` attest (180 s): the Door's witness may make a slow
+ * model call (with a retry) before it answers. Stays below Node fetch's own 300 s headers
+ * timeout.
+ */
+export const DEFAULT_MEMORY_ATTEST_TIMEOUT_MS = 180_000;
+
 /** Options for {@link HttpDoorConnection}. */
 export type HttpDoorConnectionOptions = {
   /** Door HTTP base URL (e.g. `http://127.0.0.1:3000`); trailing slash is stripped. */
   baseUrl: string;
+  /** Timeout (ms) for hello, heartbeat and presence attests; default {@link DEFAULT_HTTP_TIMEOUT_MS}. */
+  timeoutMs?: number;
+  /** Timeout (ms) for `memory` attests; default {@link DEFAULT_MEMORY_ATTEST_TIMEOUT_MS}. */
+  memoryTimeoutMs?: number;
 };
 
 /**
@@ -39,16 +53,20 @@ export type HttpDoorConnectionOptions = {
  */
 export class HttpDoorConnection implements DoorConnection {
   private readonly baseUrl: string;
+  private readonly timeoutMs: number;
+  private readonly memoryTimeoutMs: number;
   /** Door identity pubkey established by a verified hello response. */
   private doorPublicKey: Uint8Array | null = null;
 
   constructor(options: HttpDoorConnectionOptions) {
     this.baseUrl = options.baseUrl.replace(/\/$/, "");
+    this.timeoutMs = options.timeoutMs ?? DEFAULT_HTTP_TIMEOUT_MS;
+    this.memoryTimeoutMs = options.memoryTimeoutMs ?? DEFAULT_MEMORY_ATTEST_TIMEOUT_MS;
   }
 
   /** `POST /door/hello` — discover Door identity and capabilities. */
   async hello(req: HelloRequest): Promise<HelloResponse> {
-    const response = await this.post("/door/hello", req, HelloResponseSchema);
+    const response = await this.post("/door/hello", req, HelloResponseSchema, this.timeoutMs);
     const { sig, ...unsigned } = response;
     const doorPublicKey = decodePublicKey(response.door_pubkey);
     if (!verifyPayload(helloResponseSigningPayload(unsigned), sig, doorPublicKey)) {
@@ -64,7 +82,12 @@ export class HttpDoorConnection implements DoorConnection {
   /** `POST /door/attest` — presence attestation or witnessed memory (`kind: "memory"`). */
   async attest(request: AttestRequest): Promise<AttestResponse> {
     const doorPublicKey = this.requireDoorPublicKey();
-    const response = await this.post("/door/attest", request, AttestResponseSchema);
+    const response = await this.post(
+      "/door/attest",
+      request,
+      AttestResponseSchema,
+      request.kind === "memory" ? this.memoryTimeoutMs : this.timeoutMs
+    );
     const { door_sig: doorSig, ...unsigned } = response;
     if (!verifyPayload(attestResponseSigningPayload(unsigned), doorSig, doorPublicKey)) {
       throw DoorError.fromCode(
@@ -84,7 +107,12 @@ export class HttpDoorConnection implements DoorConnection {
   /** `POST /door/heartbeat` — session presence ping. */
   async heartbeat(request: HeartbeatRequest): Promise<HeartbeatResponse> {
     const doorPublicKey = this.requireDoorPublicKey();
-    const response = await this.post("/door/heartbeat", request, HeartbeatResponseSchema);
+    const response = await this.post(
+      "/door/heartbeat",
+      request,
+      HeartbeatResponseSchema,
+      this.timeoutMs
+    );
     const { door_sig: doorSig, ...unsigned } = response;
     if (!verifyPayload(heartbeatResponseSigningPayload(unsigned), doorSig, doorPublicKey)) {
       throw DoorError.fromCode(
@@ -109,7 +137,7 @@ export class HttpDoorConnection implements DoorConnection {
     path: string,
     body: unknown,
     successSchema: z.ZodType<T>,
-    timeoutMs?: number
+    timeoutMs: number
   ): Promise<T> {
     let response: Response;
     try {
@@ -117,7 +145,7 @@ export class HttpDoorConnection implements DoorConnection {
         method: "POST",
         headers: { "Content-Type": JSON_CONTENT_TYPE },
         body: JSON.stringify(body),
-        ...(timeoutMs === undefined ? {} : { signal: AbortSignal.timeout(timeoutMs) })
+        signal: AbortSignal.timeout(timeoutMs)
       });
     } catch (cause) {
       throw DoorError.fromCode(

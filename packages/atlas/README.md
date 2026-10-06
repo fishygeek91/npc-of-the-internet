@@ -27,13 +27,15 @@ Scans newest to oldest. A `sleep` record encountered before any attestation yiel
 | Record | `status` | `door_id` | `epoch` | `since` |
 |--------|----------|-----------|---------|---------|
 | `type: sleep` | `sleeping` | `null` | `null` | `body.as_of` |
-| attestation `arrival` / `heartbeat` | `present` | `body.door_id` | `body.epoch` | `at` of that residency's arrival |
+| attestation `arrival` / `heartbeat` | `present` | `body.door_id` | `body.epoch` | start of the uninterrupted stay at that Door (see below) |
 | attestation `departure` | `traveling` | `null` | `body.epoch` | `body.at` |
 | attestation `travel` | `traveling` | `null` | `body.from_epoch` | `body.at` |
 | attestation `handover` | `traveling` | `null` | `body.depart_epoch` | `body.at` |
 | (none) | `sleeping` | `null` | `null` | `null` |
 
 The Wanderer is at one Door at a time: `present` names that Door and when it arrived; `traveling` means it has left (see `GET /residencies` for where it went).
+
+A Door restart supersedes the open residency without a departure, and the Wanderer re-arrives at the same Door in a new epoch. That is a restart, not a move: `since` is the `at` of the earliest arrival in the run of consecutive same-Door arrivals with no departure, travel, handover or sleep between them.
 
 `last_record_at` comes from the **head** record body's type-specific timestamp (`created_at`, `at`, `distilled_at`, etc.).
 
@@ -80,7 +82,8 @@ Returns `{ residencies, page, per_page, total, verified }`. Each residency:
 | Field | Meaning |
 |-------|---------|
 | `residency`, `door_id`, `epoch` | The residency string and its parts |
-| `arrived_at` / `departed_at` | Arrival `at`; departure `at` (else travel / handover `at`), or `null` |
+| `arrived_at` / `departed_at` | Arrival `at`; departure `at` (else travel / handover `at`, else the `at` of the next arrival that superseded it), or `null` |
+| `ended` | `departed` (departure / travel / handover record), `superseded` (a later arrival closed it with no such record, e.g. a Door restart), or `null` while open |
 | `traveled_to` | Door named by the travel (`to_door_id`) or handover record that ended it, or `null` |
 | `counts.witnessed` | Shards the Door's witness co-signed |
 | `counts.declined` | `rejected` records with a `witness_<reason>` category |

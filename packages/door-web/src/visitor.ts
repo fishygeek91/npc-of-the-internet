@@ -7,12 +7,18 @@ export const NAME_MAX = 32;
 /** Max visitor message length (code points, after cleaning). */
 export const TEXT_MAX = 500;
 
-/** C0/C1 controls plus bidi embedding/override/isolate marks (spoofing). */
-const NAME_STRIP_RE = /[\p{Cc}\u200E\u200F\u202A-\u202E\u2066-\u2069]/gu;
-/** Same as {@link NAME_STRIP_RE} but keeps newline and tab in message text. */
-const TEXT_STRIP_RE = /[^\P{Cc}\n\t]|[\u200E\u200F\u202A-\u202E\u2066-\u2069]/gu;
-/** Names a visitor may not take (they would read as the Wanderer itself). */
-const RESERVED_NAME_RE = /^(the\s+)?wanderer$/iu;
+/**
+ * Controls (`Cc`) and invisible format characters (`Cf`: zero-width space/joiners, bidi
+ * marks and overrides, soft hyphen, Unicode tag characters) — spoofing and hidden text.
+ */
+const NAME_STRIP_RE = /[\p{Cc}\p{Cf}]/gu;
+/**
+ * Same as {@link NAME_STRIP_RE} for message text, except newline and tab are kept, and so
+ * is the zero-width joiner (U+200D) so emoji sequences like 👩‍💻 survive.
+ */
+const TEXT_STRIP_RE = /[^\P{Cc}\n\t]|[^\P{Cf}\u200D]/gu;
+/** Folded names a visitor may not take (they would read as the Wanderer itself). */
+const RESERVED_FOLDED_NAMES: ReadonlySet<string> = new Set(["wanderer", "thewanderer"]);
 
 /** A validated `POST /api/say` body. */
 export type VisitorSay = { name: string; text: string };
@@ -27,9 +33,27 @@ function codePointLength(value: string): number {
 }
 
 /**
+ * Comparison form of a display name: NFKC, lowercase, letters only — so "THE  WANDERER",
+ * "the wanderer." and full-width "Ｗａｎｄｅｒｅｒ" all fold to the same key.
+ */
+export function foldName(name: string): string {
+  return name
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[^\p{L}]/gu, "");
+}
+
+/** True when `name` would read as the Wanderer itself ("(The) Wanderer" in any disguise). */
+export function isReservedName(name: string): boolean {
+  return RESERVED_FOLDED_NAMES.has(foldName(name.replace(NAME_STRIP_RE, "")));
+}
+
+/**
  * Validate and clean a visitor message body (`{ name, text }`).
- * name: control/bidi chars stripped, trimmed, 1–32 code points, not "(The) Wanderer".
- * text: CRLF → LF, control/bidi chars (except LF/TAB) stripped, trimmed, 1–500 code points.
+ * name: control and format (`Cf`) chars stripped, whitespace collapsed, trimmed, 1–32 code
+ * points, and not "(The) Wanderer" after folding ({@link foldName}).
+ * text: CRLF → LF, control and format chars (except LF, TAB, ZWJ) stripped, trimmed,
+ * 1–500 code points.
  */
 export function parseSay(body: unknown): SayParseResult {
   const record =
@@ -49,7 +73,7 @@ export function parseSay(body: unknown): SayParseResult {
       message: `name must be 1–${String(NAME_MAX)} characters`
     };
   }
-  if (RESERVED_NAME_RE.test(name)) {
+  if (isReservedName(name)) {
     return { ok: false, code: "invalid_name", message: "that name belongs to the Wanderer" };
   }
   if (typeof rawText !== "string") {
@@ -81,6 +105,65 @@ export function relayText(text: string): string {
 
 function normalizeIp(value: string): string {
   return value.startsWith("::ffff:") && isIP(value.slice(7)) === 4 ? value.slice(7) : value;
+}
+
+/** Parse an IPv6 address (no zone) into eight 16-bit groups; `null` when malformed. */
+function ipv6Groups(ip: string): number[] | null {
+  let text = ip;
+  const tail: number[] = [];
+  const lastColon = text.lastIndexOf(":");
+  const dotted = text.slice(lastColon + 1);
+  if (isIP(dotted) === 4) {
+    const [a = 0, b = 0, c = 0, d = 0] = dotted.split(".").map(Number);
+    tail.push((a << 8) | b, (c << 8) | d);
+    text = text.slice(0, lastColon);
+    if (text.endsWith(":")) {
+      text += ":"; // the dotted quad followed "::"
+    }
+  }
+  const halves = text.split("::");
+  if (halves.length > 2) {
+    return null;
+  }
+  const parse = (part: string | undefined): string[] =>
+    part === undefined || part === "" ? [] : part.split(":");
+  const head = parse(halves[0]);
+  const rest = parse(halves[1]);
+  const width = 8 - tail.length;
+  const missing = width - head.length - rest.length;
+  if (halves.length === 1 ? missing !== 0 : missing < 1) {
+    return null;
+  }
+  const hex = [...head, ...Array<string>(halves.length === 1 ? 0 : missing).fill("0"), ...rest];
+  const groups = hex.map((group) => (/^[0-9a-f]{1,4}$/iu.test(group) ? parseInt(group, 16) : NaN));
+  if (groups.some((group) => Number.isNaN(group))) {
+    return null;
+  }
+  return [...groups, ...tail];
+}
+
+/**
+ * Rate-limit / connection-cap key for a client address. IPv4 is used as is; an IPv6 host
+ * is keyed by its /64 prefix (one subscriber usually owns a whole /64 and can rotate
+ * through it freely), and IPv4-mapped IPv6 (`::ffff:a.b.c.d`, any spelling) by its IPv4.
+ */
+export function clientKey(ip: string): string {
+  const bare = ip.split("%")[0] ?? ip;
+  if (isIP(bare) !== 6) {
+    return ip;
+  }
+  const groups = ipv6Groups(bare);
+  if (groups === null) {
+    return ip;
+  }
+  const [g0, g1, g2, g3, g4, g5, g6 = 0, g7 = 0] = groups;
+  if (g0 === 0 && g1 === 0 && g2 === 0 && g3 === 0 && g4 === 0 && g5 === 0xffff) {
+    return `${String(g6 >> 8)}.${String(g6 & 0xff)}.${String(g7 >> 8)}.${String(g7 & 0xff)}`;
+  }
+  return `${groups
+    .slice(0, 4)
+    .map((group) => group.toString(16))
+    .join(":")}::/64`;
 }
 
 /**

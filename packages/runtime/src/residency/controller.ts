@@ -3,16 +3,21 @@ import type { Logger } from "pino";
 import { DEFAULT_MIN_MEMORY_LINES, type DepartResult } from "../session/session.js";
 import type { Timer } from "../session/types.js";
 
-/** What started a residency cycle. */
-export type CycleTrigger = "operator" | "timer";
+/**
+ * What started a residency cycle. `lost_session`: the Door no longer knows this residency
+ * (heartbeat `session_invalid` / `epoch_closed`), so no memory can be witnessed there —
+ * the cycle goes straight to departure + travel without memories.
+ */
+export type CycleTrigger = "operator" | "timer" | "lost_session";
 
 /**
  * Outcome of {@link ResidencyController.requestCycle}.
  *
  * - `cycled`: departed (witnessed memories → journal → departure + travel) and arrived at
  *   `toDoor` / `toEpoch`.
- * - `abandoned`: depart kept failing; departure + travel were attempted without memories
- *   (best effort) and the Wanderer arrived at `toDoor` / `toEpoch` anyway.
+ * - `abandoned`: depart kept failing (or the session was lost); departure + travel were
+ *   attempted without memories (best effort) and the Wanderer arrived at `toDoor` /
+ *   `toEpoch` anyway.
  * - `busy`: another cycle is already running (single-flight).
  * - `shutting_down`: the daemon is stopping; no cycle started.
  * - `aborted`: shutdown interrupted the cycle; no arrival (next boot arrives).
@@ -63,8 +68,11 @@ export interface LiveResidency {
   detach(): Promise<void>;
   /** End the residency via `Session.depart` (retryable after a mid-pipeline failure). */
   depart(request: DepartRequest): Promise<DepartResult>;
-  /** Departure + travel without memories (`Session.departBare`), after depart gave up. */
-  departBare(toDoorId?: string): Promise<void>;
+  /**
+   * Departure + travel without memories (`Session.departBare`), after depart gave up.
+   * Resolves whether the departure is on chain (travel is appended either way).
+   */
+  departBare(toDoorId?: string): Promise<{ departure: boolean }>;
   /** Release without departure (shutdown): stop heartbeats, drain appends, detach. */
   close(): Promise<void>;
 }
@@ -180,7 +188,8 @@ export class ResidencyController {
    * that is online, else a random online Door. With no Door online (or a failed arrival)
    * it retries with backoff — it never gives up, except on an
    * {@link ResidencyControllerOptions.isFatalBootError}. Arms the residency-age timer when
-   * `maxResidencyMs > 0`.
+   * `maxResidencyMs > 0`. Rejects when {@link shutdown} interrupts it (an arrival that
+   * lands after shutdown is closed, without departure).
    */
   async begin(): Promise<LiveResidency> {
     const preferences = (await this.options.bootPreference?.()) ?? [];
@@ -190,6 +199,11 @@ export class ResidencyController {
         chooseNextDoor(available, null, this.random),
       true
     );
+    if (this.shuttingDown) {
+      // Shutdown landed while the boot arrival was in flight: release it (no departure).
+      await residency.close();
+      throw new CycleAborted();
+    }
     this.live = residency;
     this.arrivedAtMs = this.options.nowMs();
     if (this.options.maxResidencyMs > 0) {
@@ -307,9 +321,10 @@ export class ResidencyController {
           trigger === "operator" ? 1 : (this.options.minMemoryLines ?? DEFAULT_MIN_MEMORY_LINES)
       };
       let departed: DepartResult | null = null;
-      let departError: unknown = null;
+      let departError: unknown =
+        trigger === "lost_session" ? new Error("the Door lost the session") : null;
       const delays = this.options.departRetryDelaysMs ?? DEFAULT_DEPART_RETRY_DELAYS_MS;
-      for (let attempt = 0; ; attempt += 1) {
+      for (let attempt = 0; departError === null; attempt += 1) {
         this.throwIfShuttingDown();
         try {
           departed = await residency.depart(request);
@@ -335,7 +350,8 @@ export class ResidencyController {
           "residency_depart_abandoned"
         );
         try {
-          await residency.departBare(next ?? undefined);
+          const bare = await residency.departBare(next ?? undefined);
+          this.options.logger.info({ epoch: fromEpoch, ...bare }, "residency_departed_bare");
         } catch (error: unknown) {
           this.options.logger.warn(
             { epoch: fromEpoch, err: errorMessage(error) },

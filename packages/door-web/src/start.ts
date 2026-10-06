@@ -154,6 +154,7 @@ export async function startWebDoor(options: StartWebDoorOptions): Promise<WebDoo
     },
     maxClients: config.maxClients,
     globalPerMinute: config.globalPerMinute,
+    dailyMax: config.dailyMax,
     trustProxy: config.trustProxy,
     clock,
     logger

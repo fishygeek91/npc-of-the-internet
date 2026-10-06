@@ -1,9 +1,17 @@
 import { request } from "node:http";
+import { connect, type Socket } from "node:net";
 
 import { afterEach, describe, expect, it } from "vitest";
 
 import { Room } from "../src/room.js";
-import { VisitorSite, type RelayRequest, type VisitorSiteOptions } from "../src/site.js";
+import {
+  SAY_BODY_TIMEOUT_MS,
+  SSE_MAX_BUFFERED_BYTES,
+  SSE_MAX_PER_IP,
+  VisitorSite,
+  type RelayRequest,
+  type VisitorSiteOptions
+} from "../src/site.js";
 import { postJson, silentLogger, SseReader } from "./helpers.js";
 
 type Harness = { site: VisitorSite; url: string; relayed: RelayRequest[]; room: Room };
@@ -11,10 +19,14 @@ type Harness = { site: VisitorSite; url: string; relayed: RelayRequest[]; room: 
 describe("VisitorSite", () => {
   const sites: VisitorSite[] = [];
   const readers: SseReader[] = [];
+  const sockets: Socket[] = [];
 
   afterEach(async () => {
     for (const reader of readers.splice(0)) {
       reader.close();
+    }
+    for (const socket of sockets.splice(0)) {
+      socket.destroy();
     }
     for (const site of sites.splice(0)) {
       await site.stop();
@@ -35,6 +47,7 @@ describe("VisitorSite", () => {
       },
       maxClients: 10,
       globalPerMinute: 30,
+      dailyMax: 1500,
       trustProxy: false,
       clock: { nowMs: () => Date.now() },
       logger: silentLogger,
@@ -219,6 +232,138 @@ describe("VisitorSite", () => {
 
     first.close();
     await waitFor(() => site.clientCount() === 1);
+  });
+
+  it("caps SSE streams per client address (429 beyond SSE_MAX_PER_IP)", async () => {
+    const { url, site } = await start({ maxClients: SSE_MAX_PER_IP + 5 });
+    for (let index = 0; index < SSE_MAX_PER_IP; index += 1) {
+      const reader = await SseReader.open(`${url}/api/events`);
+      readers.push(reader);
+      expect(reader.status).toBe(200);
+    }
+    const over = await SseReader.open(`${url}/api/events`);
+    readers.push(over);
+    expect(over.status).toBe(429);
+    expect(site.clientCount()).toBe(SSE_MAX_PER_IP);
+  });
+
+  it("counts an IPv6 /64 as one client for SSE caps and rate limits", async () => {
+    const { url, site } = await start({ maxClients: SSE_MAX_PER_IP + 5, trustProxy: true });
+    const via = (ip: string) => ({ "X-Forwarded-For": ip });
+    for (let index = 0; index < SSE_MAX_PER_IP; index += 1) {
+      const reader = await SseReader.open(
+        `${url}/api/events`,
+        via(`2001:db8:1:2::${(index + 1).toString(16)}`)
+      );
+      readers.push(reader);
+    }
+    const sameNet = await SseReader.open(`${url}/api/events`, via("2001:db8:1:2:ffff::9"));
+    readers.push(sameNet);
+    expect(sameNet.status).toBe(429);
+    const otherNet = await SseReader.open(`${url}/api/events`, via("2001:db8:1:3::1"));
+    readers.push(otherNet);
+    expect(otherNet.status).toBe(200);
+    expect(site.clientCount()).toBe(SSE_MAX_PER_IP + 1);
+
+    const say = (ip: string) => postJson(`${url}/api/say`, { name: "Ada", text: "hi" }, via(ip));
+    expect((await say("2001:db8:1:2::1")).status).toBe(202);
+    expect((await say("2001:db8:1:2::2")).status).toBe(429);
+    expect((await say("2001:db8:1:3::1")).status).toBe(202);
+  });
+
+  it("opens SSE streams for GET only (HEAD gets 405 and no slot)", async () => {
+    const { url, site } = await start();
+    const head = await fetch(`${url}/api/events`, { method: "HEAD" });
+    expect(head.status).toBe(405);
+    expect(head.headers.get("allow")).toBe("GET");
+    expect((await fetch(`${url}/api/events`, { method: "POST" })).status).toBe(405);
+    expect(site.clientCount()).toBe(0);
+  });
+
+  it("drops a reader that stops reading once 64 KiB is buffered", async () => {
+    expect(SSE_MAX_BUFFERED_BYTES).toBe(64 * 1024);
+    const { url, site, room } = await start();
+    const { port } = new URL(url);
+    const socket = connect(Number(port), "127.0.0.1");
+    sockets.push(socket);
+    socket.write("GET /api/events HTTP/1.1\r\nHost: x\r\n\r\n");
+    await waitFor(() => site.clientCount() === 1);
+    socket.pause(); // Never read again: kernel buffers fill, then Node's write buffer.
+    const text = "\u{1F319}".repeat(500);
+    const deadline = Date.now() + 10_000;
+    let sent = 0;
+    while (site.clientCount() > 0 && Date.now() < deadline) {
+      for (let index = 0; index < 50; index += 1) {
+        sent += 1;
+        room.append({ id: `m${String(sent)}`, at: "t", from: "visitor", name: "a", text });
+      }
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    expect(site.clientCount()).toBe(0);
+  });
+
+  it("answers 408 and closes the connection when a body trickles in too slowly", async () => {
+    expect(SAY_BODY_TIMEOUT_MS).toBe(5_000);
+    const { url, relayed } = await start({ bodyTimeoutMs: 300 });
+    const { port } = new URL(url);
+    const socket = connect(Number(port), "127.0.0.1");
+    sockets.push(socket);
+    let response = "";
+    socket.setEncoding("utf8");
+    socket.on("data", (chunk: string) => {
+      response += chunk;
+    });
+    const closed = new Promise<void>((resolve) => socket.once("close", () => resolve()));
+    socket.write(
+      "POST /api/say HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n" +
+        "Content-Length: 100\r\n\r\n{"
+    );
+    // Keep the body "alive" with a byte every 50 ms; the deadline is for the whole body.
+    const drip = setInterval(() => {
+      if (!socket.destroyed) {
+        socket.write(" ");
+      }
+    }, 50);
+    try {
+      await Promise.race([
+        closed,
+        new Promise((_, reject) => setTimeout(() => reject(new Error("still open")), 3000))
+      ]);
+    } finally {
+      clearInterval(drip);
+    }
+    expect(response).toMatch(/^HTTP\/1\.1 408 /u);
+    expect(response).toContain("request_timeout");
+    expect(relayed).toHaveLength(0);
+  });
+
+  it("stops relaying for the day at dailyMax (429 quiet_hours until UTC midnight)", async () => {
+    let now = Date.parse("2026-10-06T22:00:00Z");
+    const { url, relayed } = await start({
+      dailyMax: 2,
+      trustProxy: true,
+      clock: { nowMs: () => now }
+    });
+    const say = (ip: string) =>
+      fetch(`${url}/api/say`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Forwarded-For": ip },
+        body: JSON.stringify({ name: "Ada", text: "hi" })
+      });
+    expect((await say("203.0.113.1")).status).toBe(202);
+    expect((await say("203.0.113.2")).status).toBe(202);
+    const quiet = await say("203.0.113.3");
+    expect(quiet.status).toBe(429);
+    expect(quiet.headers.get("retry-after")).toBe("7200");
+    expect(await quiet.json()).toMatchObject({
+      error: { code: "quiet_hours", message: expect.stringContaining("midnight UTC") as unknown },
+      retry_after_s: 7200
+    });
+    expect(relayed).toHaveLength(2);
+    // The refused visitor was not charged a per-visitor slot.
+    now = Date.parse("2026-10-07T00:00:00Z");
+    expect((await say("203.0.113.3")).status).toBe(202);
+    expect(relayed).toHaveLength(3);
   });
 });
 

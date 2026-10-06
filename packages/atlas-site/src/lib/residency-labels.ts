@@ -26,10 +26,17 @@ export function residencyMemoryLine(entry: ResidencyEntry): string {
 /**
  * Travel line for a residency: `left for web:home`, `left` when the destination is
  * not recorded, or null while the Wanderer is still there.
+ *
+ * A residency `superseded` by the next one (`next`, the chronologically following
+ * residency) at the same Door was a Door restart, not a move: it reads
+ * `(restarted)` and the stay continues in the next entry.
  */
-export function residencyTravelLine(entry: ResidencyEntry): string | null {
+export function residencyTravelLine(entry: ResidencyEntry, next?: ResidencyEntry): string | null {
   if (entry.traveled_to !== null) {
     return `left for ${entry.traveled_to}`;
+  }
+  if (entry.ended === "superseded" && next !== undefined) {
+    return next.door_id === entry.door_id ? "(restarted)" : `left for ${next.door_id}`;
   }
   return entry.departed_at === null ? null : "left";
 }

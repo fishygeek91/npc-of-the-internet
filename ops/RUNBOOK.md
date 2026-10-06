@@ -711,7 +711,10 @@ from the same release: `door/0.2` is strict, and an older runtime or Door refuse
      `discord:` entry;
    - remove obsolete lines (`DISCORD_REVIEW_*`, `DOOR_COSIGN_RETAIN_*`, `NPC_QUARANTINE_*`) —
      harmless if left, they are ignored;
-   - confirm `NPC_BRAIN_PROVIDER=openai-compat` (the witness reuses the Brain settings).
+   - confirm `NPC_BRAIN_PROVIDER=openai-compat` (the witness reuses the Brain settings);
+   - **delete** `NPC_RESIDENCY_OPERATOR_TRIGGER=0` and `NPC_RESIDENCY_MAX_MS=0` if your `.env`
+     came from an older `.env.example` — they override the new defaults and the Wanderer would
+     never move (`grep -n NPC_RESIDENCY ops/.env`).
 
    Note: the daily move and the operator trigger are now **on** by default; set
    `NPC_RESIDENCY_MAX_MS=0` to keep the Wanderer put until you move it.

@@ -6,9 +6,15 @@ Door: discord:lantern, stay #41.
 {"role":"wanderer","text":"I will remember those birds."}
 RECORD 0123456789ab>>>
 
-Proposed MEMORY:
+<<<MEMORIES 0123456789ab
+"Someone here taught me the names of three night birds."
+MEMORIES 0123456789ab>>>
+
+Proposed JOURNAL:
 <<<PROPOSAL 0123456789ab
-Someone here taught me the names of three night birds.
+# Lantern
+
+I learned three night birds here.
 PROPOSAL 0123456789ab>>>
 
-Is this memory witnessed? Reply with the JSON object only.
+Is this journal witnessed? Reply with the JSON object only.

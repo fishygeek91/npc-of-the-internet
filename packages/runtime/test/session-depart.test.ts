@@ -2,7 +2,7 @@ import { access, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promi
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { DoorError } from "@npc/door-sdk";
+import { DoorError, type HelloResponse } from "@npc/door-sdk";
 import {
   contentAddressSideBlob,
   decodeJournalBlob,
@@ -23,7 +23,14 @@ import type { TranscriptLine } from "../src/distill/types.js";
 import { SingleKeyKeyring } from "../src/keyring/single-key-keyring.js";
 import { Session } from "../src/session/session.js";
 import { SessionError } from "../src/session/errors.js";
-import type { InboundFrame } from "../src/session/types.js";
+import type {
+  AttestRequest,
+  AttestResponse,
+  DoorConnection,
+  HeartbeatRequest,
+  HeartbeatResponse,
+  InboundFrame
+} from "../src/session/types.js";
 import { DoorStub, ScriptedWitness, type WitnessDecision } from "./helpers/door-stub.js";
 import { FakeClock, FakeTimer } from "./helpers/fake-timer.js";
 import {
@@ -69,6 +76,8 @@ class PausingStore implements SoulStore {
   private releaseGate: (() => void) | null = null;
   /** Fail the next append whose record matches (simulated disk error), once. */
   failNextAppend: ((record: OspRecord) => boolean) | null = null;
+  /** Append the next matching record, then throw anyway (the write landed), once. */
+  landThenFailNextAppend: ((record: OspRecord) => boolean) | null = null;
   /** Side-blob CIDs ever written. */
   readonly sideBlobCids: string[] = [];
 
@@ -96,6 +105,11 @@ class PausingStore implements SoulStore {
     if (this.failNextAppend?.(record) === true) {
       this.failNextAppend = null;
       throw new Error("simulated append failure");
+    }
+    if (this.landThenFailNextAppend?.(record) === true) {
+      this.landThenFailNextAppend = null;
+      await this.inner.append(record);
+      throw new Error("simulated append failure after the write landed");
     }
     return this.inner.append(record);
   }
@@ -181,6 +195,36 @@ function distillCalls(brain: FakeBrain): number {
   ).length;
 }
 
+/**
+ * DoorConnection over a DoorStub whose attest answers can be lost: when `loseResponse`
+ * matches, the Door processes the request (and co-signs), but the caller sees
+ * `door_unavailable`. Counts attests per kind.
+ */
+class LossyDoor implements DoorConnection {
+  loseResponse: ((request: AttestRequest) => boolean) | null = null;
+  readonly attests: string[] = [];
+
+  constructor(readonly inner: DoorStub) {}
+
+  hello(request: unknown): Promise<HelloResponse> {
+    return this.inner.hello(request);
+  }
+
+  async attest(request: AttestRequest): Promise<AttestResponse> {
+    this.attests.push(request.kind);
+    const response = await this.inner.attest(request);
+    if (this.loseResponse?.(request) === true) {
+      this.loseResponse = null;
+      throw DoorError.fromCode("door_unavailable", "response lost");
+    }
+    return response;
+  }
+
+  heartbeat(request: HeartbeatRequest): Promise<HeartbeatResponse> {
+    return this.inner.heartbeat(request);
+  }
+}
+
 function createSessionHarness(
   store: SoulStore,
   brain: FakeBrain,
@@ -203,11 +247,11 @@ function createSessionHarness(
     keyring,
     door,
     brain,
-    async start(): Promise<Session> {
+    async start(connection: DoorConnection = door): Promise<Session> {
       return Session.start({
         store,
         brain,
-        door,
+        door: connection,
         keyring,
         doorId: DOOR_ID,
         timer,
@@ -637,6 +681,142 @@ describe("Session.depart (witnessed memory)", () => {
       "attestation/arrival",
       "memory/shard",
       "attestation/departure",
+      "attestation/travel"
+    ]);
+    const travel = records.at(-1);
+    expect(
+      travel?.type === "attestation" && travel.body.kind === "travel" && travel.body.to_door_id
+    ).toBe("web:next");
+    await expectChainValid(store);
+    await expect(session.departBare()).rejects.toThrow(/already departed/);
+  });
+});
+
+/** Departure / travel attestation kinds in chain order. */
+function attestationKinds(records: readonly OspRecord[]): string[] {
+  return shape(records).filter((entry) => entry.startsWith("attestation/"));
+}
+
+describe("Session.depart retries (in-process depart ledger)", () => {
+  const transcriptOptions = async () => ({
+    transcript: await writeTranscript(await makeTempDir("t-"), sampleTranscriptLines()),
+    journalDir: await makeTempDir("j-"),
+    toDoorId: "web:next",
+    minMemoryLines: 1
+  });
+
+  it("decline, then the rejected append fails: the retry never re-asks and stores no prose", async () => {
+    const store = await buildGenesisStore();
+    const secret = "I remember Bob's home address on Elm street.";
+    let asked = 0;
+    // A second ask would be witnessed — the retry must never get that far.
+    const witness = new ScriptedWitness(() =>
+      ++asked === 1 ? { witnessed: false, reason: "private" } : { witnessed: true }
+    );
+    const session = await createSessionHarness(store, scriptedBrain([secret]), witness).start();
+    store.failNextAppend = (record) => record.type === "memory" && record.body.kind === "rejected";
+    const options = await transcriptOptions();
+
+    await expect(session.depart(options)).rejects.toThrow(/simulated append failure/);
+    const result = await session.depart(options);
+
+    expect(witness.texts()).toEqual([secret]);
+    expect(result).toEqual({ witnessed: 0, declined: 1, screened: 0, journalPath: null });
+    expect(shape(await collectRecords(store))).toEqual([
+      "attestation/arrival",
+      "memory/rejected:witness_private",
+      "attestation/departure",
+      "attestation/travel"
+    ]);
+    expect(store.sideBlobCids).toEqual([]);
+    await expectChainValid(store);
+  });
+
+  it("witnessed, then the shard append fails: the retry re-appends the sealed shard (no re-ask)", async () => {
+    const store = await buildGenesisStore();
+    const text = "I remember a private thing.";
+    let asked = 0;
+    // A second ask about the shard would be declined — it must never happen.
+    const witness = new ScriptedWitness((input) =>
+      input.kind === "shard" && ++asked > 1
+        ? { witnessed: false, reason: "private" }
+        : { witnessed: true }
+    );
+    const session = await createSessionHarness(store, scriptedBrain([text]), witness).start();
+    store.failNextAppend = (record) => record.type === "memory" && record.body.kind === "shard";
+    const options = await transcriptOptions();
+
+    await expect(session.depart(options)).rejects.toThrow(/simulated append failure/);
+    const result = await session.depart(options);
+
+    expect(witness.texts("shard")).toEqual([text]);
+    expect(result).toMatchObject({ witnessed: 1, declined: 0 });
+    expect(await shardTextsOnChain(store)).toEqual([text]);
+    expect(new Set(store.sideBlobCids).size).toBe(2); // the shard blob + the journal blob
+    await expectChainValid(store);
+  });
+
+  it("an append that landed and then threw counts as appended (head CID): one shard", async () => {
+    const store = await buildGenesisStore();
+    const texts = nShards(2);
+    const witness = new ScriptedWitness();
+    const session = await createSessionHarness(store, scriptedBrain(texts), witness).start();
+    store.landThenFailNextAppend = (record) =>
+      record.type === "memory" && record.body.kind === "shard";
+    const options = await transcriptOptions();
+
+    await expect(session.depart(options)).rejects.toThrow(/after the write landed/);
+    const result = await session.depart(options);
+
+    expect(witness.texts("shard")).toEqual(texts);
+    expect(result.witnessed).toBe(2);
+    expect(await shardTextsOnChain(store)).toEqual(texts);
+    await expectChainValid(store);
+  });
+
+  it("departure co-signed but its append fails: the retry re-appends it, no second attest", async () => {
+    const store = await buildGenesisStore();
+    const harness = createSessionHarness(store, scriptedBrain(nShards(1)));
+    const door = new LossyDoor(harness.door);
+    const session = await harness.start(door);
+    store.failNextAppend = (record) =>
+      record.type === "attestation" && record.body.kind === "departure";
+    const options = await transcriptOptions();
+
+    await expect(session.depart(options)).rejects.toThrow(/simulated append failure/);
+    // The Door closed the epoch at the departure attest: a re-attest would be epoch_closed.
+    expect(harness.door.core.getActiveEpoch()).toBeNull();
+    await session.depart(options);
+
+    expect(door.attests.filter((kind) => kind === "departure")).toHaveLength(1);
+    expect(attestationKinds(await collectRecords(store))).toEqual([
+      "attestation/arrival",
+      "attestation/departure",
+      "attestation/travel"
+    ]);
+    await expectChainValid(store);
+  });
+
+  it("departBare: a departure the Door will not attest (epoch_closed) still appends travel", async () => {
+    const store = await buildGenesisStore();
+    const harness = createSessionHarness(store, scriptedBrain(nShards(1)));
+    const door = new LossyDoor(harness.door);
+    const session = await harness.start(door);
+    // The Door co-signs the departure (closing the epoch) but the answer never arrives.
+    door.loseResponse = (request) => request.kind === "departure";
+    const options = await transcriptOptions();
+
+    await expect(session.depart(options)).rejects.toThrow(/response lost/);
+    const retry = await session.depart(options).catch((error: unknown) => error);
+    expect((retry as DoorError).code).toBe("epoch_closed");
+
+    await expect(session.departBare("web:next")).resolves.toEqual({ departure: false });
+
+    const records = await collectRecords(store);
+    expect(shape(records)).toEqual([
+      "attestation/arrival",
+      "memory/shard",
+      "memory/journal",
       "attestation/travel"
     ]);
     const travel = records.at(-1);

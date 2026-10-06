@@ -99,12 +99,12 @@ Memory subtypes are distinguished by **`body.kind`** (not by separate top-level 
 | `kind` | Meaning | `cosigners` |
 |--------|---------|-------------|
 | `shard` | A witnessed memory; included in self-composition. | **Required non-empty** (the Door's witness co-signature). |
-| `journal` | The Wanderer's account of a residency, written from that residency's witnessed shards only; published (e.g. on the Atlas), never composed into the self. `osp/0.2` only. | **Required non-empty** (witnessed like a shard). |
+| `journal` | The Wanderer's account of a residency, written from that residency's witnessed shards only; at most one per residency; published (e.g. on the Atlas), never composed into the self. `osp/0.2` only. | **Required non-empty** (witnessed against the residency's witnessed shards). |
 | `rejected` | A memory that did not make it: dropped by the Wanderer's own immune screen, or declined by the Door's witness. Category only; **no payload**. | `[]` |
 
 #### Order within a residency (informative)
 
-At departure the Wanderer appends, in this order and all under the departing residency: one `rejected` record per immune-screen category that dropped transcript material; for each distilled shard, either the witnessed `shard` or a `rejected` record (`category: "witness_<reason>"`); then at most one `journal`; then the `departure` and `travel` attestations.
+At departure the Wanderer appends, in this order and all under the departing residency: one `rejected` record per immune-screen category that dropped transcript material; for each distilled shard, either the witnessed `shard` or a `rejected` record (`category: "witness_<reason>"`); then, when at least one shard was witnessed, at most one `journal` (or a `witness_<reason>` `rejected` record if the witness declined it); then the `departure` and `travel` attestations.
 
 ### Body fields — `kind: "shard"` (`osp/0.2`)
 

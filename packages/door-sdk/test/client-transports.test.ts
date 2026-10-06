@@ -21,7 +21,11 @@ import {
   outboundSigningPayload,
   sessionBindSigningPayload
 } from "../src/signing.js";
-import { HttpDoorConnection } from "../src/transports/http-client.js";
+import {
+  DEFAULT_HTTP_TIMEOUT_MS,
+  DEFAULT_MEMORY_ATTEST_TIMEOUT_MS,
+  HttpDoorConnection
+} from "../src/transports/http-client.js";
 import { HttpDoorServer } from "../src/transports/http.js";
 import { InProcessDoorConnection } from "../src/transports/in-process.js";
 import { WsDoorSessionServer } from "../src/transports/ws.js";
@@ -692,5 +696,79 @@ describe("WsDoorSessionClient", () => {
     } finally {
       await client.close();
     }
+  });
+});
+
+describe("HttpDoorConnection timeouts", () => {
+  let server: ReturnType<typeof createServer> | null = null;
+
+  afterEach(async () => {
+    const running = server;
+    server = null;
+    if (running !== null) {
+      running.closeAllConnections();
+      await new Promise((resolve) => running.close(resolve));
+    }
+  });
+
+  /** A Door that answers hello (when `helloAnswers`) and never answers anything else. */
+  async function hangingDoor(helloAnswers: boolean): Promise<string> {
+    const door = new Door({
+      doorId: DOOR_ID,
+      doorKeypair: generateKeypair(),
+      soulPublicKey: generateKeypair().publicKey,
+      clock: new FakeClock(RECEIVED_AT),
+      policy: defaultPolicy
+    });
+    const hello = await door.hello(helloRequest);
+    server = createServer((req, res) => {
+      if (helloAnswers && req.url === "/door/hello") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(hello));
+        return;
+      }
+      // Never answer.
+    });
+    await new Promise<void>((resolve) => server?.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (address === null || typeof address === "string") {
+      throw new Error("no address");
+    }
+    return `http://127.0.0.1:${String(address.port)}`;
+  }
+
+  const helloRequest = {
+    protocol_version: DOOR_PROTOCOL_VERSION,
+    soul_pubkey: encodePublicKey(generateKeypair().publicKey)
+  };
+  const request = (kind: AttestRequest["kind"]): AttestRequest =>
+    ({ kind, door_id: DOOR_ID, epoch: EPOCH }) as unknown as AttestRequest;
+
+  it("defaults: 30 s for hello / heartbeat / presence attests, 180 s for memory attests", () => {
+    expect(DEFAULT_HTTP_TIMEOUT_MS).toBe(30_000);
+    expect(DEFAULT_MEMORY_ATTEST_TIMEOUT_MS).toBe(180_000);
+  });
+
+  it("a memory attest waits for the memory timeout; everything else for the short one", async () => {
+    const baseUrl = await hangingDoor(true);
+    const client = new HttpDoorConnection({ baseUrl, timeoutMs: 50, memoryTimeoutMs: 300 });
+    await client.hello(helloRequest);
+    const timedOut = (ms: number): unknown => ({
+      code: "door_unavailable",
+      message: `door unavailable: request timed out after ${String(ms)}ms`
+    });
+    await expect(client.attest(request("departure"))).rejects.toMatchObject(timedOut(50));
+    await expect(client.heartbeat({} as HeartbeatRequest)).rejects.toMatchObject(timedOut(50));
+    const started = Date.now();
+    await expect(client.attest(request("memory"))).rejects.toMatchObject(timedOut(300));
+    expect(Date.now() - started).toBeGreaterThanOrEqual(250);
+  });
+
+  it("hello times out too", async () => {
+    const client = new HttpDoorConnection({ baseUrl: await hangingDoor(false), timeoutMs: 50 });
+    await expect(client.hello(helloRequest)).rejects.toMatchObject({
+      code: "door_unavailable",
+      message: "door unavailable: request timed out after 50ms"
+    });
   });
 });

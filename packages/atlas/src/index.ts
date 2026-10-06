@@ -26,6 +26,7 @@ export {
   type RecordsQuery,
   type ResidenciesResponse,
   type ResidencyCounts,
+  type ResidencyEnd,
   type ResidencyEntry,
   type StateResponse,
   type WandererStatus

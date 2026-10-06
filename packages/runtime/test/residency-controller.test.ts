@@ -90,6 +90,7 @@ function fakeWorld(
         residency.bareCalls += 1;
         events.push(`depart_bare:${String(epoch)}`);
         await opts.departBare?.(residency);
+        return { departure: true };
       },
       close: async () => {
         events.push(`close:${String(epoch)}`);
@@ -432,6 +433,31 @@ describe("ResidencyController cycle", () => {
     expect(entries.some((entry) => entry.msg === "residency_depart_abandoned")).toBe(true);
   });
 
+  it("lost_session: no memory attempt — straight to departBare(next), then arrival", async () => {
+    const world = fakeWorld({ online: ["a", "b"] });
+    const { controller, entries, delays } = controllerWith(world, {
+      bootPreference: async () => ["a"]
+    });
+    await controller.begin();
+    const outcome = await controller.requestCycle("lost_session");
+    expect(outcome).toMatchObject({
+      kind: "abandoned",
+      trigger: "lost_session",
+      fromDoor: "a",
+      toDoor: "b",
+      toEpoch: 2
+    });
+    expect(world.residencies[0]?.departRequests).toHaveLength(0);
+    expect(world.residencies[0]?.bareCalls).toBe(1);
+    expect(delays).toEqual([]);
+    expect(entries).toContainEqual(
+      expect.objectContaining({
+        msg: "residency_departed_bare",
+        fields: { epoch: 1, departure: true }
+      })
+    );
+  });
+
   it("a failing departBare is logged and the Wanderer still arrives", async () => {
     const world = fakeWorld({
       depart: async () => {
@@ -490,6 +516,22 @@ describe("ResidencyController cycle", () => {
     expect(world.arriveCalls).toHaveLength(1);
     expect(controller.current).toBeNull();
     expect(await controller.requestCycle("operator")).toMatchObject({ kind: "shutting_down" });
+  });
+
+  it("shutdown during the boot arrival closes it and begin rejects", async () => {
+    const world = fakeWorld({ online: ["a"] });
+    let controller: ResidencyController | null = null;
+    const { controller: built } = controllerWith(world, {
+      arrive: async (doorId) => {
+        const residency = await world.arrive(doorId);
+        await controller?.shutdown();
+        return residency;
+      }
+    });
+    controller = built;
+    await expect(built.begin()).rejects.toThrow(/aborted by shutdown/);
+    expect(built.current).toBeNull();
+    expect(world.events).toEqual(["arrive:a:1", "close:1"]);
   });
 
   it("shutdown while waiting to arrive aborts the retry loop", async () => {

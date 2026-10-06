@@ -11,8 +11,9 @@ import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 
 import { OutboundFrameSchema, type OutboundFrame } from "@npc/door-sdk";
+import { FileSoulStore } from "@npc/osp-core";
 import pino from "pino";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type WebSocket from "ws";
 
 import { FakeBrain } from "../src/brain/fake-brain.js";
@@ -20,10 +21,12 @@ import type { BrainMessage } from "../src/brain/types.js";
 import { startResidencyDaemon, type ResidencyDaemonHandle } from "../src/daemon.js";
 import { DISTILLER_SYSTEM } from "../src/prompts/distiller/system.js";
 import { JOURNAL_SYSTEM } from "../src/prompts/journal/system.js";
+import { SingleKeyKeyring } from "../src/keyring/single-key-keyring.js";
 import { writeDepartRequest } from "../src/residency/control-dir.js";
+import { Session } from "../src/session/session.js";
 import { ScriptedWitness } from "./helpers/door-stub.js";
 import { FakeTimer } from "./helpers/fake-timer.js";
-import { DOOR, OTHER_DOOR, THIRD_DOOR } from "./helpers/fixed-keys.js";
+import { DOOR, OTHER_DOOR, SOUL, THIRD_DOOR } from "./helpers/fixed-keys.js";
 import {
   capturingLogger,
   chainShape,
@@ -420,5 +423,116 @@ describe("residency lifecycle (daemon, multi-Door)", () => {
     expect(handle.currentEpoch()).toBe(1);
     // The request is left for no one (Ghost: tmpfs, cleared on restart).
     await readFile(join(dirs.controlDir, "depart.request"), "utf8");
+  });
+
+  it("boot prefers the last travel's to_door_id when no arrival followed it", async () => {
+    const dirs = await createSoulDirs("npc-boot-travel-");
+    const a = await door(A, DOOR);
+    const b = await door(B, OTHER_DOOR);
+    // A residency at A that departed toward B, then the process died before arriving.
+    const store = await FileSoulStore.open(dirs.chainDir, { doorPublicKeys: KEYS });
+    const session = await Session.start({
+      store,
+      brain: lifecycleBrain(),
+      door: a.door,
+      keyring: new SingleKeyKeyring(SOUL.privateKey),
+      doorId: A,
+      timer: new FakeTimer(),
+      clock: { now: () => new Date().toISOString() },
+      doorPublicKeys: KEYS
+    });
+    await session.departBare(B);
+    await store.close();
+
+    handle = await startResidencyDaemon(
+      multiDoorConfig({ dirs, doors: [a, b], doorPublicKeys: KEYS, preferredDoorId: A }),
+      { brain: lifecycleBrain(), timer: new FakeTimer(), logger: silent, skipSignals: true }
+    );
+    expect(handle.currentDoorId()).toBe(B);
+    expect(handle.currentEpoch()).toBe(2);
+  });
+
+  it("the Door lost the session (restart): heartbeat session_invalid → travels on without memories", async () => {
+    const dirs = await createSoulDirs("npc-lost-");
+    const a = await door(A, DOOR);
+    const b = await door(B, OTHER_DOOR);
+    const timer = new FakeTimer();
+    const { logger, lines } = capturingLogger();
+    handle = await startResidencyDaemon(
+      multiDoorConfig({ dirs, doors: [a, b], doorPublicKeys: KEYS, preferredDoorId: A }),
+      { brain: lifecycleBrain(), timer, logger, skipSignals: true }
+    );
+    const daemon = handle;
+    await waitFor(() => a.wsServer.getActiveClients().size === 1, "socket at A");
+
+    // Door A restarts on the same URL: it no longer knows the residency.
+    const port = Number(new URL(a.baseUrl).port);
+    await a.stop();
+    doors.splice(doors.indexOf(a), 1);
+    const restarted = await door(A, DOOR, { port });
+
+    // Heartbeat until one reaches the restarted Door (the first may hit a stale socket).
+    const failures = (): number => lines.filter((line) => line.msg === "heartbeat_failed").length;
+    const lost = (): boolean => lines.some((line) => line.msg === "residency_session_lost");
+    for (let attempt = 0; attempt < 3 && !lost(); attempt += 1) {
+      const before = failures();
+      timer.tick();
+      await waitFor(() => failures() > before, "heartbeat failure");
+    }
+    await waitFor(() => daemon.currentDoorId() === B, "travel after the lost session");
+    expect(lines).toContainEqual(
+      expect.objectContaining({ msg: "residency_session_lost", doorId: A, epoch: 1 })
+    );
+    expect(lines).toContainEqual(
+      expect.objectContaining({ msg: "residency_departed_bare", epoch: 1, departure: false })
+    );
+    expect(restarted.witness?.calls).toHaveLength(0);
+    await daemon.shutdown();
+    handle = null;
+
+    expect(withoutHeartbeats(chainShape(await readVerifiedChain(dirs.chainDir, KEYS)))).toEqual([
+      `arrival:${A}:1`,
+      `travel:${A}->${B}`,
+      `arrival:${B}:2`
+    ]);
+  });
+
+  it("SIGTERM while no Door is reachable at boot stops the daemon", async () => {
+    const dirs = await createSoulDirs("npc-boot-term-");
+    const a = await door(A, DOOR);
+    a.available = false;
+    const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
+    const beforeTerm = process.listenerCount("SIGTERM");
+    const beforeUsr2 = process.listenerCount("SIGUSR2");
+    try {
+      const booting = startResidencyDaemon(
+        multiDoorConfig({ dirs, doors: [a], doorPublicKeys: KEYS }),
+        {
+          brain: lifecycleBrain(),
+          timer: new FakeTimer(),
+          logger: silent,
+          skipSignals: false,
+          // Waits until shutdown aborts it: the daemon is stuck retrying arrival.
+          sleep: (_ms, signal) =>
+            new Promise<void>((resolve) => {
+              signal.addEventListener("abort", () => resolve(), { once: true });
+            })
+        }
+      );
+      await waitFor(
+        () => process.listenerCount("SIGTERM") === beforeTerm + 1,
+        "SIGTERM handler during boot"
+      );
+      process.listeners("SIGTERM").at(-1)?.("SIGTERM");
+
+      const stopped = await booting;
+      expect(stopped.currentDoorId()).toBeNull();
+      await waitFor(() => exit.mock.calls.length > 0, "process.exit");
+      expect(exit).toHaveBeenCalledWith(0);
+      expect(process.listenerCount("SIGTERM")).toBe(beforeTerm);
+      expect(process.listenerCount("SIGUSR2")).toBe(beforeUsr2);
+    } finally {
+      exit.mockRestore();
+    }
   });
 });

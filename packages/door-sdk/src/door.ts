@@ -38,7 +38,7 @@ import {
   signDoorCosig
 } from "./signing.js";
 import { ResidencyRecord, type ResidencyRecordOptions } from "./residency-record.js";
-import type { MemoryKind } from "./witness.js";
+import type { MemoryKind, WitnessVerdict } from "./witness.js";
 
 /** Default ±skew for Wanderer `issued_at` vs Door clock (5 minutes). */
 export const DEFAULT_MAX_ISSUED_AT_SKEW_MS = 300_000;
@@ -48,6 +48,9 @@ export const DEFAULT_MAX_ISSUED_AT_SKEW_MS = 300_000;
  * evicted first). Combined with the `issued_at` freshness window this bounds replay.
  */
 export const OUTBOUND_MSG_ID_MEMORY = 10_000;
+
+/** Default cap on witness calls per epoch (bounds the witness model's cost per stay). */
+export const DEFAULT_MAX_MEMORY_ATTESTS = 32;
 
 /**
  * Session lifecycle event: an epoch began here (`arrived`), departed (`retired`), or was
@@ -71,9 +74,28 @@ export type DoorOptions = {
    * Defaults to {@link DEFAULT_MAX_ISSUED_AT_SKEW_MS}.
    */
   maxIssuedAtSkewMs?: number;
-  /** Bounds on the in-memory residency record the witness reads (default 120 000 chars). */
+  /** Bounds on the in-memory residency record the witness reads (per-role char budgets). */
   residencyRecord?: ResidencyRecordOptions;
+  /**
+   * Max witness calls per epoch; past it, new memories are declined (`other`, "memory
+   * budget exhausted"). Defaults to {@link DEFAULT_MAX_MEMORY_ATTESTS}.
+   */
+  maxMemoryAttests?: number;
 };
+
+/** What the Door decided about memories in the active epoch (reset with the record). */
+type EpochMemory = {
+  /** Verdict per `<kind>:<side-blob hash>`: decisions are final for the epoch. */
+  decided: Map<string, WitnessVerdict>;
+  /** Texts witnessed as shards, in order (a journal is judged against these). */
+  witnessedShards: string[];
+  journalWitnessed: boolean;
+  witnessCalls: number;
+};
+
+function emptyEpochMemory(): EpochMemory {
+  return { decided: new Map(), witnessedShards: [], journalWitnessed: false, witnessCalls: 0 };
+}
 
 type ActiveSession = {
   epoch: number;
@@ -114,6 +136,9 @@ export class Door {
   private readonly seenOutboundMsgIds = new Set<string>();
   /** What happened in the active epoch, as this Door saw it (witness input). */
   private readonly transcript: ResidencyRecord;
+  private readonly maxMemoryAttests: number;
+  /** Replaced (never mutated in place) when the epoch ends, so a slow witness of an old epoch writes nowhere. */
+  private epochMemory: EpochMemory = emptyEpochMemory();
 
   constructor(options: DoorOptions) {
     this.doorId = options.doorId;
@@ -123,6 +148,10 @@ export class Door {
     this.policy = options.policy;
     this.maxIssuedAtSkewMs = options.maxIssuedAtSkewMs ?? DEFAULT_MAX_ISSUED_AT_SKEW_MS;
     this.transcript = new ResidencyRecord(options.residencyRecord);
+    this.maxMemoryAttests = options.maxMemoryAttests ?? DEFAULT_MAX_MEMORY_ATTESTS;
+    if (!Number.isSafeInteger(this.maxMemoryAttests) || this.maxMemoryAttests < 0) {
+      throw new RangeError("maxMemoryAttests must be a non-negative integer");
+    }
   }
 
   /** True when this Door witnesses memories (`attest.memory`). */
@@ -327,7 +356,7 @@ export class Door {
       this.sessionRetired = false;
       this.lastHeartbeatSeq = 0;
       this.seenOutboundMsgIds.clear();
-      this.transcript.clear();
+      this.clearResidencyRecord();
       this.lastKnownEpoch = request.epoch;
       this.emitSessionLifecycle({ type: "arrived", doorId: this.doorId, epoch: request.epoch });
     } else {
@@ -343,7 +372,7 @@ export class Door {
         const departedEpoch = request.epoch;
         this.activeSession = null;
         this.sessionRetired = true;
-        this.transcript.clear();
+        this.clearResidencyRecord();
         this.emitSessionLifecycle({
           type: "retired",
           doorId: this.doorId,
@@ -373,6 +402,12 @@ export class Door {
       received_at: receivedAt,
       door_sig: doorSig
     };
+  }
+
+  /** Forget the epoch's record and memory decisions (arrival, departure, supersession). */
+  private clearResidencyRecord(): void {
+    this.transcript.clear();
+    this.epochMemory = emptyEpochMemory();
   }
 
   /** Lines the active epoch's residency record currently holds (ops / tests). */
@@ -627,8 +662,11 @@ export class Door {
 
   /**
    * Witness a `memory` attest: bind `core` to `text`, then ask the host witness to judge
-   * `text` against this Door's own record of the residency. Declines are final
-   * (`witness_declined`); a witness that cannot decide is `witness_unavailable`.
+   * `text` against this Door's own record of the residency (a journal: against the shards
+   * witnessed this epoch). Decisions are final for the epoch: a repeat of a decided text
+   * gets the same answer without asking again. A journal needs a witnessed shard first,
+   * and at most one journal is witnessed per epoch. Witness calls are capped per epoch.
+   * A witness that cannot decide is `witness_unavailable` (never recorded).
    */
   private async witness(request: AttestRequest): Promise<void> {
     const witnessMemory = this.policy.witnessMemory;
@@ -642,7 +680,29 @@ export class Door {
     if (text === undefined) {
       throw DoorError.fromCode("invalid_request", "invalid_request: memory attest requires text");
     }
-    const kind = await this.assertMemoryCoreBound(request, text);
+    // Captured before any await: arrival/departure replace it, so decisions about an
+    // epoch that ends meanwhile land nowhere.
+    const memory = this.epochMemory;
+    const { kind, hash } = await this.assertMemoryCoreBound(request, text);
+    const key = `${kind}:${hash}`;
+    const decline = (reason: WitnessReason, why: string): DoorError => {
+      memory.decided.set(key, { witnessed: false, reason });
+      return declined(reason, why);
+    };
+
+    if (replayDecision(memory.decided.get(key))) {
+      return;
+    }
+    if (kind === "journal" && memory.journalWitnessed) {
+      throw decline("other", "a journal was already witnessed this epoch");
+    }
+    if (kind === "journal" && memory.witnessedShards.length === 0) {
+      throw decline("ungrounded", "a journal needs at least one witnessed shard");
+    }
+    if (memory.witnessCalls >= this.maxMemoryAttests) {
+      throw declined("other", "memory budget exhausted");
+    }
+    memory.witnessCalls += 1;
 
     let verdict: Awaited<ReturnType<typeof witnessMemory>>;
     try {
@@ -651,7 +711,8 @@ export class Door {
         epoch: request.epoch,
         kind,
         text,
-        transcript: this.transcript.lines()
+        transcript: this.transcript.lines(),
+        witnessedShards: [...memory.witnessedShards]
       });
     } catch (error) {
       if (error instanceof DoorError) {
@@ -667,15 +728,26 @@ export class Door {
     }
     // Fail closed on host witnesses that break the type contract: only `true` witnesses.
     const witnessed = (verdict as { witnessed?: unknown } | null | undefined)?.witnessed;
-    if (witnessed === true) {
-      return;
-    }
-    if (witnessed !== false) {
+    if (witnessed !== true && witnessed !== false) {
       throw DoorError.fromCode("witness_unavailable", "witness_unavailable: malformed verdict");
     }
-    const parsedReason = WitnessReasonSchema.safeParse((verdict as { reason?: unknown }).reason);
-    const reason: WitnessReason = parsedReason.success ? parsedReason.data : "other";
-    throw DoorError.fromCode("witness_declined", `witness_declined: ${reason}`, { reason });
+    // A concurrent request for the same text decided first: its decision stands.
+    if (replayDecision(memory.decided.get(key))) {
+      return;
+    }
+    if (!witnessed) {
+      const parsedReason = WitnessReasonSchema.safeParse((verdict as { reason?: unknown }).reason);
+      throw decline(parsedReason.success ? parsedReason.data : "other", "declined by the witness");
+    }
+    if (kind === "journal") {
+      if (memory.journalWitnessed) {
+        throw decline("other", "a journal was already witnessed this epoch"); // concurrent journal
+      }
+      memory.journalWitnessed = true;
+    } else {
+      memory.witnessedShards.push(text);
+    }
+    memory.decided.set(key, { witnessed: true });
   }
 
   /** OSP residency string for this Door at `epoch` (`door:<door_id>/epoch:<n>`). */
@@ -723,9 +795,12 @@ export class Door {
    * Bind a `memory` attest `core` to its prose: canonical `osp/0.2` memory core of this
    * Door's residency at the request epoch, whose body is exactly a shard
    * (`text_cid`, `text_hash`, `distilled_at`) or a journal (`journal_cid`, `journal_hash`,
-   * `written_at`) and whose hash is the side-blob hash of `text`. Returns the kind.
+   * `written_at`) and whose hash is the side-blob hash of `text`. Returns the kind and hash.
    */
-  private async assertMemoryCoreBound(request: AttestRequest, text: string): Promise<MemoryKind> {
+  private async assertMemoryCoreBound(
+    request: AttestRequest,
+    text: string
+  ): Promise<{ kind: MemoryKind; hash: string }> {
     const core = parseCanonicalCore(request.core);
     if (core === null) {
       throw DoorError.fromCode("core_invalid", "core_invalid: core is not canonical JSON");
@@ -778,7 +853,7 @@ export class Door {
         "core_invalid: memory core does not reference the submitted text"
       );
     }
-    return kind;
+    return { kind, hash: expectedHash };
   }
 
   private requireActiveSession(doorId: string, epoch: number, sessionPubkey: string): void {
@@ -844,6 +919,22 @@ export class Door {
       }
     }
   }
+}
+
+/** Replay an earlier decision for a text: true if witnessed, throws if declined, false if none. */
+function replayDecision(decision: WitnessVerdict | undefined): boolean {
+  if (decision === undefined) {
+    return false;
+  }
+  if (decision.witnessed) {
+    return true;
+  }
+  throw declined(decision.reason, "already declined this epoch");
+}
+
+/** `witness_declined` (422) with `details.reason`. */
+function declined(reason: WitnessReason, why: string): DoorError {
+  return DoorError.fromCode("witness_declined", `witness_declined: ${reason} (${why})`, { reason });
 }
 
 /** True for a non-null, non-array JSON object. */

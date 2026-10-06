@@ -59,6 +59,8 @@ export async function startTestDoor(options: {
   witness?: ScriptedWitness | null;
   clock?: { now(): string };
   capabilities?: Capability[];
+  /** Listen port (default ephemeral) — reuse a stopped Door's port to simulate a restart. */
+  port?: number;
 }): Promise<TestDoor> {
   const witness = options.witness === undefined ? new ScriptedWitness() : options.witness;
   const handle = { available: true };
@@ -80,7 +82,10 @@ export async function startTestDoor(options: {
     clock: options.clock ?? { now: () => new Date().toISOString() },
     policy
   });
-  const httpServer = new HttpDoorServer({ door });
+  const httpServer = new HttpDoorServer({
+    door,
+    ...(options.port === undefined ? {} : { port: options.port })
+  });
   const { baseUrl } = await httpServer.start();
   const wsServer = new WsDoorSessionServer({ door, server: httpServer.nodeServer });
   await wsServer.start();

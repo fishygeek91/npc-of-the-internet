@@ -15,20 +15,21 @@ It is an ordinary `door/0.2` Door (`@npc/door-sdk`): the runtime arrives with a 
 
 - `GET /` · `GET /app.js` · `GET /app.css` — the page (static files in `public/`, vanilla JS, no external hosts, no build step).
 - `GET /api/state` → `{ present, door: {id, name, description}, wanderer?, messages }` — `messages` are the last ≤ 100 room lines; `wanderer` (only while absent) is `{ last_seen_here, status?, door_id?, since? }`.
-- `GET /api/events` — Server-Sent Events: `message` (a room line), `reaction` (`{target, emoji}`), `presence` (`{present, last_seen_here}`); `: ping` comment every 25 s. At most `DOOR_WEB_MAX_CLIENTS` streams (503 beyond) and 20 per client address (429).
-- `POST /api/say` — JSON `{name, text}`; `202 {id}` when relayed. `409 not_here` while absent, `400 invalid_name|invalid_text|invalid_json`, `413` over 4 KiB, `415` unless `Content-Type: application/json`, `403` for cross-site browser posts (`Sec-Fetch-Site`), `429 rate_limited` with `Retry-After`.
+- `GET /api/events` — Server-Sent Events: `message` (a room line), `reaction` (`{target, emoji}`), `presence` (`{present, last_seen_here}`); `: ping` comment every 25 s. At most `DOOR_WEB_MAX_CLIENTS` streams (503 beyond) and 20 per client (429). GET only (`HEAD` → 405).
+- `POST /api/say` — JSON `{name, text}`; `202 {id}` when relayed. `409 not_here` while absent, `400 invalid_name|invalid_text|invalid_json`, `413` over 4 KiB, `408` unless the whole body arrives within 5 s, `415` unless `Content-Type: application/json`, `403` for cross-site browser posts (`Sec-Fetch-Site`), `429 rate_limited` with `Retry-After`, `429 quiet_hours` (with `Retry-After` to UTC midnight) once `DOOR_WEB_DAILY_MAX` messages have been relayed today.
 - `GET /healthz` → `200 ok`.
 
 `present` means the Door has an active residency epoch **and** the runtime's session socket is bound. Presence is re-derived on lifecycle events and polled every 2 s (the WS server exposes no connect/disconnect hook).
 
 ## Behaviour
 
-- **Visitors:** name 1–32 characters, text 1–500 (control and bidi-override characters stripped; "The Wanderer" is reserved). Rate limits: 1 message / 3 s and 20 / 10 min per client address, plus `DOOR_WEB_GLOBAL_PER_MIN` for everyone together.
-- **Relay:** each accepted message becomes an inbound frame — `author_id` is `web-<12 hex>`, a keyed hash of the client address under a secret salt rotated every UTC day (the raw IP never leaves the process); `author_display` is the name; `addressed` is true when the text mentions "wanderer" or starts with `@`. A leading `@` on words is dropped in the relayed text only (the runtime's immune screen treats `@handle` as PII).
+- **Visitors:** name 1–32 characters, text 1–500 (control and invisible format characters — zero-width, bidi, tag characters — stripped; text keeps the zero-width joiner for emoji). "The Wanderer" is reserved in any spelling: names are compared NFKC-folded, lowercased, letters only. Rate limits: 1 message / 3 s and 20 / 10 min per client, plus `DOOR_WEB_GLOBAL_PER_MIN` for everyone together, plus `DOOR_WEB_DAILY_MAX` relayed per UTC day (bounds model cost).
+- **Client:** an IPv4 address, or an IPv6 **/64** (one subscriber owns a whole /64); IPv4-mapped IPv6 counts as its IPv4. Rate limits, SSE caps and `author_id` all use this key.
+- **Relay:** each accepted message becomes an inbound frame — `author_id` is `web-<12 hex>`, a keyed hash of the client key under a secret salt rotated every UTC day (the raw IP never leaves the process); `author_display` is the name; `addressed` is true when the text mentions "wanderer" or starts with `@`. A leading `@` on words is dropped in the relayed text only (the runtime's immune screen treats `@handle` as PII).
 - **The Wanderer:** verified outbound text appears as "The Wanderer" (a `reply_to` shows which message it answers); reactions decorate the target message.
 - **Notices:** arrival → "The Wanderer has arrived."; departure → "The Wanderer has moved on.".
 - **Privacy:** the room is an in-memory ring of 200 lines; nothing is written to disk. No cookies, no analytics; the name is remembered in the visitor's own `localStorage`. Message text and IPs are never logged.
-- **Hardening:** strict CSP (`default-src 'self'`, no inline script/style, `frame-ancestors 'none'`), `nosniff`, `no-referrer`; all text rendered with `textContent`; 10 s header timeout; slow SSE readers are dropped.
+- **Hardening:** strict CSP (`default-src 'self'`, no inline script/style, `frame-ancestors 'none'`), `nosniff`, `no-referrer`; all text rendered with `textContent`; 10 s header timeout, 5 s body deadline; SSE readers with more than 64 KiB unsent are dropped.
 
 ## Config (env)
 
@@ -41,8 +42,9 @@ It is an ordinary `door/0.2` Door (`@npc/door-sdk`): the runtime arrives with a 
 | `DOOR_WEB_PUBLIC_HOST` / `DOOR_WEB_PUBLIC_PORT` | `0.0.0.0` / `8080` | Visitor site listener |
 | `DOOR_WEB_COMMUNITY_NAME` | `The Wanderer's front porch` | Page title and `hello` community name |
 | `DOOR_WEB_COMMUNITY_DESCRIPTION` | (short default) | Page subtitle and `hello` description |
-| `DOOR_WEB_MAX_CLIENTS` | `500` | Max concurrent SSE streams |
+| `DOOR_WEB_MAX_CLIENTS` | `200` | Max concurrent SSE streams |
 | `DOOR_WEB_GLOBAL_PER_MIN` | `30` | Visitor messages per minute, all visitors together |
+| `DOOR_WEB_DAILY_MAX` | `1500` | Visitor messages relayed to the Wanderer per UTC day; beyond it `/api/say` answers `429 quiet_hours` |
 | `DOOR_WEB_TRUST_PROXY` | unset | `1` = rate-limit by the **last** `X-Forwarded-For` hop (set only behind your own proxy) |
 | `ATLAS_API_URL` | unset | atlas-api base URL (e.g. `http://atlas-api:8787`) for "where is it now" (cached 30 s, failures ignored) |
 | `DOOR_WITNESS`, `DOOR_WITNESS_*` / `NPC_BRAIN_*` | — | Memory witness (see `@npc/door-sdk` `loadWitnessConfig`); `DOOR_WITNESS=off` disables it. Logged as `door_witness_config {enabled, model}` |

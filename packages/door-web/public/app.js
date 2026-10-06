@@ -331,7 +331,9 @@
       } catch {
         body = null;
       }
-      if (response.status === 429) {
+      if (response.status === 429 && body && body.error && body.error.code === "quiet_hours") {
+        showError(`The porch is quiet for today: ${body.error.message}.`);
+      } else if (response.status === 429) {
         const seconds = body && Number.isFinite(body.retry_after_s) ? body.retry_after_s : 3;
         showError(`You're speaking quickly — please wait ${seconds}s and try again.`);
       } else if (response.status === 409) {

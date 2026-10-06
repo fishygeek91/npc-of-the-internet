@@ -15,6 +15,7 @@ function residency(overrides: Partial<ResidencyEntry>): ResidencyEntry {
     arrived_at: "2026-01-04T00:00:00.000Z",
     departed_at: null,
     traveled_to: null,
+    ended: null,
     counts: { witnessed: 0, declined: 0, screened: 0 },
     declined_reasons: [],
     journal: null,
@@ -59,6 +60,23 @@ describe("residencyTravelLine", () => {
       "left"
     );
     expect(residencyTravelLine(residency({}))).toBeNull();
+  });
+
+  it("reads a superseded residency at the same Door as a restart, elsewhere as a move", () => {
+    const superseded = residency({
+      residency: "door:web:home/epoch:3",
+      departed_at: "2026-01-04T02:00:00.000Z",
+      ended: "superseded"
+    });
+    const restart = residency({ residency: "door:web:home/epoch:4", epoch: 4 });
+    const moved = residency({
+      residency: "door:discord:g/epoch:4",
+      door_id: "discord:g",
+      epoch: 4
+    });
+    expect(residencyTravelLine(superseded, restart)).toBe("(restarted)");
+    expect(residencyTravelLine(superseded, moved)).toBe("left for discord:g");
+    expect(residencyTravelLine(superseded)).toBe("left");
   });
 });
 

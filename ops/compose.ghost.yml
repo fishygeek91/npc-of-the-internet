@@ -184,6 +184,7 @@ services:
       DOOR_WEB_TRUST_PROXY: ${DOOR_WEB_TRUST_PROXY:-1}
       DOOR_WEB_GLOBAL_PER_MIN: ${DOOR_WEB_GLOBAL_PER_MIN:-30}
       DOOR_WEB_MAX_CLIENTS: ${DOOR_WEB_MAX_CLIENTS:-200}
+      DOOR_WEB_DAILY_MAX: ${DOOR_WEB_DAILY_MAX:-1500}
       ATLAS_API_URL: http://atlas-api:8787
       # Memory witness (spec/door/api.md §Memory witnessing): an independent model call that
       # checks each memory against what this Door saw. Defaults to the Brain's provider,

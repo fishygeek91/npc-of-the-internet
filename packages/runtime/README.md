@@ -219,11 +219,11 @@ Enters `departing` immediately (`stop()` + `drainAppends()`, then waits for any 
 
 Returns `{ witnessed, declined, screened, journalPath }` (counts for the whole residency; `journalPath` is `null` without a witnessed journal).
 
-**Retry:** any other error — `witness_unavailable`, network, Brain, store — throws and leaves the session `departing`; call `depart` again. Shards already on chain (deduped by decoded text) or already decided in this process are never re-attested; a decided journal is never re-attested; departure/travel already on chain are skipped. Retry is **in-process only**: a crash mid-depart loses the transcript by design.
+**Retry:** any other error — `witness_unavailable`, network, Brain, store — throws and leaves the session `departing`; call `depart` again. One in-process **depart ledger** keeps the transcript, the distill output, the Door's verdict per shard text and for the journal, and every sealed record (memory, departure, travel) — each verdict is recorded before its append. A retry never re-asks the Brain or the Door about anything decided: it re-appends the sealed record (a record already at the chain head is an append that landed, and counts as done). A witnessed side blob is stored only immediately before its record's append; declined prose is never stored. A sealed departure is re-appended, never re-attested (the Door already closed the epoch). Retry is **in-process only**: a crash mid-depart loses the transcript by design.
 
 ### `Session.departBare(toDoorId?)`
 
-Departure + travel without memories (destroys the transcript; skips records already on chain). The controller's best-effort fallback after `depart` kept failing; throws when the Door cannot attest the departure.
+Departure + travel without memories (destroys the transcript; reuses the ledger's sealed records). The controller's best-effort fallback after `depart` kept failing, or after the Door lost the session. When the departure cannot be attested or appended (e.g. `epoch_closed`, `session_invalid`), travel is still appended — soul-signed, `verifyChain` accepts it. Resolves `{ departure }` (whether the departure is on chain); throws only when travel cannot be appended.
 
 ### Operator CLI
 
@@ -263,7 +263,7 @@ Or after install: `npc-runtime` (bin in `@npc/runtime`). Ghost image `CMD` is `n
 | `NPC_DOOR_URLS` | yes* | — | Comma-separated Door base URLs (`http://door-discord:8787,http://door-web:8788`); WebSocket URL = `http`→`ws`, `https`→`wss` |
 | `DOOR_HTTP_HOST` / `DOOR_HTTP_PORT` | yes* | — | Legacy single Door (`http://host:port`) when `NPC_DOOR_URLS` is unset |
 | `ATLAS_DOOR_PUBKEYS` | yes | — | Comma-separated `doorId=base64url` — the trusted Doors. A Door whose `hello` `door_id` is not listed, or whose `door_pubkey` differs, is rejected (`door_rejected`) and treated as unavailable |
-| `CURRENT_DOOR_ID` | no | — | Boot preference only, used when the chain's last arrival Door is not online |
+| `CURRENT_DOOR_ID` | no | — | Boot preference only, used when the chain's last Door (travel destination or arrival) is not online |
 | `ANTHROPIC_API_KEY` | anthropic† | — | Anthropic API key (direct; see Brain section) |
 | `ANTHROPIC_API_KEY_FILE` | anthropic† | — | Path to file containing the Anthropic API key |
 | `NPC_BRAIN_PROVIDER` | no | `anthropic` | `anthropic` \| `openai-compat` \| `fake` |
@@ -299,18 +299,18 @@ import { ResidencyController, probeDoors, type LiveResidency, type CycleOutcome 
 
 **Doors.** One base URL per Door. `probeDoors` sends `hello` to all of them in parallel (10 s timeout each) and keeps the ones that answer with a verified `hello` whose `door_id` / `door_pubkey` match `ATLAS_DOOR_PUBKEYS`. Each arrival does its own `hello` on a fresh connection, so the Door identity is pinned per residency.
 
-**Boot:** arrive at the Door of the chain's latest `arrival` if it is online, else `CURRENT_DOOR_ID` if online, else a random online Door. No Door online → retry with backoff (5 s doubling to 5 min) — never a crash loop. Door trouble (unreachable, refused, socket bind failure) is retried; local failures (invalid chain, `osp/0.1` chain, storage) fail boot.
+**Boot:** arrive where the chain says the Wanderer is — the last `travel`'s `to_door_id` when no `arrival` follows it, else the latest `arrival`'s Door — if it is online, else `CURRENT_DOOR_ID` if online, else a random online Door. No Door online → retry with backoff (5 s doubling to 5 min) — never a crash loop. Door trouble (unreachable, refused, socket bind failure) is retried; local failures (invalid chain, `osp/0.1` chain, storage) fail boot. SIGTERM/SIGINT/SIGUSR2 handlers are registered before the first arrival, so shutdown works while no Door is reachable.
 
-**One cycle** (`requestCycle("operator" | "timer")`, single-flight — a second request resolves `busy`):
+**One cycle** (`requestCycle("operator" | "timer" | "lost_session")`, single-flight — a second request resolves `busy`):
 
 1. `detach()` — close the session socket. Inbound frames in the travel gap are **dropped, not queued**.
 2. Choose the next Door: probe, then uniformly random among online Doors **other than the current one** (the current one only when it is the only one online; `random` is injectable).
-3. `Session.depart({ toDoorId, minMemoryLines })` — witnessed memories, journal, departure, travel. Operator departures use `minMemoryLines: 1`, timer departures `NPC_RESIDENCY_MIN_LINES`. Failures retry with backoff (default 30 s, 120 s); after the last attempt the cycle is **abandoned**: `departBare(next)` (departure + travel, no memories; best effort) so the Wanderer is never stranded.
+3. `Session.depart({ toDoorId, minMemoryLines })` — witnessed memories, journal, departure, travel. Operator departures use `minMemoryLines: 1`, timer departures `NPC_RESIDENCY_MIN_LINES`. Failures retry with backoff (default 30 s, 120 s); after the last attempt the cycle is **abandoned**: `departBare(next)` (departure + travel, no memories; best effort) so the Wanderer is never stranded. A `lost_session` cycle skips straight to `departBare(next)` (the Door cannot witness anything for a session it no longer knows).
 4. Arrive at the chosen Door: `hello` (identity check; `active_epoch` crash floor; `attest.memory` → `witnessesMemories`) → `Session.start` → bind a new `WsDoorSessionClient`. On failure: re-probe and retry with backoff at any online Door, until success or shutdown.
 
 Outcomes: `cycled` / `abandoned` (both with `fromDoor`, `toDoor`, `fromEpoch`, `toEpoch`), `busy`, `shutting_down`, `aborted`. Each cycle logs `residency_cycle_outcome` (with `witnessed` / `declined` on `cycled`).
 
-**Triggers:** timer — `NPC_RESIDENCY_MAX_MS` (default a day), checked every minute; a quiet stay still travels, it just forms no memories. Operator (on by default) — SIGUSR2 or a `wanderer depart` request file in `NPC_CONTROL_DIR` (polled every second). SIGUSR2 is always handled (ignored with a warning when the trigger is off) so a stray signal cannot terminate the daemon. The daemon handle exposes `requestCycle`, `currentEpoch`, `currentDoorId`, `shutdown`.
+**Triggers:** timer — `NPC_RESIDENCY_MAX_MS` (default a day), checked every minute; a quiet stay still travels, it just forms no memories. Operator (on by default) — SIGUSR2 or a `wanderer depart` request file in `NPC_CONTROL_DIR` (polled every second). SIGUSR2 is always handled (ignored with a warning when the trigger is off) so a stray signal cannot terminate the daemon. Lost session — a heartbeat the Door refuses with `session_invalid` / `epoch_closed` (e.g. the Door restarted) logs `residency_session_lost` and runs a `lost_session` cycle, so the Wanderer moves on instead of staying mute. The daemon handle exposes `requestCycle`, `currentEpoch`, `currentDoorId`, `shutdown`.
 
 **Shutdown during a cycle** aborts backoff / arrival waits, never re-arrives, and leaves the chain valid; the next boot arrives at a fresh epoch exactly as after any restart.
 

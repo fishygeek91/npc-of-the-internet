@@ -17,6 +17,11 @@ export type WitnessInput = {
   text: string;
   /** The Door's own record of the residency, oldest first (untrusted). */
   transcript: readonly ResidencyLine[];
+  /**
+   * Shard texts this Door witnessed in this residency so far, in order. A journal is
+   * judged against these (it may not go beyond them); the record is context.
+   */
+  witnessedShards: readonly string[];
 };
 
 /** A witness decision. */
@@ -222,7 +227,8 @@ function readKeyFile(path: string, envVar: string): string {
  * | timeout | `DOOR_WITNESS_TIMEOUT_MS` (default 60000) |
  *
  * `DOOR_WITNESS=off` turns witnessing off (the Wanderer forms no memories at this Door).
- * The Brain's API key is only borrowed when the Brain's base URL is used too.
+ * The Brain's API key and provider allowlist are only borrowed when the Brain's base URL
+ * is used too.
  * Returns `null` when off or when no base URL / key / model is configured at all; throws
  * {@link WitnessConfigError} when configuration is partial or invalid.
  */
@@ -247,11 +253,11 @@ export function loadWitnessConfig(env: NodeJS.ProcessEnv = process.env): Witness
   // First match wins: the Door's own key, then the Brain's (inline before file). The
   // Brain's key is only borrowed when the Brain's base URL is used too — a Brain key must
   // never be sent to a different host the operator configured for the witness.
-  const borrowBrainKey = baseUrl.name === "NPC_BRAIN_BASE_URL";
+  const borrowBrain = baseUrl.name === "NPC_BRAIN_BASE_URL";
   const keySources = [
     ["DOOR_WITNESS_API_KEY", false],
     ["DOOR_WITNESS_API_KEY_FILE", true],
-    ...(borrowBrainKey
+    ...(borrowBrain
       ? ([
           ["NPC_BRAIN_API_KEY", false],
           ["NPC_BRAIN_API_KEY_FILE", true]
@@ -299,8 +305,11 @@ export function loadWitnessConfig(env: NodeJS.ProcessEnv = process.env): Witness
       );
     }
   }
-  const allowlistRaw = pick("DOOR_WITNESS_PROVIDER_ALLOWLIST", "NPC_BRAIN_PROVIDER_ALLOWLIST");
-  const providerAllowlist = allowlistRaw.value
+  // Like the key, the Brain's allowlist only applies to the Brain's host.
+  const allowlistRaw = borrowBrain
+    ? pick("DOOR_WITNESS_PROVIDER_ALLOWLIST", "NPC_BRAIN_PROVIDER_ALLOWLIST").value
+    : envValue(env, "DOOR_WITNESS_PROVIDER_ALLOWLIST");
+  const providerAllowlist = allowlistRaw
     ?.split(",")
     .map((entry) => entry.trim())
     .filter((entry) => entry !== "");

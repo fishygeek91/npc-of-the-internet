@@ -6,8 +6,8 @@ import type { Logger } from "pino";
 
 import type { WandererWhereabouts } from "./atlas.js";
 import type { Room, RoomEvent, RoomMessage } from "./room.js";
-import { VisitorRateLimiter, type MsClock } from "./rate-limit.js";
-import { clientIp, isAddressed, parseSay, VisitorIds } from "./visitor.js";
+import { DailyBudget, VisitorRateLimiter, type MsClock } from "./rate-limit.js";
+import { clientIp, clientKey, isAddressed, parseSay, VisitorIds } from "./visitor.js";
 
 /** Max `POST /api/say` body (bytes). */
 export const SAY_BODY_MAX_BYTES = 4096;
@@ -18,7 +18,9 @@ export const SSE_HEARTBEAT_MS = 25_000;
 /** Concurrent SSE streams one client address may hold. */
 export const SSE_MAX_PER_IP = 20;
 /** Unsent SSE bytes after which a slow reader is dropped. */
-const SSE_MAX_BUFFERED_BYTES = 1024 * 1024;
+export const SSE_MAX_BUFFERED_BYTES = 64 * 1024;
+/** Hard deadline for receiving a whole `POST /api/say` body (slow-body guard). */
+export const SAY_BODY_TIMEOUT_MS = 5_000;
 
 const SECURITY_HEADERS: Readonly<Record<string, string>> = {
   "Content-Security-Policy":
@@ -69,12 +71,17 @@ export type VisitorSiteOptions = {
   relay: (request: RelayRequest) => boolean;
   maxClients: number;
   globalPerMinute: number;
+  /** Visitor messages relayed to the Wanderer per UTC day; beyond it `429 quiet_hours`. */
+  dailyMax: number;
+  /** Override {@link SAY_BODY_TIMEOUT_MS} (tests). */
+  bodyTimeoutMs?: number;
   trustProxy: boolean;
   clock: MsClock;
   logger: Logger;
 };
 
-type SseClient = { res: ServerResponse; ip: string };
+/** One open SSE stream; `key` is the client's {@link clientKey} (IPv6 /64). */
+type SseClient = { res: ServerResponse; key: string };
 
 /**
  * The public visitor site: static page, `GET /api/state`, `GET /api/events` (SSE),
@@ -84,6 +91,7 @@ export class VisitorSite {
   private readonly options: VisitorSiteOptions;
   private readonly assets = loadAssets();
   private readonly limiter: VisitorRateLimiter;
+  private readonly daily: DailyBudget;
   private readonly ids: VisitorIds;
   private readonly clients = new Set<SseClient>();
   private server: Server | null = null;
@@ -96,6 +104,7 @@ export class VisitorSite {
       globalPerMinute: options.globalPerMinute,
       clock: options.clock
     });
+    this.daily = new DailyBudget(options.dailyMax, options.clock);
     this.ids = new VisitorIds(options.clock);
   }
 
@@ -208,6 +217,11 @@ export class VisitorSite {
       return;
     }
     if (path === "/api/events") {
+      if (method !== "GET") {
+        // Only GET holds a stream open; HEAD would take a slot for nothing.
+        this.methodNotAllowed(res, "GET");
+        return;
+      }
       this.handleEvents(req, res);
       return;
     }
@@ -243,14 +257,14 @@ export class VisitorSite {
       this.fail(res, 503, "too_many_listeners", "the porch is full; try again soon");
       return;
     }
-    const ip = clientIp(req, this.options.trustProxy);
-    let fromIp = 0;
+    const key = clientKey(clientIp(req, this.options.trustProxy));
+    let fromKey = 0;
     for (const client of this.clients) {
-      if (client.ip === ip) {
-        fromIp += 1;
+      if (client.key === key) {
+        fromKey += 1;
       }
     }
-    if (fromIp >= SSE_MAX_PER_IP) {
+    if (fromKey >= SSE_MAX_PER_IP) {
       this.fail(res, 429, "too_many_listeners", "too many open tabs from your address");
       return;
     }
@@ -262,7 +276,7 @@ export class VisitorSite {
       Connection: "keep-alive",
       "X-Accel-Buffering": "no"
     });
-    const client: SseClient = { res, ip };
+    const client: SseClient = { res, key };
     this.clients.add(client);
     const drop = (): void => {
       this.clients.delete(client);
@@ -289,15 +303,25 @@ export class VisitorSite {
       this.fail(res, 415, "unsupported_media_type", "send JSON");
       return;
     }
-    const raw = await readBody(req, SAY_BODY_MAX_BYTES);
-    if (raw === null) {
+    const read = await readBody(
+      req,
+      SAY_BODY_MAX_BYTES,
+      this.options.bodyTimeoutMs ?? SAY_BODY_TIMEOUT_MS
+    );
+    if (!read.ok) {
       res.setHeader("Connection", "close");
-      this.fail(res, 413, "too_large", "message too large");
+      if (read.reason === "timeout") {
+        // The client stalled mid-body: answer, then drop the connection outright.
+        res.once("finish", () => req.socket.destroy());
+        this.fail(res, 408, "request_timeout", "the message took too long to arrive");
+      } else {
+        this.fail(res, 413, "too_large", "message too large");
+      }
       return;
     }
     let body: unknown;
     try {
-      body = JSON.parse(raw) as unknown;
+      body = JSON.parse(read.text) as unknown;
     } catch {
       this.fail(res, 400, "invalid_json", "body must be JSON");
       return;
@@ -311,8 +335,23 @@ export class VisitorSite {
       this.fail(res, 409, "not_here", "the Wanderer is elsewhere right now");
       return;
     }
-    const ip = clientIp(req, this.options.trustProxy);
-    const decision = this.limiter.take(ip);
+    const today = this.daily.check();
+    if (!today.ok) {
+      const seconds = Math.ceil(today.retryAfterMs / 1000);
+      res.setHeader("Retry-After", String(seconds));
+      this.json(res, 429, {
+        error: {
+          code: "quiet_hours",
+          message:
+            "the Wanderer has listened to a lot today and is resting until midnight UTC — " +
+            "come back then"
+        },
+        retry_after_s: seconds
+      });
+      return;
+    }
+    const key = clientKey(clientIp(req, this.options.trustProxy));
+    const decision = this.limiter.take(key);
     if (!decision.ok) {
       const seconds = Math.ceil(decision.retryAfterMs / 1000);
       res.setHeader("Retry-After", String(seconds));
@@ -330,7 +369,7 @@ export class VisitorSite {
     try {
       delivered = this.options.relay({
         msgId,
-        authorId: this.ids.idFor(ip),
+        authorId: this.ids.idFor(key),
         name,
         text,
         addressed: isAddressed(text)
@@ -342,6 +381,7 @@ export class VisitorSite {
       this.fail(res, 409, "not_here", "the Wanderer is elsewhere right now");
       return;
     }
+    this.daily.record();
     this.options.room.append({
       id: msgId,
       at: new Date(this.options.clock.nowMs()).toISOString(),
@@ -410,38 +450,54 @@ function sseFrame(event: string, data: unknown): string {
   return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
 }
 
-/** Read a request body up to `limit` bytes; `null` when it is larger. */
-function readBody(req: IncomingMessage, limit: number): Promise<string | null> {
+/** Outcome of {@link readBody}. */
+type BodyResult = { ok: true; text: string } | { ok: false; reason: "too_large" | "timeout" };
+
+/**
+ * Read a request body of at most `limit` bytes that must arrive completely within
+ * `timeoutMs` (a hard deadline for the whole body, not an idle timeout, so a trickling
+ * client cannot hold the connection open).
+ */
+function readBody(req: IncomingMessage, limit: number, timeoutMs: number): Promise<BodyResult> {
   const declared = Number(req.headers["content-length"] ?? "0");
   if (Number.isFinite(declared) && declared > limit) {
     req.resume();
-    return Promise.resolve(null);
+    return Promise.resolve({ ok: false, reason: "too_large" });
   }
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let size = 0;
     let done = false;
+    const finish = (result: BodyResult): void => {
+      done = true;
+      clearTimeout(deadline);
+      resolve(result);
+    };
+    const deadline = setTimeout(() => {
+      if (!done) {
+        finish({ ok: false, reason: "timeout" });
+      }
+    }, timeoutMs);
     req.on("data", (chunk: Buffer) => {
       if (done) {
         return;
       }
       size += chunk.length;
       if (size > limit) {
-        done = true;
-        resolve(null);
+        finish({ ok: false, reason: "too_large" });
         return;
       }
       chunks.push(chunk);
     });
     req.on("end", () => {
       if (!done) {
-        done = true;
-        resolve(Buffer.concat(chunks).toString("utf8"));
+        finish({ ok: true, text: Buffer.concat(chunks).toString("utf8") });
       }
     });
     req.on("error", (error) => {
       if (!done) {
         done = true;
+        clearTimeout(deadline);
         reject(error);
       }
     });

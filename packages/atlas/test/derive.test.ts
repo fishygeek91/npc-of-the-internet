@@ -21,6 +21,7 @@ import {
   createArrivalRecord,
   createDepartureRecord,
   createGenesisRecord,
+  createHeartbeatRecord,
   createJournalRecord,
   createRejectedRecord,
   createShardRecord,
@@ -30,6 +31,7 @@ import {
   createTravelRecord,
   DEFAULT_DOOR,
   DEFAULT_DOOR_ID,
+  DEFAULT_OTHER_DOOR,
   DEFAULT_RESIDENCY,
   DEFAULT_SESSION,
   DEFAULT_SOUL
@@ -432,6 +434,7 @@ describe("witnessed memory", () => {
       arrived_at: "2026-01-02T00:00:00.000Z",
       departed_at: "2026-01-02T05:03:00.000Z",
       traveled_to: "web:home",
+      ended: "departed",
       counts: { witnessed: 1, declined: 3, screened: 1 },
       declined_reasons: ["private", "ungrounded"],
       journal: { cid: journal.cid, journal: "[journal unavailable]" }
@@ -445,5 +448,193 @@ describe("witnessed memory", () => {
     expect(summaries).toContain("memory/rejected category=pii.email");
     expect(summaries).toContain("memory/journal");
     expect(summaries).toContain("attestation/travel from=discord:g epoch=1 to=web:home");
+  });
+});
+
+const RESTART_RESIDENCY_2 = `door:${DEFAULT_DOOR_ID}/epoch:2`;
+const WEB_RESIDENCY_3 = "door:web:home/epoch:3";
+
+/**
+ * Synthetic restart chain: arrive at discord:g (epoch 1), the Door restarts and the
+ * Wanderer re-arrives at discord:g (epoch 2, no departure in between), heartbeats,
+ * then travels to web:home (epoch 3).
+ */
+async function buildRestartChain() {
+  const genesis = await createGenesisRecord(DEFAULT_SOUL);
+  const arrival1 = await createArrivalRecord(
+    DEFAULT_SOUL,
+    DEFAULT_DOOR,
+    DEFAULT_SESSION,
+    1,
+    genesis.cid,
+    DEFAULT_DOOR_ID,
+    1,
+    DEFAULT_RESIDENCY,
+    "2026-01-02T00:00:00.000Z"
+  );
+  const arrival2 = await createArrivalRecord(
+    DEFAULT_SOUL,
+    DEFAULT_DOOR,
+    DEFAULT_SESSION,
+    2,
+    arrival1.cid,
+    DEFAULT_DOOR_ID,
+    2,
+    RESTART_RESIDENCY_2,
+    "2026-01-02T03:00:00.000Z"
+  );
+  const heartbeat = await createHeartbeatRecord(
+    DEFAULT_SOUL,
+    DEFAULT_DOOR,
+    DEFAULT_SESSION,
+    3,
+    arrival2.cid,
+    DEFAULT_DOOR_ID,
+    2,
+    RESTART_RESIDENCY_2,
+    "2026-01-02T04:00:00.000Z"
+  );
+  const travel = await createTravelRecord(
+    DEFAULT_SOUL,
+    4,
+    heartbeat.cid,
+    DEFAULT_DOOR_ID,
+    2,
+    RESTART_RESIDENCY_2,
+    "2026-01-02T05:00:00.000Z",
+    "web:home"
+  );
+  const arrival3 = await createArrivalRecord(
+    DEFAULT_SOUL,
+    DEFAULT_OTHER_DOOR,
+    DEFAULT_SESSION,
+    5,
+    travel.cid,
+    "web:home",
+    3,
+    WEB_RESIDENCY_3,
+    "2026-01-02T06:00:00.000Z"
+  );
+  return {
+    restarted: [genesis.record, arrival1.record, arrival2.record, heartbeat.record],
+    traveled: [
+      genesis.record,
+      arrival1.record,
+      arrival2.record,
+      heartbeat.record,
+      travel.record,
+      arrival3.record
+    ],
+    genesis,
+    arrival1
+  };
+}
+
+describe("Door restarts", () => {
+  it("keeps state.since at the start of the uninterrupted stay across a restart", async () => {
+    const { restarted, traveled } = await buildRestartChain();
+    expect(deriveState(restarted, true)).toMatchObject({
+      status: "present",
+      door_id: DEFAULT_DOOR_ID,
+      epoch: 2,
+      since: "2026-01-02T00:00:00.000Z"
+    });
+    // Restarted stay without its heartbeat: the head is the re-arrival itself.
+    expect(deriveState(restarted.slice(0, 3), true).since).toBe("2026-01-02T00:00:00.000Z");
+    // After a real move, since is the new Door's arrival.
+    expect(deriveState(traveled, true)).toMatchObject({
+      status: "present",
+      door_id: "web:home",
+      epoch: 3,
+      since: "2026-01-02T06:00:00.000Z"
+    });
+  });
+
+  it("starts a new stay when a departure or travel separates same-Door arrivals", async () => {
+    const { genesis, arrival1 } = await buildRestartChain();
+    const travel = await createTravelRecord(
+      DEFAULT_SOUL,
+      2,
+      arrival1.cid,
+      DEFAULT_DOOR_ID,
+      1,
+      DEFAULT_RESIDENCY,
+      "2026-01-02T01:00:00.000Z",
+      DEFAULT_DOOR_ID
+    );
+    const back = await createArrivalRecord(
+      DEFAULT_SOUL,
+      DEFAULT_DOOR,
+      DEFAULT_SESSION,
+      3,
+      travel.cid,
+      DEFAULT_DOOR_ID,
+      2,
+      RESTART_RESIDENCY_2,
+      "2026-01-02T02:00:00.000Z"
+    );
+    const chain = [genesis.record, arrival1.record, travel.record, back.record];
+    expect(deriveState(chain, true).since).toBe("2026-01-02T02:00:00.000Z");
+  });
+
+  it("closes a superseded residency at the next arrival", async () => {
+    const { traveled } = await buildRestartChain();
+    const result = await deriveResidencies(traveled, true);
+    expect(
+      result.residencies.map(({ residency, arrived_at, departed_at, traveled_to, ended }) => ({
+        residency,
+        arrived_at,
+        departed_at,
+        traveled_to,
+        ended
+      }))
+    ).toEqual([
+      {
+        residency: WEB_RESIDENCY_3,
+        arrived_at: "2026-01-02T06:00:00.000Z",
+        departed_at: null,
+        traveled_to: null,
+        ended: null
+      },
+      {
+        residency: RESTART_RESIDENCY_2,
+        arrived_at: "2026-01-02T03:00:00.000Z",
+        departed_at: "2026-01-02T05:00:00.000Z",
+        traveled_to: "web:home",
+        ended: "departed"
+      },
+      {
+        residency: DEFAULT_RESIDENCY,
+        arrived_at: "2026-01-02T00:00:00.000Z",
+        departed_at: "2026-01-02T03:00:00.000Z",
+        traveled_to: null,
+        ended: "superseded"
+      }
+    ]);
+  });
+
+  it("closes every earlier open residency, whichever Door the new arrival is at", async () => {
+    const { genesis, arrival1 } = await buildRestartChain();
+    const elsewhere = await createArrivalRecord(
+      DEFAULT_SOUL,
+      DEFAULT_OTHER_DOOR,
+      DEFAULT_SESSION,
+      2,
+      arrival1.cid,
+      "web:home",
+      3,
+      WEB_RESIDENCY_3,
+      "2026-01-02T02:00:00.000Z"
+    );
+    const result = await deriveResidencies(
+      [genesis.record, arrival1.record, elsewhere.record],
+      true
+    );
+    expect(result.residencies[1]).toMatchObject({
+      residency: DEFAULT_RESIDENCY,
+      departed_at: "2026-01-02T02:00:00.000Z",
+      ended: "superseded"
+    });
+    expect(result.residencies[0]?.ended).toBeNull();
   });
 });

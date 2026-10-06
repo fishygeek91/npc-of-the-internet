@@ -7,7 +7,8 @@ const DEFAULT_DOOR_ID = "web:home";
 const DEFAULT_HOST = "0.0.0.0";
 const DEFAULT_DOOR_HTTP_PORT = 9091;
 const DEFAULT_PUBLIC_PORT = 8080;
-const DEFAULT_MAX_CLIENTS = 500;
+const DEFAULT_MAX_CLIENTS = 200;
+const DEFAULT_DAILY_MAX = 1500;
 const DEFAULT_GLOBAL_PER_MIN = 30;
 const DEFAULT_COMMUNITY_NAME = "The Wanderer's front porch";
 const DEFAULT_COMMUNITY_DESCRIPTION =
@@ -30,6 +31,7 @@ const webDoorConfigSchema = z.object({
   communityDescription: z.string().min(1).max(2000),
   maxClients: z.number().int().positive(),
   globalPerMinute: z.number().int().positive(),
+  dailyMax: z.number().int().positive(),
   trustProxy: z.boolean(),
   atlasApiUrl: z.string().url().optional()
 });
@@ -112,6 +114,7 @@ export function loadWebDoorConfig(env: NodeJS.ProcessEnv = process.env): WebDoor
       envValue(env, "DOOR_WEB_COMMUNITY_DESCRIPTION") ?? DEFAULT_COMMUNITY_DESCRIPTION,
     maxClients: parsePositiveInt(env, "DOOR_WEB_MAX_CLIENTS", DEFAULT_MAX_CLIENTS),
     globalPerMinute: parsePositiveInt(env, "DOOR_WEB_GLOBAL_PER_MIN", DEFAULT_GLOBAL_PER_MIN),
+    dailyMax: parsePositiveInt(env, "DOOR_WEB_DAILY_MAX", DEFAULT_DAILY_MAX),
     trustProxy: envValue(env, "DOOR_WEB_TRUST_PROXY") === "1",
     ...(envValue(env, "ATLAS_API_URL") === undefined
       ? {}

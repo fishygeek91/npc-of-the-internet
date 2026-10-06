@@ -17,8 +17,9 @@ export type StateResponse = {
   door_id: string | null;
   epoch: number | null;
   /**
-   * When the current status began: arrival time at `door_id` (present), departure /
-   * travel time (traveling), or the sleep record's `as_of` (sleeping). Null when unknown.
+   * When the current status began: start of the uninterrupted stay at `door_id`
+   * (present — restarts at the same Door do not reset it), departure / travel time
+   * (traveling), or the sleep record's `as_of` (sleeping). Null when unknown.
    */
   since: string | null;
   last_record_at: string | null;
@@ -197,8 +198,9 @@ export function parseResidency(residency: string): { door_id: string; epoch: num
 /**
  * Derive Wanderer presence state from chain records.
  * Scans newest to oldest: a `sleep` record before any attestation means sleeping
- * (do not fake presence after the soul has recorded sleep). `since` is the arrival
- * time of the current residency when present, else the time of the deciding record.
+ * (do not fake presence after the soul has recorded sleep). When present, `since` is
+ * the start of the uninterrupted stay at the current Door (see {@link findStaySince});
+ * otherwise it is the time of the deciding record.
  */
 export function deriveState(records: readonly OspRecord[], verified: boolean): StateResponse {
   const head = records.length > 0 ? records[records.length - 1] : undefined;
@@ -239,7 +241,7 @@ export function deriveState(records: readonly OspRecord[], verified: boolean): S
           "present",
           body.door_id,
           body.epoch,
-          findArrivalAt(records, index, body.door_id, body.epoch) ?? body.at
+          findStaySince(records, index, body.door_id, body.epoch) ?? body.at
         );
       case "departure":
         return state("traveling", null, body.epoch, body.at);
@@ -253,25 +255,49 @@ export function deriveState(records: readonly OspRecord[], verified: boolean): S
   return state("sleeping", null, null, null);
 }
 
-/** Find the `at` of the arrival for `doorId`/`epoch` at or before `fromIndex`. */
-function findArrivalAt(
+/**
+ * Start of the uninterrupted stay at `doorId` that includes residency `epoch`.
+ *
+ * Finds that residency's arrival at or before `fromIndex`, then keeps walking back
+ * over earlier arrivals at the same Door: a Door restart supersedes a residency
+ * without any departure, and the Wanderer re-arrives at the same Door in a new
+ * epoch — that is a restart, not a move. The run stops at a departure, travel,
+ * handover or sleep record, or at any attestation for another Door.
+ * Returns null when the residency's arrival is not on the chain.
+ */
+function findStaySince(
   records: readonly OspRecord[],
   fromIndex: number,
   doorId: string,
   epoch: number
 ): string | null {
+  let since: string | null = null;
   for (let index = fromIndex; index >= 0; index -= 1) {
     const record = records[index];
-    if (
-      record?.type === "attestation" &&
-      record.body.kind === "arrival" &&
-      record.body.door_id === doorId &&
-      record.body.epoch === epoch
-    ) {
-      return record.body.at;
+    if (record?.type === "sleep") {
+      if (since !== null) {
+        break;
+      }
+      continue;
+    }
+    if (record?.type !== "attestation") {
+      continue;
+    }
+    const body = record.body;
+    if (since === null) {
+      // Still looking for the current residency's own arrival.
+      if (body.kind === "arrival" && body.door_id === doorId && body.epoch === epoch) {
+        since = body.at;
+      }
+      continue;
+    }
+    if (body.kind === "arrival" && body.door_id === doorId) {
+      since = body.at;
+    } else if (body.kind !== "heartbeat" || body.door_id !== doorId) {
+      break;
     }
   }
-  return null;
+  return since;
 }
 
 /**
@@ -487,6 +513,9 @@ export type ResidencyCounts = {
   screened: number;
 };
 
+/** How a residency ended (see {@link ResidencyEntry.ended}). */
+export type ResidencyEnd = "departed" | "superseded";
+
 /** One residency (a stay at one Door for one epoch), for `GET /residencies`. */
 export type ResidencyEntry = {
   residency: string;
@@ -496,6 +525,12 @@ export type ResidencyEntry = {
   departed_at: string | null;
   /** Door named by the travel (or handover) record that ended this residency. */
   traveled_to: string | null;
+  /**
+   * How the residency ended: `departed` (departure / travel / handover record),
+   * `superseded` (a later arrival anywhere closed it with no such record — e.g. the
+   * Door restarted and the Wanderer re-arrived), or `null` while still open.
+   */
+  ended: ResidencyEnd | null;
   counts: ResidencyCounts;
   /** Distinct witness decline reasons in chain order (e.g. `["private"]`). */
   declined_reasons: string[];
@@ -520,6 +555,11 @@ export const WITNESS_CATEGORY_PREFIX = "witness_";
  * record: arrival / departure / travel times, witnessed / declined / screened memory
  * counts, and the residency's journal (the `journal` record, else the last legacy
  * shard-embedded journal). Pagination follows {@link deriveJournals}.
+ *
+ * The Wanderer is in one place at a time, so an arrival closes every earlier
+ * residency that is still open: `departed_at` becomes that arrival's `at` and
+ * `ended` becomes `superseded`. An explicit departure / travel / handover marks
+ * `ended: "departed"`.
  */
 export async function deriveResidencies(
   records: readonly OspRecord[],
@@ -547,6 +587,7 @@ export async function deriveResidencies(
           arrived_at: null,
           departed_at: null,
           traveled_to: null,
+          ended: null,
           counts: { witnessed: 0, declined: 0, screened: 0 },
           declined_reasons: [],
           journal: null
@@ -580,17 +621,26 @@ export async function deriveResidencies(
       switch (body.kind) {
         case "arrival":
           entry.arrived_at ??= body.at;
+          for (const other of byResidency.values()) {
+            if (other.entry !== entry && other.entry.ended === null) {
+              other.entry.departed_at = body.at;
+              other.entry.ended = "superseded";
+            }
+          }
           break;
         case "departure":
           entry.departed_at = body.at;
+          entry.ended = "departed";
           break;
         case "travel":
           entry.departed_at ??= body.at;
           entry.traveled_to = body.to_door_id ?? null;
+          entry.ended = "departed";
           break;
         case "handover":
           entry.departed_at ??= body.at;
           entry.traveled_to = body.arrive_door_id;
+          entry.ended = "departed";
           break;
         case "heartbeat":
           break;

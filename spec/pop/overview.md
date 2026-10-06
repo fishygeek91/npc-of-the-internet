@@ -121,13 +121,13 @@ A residency epoch progresses through three public states:
 
 ---
 
-## 6. Manual handover (v0.1)
+## 6. Handover (v0.1)
 
-Ghost uses **operator-orchestrated manual handover**. There is no autonomous Navigator or threshold rotation ceremony in v0.1.
+The runtime travels on its own: about once a day it moves to a random Door that is online (never the current one when another is available). There is no threshold rotation ceremony in v0.1.
 
-### 6.1 Operator flow
+### 6.1 Flow
 
-The operator runs a CLI command (e.g. `wanderer move <door>`) that orchestrates:
+Each move is:
 
 1. **Depart** at the current Door.
 2. **Travel** — gap with no valid session key.
@@ -257,7 +257,7 @@ An implementation conforms to `pop/0.1` if:
 1. Soul key is a single Ed25519 key on the host, accessed only via `Keyring`.
 2. Session keys are derived per `(door_id, epoch)` and published in `arrival` attestations.
 3. All live Door outputs are signed with the active session key.
-4. Manual handover produces `departure` → `travel` → `arrival` attestations; no session key is valid during travel.
+4. Handover produces `departure` → `travel` → `arrival` attestations; no session key is valid during travel.
 5. Heartbeats fire at ~10 min cadence with session + Door signatures.
 6. Conflicting heartbeats (same epoch, different doors) are detected automatically.
 7. No threshold, TEE, or on-chain anchor code paths exist.

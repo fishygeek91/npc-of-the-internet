@@ -124,8 +124,10 @@ function createRealTimer(): Timer {
 
 /**
  * Boot the long-running residency daemon: open the soulchain, probe the configured Doors,
- * arrive at one (the chain's last Door if online, else `CURRENT_DOOR_ID`, else a random
- * online Door — retrying with backoff while none is online), bind the session WebSocket,
+ * arrive at one (where the chain says the Wanderer is — the last travel's `to_door_id` when
+ * no arrival followed it, else the last arrival's Door — if online, else `CURRENT_DOOR_ID`,
+ * else a random online Door — retrying with backoff while none is online; SIGTERM/SIGINT
+ * already stop it then), bind the session WebSocket,
  * and maintain inbound → outbound handling until shutdown. Residency cycles (depart →
  * travel → arrive at another online Door) run on the residency timer, the operator
  * trigger, or {@link ResidencyDaemonHandle.requestCycle}.
@@ -334,6 +336,11 @@ async function bootResidency(ctx: {
       logger.warn({ err: message, stage, heartbeatErrorCount }, "heartbeat_failed");
     },
     onConnectionChange,
+    onSessionLost: (epoch) => {
+      if (controller.current?.epoch === epoch) {
+        void controller.requestCycle("lost_session");
+      }
+    },
     ...(deps.heartbeatIntervalMs !== undefined
       ? { heartbeatIntervalMs: deps.heartbeatIntervalMs }
       : {}),
@@ -367,7 +374,7 @@ async function bootResidency(ctx: {
       return arriveDaemonResidency(residencyCtx, { doorId, endpoint });
     },
     bootPreference: async () => {
-      const last = await lastArrivalDoorId(store);
+      const last = await lastDoorId(store);
       return [last, config.preferredDoorId].filter(
         (doorId): doorId is string => doorId !== undefined && doorId !== null
       );
@@ -403,29 +410,12 @@ async function bootResidency(ctx: {
     },
     "residency_lifecycle_config"
   );
-  await controller.begin();
 
   /** Operator trigger (SIGUSR2 / `wanderer depart`): run one cycle (it logs its outcome). */
   const requestOperatorCycle = (source: "signal" | "control_dir"): void => {
     logger.info({ source }, "residency_cycle_requested");
     void controller.requestCycle("operator");
   };
-
-  if (residencyConfig.operatorTrigger) {
-    resources.controlWatcher = await watchControlDir({
-      controlDir: residencyConfig.controlDir,
-      timer,
-      onDepartRequest: () => {
-        requestOperatorCycle("control_dir");
-      },
-      onError: (error) => {
-        const message = error instanceof Error ? error.message : String(error);
-        logger.warn({ err: message }, "control_dir_poll_failed");
-      }
-    });
-  }
-
-  deps.onReady?.();
 
   const signalHandlers: Array<[NodeJS.Signals, () => void]> = [];
 
@@ -446,6 +436,7 @@ async function bootResidency(ctx: {
     }
   };
 
+  // Registered before the first arrival so SIGTERM works while no Door is reachable.
   if (!deps.skipSignals) {
     const onSignal = (): void => {
       void shutdown()
@@ -480,20 +471,60 @@ async function bootResidency(ctx: {
     }
   }
 
-  return {
+  const handle: ResidencyDaemonHandle = {
     shutdown,
     requestCycle: (trigger = "operator") => controller.requestCycle(trigger),
     currentEpoch: () => controller.current?.epoch ?? null,
     currentDoorId: () => controller.current?.doorId ?? null
   };
+
+  try {
+    await controller.begin();
+  } catch (error: unknown) {
+    if (shuttingDown) {
+      // A signal stopped the daemon during boot; shutdown released everything.
+      return handle;
+    }
+    for (const [signal, handler] of signalHandlers) {
+      process.removeListener(signal, handler);
+    }
+    throw error;
+  }
+
+  if (residencyConfig.operatorTrigger) {
+    resources.controlWatcher = await watchControlDir({
+      controlDir: residencyConfig.controlDir,
+      timer,
+      onDepartRequest: () => {
+        requestOperatorCycle("control_dir");
+      },
+      onError: (error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        logger.warn({ err: message }, "control_dir_poll_failed");
+      }
+    });
+  }
+
+  deps.onReady?.();
+
+  return handle;
 }
 
-/** Door id of the latest `arrival` attestation on the chain, if any (boot preference). */
-async function lastArrivalDoorId(store: SoulStore): Promise<string | null> {
+/**
+ * Where the chain says the Wanderer is (boot preference): the `to_door_id` of the last
+ * `travel` when it comes after the last `arrival` (it left, the arrival never happened),
+ * else the last arrival's Door, else `null`.
+ */
+async function lastDoorId(store: SoulStore): Promise<string | null> {
   let doorId: string | null = null;
   for await (const record of store.iterate()) {
-    if (record.type === "attestation" && record.body.kind === "arrival") {
+    if (record.type !== "attestation") {
+      continue;
+    }
+    if (record.body.kind === "arrival") {
       doorId = record.body.door_id;
+    } else if (record.body.kind === "travel") {
+      doorId = record.body.to_door_id ?? null;
     }
   }
   return doorId;

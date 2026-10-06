@@ -58,6 +58,7 @@ export type HarnessOptions = {
   witness?: WitnessMemory | null;
   policy?: Partial<HostPolicy>;
   residencyRecord?: ResidencyRecordOptions;
+  maxMemoryAttests?: number;
 };
 
 /** Build a Door whose witness records its inputs and (by default) witnesses everything. */
@@ -83,7 +84,10 @@ export function createHarness(options: HarnessOptions = {}): Harness {
     soulPublicKey: soul.publicKey,
     clock: fixedClock,
     policy,
-    ...(options.residencyRecord === undefined ? {} : { residencyRecord: options.residencyRecord })
+    ...(options.residencyRecord === undefined ? {} : { residencyRecord: options.residencyRecord }),
+    ...(options.maxMemoryAttests === undefined
+      ? {}
+      : { maxMemoryAttests: options.maxMemoryAttests })
   };
   return { door: new Door(doorOptions), doorKeypair, soul, session, witnessCalls };
 }
