@@ -13,8 +13,14 @@ export type WandererStatus = "present" | "traveling" | "sleeping";
 /** Response shape for `GET /state`. */
 export type StateResponse = {
   status: WandererStatus;
+  /** Door the Wanderer is at (present only). */
   door_id: string | null;
   epoch: number | null;
+  /**
+   * When the current status began: arrival time at `door_id` (present), departure /
+   * travel time (traveling), or the sleep record's `as_of` (sleeping). Null when unknown.
+   */
+  since: string | null;
   last_record_at: string | null;
   verified: boolean;
 };
@@ -52,7 +58,7 @@ export type RecordsPageResponse = {
   verified: boolean;
 };
 
-/** One journal entry derived from a memory shard. */
+/** One journal entry: a `journal` record, or a legacy journal embedded on a shard. */
 export type JournalEntry = {
   epoch: number;
   door_id: string;
@@ -60,7 +66,7 @@ export type JournalEntry = {
   journal: string;
 };
 
-/** Query parameters for `GET /journals`. */
+/** Query parameters for `GET /journals` and `GET /residencies`. */
 export type JournalsQuery = {
   page?: number;
   per_page?: number;
@@ -105,6 +111,9 @@ export function extractRecordTimestamp(record: OspRecord): string | null {
       if (body.kind === "shard") {
         return body.distilled_at;
       }
+      if (body.kind === "journal") {
+        return body.written_at;
+      }
       if (body.kind === "candidate") {
         return body.proposed_at;
       }
@@ -139,7 +148,10 @@ export function recordSummary(record: OspRecord): string {
     case "genesis":
       return "genesis";
     case "memory":
-      return `memory/${record.body.kind}`;
+      // Rejected categories are closed labels (never payload), safe to surface.
+      return record.body.kind === "rejected"
+        ? `memory/rejected category=${record.body.category}`
+        : `memory/${record.body.kind}`;
     case "drift":
       return "drift";
     case "decision":
@@ -159,8 +171,10 @@ export function recordSummary(record: OspRecord): string {
           return `attestation/heartbeat door=${body.door_id} epoch=${String(body.epoch)}`;
         case "departure":
           return `attestation/departure door=${body.door_id} epoch=${String(body.epoch)}`;
-        case "travel":
-          return `attestation/travel from=${body.from_door_id} epoch=${String(body.from_epoch)}`;
+        case "travel": {
+          const to = body.to_door_id === undefined ? "" : ` to=${body.to_door_id}`;
+          return `attestation/travel from=${body.from_door_id} epoch=${String(body.from_epoch)}${to}`;
+        }
         case "handover":
           return `attestation/handover depart=${body.depart_door_id} epoch=${String(body.depart_epoch)}`;
       }
@@ -183,11 +197,25 @@ export function parseResidency(residency: string): { door_id: string; epoch: num
 /**
  * Derive Wanderer presence state from chain records.
  * Scans newest to oldest: a `sleep` record before any attestation means sleeping
- * (do not fake presence after the soul has recorded sleep).
+ * (do not fake presence after the soul has recorded sleep). `since` is the arrival
+ * time of the current residency when present, else the time of the deciding record.
  */
 export function deriveState(records: readonly OspRecord[], verified: boolean): StateResponse {
   const head = records.length > 0 ? records[records.length - 1] : undefined;
   const lastRecordAt = head === undefined ? null : extractRecordTimestamp(head);
+  const state = (
+    status: WandererStatus,
+    doorId: string | null,
+    epoch: number | null,
+    since: string | null
+  ): StateResponse => ({
+    status,
+    door_id: doorId,
+    epoch,
+    since,
+    last_record_at: lastRecordAt,
+    verified
+  });
 
   for (let index = records.length - 1; index >= 0; index -= 1) {
     const record = records[index];
@@ -196,13 +224,7 @@ export function deriveState(records: readonly OspRecord[], verified: boolean): S
     }
 
     if (record.type === "sleep") {
-      return {
-        status: "sleeping",
-        door_id: null,
-        epoch: null,
-        last_record_at: lastRecordAt,
-        verified
-      };
+      return state("sleeping", null, null, record.body.as_of);
     }
 
     if (record.type !== "attestation") {
@@ -213,47 +235,43 @@ export function deriveState(records: readonly OspRecord[], verified: boolean): S
     switch (body.kind) {
       case "arrival":
       case "heartbeat":
-        return {
-          status: "present",
-          door_id: body.door_id,
-          epoch: body.epoch,
-          last_record_at: lastRecordAt,
-          verified
-        };
+        return state(
+          "present",
+          body.door_id,
+          body.epoch,
+          findArrivalAt(records, index, body.door_id, body.epoch) ?? body.at
+        );
       case "departure":
-        return {
-          status: "traveling",
-          door_id: null,
-          epoch: body.epoch,
-          last_record_at: lastRecordAt,
-          verified
-        };
+        return state("traveling", null, body.epoch, body.at);
       case "travel":
-        return {
-          status: "traveling",
-          door_id: null,
-          epoch: body.from_epoch,
-          last_record_at: lastRecordAt,
-          verified
-        };
+        return state("traveling", null, body.from_epoch, body.at);
       case "handover":
-        return {
-          status: "traveling",
-          door_id: null,
-          epoch: body.depart_epoch,
-          last_record_at: lastRecordAt,
-          verified
-        };
+        return state("traveling", null, body.depart_epoch, body.at);
     }
   }
 
-  return {
-    status: "sleeping",
-    door_id: null,
-    epoch: null,
-    last_record_at: lastRecordAt,
-    verified
-  };
+  return state("sleeping", null, null, null);
+}
+
+/** Find the `at` of the arrival for `doorId`/`epoch` at or before `fromIndex`. */
+function findArrivalAt(
+  records: readonly OspRecord[],
+  fromIndex: number,
+  doorId: string,
+  epoch: number
+): string | null {
+  for (let index = fromIndex; index >= 0; index -= 1) {
+    const record = records[index];
+    if (
+      record?.type === "attestation" &&
+      record.body.kind === "arrival" &&
+      record.body.door_id === doorId &&
+      record.body.epoch === epoch
+    ) {
+      return record.body.at;
+    }
+  }
+  return null;
 }
 
 /**
@@ -328,9 +346,94 @@ export type DeriveJournalsOptions = {
   getSideBlob?: (cid: string) => Promise<Uint8Array>;
 };
 
+/** Where a memory record keeps its journal: inline (osp/0.1) or a side blob (osp/0.2). */
+type JournalRef = { inline: string } | { blobCid: string };
+
 /**
- * Derive journal entries from memory shard records (newest first).
- * Supports osp/0.1 inline `journal` and osp/0.2 `journal_cid` (via `getSideBlob`).
+ * Journal carried by a memory record: a `journal` record (witnessed memory) or a
+ * legacy shard with an inline `journal` / `journal_cid`. Null for anything else.
+ */
+function journalRefOf(record: OspRecord): JournalRef | null {
+  if (record.type !== "memory") {
+    return null;
+  }
+  const body = record.body;
+  if (body.kind === "journal") {
+    return { blobCid: body.journal_cid };
+  }
+  if (body.kind !== "shard") {
+    return null;
+  }
+  if ("journal" in body && body.journal !== undefined) {
+    return { inline: body.journal };
+  }
+  if ("journal_cid" in body && body.journal_cid !== undefined) {
+    return { blobCid: body.journal_cid };
+  }
+  return null;
+}
+
+/** Blob CIDs erased by tombstone records anywhere on the chain. */
+function tombstonedBlobs(records: readonly OspRecord[]): Set<string> {
+  const erased = new Set<string>();
+  for (const record of records) {
+    if (record.type === "tombstone") {
+      erased.add(record.body.blob_cid);
+    }
+  }
+  return erased;
+}
+
+/**
+ * Resolve a journal reference to text. Tombstoned or unreadable blobs become
+ * `[journal erased]`; a missing resolver becomes `[journal unavailable]`.
+ */
+async function resolveJournal(
+  ref: JournalRef,
+  erased: ReadonlySet<string>,
+  options: DeriveJournalsOptions | undefined
+): Promise<string> {
+  if ("inline" in ref) {
+    return ref.inline;
+  }
+  if (erased.has(ref.blobCid)) {
+    return "[journal erased]";
+  }
+  if (options?.getSideBlob === undefined) {
+    // Misconfigured Atlas (no blob resolver) — surface a marker so operators
+    // can tell this apart from "residency has no journal".
+    return "[journal unavailable]";
+  }
+  try {
+    return decodeJournalBlob(await options.getSideBlob(ref.blobCid));
+  } catch {
+    return "[journal erased]";
+  }
+}
+
+/** Page newest-first items with HTTP defaults (page 1, per_page 50, max 200). */
+function paginate<T>(
+  items: readonly T[],
+  query: JournalsQuery | undefined
+): { items: T[]; page: number; per_page: number; total: number } {
+  const total = items.length;
+  if (query === undefined) {
+    return { items: [...items], page: 1, per_page: total === 0 ? 50 : total, total };
+  }
+  const page = Math.max(query.page ?? 1, 1);
+  const perPage = Math.min(Math.max(query.per_page ?? 50, 1), 200);
+  const start = (page - 1) * perPage;
+  return {
+    items: start >= total ? [] : items.slice(start, start + perPage),
+    page,
+    per_page: perPage,
+    total
+  };
+}
+
+/**
+ * Derive journal entries (newest first) from `journal` records and legacy
+ * shard-embedded journals (osp/0.1 inline `journal`, osp/0.2 `journal_cid`).
  * Tombstoned / missing journal blobs become a visible erased marker string.
  *
  * When `query` is omitted (library / static-site callers), returns the full list
@@ -343,79 +446,177 @@ export async function deriveJournals(
   query?: JournalsQuery,
   options?: DeriveJournalsOptions
 ): Promise<JournalsResponse> {
+  const erased = tombstonedBlobs(records);
   const journals: JournalEntry[] = [];
-  const tombstonedBlobCids = new Set<string>();
-  for (const record of records) {
-    if (record.type === "tombstone") {
-      tombstonedBlobCids.add(record.body.blob_cid);
-    }
-  }
 
   for (let index = records.length - 1; index >= 0; index -= 1) {
     const record = records[index];
-    if (record === undefined || record.type !== "memory" || record.body.kind !== "shard") {
+    if (record === undefined || record.residency === null) {
       continue;
     }
-    const body = record.body;
-    if (record.residency === null) {
+    const ref = journalRefOf(record);
+    const parsed = ref === null ? null : parseResidency(record.residency);
+    if (ref === null || parsed === null) {
       continue;
     }
-
-    let journal: string | undefined;
-    if ("journal" in body && body.journal !== undefined) {
-      journal = body.journal;
-    } else if ("journal_cid" in body && body.journal_cid !== undefined) {
-      if (tombstonedBlobCids.has(body.journal_cid)) {
-        journal = "[journal erased]";
-      } else if (options?.getSideBlob !== undefined) {
-        try {
-          journal = decodeJournalBlob(await options.getSideBlob(body.journal_cid));
-        } catch {
-          journal = "[journal erased]";
-        }
-      } else {
-        // Misconfigured Atlas (no blob resolver) — surface a marker so operators
-        // can tell this apart from "residency has no journal".
-        journal = "[journal unavailable]";
-      }
-    } else {
-      continue;
-    }
-
-    const parsed = parseResidency(record.residency);
-    if (parsed === null) {
-      continue;
-    }
-
     journals.push({
       epoch: parsed.epoch,
       door_id: parsed.door_id,
       cid: await computeCid(record),
-      journal
+      journal: await resolveJournal(ref, erased, options)
     });
   }
 
-  const total = journals.length;
-  if (query === undefined) {
-    return {
-      journals,
-      page: 1,
-      per_page: total === 0 ? 50 : total,
-      total,
-      verified
-    };
+  const paged = paginate(journals, query);
+  return {
+    journals: paged.items,
+    page: paged.page,
+    per_page: paged.per_page,
+    total: paged.total,
+    verified
+  };
+}
+
+/** Memory outcomes for one residency. */
+export type ResidencyCounts = {
+  /** Shards the Door's witness co-signed. */
+  witnessed: number;
+  /** Shards the Door's witness declined (`rejected`, category `witness_<reason>`). */
+  declined: number;
+  /** Material dropped by the Wanderer's own immune screen (any other `rejected`). */
+  screened: number;
+};
+
+/** One residency (a stay at one Door for one epoch), for `GET /residencies`. */
+export type ResidencyEntry = {
+  residency: string;
+  door_id: string;
+  epoch: number;
+  arrived_at: string | null;
+  departed_at: string | null;
+  /** Door named by the travel (or handover) record that ended this residency. */
+  traveled_to: string | null;
+  counts: ResidencyCounts;
+  /** Distinct witness decline reasons in chain order (e.g. `["private"]`). */
+  declined_reasons: string[];
+  /** The residency's journal (record CID + text), or null when none was written. */
+  journal: { cid: string; journal: string } | null;
+};
+
+/** Response shape for `GET /residencies` (newest first). */
+export type ResidenciesResponse = {
+  residencies: ResidencyEntry[];
+  page: number;
+  per_page: number;
+  total: number;
+  verified: boolean;
+};
+
+/** Category prefix for memories the Door's witness declined (records.md §rejected). */
+export const WITNESS_CATEGORY_PREFIX = "witness_";
+
+/**
+ * Derive one entry per residency (newest first) from the residency field of every
+ * record: arrival / departure / travel times, witnessed / declined / screened memory
+ * counts, and the residency's journal (the `journal` record, else the last legacy
+ * shard-embedded journal). Pagination follows {@link deriveJournals}.
+ */
+export async function deriveResidencies(
+  records: readonly OspRecord[],
+  verified: boolean,
+  query?: JournalsQuery,
+  options?: DeriveJournalsOptions
+): Promise<ResidenciesResponse> {
+  const byResidency = new Map<string, { entry: ResidencyEntry; journal: OspRecord | null }>();
+
+  for (const record of records) {
+    if (record.residency === null) {
+      continue;
+    }
+    let slot = byResidency.get(record.residency);
+    if (slot === undefined) {
+      const parsed = parseResidency(record.residency);
+      if (parsed === null) {
+        continue;
+      }
+      slot = {
+        entry: {
+          residency: record.residency,
+          door_id: parsed.door_id,
+          epoch: parsed.epoch,
+          arrived_at: null,
+          departed_at: null,
+          traveled_to: null,
+          counts: { witnessed: 0, declined: 0, screened: 0 },
+          declined_reasons: [],
+          journal: null
+        },
+        journal: null
+      };
+      byResidency.set(record.residency, slot);
+    }
+    const entry = slot.entry;
+
+    if (journalRefOf(record) !== null) {
+      slot.journal = record;
+    }
+    if (record.type === "memory") {
+      const body = record.body;
+      if (body.kind === "shard") {
+        entry.counts.witnessed += 1;
+      } else if (body.kind === "rejected") {
+        if (body.category.startsWith(WITNESS_CATEGORY_PREFIX)) {
+          entry.counts.declined += 1;
+          const reason = body.category.slice(WITNESS_CATEGORY_PREFIX.length);
+          if (!entry.declined_reasons.includes(reason)) {
+            entry.declined_reasons.push(reason);
+          }
+        } else {
+          entry.counts.screened += 1;
+        }
+      }
+    } else if (record.type === "attestation") {
+      const body = record.body;
+      switch (body.kind) {
+        case "arrival":
+          entry.arrived_at ??= body.at;
+          break;
+        case "departure":
+          entry.departed_at = body.at;
+          break;
+        case "travel":
+          entry.departed_at ??= body.at;
+          entry.traveled_to = body.to_door_id ?? null;
+          break;
+        case "handover":
+          entry.departed_at ??= body.at;
+          entry.traveled_to = body.arrive_door_id;
+          break;
+        case "heartbeat":
+          break;
+      }
+    }
   }
 
-  const page = Math.max(query.page ?? 1, 1);
-  const perPage = Math.min(Math.max(query.per_page ?? 50, 1), 200);
-  const start = (page - 1) * perPage;
-  const slice = start >= total ? [] : journals.slice(start, start + perPage);
+  const erased = tombstonedBlobs(records);
+  const residencies: ResidencyEntry[] = [];
+  for (const { entry, journal } of [...byResidency.values()].reverse()) {
+    const ref = journal === null ? null : journalRefOf(journal);
+    if (journal !== null && ref !== null) {
+      entry.journal = {
+        cid: await computeCid(journal),
+        journal: await resolveJournal(ref, erased, options)
+      };
+    }
+    residencies.push(entry);
+  }
 
+  const paged = paginate(residencies, query);
   return {
-    journals: slice,
-    page,
-    per_page: perPage,
-    total,
+    residencies: paged.items,
+    page: paged.page,
+    per_page: paged.per_page,
+    total: paged.total,
     verified
   };
 }

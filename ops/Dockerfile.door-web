@@ -1,0 +1,60 @@
+# syntax=docker/dockerfile:1
+
+FROM node:22-bookworm-slim AS build
+
+RUN corepack enable && corepack prepare pnpm@9.15.9 --activate
+
+WORKDIR /app
+
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
+COPY packages/atlas/package.json packages/atlas/
+COPY packages/atlas-site/package.json packages/atlas-site/
+COPY packages/door-discord/package.json packages/door-discord/
+COPY packages/door-sdk/package.json packages/door-sdk/
+COPY packages/door-web/package.json packages/door-web/
+COPY packages/immune/package.json packages/immune/
+COPY packages/osp-cli/package.json packages/osp-cli/
+COPY packages/osp-core/package.json packages/osp-core/
+COPY packages/runtime/package.json packages/runtime/
+
+RUN pnpm install --frozen-lockfile
+
+COPY packages/osp-core packages/osp-core
+COPY packages/door-sdk packages/door-sdk
+COPY packages/door-web packages/door-web
+
+RUN pnpm --filter @npc/osp-core --filter @npc/door-sdk --filter @npc/door-web build
+# The deployed package keeps public/ (index.html, app.js, app.css) next to dist/.
+RUN pnpm --filter @npc/door-web deploy --prod /out
+
+FROM node:22-slim AS runtime
+
+# Apply Debian security updates published after the base image was built (see
+# Dockerfile.door-discord: a stale base layer otherwise fails the release Trivy gate).
+RUN apt-get update \
+  && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y --no-install-recommends \
+  && rm -rf /var/lib/apt/lists/*
+
+# Container uid/gid pinned to 10001 so a host bind-mounted door key owned 10001:10001 is readable (#84).
+RUN groupadd --gid 10001 npc && useradd --uid 10001 --gid npc --create-home --home-dir /home/npc npc
+
+# Strip unused Node base-image package managers from the runtime image (#130).
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
+  && rm -f /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack
+
+COPY --from=build /out /app
+
+WORKDIR /app
+USER npc
+
+# 8080: public visitor site (put a TLS reverse proxy in front). 9091: Door protocol for the
+# runtime — keep it on the internal network only.
+EXPOSE 8080 9091
+
+# No curl in the slim image: probe /healthz with Node's fetch.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD ["node", "-e", "fetch('http://127.0.0.1:'+(process.env.DOOR_WEB_PUBLIC_PORT||'8080')+'/healthz').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+
+# pnpm deploy does not emit a .bin shim for this package's own `bin` entry —
+# invoke the built entrypoint directly.
+CMD ["node", "dist/server.js"]

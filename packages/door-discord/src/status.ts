@@ -6,7 +6,8 @@ export type DoorStatusSnapshot = {
   doorId: string;
   epoch: number | null;
   sessionLive: boolean;
-  pendingReviewCount: number;
+  /** True when this Door's AI witness co-signs memories (`attest.memory`). */
+  witnessesMemories: boolean;
 };
 
 /**
@@ -16,12 +17,15 @@ export function formatStatusReply(status: DoorStatusSnapshot): string {
   const presence = status.present ? "present" : "absent";
   const epoch = status.epoch === null ? "none" : String(status.epoch);
   const live = status.sessionLive ? "live" : "not live";
+  const memories = status.witnessesMemories
+    ? "witnessed by this Door's AI witness"
+    : "not witnessed (no witness configured — the Wanderer forms no memories here)";
   return [
     `**Wanderer status**`,
     `• presence: ${presence}`,
     `• door_id: \`${status.doorId}\``,
     `• epoch: ${epoch}`,
     `• session: ${live}`,
-    `• pending review shards: ${String(status.pendingReviewCount)}`
+    `• memories: ${memories}`
   ].join("\n");
 }

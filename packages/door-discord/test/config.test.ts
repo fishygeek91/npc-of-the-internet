@@ -25,28 +25,69 @@ describe("loadDiscordDoorConfig", () => {
     const config = loadDiscordDoorConfig(baseEnv());
     expect(config.guildId).toBe("10001");
     expect(config.operatorIds).toEqual(["10004"]);
-    expect(config.reviewTimeoutMs).toBe(240_000);
+    expect(config.witness).toBeNull();
+    expect(config.presenceNotices).toBe(true);
   });
 
-  it("cosign review retention: in-memory by default, DOOR_STATE_DIR enables persistence", () => {
-    const defaults = loadDiscordDoorConfig(baseEnv());
-    expect(defaults.stateDir).toBeUndefined();
-    expect(defaults.cosignRetainEpochs).toBe(64);
-    expect(defaults.cosignRetainMs).toBe(604_800_000);
+  it("DISCORD_PRESENCE_NOTICES=0 disables presence notices; junk is a config error", () => {
+    expect(
+      loadDiscordDoorConfig({ ...baseEnv(), DISCORD_PRESENCE_NOTICES: "0" }).presenceNotices
+    ).toBe(false);
+    expect(
+      loadDiscordDoorConfig({ ...baseEnv(), DISCORD_PRESENCE_NOTICES: "1" }).presenceNotices
+    ).toBe(true);
+    expect(() =>
+      loadDiscordDoorConfig({ ...baseEnv(), DISCORD_PRESENCE_NOTICES: "maybe" })
+    ).toThrow(/DISCORD_PRESENCE_NOTICES/);
+  });
 
-    const configured = loadDiscordDoorConfig({
+  it("loads the memory witness from DOOR_WITNESS_*, falling back to NPC_BRAIN_*", () => {
+    const own = loadDiscordDoorConfig({
       ...baseEnv(),
-      DOOR_STATE_DIR: " /data/door-state ",
-      DOOR_COSIGN_RETAIN_EPOCHS: "4",
-      DOOR_COSIGN_RETAIN_MS: "86400000"
+      DOOR_WITNESS_BASE_URL: "https://witness.test/v1",
+      DOOR_WITNESS_API_KEY: "witness-key",
+      DOOR_WITNESS_MODEL: "witness-model"
     });
-    expect(configured.stateDir).toBe("/data/door-state");
-    expect(configured.cosignRetainEpochs).toBe(4);
-    expect(configured.cosignRetainMs).toBe(86_400_000);
+    expect(own.witness).toMatchObject({
+      baseUrl: "https://witness.test/v1",
+      apiKey: "witness-key",
+      model: "witness-model"
+    });
 
-    expect(() => loadDiscordDoorConfig({ ...baseEnv(), DOOR_COSIGN_RETAIN_EPOCHS: "0" })).toThrow(
-      /DOOR_COSIGN_RETAIN_EPOCHS/
-    );
+    const brain = loadDiscordDoorConfig({
+      ...baseEnv(),
+      NPC_BRAIN_BASE_URL: "https://brain.test/v1",
+      NPC_BRAIN_API_KEY: "brain-key",
+      NPC_BRAIN_MODEL: "brain-model"
+    });
+    expect(brain.witness?.model).toBe("brain-model");
+
+    const off = loadDiscordDoorConfig({
+      ...baseEnv(),
+      DOOR_WITNESS: "off",
+      NPC_BRAIN_BASE_URL: "https://brain.test/v1",
+      NPC_BRAIN_API_KEY: "brain-key",
+      NPC_BRAIN_MODEL: "brain-model"
+    });
+    expect(off.witness).toBeNull();
+  });
+
+  it("a partial witness config is an invalid_config boot error naming the var, not the key", () => {
+    const env = {
+      ...baseEnv(),
+      DOOR_WITNESS_BASE_URL: "https://witness.test/v1",
+      DOOR_WITNESS_API_KEY: "witness-secret-key"
+    };
+    let caught: unknown;
+    try {
+      loadDiscordDoorConfig(env);
+    } catch (error: unknown) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(DiscordDoorError);
+    expect((caught as DiscordDoorError).code).toBe("invalid_config");
+    expect((caught as DiscordDoorError).message).toMatch(/DOOR_WITNESS_MODEL/);
+    expect((caught as DiscordDoorError).message).not.toContain("witness-secret-key");
   });
 
   it("fails fast naming DISCORD_BOT_TOKEN when missing", () => {

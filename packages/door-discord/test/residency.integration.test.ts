@@ -2,6 +2,7 @@ import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import type { WitnessInput } from "@npc/door-sdk";
 import { verifyChain, type OspRecord } from "@npc/osp-core";
 import {
   FakeBrain,
@@ -13,12 +14,11 @@ import {
 import { afterEach, describe, expect, it } from "vitest";
 
 import { doorIdForGuild } from "../src/config.js";
-import { startDiscordDoor } from "../src/start.js";
+import { ARRIVED_NOTICE, MOVED_ON_NOTICE, startDiscordDoor } from "../src/start.js";
 import { FakeGateway } from "./helpers/fake-gateway.js";
 import { FakeTimer } from "./helpers/fake-timer.js";
 import { DOOR, SOUL } from "./helpers/fixed-keys.js";
 import {
-  autoApproveReviews,
   CHANNEL_ID,
   cleanupTempDirs,
   genesisStore,
@@ -76,11 +76,11 @@ async function collectRecords(store: {
 }
 
 describe("door-discord residency integration", () => {
-  it("runs a full mocked residency and the chain verifies", async () => {
+  it("runs a full residency; the Door's witness decides each memory; the chain verifies", async () => {
     const gateway = new FakeGateway();
     const clock = new TestClock(CLOCK_START);
     const timer = new FakeTimer();
-    const config = await testConfig({ reviewTimeoutMs: 10_000 });
+    const config = await testConfig({ presenceNotices: true });
     const doorId = doorIdForGuild(GUILD_ID);
     const store = await genesisStore();
 
@@ -89,14 +89,17 @@ describe("door-discord residency integration", () => {
 
     let session: Session | null = null;
 
+    const witnessed: WitnessInput[] = [];
     const handle = await startDiscordDoor({
       config,
       gateway,
       clock,
-      sleep: async (ms) => {
-        await new Promise<void>((resolve) => {
-          setTimeout(resolve, Math.min(ms, 5));
-        });
+      // Declines one shard; witnesses everything else (shards and the journal).
+      witness: async (input) => {
+        witnessed.push(input);
+        return input.text.includes("topic 3")
+          ? { witnessed: false, reason: "ungrounded" }
+          : { witnessed: true };
       },
       disableServers: true,
       sessionBridge: {
@@ -122,7 +125,8 @@ describe("door-discord residency integration", () => {
       clock,
       timer,
       heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS,
-      doorPublicKeys: { [doorId]: DOOR.publicKey }
+      doorPublicKeys: { [doorId]: DOOR.publicKey },
+      witnessesMemories: true
     });
 
     expect(handle.status().present).toBe(true);
@@ -165,20 +169,38 @@ describe("door-discord residency integration", () => {
       { role: "assistant", text: "Gratitude for the noise and the patience." }
     ]);
 
-    const departPromise = session.depart({
+    const departed = await session.depart({
       brain: distillBrain,
       transcript: new FileTranscriptSource(transcriptPath),
       journalDir,
-      nextDoorId: "irc:elsewhere"
+      toDoorId: "irc:elsewhere"
     });
-    await autoApproveReviews(gateway, departPromise);
-    await departPromise;
+    expect(departed).toMatchObject({ witnessed: 4, declined: 1 });
+    expect(departed.journalPath).not.toBeNull();
+
+    // The witness judged each memory against the Door's own record of the stay.
+    expect(witnessed.map((input) => input.kind)).toEqual([
+      "shard",
+      "shard",
+      "shard",
+      "shard",
+      "shard",
+      "journal"
+    ]);
+    expect(witnessed[0]?.transcript.map((line) => [line.role, line.text])).toEqual([
+      ["community", "What do you remember?"],
+      ["wanderer", "Hello from the channel."]
+    ]);
 
     const records = await collectRecords(store);
-    const candidates = records.filter((r) => r.type === "memory" && r.body.kind === "candidate");
-    const shards = records.filter((r) => r.type === "memory" && r.body.kind === "shard");
-    expect(candidates.length).toBe(5);
-    expect(shards.length).toBe(0);
+    const memoryKinds = records.filter((r) => r.type === "memory").map((r) => r.body.kind);
+    expect(memoryKinds.filter((kind) => kind === "shard")).toHaveLength(4);
+    expect(memoryKinds.filter((kind) => kind === "journal")).toHaveLength(1);
+    expect(memoryKinds).not.toContain("candidate");
+    const rejected = records.filter((r) => r.type === "memory" && r.body.kind === "rejected");
+    expect(rejected.map((r) => (r.body as { category: string }).category)).toEqual([
+      "witness_ungrounded"
+    ]);
 
     const verified = await verifyChain(store, {
       doorPublicKeys: { [doorId]: DOOR.publicKey }
@@ -186,6 +208,13 @@ describe("door-discord residency integration", () => {
     expect(verified.valid).toBe(true);
 
     expect(handle.status().present).toBe(false);
+    await new Promise<void>((resolve) => {
+      setImmediate(resolve);
+    });
+    const notices = gateway.sent
+      .map((m) => m.content)
+      .filter((c) => c === ARRIVED_NOTICE || c === MOVED_ON_NOTICE);
+    expect(notices).toEqual([ARRIVED_NOTICE, MOVED_ON_NOTICE]);
 
     await handle.stop();
   });

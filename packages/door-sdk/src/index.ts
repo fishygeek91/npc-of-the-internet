@@ -3,20 +3,16 @@ export const packageName = "@npc/door-sdk";
 export { Door, DEFAULT_MAX_ISSUED_AT_SKEW_MS } from "./door.js";
 export type { DoorOptions, SessionLifecycleEvent } from "./door.js";
 export type { HostPolicy } from "./policy.js";
-export {
-  ResidencyRecord,
-  DEFAULT_RESIDENCY_RECORD_CHARS
-} from "./residency-record.js";
+export { ResidencyRecord, DEFAULT_RESIDENCY_RECORD_CHARS } from "./residency-record.js";
 export type { ResidencyLine, ResidencyRecordOptions } from "./residency-record.js";
 export {
   createAiWitness,
   openAiCompatComplete,
   loadWitnessConfig,
-  buildWitnessUserPrompt,
   parseWitnessReply,
-  WitnessConfigError,
-  WITNESS_SYSTEM_PROMPT
+  WitnessConfigError
 } from "./witness.js";
+export { buildWitnessUserPrompt, WITNESS_SYSTEM_PROMPT } from "./prompts/witness.js";
 export type {
   AiWitnessOptions,
   CompleteFn,

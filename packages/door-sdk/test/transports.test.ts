@@ -55,7 +55,7 @@ const defaultPolicy: HostPolicy = {
     platform: "discord",
     invitation_required: false
   },
-  capabilities: ["session.text", "heartbeat", "attest", "cosign.manual"]
+  capabilities: ["session.text", "heartbeat", "attest"]
 };
 
 function createDoor(soulPublicKey: Uint8Array): Door {
@@ -245,7 +245,7 @@ describe("HTTP transport", () => {
     const { baseUrl } = await httpServer.start();
 
     const response = await postJson(baseUrl, "/door/hello", {
-      protocol_version: "door/0.2",
+      protocol_version: "door/0.1",
       soul_pubkey: encodePublicKey(soul.publicKey)
     });
 
@@ -366,22 +366,23 @@ describe("HTTP transport", () => {
     expect((response.body.error as { code: string }).code).toBe("payload_too_large");
   });
 
-  it("stream body exceeding 128KiB without Content-Length returns 413", async () => {
+  it("stream body exceeding MAX_HTTP_BODY_BYTES without Content-Length returns 413", async () => {
     const soul = generateKeypair();
     const door = createDoor(soul.publicKey);
     httpServer = new HttpDoorServer({ door });
     const { baseUrl } = await httpServer.start();
 
     const chunk = Buffer.alloc(64 * 1024, 0x61);
+    const chunkCount = Math.ceil(MAX_HTTP_BODY_BYTES / chunk.length) + 1;
     const response = await postRaw(baseUrl, "/door/hello", {
-      streamChunks: [chunk, chunk, chunk]
+      streamChunks: Array.from({ length: chunkCount }, () => chunk)
     });
 
     expect(response.status).toBe(413);
     expect((response.body.error as { code: string }).code).toBe("payload_too_large");
   });
 
-  it("stream body one byte over 128KiB returns 413", async () => {
+  it("stream body one byte over MAX_HTTP_BODY_BYTES returns 413", async () => {
     const soul = generateKeypair();
     const door = createDoor(soul.publicKey);
     httpServer = new HttpDoorServer({ door });

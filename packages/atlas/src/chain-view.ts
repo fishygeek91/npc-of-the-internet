@@ -19,7 +19,7 @@ export type ChainSnapshot = {
   unreadable?: boolean;
   unreadableMessage?: string;
   /**
-   * Side-blob bytes keyed by CID (osp/0.2 journal/text blobs found while loading).
+   * Side-blob bytes keyed by CID (osp/0.2 shard text and journal blobs found while loading).
    * Missing CIDs are omitted (tombstoned or unavailable).
    */
   sideBlobs?: ReadonlyMap<string, Uint8Array>;
@@ -187,10 +187,13 @@ export class ChainView {
         // revisit lazy/fetch-on-demand if Atlas memory becomes an issue.
         const sideBlobs = new Map<string, Uint8Array>();
         for (const record of records) {
-          if (record.type !== "memory" || record.body.kind !== "shard") {
+          if (record.type !== "memory") {
             continue;
           }
           const body = record.body;
+          if (body.kind !== "shard" && body.kind !== "journal") {
+            continue;
+          }
           const cids: string[] = [];
           if ("text_cid" in body) {
             cids.push(body.text_cid);

@@ -18,16 +18,9 @@ import { Door } from "../src/door.js";
 import { DoorError } from "../src/errors.js";
 import type { HostPolicy } from "../src/policy.js";
 import { DOOR_PROTOCOL_VERSION } from "../src/schemas.js";
-import type {
-  AttestRequest,
-  CosignCandidateShard,
-  CosignRequest,
-  OutboundFrame
-} from "../src/schemas.js";
+import type { AttestRequest, OutboundFrame } from "../src/schemas.js";
 import {
   attestSigningPayload,
-  cosignCommitSigningPayload,
-  cosignReviewSigningPayload,
   generateDoorKeypair,
   helloResponseSigningPayload,
   sessionBindSigningPayload,
@@ -56,18 +49,6 @@ function attestCore(kind: AttestRequest["kind"], epoch: number, doorId = DOOR_ID
   );
 }
 
-/** Canonical `memory` core for `sampleShards()[0]` (inline osp/0.1 text; the Door binds commit cores to reviewed text). */
-const MEMORY_CORE = new TextDecoder().decode(
-  canonicalize({
-    spec: "osp/0.1",
-    seq: 2,
-    prev: PREV_CID,
-    type: "memory",
-    body: { kind: "shard", text: "Memory shard 1 from the residency." },
-    residency: RESIDENCY
-  })
-);
-
 /** Injectable clock for deterministic timestamps. */
 class FakeClock {
   constructor(private readonly fixed: string) {}
@@ -84,7 +65,7 @@ const defaultPolicy: HostPolicy = {
     platform: "discord",
     invitation_required: false
   },
-  capabilities: ["session.text", "heartbeat", "attest", "cosign.manual"]
+  capabilities: ["session.text", "heartbeat", "attest"]
 };
 
 function createDoor(options?: {
@@ -124,29 +105,6 @@ function signOutboundFrame(
 ): OutboundFrame {
   const payload = canonicalize(frame);
   return { ...frame, sig: encodeSignature(sign(payload, session.privateKey)) };
-}
-
-function sampleShards(count: number): CosignCandidateShard[] {
-  return Array.from({ length: count }, (_, index) => ({
-    shard_id: `shard_${String(index + 1).padStart(2, "0")}`,
-    text: `Memory shard ${String(index + 1)} from the residency.`
-  }));
-}
-
-function signCosignReviewRequest(
-  session: Ed25519Keypair,
-  fields: Omit<Extract<CosignRequest, { phase: "review" }>, "sig">
-): Extract<CosignRequest, { phase: "review" }> {
-  const payload = cosignReviewSigningPayload(fields);
-  return { ...fields, sig: encodeSignature(sign(payload, session.privateKey)) };
-}
-
-function signCosignCommitRequest(
-  session: Ed25519Keypair,
-  fields: Omit<Extract<CosignRequest, { phase: "commit" }>, "sig">
-): Extract<CosignRequest, { phase: "commit" }> {
-  const payload = cosignCommitSigningPayload(fields);
-  return { ...fields, sig: encodeSignature(sign(payload, session.privateKey)) };
 }
 
 async function establishArrival(
@@ -459,203 +417,6 @@ describe("Door", () => {
     );
   });
 
-  it("cosign review with no active session → session_invalid", async () => {
-    const door = createTestDoor();
-    const shards = sampleShards(5);
-    const reviewRequest = signCosignReviewRequest(session, {
-      protocol_version: DOOR_PROTOCOL_VERSION,
-      phase: "review",
-      door_id: DOOR_ID,
-      epoch: EPOCH,
-      session_pubkey: encodePublicKey(session.publicKey),
-      shards,
-      issued_at: ISSUED_AT
-    });
-
-    await expect(door.cosign(reviewRequest)).rejects.toBeInstanceOf(DoorError);
-    await expect(door.cosign(reviewRequest)).rejects.toMatchObject({ code: "session_invalid" });
-    await expect(door.cosign(reviewRequest)).rejects.toThrow(/no active session/);
-  });
-
-  it("cosign review with invalid signature → signature_invalid", async () => {
-    const door = createTestDoor();
-    await establishArrival(door, soul, session, EPOCH);
-
-    const wrongSession = generateKeypair();
-    const shards = sampleShards(5);
-    const reviewRequest = signCosignReviewRequest(wrongSession, {
-      protocol_version: DOOR_PROTOCOL_VERSION,
-      phase: "review",
-      door_id: DOOR_ID,
-      epoch: EPOCH,
-      session_pubkey: encodePublicKey(session.publicKey),
-      shards,
-      issued_at: ISSUED_AT
-    });
-
-    await expect(door.cosign(reviewRequest)).rejects.toBeInstanceOf(DoorError);
-    await expect(door.cosign(reviewRequest)).rejects.toMatchObject({ code: "signature_invalid" });
-    await expect(door.cosign(reviewRequest)).rejects.toThrow(
-      /cosign review request signature failed/
-    );
-  });
-
-  it("cosign review with too many shards → shard_count", async () => {
-    const door = createTestDoor();
-    await establishArrival(door, soul, session, EPOCH);
-
-    const reviewRequest = signCosignReviewRequest(session, {
-      protocol_version: DOOR_PROTOCOL_VERSION,
-      phase: "review",
-      door_id: DOOR_ID,
-      epoch: EPOCH,
-      session_pubkey: encodePublicKey(session.publicKey),
-      shards: sampleShards(21),
-      issued_at: ISSUED_AT
-    });
-
-    await expect(door.cosign(reviewRequest)).rejects.toBeInstanceOf(DoorError);
-    await expect(door.cosign(reviewRequest)).rejects.toMatchObject({ code: "shard_count" });
-    await expect(door.cosign(reviewRequest)).rejects.toThrow(/expected 5–20 shards/);
-  });
-
-  it("cosign review then commit; door_cosig verifies; identical retry replays, other review → epoch_closed", async () => {
-    const { door, doorKeypair } = createDoor({ soulPublicKey: soul.publicKey });
-    await establishArrival(door, soul, session, EPOCH);
-
-    const shards = sampleShards(5);
-    const reviewRequest = signCosignReviewRequest(session, {
-      protocol_version: DOOR_PROTOCOL_VERSION,
-      phase: "review",
-      door_id: DOOR_ID,
-      epoch: EPOCH,
-      session_pubkey: encodePublicKey(session.publicKey),
-      shards,
-      issued_at: ISSUED_AT
-    });
-
-    const reviewResponse = await door.cosign(reviewRequest);
-    expect(reviewResponse.phase).toBe("review");
-    expect(reviewResponse.decisions).toHaveLength(5);
-    expect(reviewResponse.decisions.every((decision) => decision.status === "approved")).toBe(true);
-
-    // Authenticated retry of the same review (lost reply): stored response, no re-review.
-    await expect(door.cosign(reviewRequest)).resolves.toEqual(reviewResponse);
-    // Any other review for the closed epoch (different shard set) → epoch_closed.
-    const otherReview = signCosignReviewRequest(session, {
-      protocol_version: DOOR_PROTOCOL_VERSION,
-      phase: "review",
-      door_id: DOOR_ID,
-      epoch: EPOCH,
-      session_pubkey: encodePublicKey(session.publicKey),
-      shards: sampleShards(6),
-      issued_at: ISSUED_AT
-    });
-    await expect(door.cosign(otherReview)).rejects.toBeInstanceOf(DoorError);
-    await expect(door.cosign(otherReview)).rejects.toMatchObject({ code: "epoch_closed" });
-    await expect(door.cosign(otherReview)).rejects.toThrow(/epoch_closed/);
-
-    const shardId = shards[0].shard_id;
-    const commitResponse = await door.cosign(
-      signCosignCommitRequest(session, {
-        protocol_version: DOOR_PROTOCOL_VERSION,
-        phase: "commit",
-        door_id: DOOR_ID,
-        epoch: EPOCH,
-        session_pubkey: encodePublicKey(session.publicKey),
-        shard_id: shardId,
-        core: MEMORY_CORE,
-        issued_at: ISSUED_AT
-      })
-    );
-
-    expect(commitResponse.phase).toBe("commit");
-    expect(verifyDoorCosig(MEMORY_CORE, commitResponse.door_cosig, doorKeypair.publicKey)).toBe(
-      true
-    );
-    const coreBytes = new TextEncoder().encode(MEMORY_CORE);
-    expect(
-      verify(coreBytes, decodeSignature(commitResponse.door_cosig), doorKeypair.publicKey)
-    ).toBe(true);
-  });
-
-  it("commit before review → review_pending", async () => {
-    const door = createTestDoor();
-    await establishArrival(door, soul, session, EPOCH);
-
-    const commitRequest = signCosignCommitRequest(session, {
-      protocol_version: DOOR_PROTOCOL_VERSION,
-      phase: "commit",
-      door_id: DOOR_ID,
-      epoch: EPOCH,
-      session_pubkey: encodePublicKey(session.publicKey),
-      shard_id: "shard_01",
-      core: MEMORY_CORE,
-      issued_at: ISSUED_AT
-    });
-
-    await expect(door.cosign(commitRequest)).rejects.toMatchObject({ code: "review_pending" });
-    await expect(door.cosign(commitRequest)).rejects.toThrow(/review_pending/);
-  });
-
-  it("cosign review honors reject policy and blocks commit for rejected shards", async () => {
-    const shards = sampleShards(5);
-    const rejectedId = shards[2].shard_id;
-    const door = createDoor({
-      soulPublicKey: soul.publicKey,
-      policy: {
-        ...defaultPolicy,
-        decideShard: (shard) => (shard.shard_id === rejectedId ? "rejected" : "approved")
-      }
-    }).door;
-    await establishArrival(door, soul, session, EPOCH);
-
-    const reviewResponse = await door.cosign(
-      signCosignReviewRequest(session, {
-        protocol_version: DOOR_PROTOCOL_VERSION,
-        phase: "review",
-        door_id: DOOR_ID,
-        epoch: EPOCH,
-        session_pubkey: encodePublicKey(session.publicKey),
-        shards,
-        issued_at: ISSUED_AT
-      })
-    );
-
-    const rejected = reviewResponse.decisions.find((decision) => decision.shard_id === rejectedId);
-    expect(rejected?.status).toBe("rejected");
-    expect(rejected?.reason).toBeDefined();
-
-    const approvedId = shards[0].shard_id;
-    const commitRequest = signCosignCommitRequest(session, {
-      protocol_version: DOOR_PROTOCOL_VERSION,
-      phase: "commit",
-      door_id: DOOR_ID,
-      epoch: EPOCH,
-      session_pubkey: encodePublicKey(session.publicKey),
-      shard_id: rejectedId,
-      core: MEMORY_CORE,
-      issued_at: ISSUED_AT
-    });
-    await expect(door.cosign(commitRequest)).rejects.toMatchObject({ code: "shard_not_approved" });
-    await expect(door.cosign(commitRequest)).rejects.toThrow(/shard_not_approved/);
-
-    const approvedCommit = await door.cosign(
-      signCosignCommitRequest(session, {
-        protocol_version: DOOR_PROTOCOL_VERSION,
-        phase: "commit",
-        door_id: DOOR_ID,
-        epoch: EPOCH,
-        session_pubkey: encodePublicKey(session.publicKey),
-        shard_id: approvedId,
-        core: MEMORY_CORE,
-        issued_at: ISSUED_AT
-      })
-    );
-    expect(approvedCommit.phase).toBe("commit");
-    expect(approvedCommit.shard_id).toBe(approvedId);
-  });
-
   it("verifies good outbound frames and rejects tampered text", async () => {
     const door = createTestDoor();
     await establishArrival(door, soul, session, EPOCH);
@@ -926,7 +687,7 @@ describe("Door protocol hardening (#66)", () => {
     await establishArrival(door, soul, session, EPOCH);
 
     const lifecycleEvents: Array<{ type: string; epoch: number }> = [];
-    door.setSessionLifecycleListener((event) => {
+    door.addSessionLifecycleListener((event) => {
       lifecycleEvents.push({ type: event.type, epoch: event.epoch });
     });
 
@@ -949,10 +710,13 @@ describe("Door protocol hardening (#66)", () => {
 
     expect(door.getActiveEpoch()).toBe(EPOCH + 1);
     expect(door.getActiveSessionPubkey()).toBe(encodePublicKey(nextSession.publicKey));
-    expect(lifecycleEvents).toEqual([{ type: "superseded", epoch: EPOCH }]);
+    expect(lifecycleEvents).toEqual([
+      { type: "superseded", epoch: EPOCH },
+      { type: "arrived", epoch: EPOCH + 1 }
+    ]);
   });
 
-  it("rejects stale and future issued_at beyond maxIssuedAtSkewMs on arrival and cosign review", async () => {
+  it("rejects stale and future issued_at beyond maxIssuedAtSkewMs on arrival and session attests", async () => {
     const door = createTestDoor({ maxIssuedAtSkewMs: 1000 });
     const staleIssuedAt = "2026-07-20T15:00:00.000Z";
     const futureIssuedAt = "2026-07-20T15:15:00.000Z";
@@ -1009,15 +773,20 @@ describe("Door protocol hardening (#66)", () => {
     );
     await door.attest(validArrival);
 
-    const staleReview = signCosignReviewRequest(session, {
-      protocol_version: DOOR_PROTOCOL_VERSION,
-      phase: "review",
-      door_id: DOOR_ID,
-      epoch: EPOCH,
-      session_pubkey: encodePublicKey(session.publicKey),
-      shards: sampleShards(5),
-      issued_at: staleIssuedAt
-    });
-    await expect(door.cosign(staleReview)).rejects.toMatchObject({ code: "timestamp_stale" });
+    const staleHeartbeat = signAttestRequest(
+      soul,
+      session,
+      {
+        protocol_version: DOOR_PROTOCOL_VERSION,
+        door_id: DOOR_ID,
+        epoch: EPOCH,
+        kind: "heartbeat",
+        core: attestCore("heartbeat", EPOCH),
+        session_pubkey: encodePublicKey(session.publicKey),
+        issued_at: staleIssuedAt
+      },
+      false
+    );
+    await expect(door.attest(staleHeartbeat)).rejects.toMatchObject({ code: "timestamp_stale" });
   });
 });

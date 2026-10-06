@@ -20,9 +20,8 @@ describe("loadDaemonConfig", () => {
     const config = loadDaemonConfig(VALID_ENV);
     expect(config.soulKeyPath).toBe("/tmp/soul.key");
     expect(config.soulchainDir).toBe("/tmp/chain");
-    expect(config.doorHttpHost).toBe("127.0.0.1");
-    expect(config.doorHttpPort).toBe(3000);
-    expect(config.doorId).toBe("discord:test-guild");
+    expect(config.doorUrls).toEqual(["http://127.0.0.1:3000"]);
+    expect(config.preferredDoorId).toBe("discord:test-guild");
     expect(Object.keys(config.doorPublicKeys)).toEqual(["discord:test-guild"]);
     expect(config.brain.provider).toBe("anthropic");
     if (config.brain.provider === "anthropic") {
@@ -32,6 +31,55 @@ describe("loadDaemonConfig", () => {
     expect(config.replication.enabled).toBe(false);
     expect(config.replication.targets).toEqual([]);
     expect(config.attentionMode).toBe("selective");
+    expect(config.residency).toMatchObject({
+      maxResidencyMs: 86_400_000,
+      minMemoryLines: 10,
+      operatorTrigger: true
+    });
+  });
+
+  it("NPC_DOOR_URLS lists the Doors (deduped, trailing slashes dropped) and wins over the legacy pair", () => {
+    const config = loadDaemonConfig({
+      ...VALID_ENV,
+      NPC_DOOR_URLS:
+        " http://door-discord:8787/, https://door.example.org ,http://door-discord:8787"
+    });
+    expect(config.doorUrls).toEqual(["http://door-discord:8787", "https://door.example.org"]);
+
+    const withoutLegacy: NodeJS.ProcessEnv = {
+      ...VALID_ENV,
+      NPC_DOOR_URLS: "http://door-web:8788"
+    };
+    delete withoutLegacy.DOOR_HTTP_HOST;
+    delete withoutLegacy.DOOR_HTTP_PORT;
+    expect(loadDaemonConfig(withoutLegacy).doorUrls).toEqual(["http://door-web:8788"]);
+  });
+
+  it("rejects non-http(s) NPC_DOOR_URLS entries", () => {
+    for (const bad of ["ws://door:8787", "door-discord:8787", "ftp://x"]) {
+      try {
+        loadDaemonConfig({ ...VALID_ENV, NPC_DOOR_URLS: bad });
+        expect.unreachable();
+      } catch (error) {
+        expect(error).toBeInstanceOf(DaemonError);
+        expect((error as DaemonError).envVar).toBe("NPC_DOOR_URLS");
+      }
+    }
+  });
+
+  it("CURRENT_DOOR_ID is optional; without NPC_DOOR_URLS the legacy host/port are required", () => {
+    const noPreference = { ...VALID_ENV };
+    delete noPreference.CURRENT_DOOR_ID;
+    expect(loadDaemonConfig(noPreference).preferredDoorId).toBeUndefined();
+
+    const noDoors = { ...VALID_ENV };
+    delete noDoors.DOOR_HTTP_HOST;
+    try {
+      loadDaemonConfig(noDoors);
+      expect.unreachable();
+    } catch (error) {
+      expect((error as DaemonError).envVar).toBe("DOOR_HTTP_HOST");
+    }
   });
 
   it("parses NPC_ATTENTION_MODE and rejects unknown values", () => {

@@ -7,7 +7,7 @@ export const DISTILLER_SYSTEM = `You are the Wanderer — a traveler who has jus
 Distill this residency into first-person memory shards: short recollections in your own voice, as things you remember and carry — not summaries for someone else.
 
 Rules:
-- Produce between 5 and 20 shards.
+- Produce between 1 and 20 shards — fewer for short stays. Only keep what truly happened here.
 - Each shard must be at most 500 characters.
 - Write in first person.
 - Do not include PII: no email addresses, phone numbers, or @handles.

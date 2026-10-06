@@ -16,6 +16,7 @@ import type { HostPolicy } from "./policy.js";
 import {
   DOOR_PROTOCOL_VERSION,
   HelloRequestSchema,
+  WitnessReasonSchema,
   type AttestRequest,
   type AttestResponse,
   type Clock,
@@ -25,7 +26,8 @@ import {
   type HelloResponse,
   type InboundFrame,
   type OutboundFrame,
-  type SessionBindParams
+  type SessionBindParams,
+  type WitnessReason
 } from "./schemas.js";
 import {
   attestSigningPayload,
@@ -211,7 +213,6 @@ export class Door {
     return { ...unsigned, sig };
   }
 
-
   /** `POST /door/hello` — capability negotiation and signed community descriptor. */
   async hello(req: unknown): Promise<HelloResponse> {
     const version = readProtocolVersion(req);
@@ -257,7 +258,6 @@ export class Door {
 
     return { ...unsigned, sig };
   }
-
 
   /**
    * `POST /door/attest` — verify soul/session signatures, bind `core` to the request,
@@ -437,7 +437,6 @@ export class Door {
       door_sig: doorSig
     };
   }
-
 
   /**
    * Verify WebSocket session binding proof (`session_sig` over `{door_id, epoch, session_pubkey}`).
@@ -666,20 +665,23 @@ export class Door {
         error
       );
     }
-    if (!verdict.witnessed) {
-      throw DoorError.fromCode(
-        "witness_declined",
-        `witness_declined: ${verdict.reason}`,
-        { reason: verdict.reason }
-      );
+    // Fail closed on host witnesses that break the type contract: only `true` witnesses.
+    const witnessed = (verdict as { witnessed?: unknown } | null | undefined)?.witnessed;
+    if (witnessed === true) {
+      return;
     }
+    if (witnessed !== false) {
+      throw DoorError.fromCode("witness_unavailable", "witness_unavailable: malformed verdict");
+    }
+    const parsedReason = WitnessReasonSchema.safeParse((verdict as { reason?: unknown }).reason);
+    const reason: WitnessReason = parsedReason.success ? parsedReason.data : "other";
+    throw DoorError.fromCode("witness_declined", `witness_declined: ${reason}`, { reason });
   }
 
   /** OSP residency string for this Door at `epoch` (`door:<door_id>/epoch:<n>`). */
   private residencyFor(epoch: number): string {
     return `door:${this.doorId}/epoch:${String(epoch)}`;
   }
-
 
   /**
    * Bind an attestation `core` to the request: it must be a canonical OSP `attestation`
@@ -832,7 +834,6 @@ export class Door {
       );
     }
   }
-
 
   private emitSessionLifecycle(event: SessionLifecycleEvent): void {
     for (const listener of [...this.sessionLifecycleListeners]) {

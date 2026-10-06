@@ -1,157 +1,54 @@
 /**
- * Residency lifecycle through the REAL daemon: real door-sdk Door over HTTP + WebSocket,
- * real FileSoulStore, FakeBrain, injected FakeTimer (heartbeats / control-dir polls).
+ * Residency lifecycle through the REAL daemon across several Doors: real door-sdk Doors
+ * over HTTP + WebSocket (each with a scripted memory witness), real FileSoulStore,
+ * FakeBrain, injected FakeTimer (heartbeats / control-dir polls / residency age).
  *
- * arrive → inbound → operator-triggered cycle (control dir / SIGUSR2) → Door review →
- * candidate / departure / travel records → re-arrival at epoch + 1 → heartbeats and
- * inbound continue on the new session → chain verifies with the Door key.
+ * arrive at Door A → conversation → operator-triggered cycle → A witnesses each memory →
+ * shard / rejected / journal / departure / travel(→ B) records → arrival at Door B at
+ * epoch + 1 → the chain verifies with both Door keys.
  */
-import { mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 
-import {
-  Door,
-  HttpDoorServer,
-  OutboundFrameSchema,
-  WsDoorSessionServer,
-  type HostPolicy,
-  type OutboundFrame
-} from "@npc/door-sdk";
-import {
-  OSP_SPEC_V02,
-  createRecord,
-  encodeBase64Url,
-  encodePublicKey,
-  FileSoulStore,
-  verifyChain,
-  type OspRecord
-} from "@npc/osp-core";
+import { OutboundFrameSchema, type OutboundFrame } from "@npc/door-sdk";
 import pino from "pino";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import type WebSocket from "ws";
 
 import { FakeBrain } from "../src/brain/fake-brain.js";
 import type { BrainMessage } from "../src/brain/types.js";
-import type { DaemonConfig } from "../src/daemon-config.js";
 import { startResidencyDaemon, type ResidencyDaemonHandle } from "../src/daemon.js";
 import { DISTILLER_SYSTEM } from "../src/prompts/distiller/system.js";
 import { JOURNAL_SYSTEM } from "../src/prompts/journal/system.js";
-import { loadReplicationConfig } from "../src/replication/config.js";
-import { loadResidencyConfig, type ResidencyConfig } from "../src/residency/config.js";
 import { writeDepartRequest } from "../src/residency/control-dir.js";
-import { DOOR, SOUL } from "./helpers/fixed-keys.js";
+import { ScriptedWitness } from "./helpers/door-stub.js";
 import { FakeTimer } from "./helpers/fake-timer.js";
+import { DOOR, OTHER_DOOR, THIRD_DOOR } from "./helpers/fixed-keys.js";
+import {
+  capturingLogger,
+  chainShape,
+  createSoulDirs,
+  multiDoorConfig,
+  OffsetClock,
+  readVerifiedChain,
+  startTestDoor,
+  waitFor,
+  type TestDoor
+} from "./helpers/test-doors.js";
 
-const DOOR_ID = "discord:residency-test";
-const DOOR_KEYS = { [DOOR_ID]: DOOR.publicKey };
+const A = "discord:a";
+const B = "web:b";
+const KEYS = { [A]: DOOR.publicKey, [B]: OTHER_DOOR.publicKey };
 const RAW_LINE = "my cat is named Pixel and she hates thunder";
 const GAP_LINE = "anyone here? (said during the travel gap)";
+const JOURNAL = "# Journal\n\nThe storms followed me here, and then I left.";
+const SHARDS = [
+  "I remember the guild talking about storms.",
+  "I remember a cat that hates thunder.",
+  "I remember the river running high."
+];
 
-const policy: HostPolicy = {
-  community: {
-    name: "Residency Test Guild",
-    description: "Residency lifecycle integration tests.",
-    platform: "discord",
-    invitation_required: false
-  },
-  capabilities: ["session.text", "heartbeat", "attest", "cosign.manual"]
-};
-
-const SHARDS = Array.from({ length: 6 }, (_, i) => ({
-  text: `I remember the guild talking about storms, part ${String(i + 1)}.`
-}));
-
-type Env = {
-  chainDir: string;
-  controlDir: string;
-  journalDir: string;
-  readyFilePath: string;
-  door: Door;
-  httpServer: HttpDoorServer;
-  wsServer: WsDoorSessionServer;
-  config: (residency?: Partial<ResidencyConfig>) => DaemonConfig;
-};
-
-/** Wall clock with a test-controlled offset, shared by the Door and the daemon. */
-class OffsetClock {
-  offsetMs = 0;
-  now(): string {
-    return new Date(Date.now() + this.offsetMs).toISOString();
-  }
-}
-
-async function createEnv(opts: { pastEpochs?: boolean; clock?: OffsetClock } = {}): Promise<Env> {
-  const root = await mkdtemp(join(tmpdir(), "npc-residency-"));
-  const chainDir = join(root, "chain");
-  const soulKeyPath = join(root, "soul.key");
-  await writeFile(soulKeyPath, encodeBase64Url(SOUL.privateKey), "utf8");
-
-  const store = await FileSoulStore.open(chainDir, { doorPublicKeys: DOOR_KEYS });
-  const genesis = await createRecord({
-    spec: OSP_SPEC_V02,
-    seq: 0,
-    prev: null,
-    type: "genesis",
-    body: {
-      charter: "# Wanderer\n\nResidency lifecycle test.",
-      soul_pubkey: encodePublicKey(SOUL.publicKey),
-      created_at: "2026-10-01T00:00:00.000Z"
-    },
-    residency: null,
-    cosigners: [],
-    soulPrivateKey: SOUL.privateKey
-  });
-  await store.append(genesis.record);
-  await store.close();
-
-  const door = new Door({
-    doorId: DOOR_ID,
-    doorKeypair: DOOR,
-    soulPublicKey: SOUL.publicKey,
-    clock: opts.clock ?? { now: () => new Date().toISOString() },
-    policy:
-      opts.pastEpochs === true
-        ? { ...policy, capabilities: [...policy.capabilities, "cosign.past_epochs"] }
-        : policy
-  });
-  const httpServer = new HttpDoorServer({ door });
-  const httpInfo = await httpServer.start();
-  const wsServer = new WsDoorSessionServer({ door, server: httpServer.nodeServer });
-  await wsServer.start();
-  const url = new URL(httpInfo.baseUrl);
-
-  const controlDir = join(root, "control");
-  const journalDir = join(root, "published", "journals");
-  const readyFilePath = join(root, "ready");
-  return {
-    chainDir,
-    controlDir,
-    journalDir,
-    readyFilePath,
-    door,
-    httpServer,
-    wsServer,
-    config: (residency = {}) => ({
-      soulKeyPath,
-      soulchainDir: chainDir,
-      doorHttpHost: url.hostname,
-      doorHttpPort: Number.parseInt(url.port, 10),
-      doorId: DOOR_ID,
-      doorPublicKeys: DOOR_KEYS,
-      brain: { apiKey: "test", model: "test-model", maxTokens: 1024, timeoutMs: 60_000 },
-      readyFilePath,
-      replication: loadReplicationConfig({}),
-      attentionMode: "always",
-      residency: {
-        ...loadResidencyConfig({}),
-        controlDir,
-        journalDir,
-        ...residency
-      }
-    })
-  };
-}
+const silent = pino({ level: "silent" });
 
 /** Brain: distiller → shards JSON, journal → markdown, otherwise echo the user line. */
 function lifecycleBrain(gate?: Promise<void>): FakeBrain {
@@ -159,37 +56,28 @@ function lifecycleBrain(gate?: Promise<void>): FakeBrain {
     const system = messages[0]?.content ?? "";
     if (system === DISTILLER_SYSTEM) {
       await gate;
-      return JSON.stringify({ shards: SHARDS });
+      return JSON.stringify({ shards: SHARDS.map((text) => ({ text })) });
     }
     if (system === JOURNAL_SYSTEM) {
-      return "# Journal\n\nThe storms followed me here, and then I left.";
+      return JOURNAL;
     }
     const lastUser = [...messages].reverse().find((message) => message.role === "user");
     return `echo:${lastUser?.content ?? ""}`;
   });
 }
 
-async function waitFor(predicate: () => boolean | Promise<boolean>, label: string): Promise<void> {
-  const started = Date.now();
-  while (!(await predicate())) {
-    if (Date.now() - started > 8_000) {
-      throw new Error(`timed out waiting for ${label}`);
-    }
-    await new Promise<void>((resolve) => setTimeout(resolve, 10));
-  }
+function distilled(brain: FakeBrain): boolean {
+  return brain.calls.some((call) => call.messages[0]?.content === DISTILLER_SYSTEM);
 }
 
-/** Collect outbound frames from every session socket the Door accepts. */
-function collectOutbound(wsServer: WsDoorSessionServer): {
-  frames: OutboundFrame[];
-  watch: () => void;
-} {
+/** Collect outbound frames from every session socket a Door accepts. */
+function collectOutbound(door: TestDoor): { frames: OutboundFrame[]; watch: () => void } {
   const frames: OutboundFrame[] = [];
   const watched = new Set<WebSocket>();
   return {
     frames,
     watch: () => {
-      for (const socket of wsServer.getActiveClients()) {
+      for (const socket of door.wsServer.getActiveClients()) {
         if (watched.has(socket)) continue;
         watched.add(socket);
         socket.on("message", (data: WebSocket.RawData) => {
@@ -199,24 +87,6 @@ function collectOutbound(wsServer: WsDoorSessionServer): {
       }
     }
   };
-}
-
-async function readChain(chainDir: string): Promise<OspRecord[]> {
-  const store = await FileSoulStore.open(chainDir, { doorPublicKeys: DOOR_KEYS });
-  const records: OspRecord[] = [];
-  for await (const record of store.iterate()) records.push(record);
-  const verified = await verifyChain(store, { doorPublicKeys: DOOR_KEYS });
-  expect(verified.valid).toBe(true);
-  await store.close();
-  return records;
-}
-
-function attestations(records: readonly OspRecord[]): string[] {
-  return records.flatMap((record) => {
-    if (record.type !== "attestation") return [];
-    const body = record.body as { kind: string; epoch?: number; from_epoch?: number };
-    return [`${body.kind}:${String(body.epoch ?? body.from_epoch)}`];
-  });
 }
 
 /** Every file under `dir` (recursively) as UTF-8 text. */
@@ -230,281 +100,293 @@ async function allFileText(dir: string): Promise<string> {
   return out;
 }
 
-describe("residency lifecycle (daemon)", () => {
-  let env: Env;
+function withoutHeartbeats(shape: readonly string[]): string[] {
+  return shape.filter((entry) => entry !== "heartbeat");
+}
+
+describe("residency lifecycle (daemon, multi-Door)", () => {
+  const doors: TestDoor[] = [];
   let handle: ResidencyDaemonHandle | null = null;
 
-  beforeEach(async () => {
-    env = await createEnv();
-  });
+  async function door(
+    doorId: string,
+    keypair: typeof DOOR,
+    options: Omit<Parameters<typeof startTestDoor>[0], "doorId" | "keypair"> = {}
+  ): Promise<TestDoor> {
+    const started = await startTestDoor({ doorId, keypair, ...options });
+    doors.push(started);
+    return started;
+  }
 
   afterEach(async () => {
     await handle?.shutdown();
     handle = null;
-    await env.wsServer.stop();
-    await env.httpServer.stop();
+    for (const started of doors.splice(0)) {
+      await started.stop();
+    }
   });
 
-  it("operator depart request → review → records → re-arrival at epoch+1; chain verifies", async () => {
+  it("operator depart → witnessed memories at A → travel → arrival at B; chain verifies", async () => {
+    const dirs = await createSoulDirs("npc-multi-");
+    const witnessA = new ScriptedWitness((input) =>
+      input.text === SHARDS[1] ? { witnessed: false, reason: "private" } : { witnessed: true }
+    );
+    const a = await door(A, DOOR, { witness: witnessA });
+    const b = await door(B, OTHER_DOOR);
     const timer = new FakeTimer();
     let releaseDistill: (() => void) | undefined;
     const distillGate = new Promise<void>((resolve) => {
       releaseDistill = resolve;
     });
     const brain = lifecycleBrain(distillGate);
-    const outbound = collectOutbound(env.wsServer);
-    handle = await startResidencyDaemon(env.config({ operatorTrigger: true }), {
-      brain,
-      timer,
-      logger: pino({ level: "silent" }),
-      skipSignals: true
-    });
-    const daemon = handle;
-    expect(daemon.currentEpoch()).toBe(1);
-    await waitFor(() => env.wsServer.getActiveClients().size === 1, "first socket");
-    outbound.watch();
+    const outA = collectOutbound(a);
+    const outB = collectOutbound(b);
 
-    // Residency 1: three inbound lines + a heartbeat.
-    for (const [i, text] of [RAW_LINE, "storms again tonight", "the river is high"].entries()) {
-      env.wsServer.broadcastInbound({ text, author_id: `u${String(i)}` }, `in-1-${String(i)}`);
-    }
-    await waitFor(() => outbound.frames.length === 3, "three replies");
-    expect(outbound.frames.every((frame) => frame.epoch === 1)).toBe(true);
-    timer.tick();
-    await waitFor(
-      async () =>
-        (await readFile(join(env.chainDir, "chain.jsonl"), "utf8")).includes('"heartbeat"'),
-      "heartbeat 1"
+    handle = await startResidencyDaemon(
+      multiDoorConfig({ dirs, doors: [a, b], doorPublicKeys: KEYS, preferredDoorId: A }),
+      { brain, timer, logger: silent, skipSignals: true }
     );
+    const daemon = handle;
+    expect(daemon.currentDoorId()).toBe(A);
+    expect(daemon.currentEpoch()).toBe(1);
+    await waitFor(() => a.wsServer.getActiveClients().size === 1, "socket at A");
+    outA.watch();
+
+    for (const [i, text] of [RAW_LINE, "storms again tonight", "the river is high"].entries()) {
+      a.wsServer.broadcastInbound({ text, author_id: `u${String(i)}` }, `in-1-${String(i)}`);
+    }
+    await waitFor(() => outA.frames.length === 3, "three replies");
 
     // Operator: `wanderer depart` drops a request; the daemon's poll picks it up.
-    await writeDepartRequest(env.controlDir, new Date().toISOString());
+    await writeDepartRequest(dirs.controlDir, new Date().toISOString());
     timer.tick();
-    await waitFor(
-      () => brain.calls.some((call) => call.messages[0]?.content === DISTILLER_SYSTEM),
-      "distill"
-    );
+    await waitFor(() => distilled(brain), "distill");
 
     // Travel gap: the old socket is closed; a message now reaches no session.
-    expect(daemon.currentEpoch()).toBe(1);
-    await waitFor(() => env.wsServer.getActiveClients().size === 0, "socket detached");
-    await expect(readFile(env.readyFilePath, "utf8")).rejects.toThrow();
-    env.wsServer.broadcastInbound({ text: GAP_LINE, author_id: "u9" }, "in-gap");
+    await waitFor(() => a.wsServer.getActiveClients().size === 0, "socket detached");
+    a.wsServer.broadcastInbound({ text: GAP_LINE, author_id: "u9" }, "in-gap");
     releaseDistill?.();
 
-    await waitFor(() => daemon.currentEpoch() === 2, "re-arrival");
-    await waitFor(() => env.wsServer.getActiveClients().size === 1, "second socket");
-    await readFile(env.readyFilePath, "utf8");
-    outbound.watch();
-
-    // Residency 2: a fresh session (no carried history), heartbeats continue.
-    env.wsServer.broadcastInbound({ text: "welcome back", author_id: "u1" }, "in-2-0");
-    await waitFor(() => outbound.frames.length === 4, "reply in epoch 2");
-    expect(outbound.frames[3]).toMatchObject({ epoch: 2, body: { text: "echo:welcome back" } });
-    const lastCall = brain.calls[brain.calls.length - 1];
-    expect(lastCall?.messages.map((message) => message.role)).toEqual(["system", "user"]);
-    expect(
-      brain.calls.some((call) =>
-        call.messages.some((message) => message.content.includes(GAP_LINE))
-      )
-    ).toBe(false);
-    timer.tick();
-    await waitFor(async () => {
-      const chain = await readFile(join(env.chainDir, "chain.jsonl"), "utf8");
-      return chain.split("\n").filter((line) => line.includes('"heartbeat"')).length === 2;
-    }, "heartbeat 2");
+    await waitFor(() => daemon.currentDoorId() === B, "arrival at B");
+    expect(daemon.currentEpoch()).toBe(2);
+    await waitFor(() => b.wsServer.getActiveClients().size === 1, "socket at B");
+    outB.watch();
+    b.wsServer.broadcastInbound({ text: "welcome", author_id: "v1" }, "in-2-0");
+    await waitFor(() => outB.frames.length === 1, "reply at B");
+    expect(outB.frames[0]).toMatchObject({ door_id: B, epoch: 2, body: { text: "echo:welcome" } });
 
     await daemon.shutdown();
     handle = null;
 
-    const records = await readChain(env.chainDir);
-    expect(attestations(records)).toEqual([
-      "arrival:1",
-      "heartbeat:1",
-      // The tick that polled the control dir also fired a heartbeat (one FakeTimer).
-      "heartbeat:1",
-      "departure:1",
-      "travel:1",
-      "arrival:2",
-      "heartbeat:2"
+    const records = await readVerifiedChain(dirs.chainDir, KEYS);
+    expect(withoutHeartbeats(chainShape(records))).toEqual([
+      `arrival:${A}:1`,
+      "memory/shard",
+      "memory/rejected:witness_private",
+      "memory/shard",
+      "memory/journal",
+      `departure:${A}:1`,
+      `travel:${A}->${B}`,
+      `arrival:${B}:2`
     ]);
-    const travel = records.find(
-      (record) => record.type === "attestation" && record.body.kind === "travel"
-    );
-    expect(travel?.body).toMatchObject({ from_door_id: DOOR_ID, to_door_id: DOOR_ID });
-    const candidates = records.filter(
-      (record) => record.type === "memory" && record.body.kind === "candidate"
-    );
-    expect(candidates).toHaveLength(SHARDS.length);
-    expect(candidates.every((record) => record.residency === `door:${DOOR_ID}/epoch:1`)).toBe(true);
 
-    // Journal published to NPC_JOURNAL_DIR; the raw transcript never touched disk.
-    const journals = await readdir(env.journalDir);
-    expect(journals).toEqual(["journal-discord_residency-test-epoch-1.md"]);
-    const onDisk = (await allFileText(env.chainDir)) + (await allFileText(env.journalDir));
-    expect(onDisk).not.toContain(RAW_LINE);
-    expect(onDisk).not.toContain(GAP_LINE);
+    // A judged each memory against its OWN record of the stay (both sides of the talk).
+    expect(witnessA.texts("shard")).toEqual(SHARDS);
+    expect(witnessA.texts("journal")).toEqual([JOURNAL]);
+    const record = witnessA.calls[0]?.transcript.map((line) => line.text) ?? [];
+    expect(record).toContain(RAW_LINE);
+    expect(record).toContain(`echo:${RAW_LINE}`);
+    // The Wanderer itself never heard the travel-gap line.
+    expect(
+      brain.calls.some((call) => call.messages.some((m) => m.content.includes(GAP_LINE)))
+    ).toBe(false);
+
+    // Journal published; raw conversation and the declined memory never touch disk.
+    const journals = await readdir(dirs.journalDir);
+    expect(journals).toEqual(["journal-discord_a-epoch-1.md"]);
+    const disk = await allFileText(dirs.root);
+    expect(disk).not.toContain(RAW_LINE);
+    expect(disk).not.toContain(SHARDS[1]);
   });
 
-  it("commit sweep (enabled) promotes the departed epoch's candidates before re-arrival", async () => {
+  it("boot prefers the Door of the chain's last arrival over CURRENT_DOOR_ID", async () => {
+    const dirs = await createSoulDirs("npc-boot-pref-");
+    const a = await door(A, DOOR);
+    const b = await door(B, OTHER_DOOR);
+    const config = multiDoorConfig({
+      dirs,
+      doors: [a, b],
+      doorPublicKeys: KEYS,
+      preferredDoorId: A
+    });
+
+    handle = await startResidencyDaemon(config, {
+      brain: lifecycleBrain(),
+      timer: new FakeTimer(),
+      logger: silent,
+      skipSignals: true
+    });
+    expect(handle.currentDoorId()).toBe(A);
+    expect(await handle.requestCycle("operator")).toMatchObject({
+      kind: "cycled",
+      fromDoor: A,
+      toDoor: B
+    });
+    await handle.shutdown();
+
+    // Restart (crash-style, no departure): back to B, where the chain says it is.
+    handle = await startResidencyDaemon(config, {
+      brain: lifecycleBrain(),
+      timer: new FakeTimer(),
+      logger: silent,
+      skipSignals: true
+    });
+    expect(handle.currentDoorId()).toBe(B);
+    expect(handle.currentEpoch()).toBe(3);
+  });
+
+  it("a Door whose pubkey differs from ATLAS_DOOR_PUBKEYS is rejected and never visited", async () => {
+    const dirs = await createSoulDirs("npc-rogue-");
+    const rogue = await door(A, THIRD_DOOR);
+    const b = await door(B, OTHER_DOOR);
+    const { logger, lines } = capturingLogger();
+
+    handle = await startResidencyDaemon(
+      multiDoorConfig({ dirs, doors: [rogue, b], doorPublicKeys: KEYS, preferredDoorId: A }),
+      { brain: lifecycleBrain(), timer: new FakeTimer(), logger, skipSignals: true }
+    );
+
+    expect(handle.currentDoorId()).toBe(B);
+    expect(lines).toContainEqual(
+      expect.objectContaining({
+        msg: "door_rejected",
+        door_id: A,
+        reason: "door_pubkey differs from ATLAS_DOOR_PUBKEYS"
+      })
+    );
+    // B is the only trusted Door online: the Wanderer stays there.
+    expect(await handle.requestCycle("operator")).toMatchObject({ toDoor: B, toEpoch: 2 });
+    expect(rogue.door.getLastKnownEpoch()).toBeNull();
+    expect(lines).toContainEqual(
+      expect.objectContaining({
+        msg: "residency_lifecycle_config",
+        doors: [rogue.baseUrl, b.baseUrl],
+        maxResidencyMs: 0,
+        minLines: 10,
+        operatorTrigger: true
+      })
+    );
+  });
+
+  it("a Door without attest.memory: no distill, no memory records — the Wanderer still travels", async () => {
+    const dirs = await createSoulDirs("npc-nowitness-");
+    const a = await door(A, DOOR, { witness: null });
+    const b = await door(B, OTHER_DOOR);
+    const brain = lifecycleBrain();
+    handle = await startResidencyDaemon(
+      multiDoorConfig({ dirs, doors: [a, b], doorPublicKeys: KEYS, preferredDoorId: A }),
+      { brain, timer: new FakeTimer(), logger: silent, skipSignals: true }
+    );
+    await waitFor(() => a.wsServer.getActiveClients().size === 1, "socket at A");
+    for (let i = 0; i < 12; i += 1) {
+      a.wsServer.broadcastInbound(
+        { text: `line ${String(i)}`, author_id: "u1" },
+        `in-${String(i)}`
+      );
+    }
+    await waitFor(() => brain.calls.length === 12, "replies");
+
+    expect(await handle.requestCycle("timer")).toMatchObject({
+      kind: "cycled",
+      toDoor: B,
+      witnessed: 0
+    });
+    await handle.shutdown();
+    handle = null;
+
+    expect(distilled(brain)).toBe(false);
+    expect(withoutHeartbeats(chainShape(await readVerifiedChain(dirs.chainDir, KEYS)))).toEqual([
+      `arrival:${A}:1`,
+      `departure:${A}:1`,
+      `travel:${A}->${B}`,
+      `arrival:${B}:2`
+    ]);
+  });
+
+  it("the daily timer travels even after a quiet stay (no memories, no distill)", async () => {
+    const dirs = await createSoulDirs("npc-timer-");
+    const clock = new OffsetClock();
+    const a = await door(A, DOOR, { clock });
+    const b = await door(B, OTHER_DOOR, { clock });
     const timer = new FakeTimer();
     const brain = lifecycleBrain();
     handle = await startResidencyDaemon(
-      env.config({ commitIntervalMs: 10_000, quarantineWindowMs: 1 }),
+      multiDoorConfig({
+        dirs,
+        doors: [a, b],
+        doorPublicKeys: KEYS,
+        preferredDoorId: A,
+        residency: { maxResidencyMs: 86_400_000 }
+      }),
+      { brain, timer, clock, logger: silent, skipSignals: true }
+    );
+    const daemon = handle;
+    await waitFor(() => a.wsServer.getActiveClients().size === 1, "socket at A");
+    a.wsServer.broadcastInbound({ text: "hello?", author_id: "u1" }, "in-1");
+    await waitFor(() => brain.calls.length === 1, "reply");
+
+    timer.tick();
+    expect(daemon.currentDoorId()).toBe(A);
+    clock.offsetMs = 86_400_000 + 60_000;
+    timer.tick();
+    await waitFor(() => daemon.currentDoorId() === B, "timer travel");
+
+    expect(distilled(brain)).toBe(false);
+    expect(a.witness?.calls).toHaveLength(0);
+  });
+
+  it("no Door online at boot: retries with backoff until one answers", async () => {
+    const dirs = await createSoulDirs("npc-offline-");
+    const a = await door(A, DOOR);
+    a.available = false;
+    const { logger, lines } = capturingLogger();
+    const sleeps: number[] = [];
+    handle = await startResidencyDaemon(
+      multiDoorConfig({ dirs, doors: [a], doorPublicKeys: KEYS }),
       {
-        brain,
-        timer,
-        logger: pino({ level: "silent" }),
-        skipSignals: true,
-        // Real time stays real (candidates must age 1 ms); polls just don't wait 10 s.
-        sleep: (_ms, signal) =>
-          new Promise<void>((resolve) => {
-            const t = setTimeout(resolve, 5);
-            signal.addEventListener("abort", () => {
-              clearTimeout(t);
-              resolve();
-            });
-          })
-      }
-    );
-    const daemon = handle;
-    await waitFor(() => env.wsServer.getActiveClients().size === 1, "socket");
-    env.wsServer.broadcastInbound({ text: RAW_LINE, author_id: "u1" }, "in-1");
-    await waitFor(() => brain.calls.length === 1, "reply");
-
-    const outcome = await daemon.requestCycle("operator");
-    expect(outcome).toMatchObject({
-      kind: "cycled",
-      fromEpoch: 1,
-      toEpoch: 2,
-      candidateCount: SHARDS.length,
-      committedCount: SHARDS.length
-    });
-    await daemon.shutdown();
-    handle = null;
-
-    const records = await readChain(env.chainDir);
-    const shards = records.filter(
-      (record) => record.type === "memory" && record.body.kind === "shard"
-    );
-    expect(shards).toHaveLength(SHARDS.length);
-    expect(shards.filter((record) => "journal_cid" in record.body)).toHaveLength(1);
-    // Commits land in the travel gap: after travel:1, before arrival:2.
-    const order = records.map((record) =>
-      record.type === "attestation"
-        ? record.body.kind
-        : record.type === "memory"
-          ? record.body.kind
-          : record.type
-    );
-    expect(order.lastIndexOf("shard")).toBeLessThan(order.lastIndexOf("arrival"));
-    expect(order.indexOf("shard")).toBeGreaterThan(order.indexOf("travel"));
-  });
-
-  it("past-epoch Door: re-arrives at once, then the live sweep commits epoch 1 after a 24 h window", async () => {
-    await env.wsServer.stop();
-    await env.httpServer.stop();
-    const clock = new OffsetClock();
-    env = await createEnv({ pastEpochs: true, clock });
-    const timer = new FakeTimer();
-    const brain = lifecycleBrain();
-    // Default 24 h window: refused before cosign.past_epochs, accepted now.
-    handle = await startResidencyDaemon(env.config({ commitIntervalMs: 30_000 }), {
-      brain,
-      timer,
-      clock,
-      logger: pino({ level: "silent" }),
-      skipSignals: true
-    });
-    const daemon = handle;
-    await waitFor(() => env.wsServer.getActiveClients().size === 1, "socket");
-    env.wsServer.broadcastInbound({ text: RAW_LINE, author_id: "u1" }, "in-1");
-    await waitFor(() => brain.calls.length === 1, "reply");
-
-    // The cycle no longer waits out the window in the travel gap.
-    const outcome = await daemon.requestCycle("operator");
-    expect(outcome).toMatchObject({
-      kind: "cycled",
-      fromEpoch: 1,
-      toEpoch: 2,
-      candidateCount: SHARDS.length,
-      committedCount: 0
-    });
-    await waitFor(() => env.wsServer.getActiveClients().size === 1, "second socket");
-    expect(env.door.getActiveEpoch()).toBe(2);
-
-    const shardCount = async (): Promise<number> =>
-      (await readFile(join(env.chainDir, "chain.jsonl"), "utf8"))
-        .split("\n")
-        .filter((line) => line.includes('"kind":"shard"')).length;
-
-    // While ripening, a sweep tick commits nothing.
-    timer.tick();
-    await new Promise<void>((resolve) => setTimeout(resolve, 100));
-    expect(await shardCount()).toBe(0);
-
-    // A day later (Door and daemon share the clock), the live sweep commits epoch 1's
-    // candidates while epoch 2 is live — the Door still holds epoch 1's review.
-    clock.offsetMs = 24 * 60 * 60 * 1000 + 60_000;
-    timer.tick();
-    await waitFor(async () => (await shardCount()) === SHARDS.length, "live commits");
-    expect(daemon.currentEpoch()).toBe(2);
-    // Still live: inbound on epoch 2 is answered.
-    env.wsServer.broadcastInbound({ text: "still here?", author_id: "u2" }, "in-2");
-    await waitFor(() => brain.calls.length >= 4, "reply in epoch 2");
-    await daemon.shutdown();
-    handle = null;
-
-    const records = await readChain(env.chainDir);
-    const shards = records.filter(
-      (record) => record.type === "memory" && record.body.kind === "shard"
-    );
-    expect(shards).toHaveLength(SHARDS.length);
-    expect(shards.every((record) => record.residency === `door:${DOOR_ID}/epoch:1`)).toBe(true);
-    expect(shards.filter((record) => "journal_cid" in record.body)).toHaveLength(1);
-    const order = records.map((record) =>
-      record.type === "attestation"
-        ? `${String(record.body.kind)}:${String(record.body.epoch ?? record.body.from_epoch)}`
-        : record.type === "memory"
-          ? String(record.body.kind)
-          : record.type
-    );
-    // Commits land during residency 2, after its arrival.
-    expect(order.indexOf("shard")).toBeGreaterThan(order.indexOf("arrival:2"));
-  });
-
-  it("legacy Door + commit sweep + 24 h window: boot refuses before any append", async () => {
-    await expect(
-      startResidencyDaemon(env.config({ commitIntervalMs: 30_000 }), {
         brain: lifecycleBrain(),
         timer: new FakeTimer(),
-        logger: pino({ level: "silent" }),
-        skipSignals: true
-      })
-    ).rejects.toMatchObject({ reason: "invalid_config", envVar: "NPC_QUARANTINE_WINDOW_MS" });
-    const records = await readChain(env.chainDir);
-    expect(records.map((record) => record.type)).toEqual(["genesis"]);
+        logger,
+        skipSignals: true,
+        sleep: async (ms) => {
+          sleeps.push(ms);
+          if (sleeps.length === 2) {
+            a.available = true;
+          }
+        }
+      }
+    );
+    expect(handle.currentDoorId()).toBe(A);
+    expect(sleeps).toEqual([5_000, 10_000]);
+    expect(lines.filter((line) => line.msg === "residency_no_door_available")).toHaveLength(2);
+    expect(lines.some((line) => line.msg === "door_probe_failed")).toBe(true);
   });
 
-  it("SIGUSR2 triggers a cycle when the operator trigger is enabled; listeners are removed on shutdown", async () => {
+  it("SIGUSR2 (operator trigger on by default) travels; listeners are removed on shutdown", async () => {
+    const dirs = await createSoulDirs("npc-sigusr2-");
+    const a = await door(A, DOOR);
+    const b = await door(B, OTHER_DOOR);
     const before = process.listenerCount("SIGUSR2");
     const beforeTerm = process.listenerCount("SIGTERM");
-    const timer = new FakeTimer();
-    const brain = lifecycleBrain();
-    handle = await startResidencyDaemon(env.config({ operatorTrigger: true }), {
-      brain,
-      timer,
-      logger: pino({ level: "silent" }),
-      skipSignals: false
-    });
+    handle = await startResidencyDaemon(
+      multiDoorConfig({ dirs, doors: [a, b], doorPublicKeys: KEYS, preferredDoorId: A }),
+      { brain: lifecycleBrain(), timer: new FakeTimer(), logger: silent, skipSignals: false }
+    );
     const daemon = handle;
     expect(process.listenerCount("SIGUSR2")).toBe(before + 1);
-    await waitFor(() => env.wsServer.getActiveClients().size === 1, "socket");
-    env.wsServer.broadcastInbound({ text: RAW_LINE, author_id: "u1" }, "in-1");
-    await waitFor(() => brain.calls.length === 1, "reply");
 
     process.kill(process.pid, "SIGUSR2");
-    await waitFor(() => daemon.currentEpoch() === 2, "re-arrival after SIGUSR2");
+    await waitFor(() => daemon.currentDoorId() === B, "travel after SIGUSR2");
 
     await daemon.shutdown();
     handle = null;
@@ -512,36 +394,31 @@ describe("residency lifecycle (daemon)", () => {
     expect(process.listenerCount("SIGTERM")).toBe(beforeTerm);
   });
 
-  it("with every trigger off (defaults) nothing departs on its own", async () => {
+  it("with the operator trigger and timer off nothing departs on its own", async () => {
+    const dirs = await createSoulDirs("npc-off-");
+    const a = await door(A, DOOR);
+    const b = await door(B, OTHER_DOOR);
     const timer = new FakeTimer();
     const before = process.listenerCount("SIGUSR2");
-    handle = await startResidencyDaemon(env.config(), {
-      brain: lifecycleBrain(),
-      timer,
-      logger: pino({ level: "silent" }),
-      skipSignals: false
-    });
+    handle = await startResidencyDaemon(
+      multiDoorConfig({
+        dirs,
+        doors: [a, b],
+        doorPublicKeys: KEYS,
+        preferredDoorId: A,
+        residency: { operatorTrigger: false, maxResidencyMs: 0 }
+      }),
+      { brain: lifecycleBrain(), timer, logger: silent, skipSignals: false }
+    );
     // SIGUSR2 is still handled (ignored) so a stray signal cannot kill the daemon.
     expect(process.listenerCount("SIGUSR2")).toBe(before + 1);
-    // Enough conversation that any enabled trigger would cycle.
-    await waitFor(() => env.wsServer.getActiveClients().size === 1, "socket");
-    for (let i = 0; i < 12; i += 1) {
-      env.wsServer.broadcastInbound(
-        { text: `line ${String(i)}`, author_id: "u1" },
-        `in-${String(i)}`
-      );
-    }
     process.kill(process.pid, "SIGUSR2");
-    await writeDepartRequest(env.controlDir, new Date().toISOString());
+    await writeDepartRequest(dirs.controlDir, new Date().toISOString());
     for (let i = 0; i < 5; i += 1) timer.tick();
     await new Promise<void>((resolve) => setTimeout(resolve, 100));
+    expect(handle.currentDoorId()).toBe(A);
     expect(handle.currentEpoch()).toBe(1);
     // The request is left for no one (Ghost: tmpfs, cleared on restart).
-    await readFile(join(env.controlDir, "depart.request"), "utf8");
-    await handle.shutdown();
-    handle = null;
-    expect(
-      attestations(await readChain(env.chainDir)).filter((a) => a.startsWith("departure"))
-    ).toEqual([]);
+    await readFile(join(dirs.controlDir, "depart.request"), "utf8");
   });
 });

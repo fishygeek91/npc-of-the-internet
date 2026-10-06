@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { extractTimestamp } from "../src/log-format.js";
+import { describeRecord, extractTimestamp, formatLogLine } from "../src/log-format.js";
 import type { OspRecord } from "@npc/osp-core";
 
 const DUMMY_SIG =
@@ -62,6 +62,7 @@ describe("extractTimestamp", () => {
       }
     };
     expect(extractTimestamp(record)).toBe("2026-01-03T00:00:00.000Z");
+    expect(describeRecord(record)).toBe("legacy candidate");
   });
 
   it("reads rejected_at from memory/rejected", () => {
@@ -208,5 +209,53 @@ describe("extractTimestamp", () => {
       }
     };
     expect(extractTimestamp(record)).toBe("2026-01-09T00:00:00.000Z");
+  });
+});
+
+describe("witnessed memory log lines", () => {
+  const journal: OspRecord = {
+    ...envelope(5, "door:web:home/epoch:3"),
+    spec: "osp/0.2",
+    type: "memory",
+    body: {
+      kind: "journal",
+      journal_cid: PREV_CID,
+      journal_hash: "A".repeat(43),
+      written_at: "2026-01-04T05:01:00.000Z"
+    }
+  };
+
+  function rejected(category: string): OspRecord {
+    return {
+      ...envelope(4),
+      type: "memory",
+      body: { kind: "rejected", category, rejected_at: "2026-01-04T05:00:00.000Z" }
+    };
+  }
+
+  it("prints one readable line for a journal record", () => {
+    expect(extractTimestamp(journal)).toBe("2026-01-04T05:01:00.000Z");
+    expect(formatLogLine(journal, PREV_CID)).toBe(
+      "5 memory/journal baguaaaaaaaaa… 2026-01-04T05:01:00.000Z journal for web:home epoch 3"
+    );
+  });
+
+  it("explains witness declines and immune-screen drops by category", () => {
+    expect(formatLogLine(rejected("witness_private"), PREV_CID)).toBe(
+      "4 memory/rejected baguaaaaaaaaa… 2026-01-04T05:00:00.000Z declined by the witness (private)"
+    );
+    expect(describeRecord(rejected("pii.email"))).toBe("screened out (pii.email)");
+  });
+
+  it("adds no note to other records", () => {
+    const shard: OspRecord = {
+      ...envelope(1),
+      type: "memory",
+      body: { kind: "shard", text: "shard text", distilled_at: "2026-01-02T00:00:00.000Z" }
+    };
+    expect(describeRecord(shard)).toBeNull();
+    expect(formatLogLine(shard, PREV_CID)).toBe(
+      "1 memory/shard baguaaaaaaaaa… 2026-01-02T00:00:00.000Z"
+    );
   });
 });

@@ -6,12 +6,12 @@ Static public Atlas for the NPC of the Internet. Built with Astro from a soulcha
 
 | Route | Content |
 |-------|---------|
-| `/` | Location banner (present / traveling / sleeping), current door, head CID |
-| `/journey` | Timeline of arrival attestations |
-| `/journals`, `/journals/[cid]` | Residency journals (markdown → sanitized HTML; page title is `Journal — {door_id} epoch {epoch}`) |
+| `/` | Location banner (present / traveling / sleeping), current Door, since when, where it left for, head CID |
+| `/journey` | Residencies, most recent first: the Door, arrival/departure times, witnessed memories ("3 memories witnessed · 1 declined by the witness (private)"), journal link, and the travel line ("left for web:home") |
+| `/journals`, `/journals/[cid]` | Residency journals from `journal` records and legacy shard-embedded journals (markdown → sanitized HTML; page title is `Journal — {door_id} epoch {epoch}`) |
 | `/soul`, `/soul/page/[n]` | Paginated soulchain records |
 | `/soul/type/[type]/…` | Filter by top-level record type |
-| `/soul/[cid]` | Record detail + verification badge |
+| `/soul/[cid]` | Record detail + verification badge (legacy `memory/candidate` records are labelled "legacy candidate") |
 
 ## Local development
 
@@ -43,7 +43,7 @@ Missing or invalid `ATLAS_SITE_CHAIN_DIR` fails the build with a clear error nam
 
 ```bash
 ATLAS_SITE_CHAIN_DIR=/path/to/soulchain \
-ATLAS_SITE_DOOR_PUBKEYS='discord:g=key1,irc:libera-wanderer=key2' \
+ATLAS_SITE_DOOR_PUBKEYS='discord:g=key1,web:home=key2' \
 ATLAS_SITE_BASE=/ \
 pnpm --filter @npc/atlas-site build
 ```
@@ -62,6 +62,6 @@ Workflow: [`.github/workflows/deploy-atlas-site.yml`](../../.github/workflows/de
 pnpm --filter @npc/atlas-site test
 ```
 
-Covers data-loader expectations on the fixture, tampered-chain unverified badges (truncation + mid-chain signature tamper), rejected/candidate display bodies, journal markdown XSS neutralization, verification badge fail-closed, and build output paths.
+Covers data-loader expectations on the fixture (three residencies at three Doors, witnessed/declined counts, journal records), residency labels, tampered-chain unverified badges (truncation + mid-chain signature tamper), rejected/legacy candidate display bodies, journal markdown XSS neutralization, verification badge fail-closed, and build output paths.
 
 Journal HTML escapes raw HTML tokens and strips `javascript:` / `data:` / `vbscript:` URLs — a chain signature proves authorship, not browser safety.

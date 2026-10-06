@@ -83,7 +83,7 @@ const composed: ComposedSelf = await composeSelf(store, {
 
 **Composes in:** genesis charter, drift summaries (seq order), shard texts (seq order).
 
-**Does not compose:** candidate, rejected, attestation/decision/transaction/sleep records; shard `journal`; drift `evidence` CIDs.
+**Does not compose:** journal, rejected, legacy candidate, attestation/decision/transaction/sleep records; shard `journal`; drift `evidence` CIDs.
 
 Prompt template lives at `src/prompts/composer/system.ts` (TS string constant, strategy a).
 
@@ -97,7 +97,7 @@ For integration tests, `test/helpers/memory-soul-store.ts` provides an in-memory
 
 ## Distiller (T2.3)
 
-End-of-residency distillation: transcript lines → 5–20 first-person candidate memory shards (Door cosign shape) via `Brain`.
+End-of-residency distillation: transcript lines → 1–20 first-person candidate memory shards (fewer for short stays) via `Brain`. `Session.depart` then asks the Door to witness each one.
 
 ```ts
 import {
@@ -112,7 +112,7 @@ const brain = new FakeBrain(() =>
   JSON.stringify({
     shards: [
       { text: "I remember feeling curious about the stars." },
-      // ... 4–19 more shards
+      // ... up to 19 more
     ],
   })
 );
@@ -128,9 +128,9 @@ const shards: CandidateShard[] = await distillTranscripts(source, brain, {
 
 Prompt templates live at `src/prompts/distiller/` (TS string constants, strategy a).
 
-**Behavior:** each transcript line passes through `@npc/immune` `screenText` before the Brain call — failing lines are dropped and `onScreenReject` is notified (category only, never payload text); Zod-parse Brain JSON (`{ shards: [{ text, tags? }] }`); one malformed-output retry; empty or over-length shards dropped (≤500 UTF-16 code units, i.e. `String.length` — what the Door's `CandidateShardSchema` enforces, and never more than the spec's 500 code points; reject, not truncate); output shards are screened again with optional PII allowlist; failures use `DistillError` reason `"screen_reject"` with `categories` (never payload text); the transcript source is destroyed after a successful read (success or failure) so raw transcripts do not linger on disk.
+**Behavior:** each transcript line passes through `@npc/immune` `screenText` before the Brain call — failing lines are dropped and `onScreenReject` is notified (category only, never payload text); Zod-parse Brain JSON (`{ shards: [{ text, tags? }] }`); one malformed-output retry; empty or over-length shards dropped (≤500 UTF-16 code units, i.e. `String.length` — never more than the spec's 500 code points; reject, not truncate); repeated texts dropped (first wins); output shards are screened again with optional PII allowlist; no surviving shard is `DistillError` `"too_few_shards"` or `"screen_reject"` (with `categories`, never payload text) — `Session.depart` treats both as "no memories"; the transcript source is destroyed after a successful read (success or failure) so raw transcripts do not linger on disk.
 
-**Out of scope:** soulchain append (callers append `memory.candidate` at depart; see Quarantine T3.2).
+**Out of scope:** soulchain append (`Session.depart` witnesses and appends; see [Departure](#departure-witnessed-memory)).
 
 ## Session loop (T2.4)
 
@@ -151,7 +151,7 @@ import {
 |--------|----------|---------|---------|
 | `store` | yes | — | Append-only `SoulStore` (genesis head required) |
 | `brain` | yes | — | `Brain` for replies |
-| `door` | yes | — | `DoorConnection` (`attest`, `heartbeat`, `cosign`) |
+| `door` | yes | — | `DoorConnection` (`attest`, `heartbeat`) |
 | `keyring` | yes | — | `Keyring` — soul signing + session-key derivation |
 | `doorId` | yes | — | Door identifier (e.g. `discord:g`) |
 | `timer` | yes | — | Injectable `Timer` for heartbeat scheduling |
@@ -163,6 +163,7 @@ import {
 | `activeEpoch` | no | — | Optional floor from Door `hello.active_epoch`; after a mid-arrival crash, epoch allocation uses `max(chain_derived, activeEpoch + 1)` |
 | `onHeartbeatError` | no | — | Optional callback when heartbeat attestation fails at `door` or `append` stage |
 | `transcript` | no | — | Live in-memory `ResidencyTranscript` (WHITEPAPER §3.2): records screened inbound + spoken replies; `depart()` distills it when no `transcript` is passed |
+| `witnessesMemories` | no | `false` | The Door advertised `attest.memory` in `hello`; without it `depart()` forms no memories |
 | `attention` | no | see below | `Partial<AttentionPolicy>` for `observe()` — `reactions` (Door has `session.reactions`), `maxSelfShare` (`0.3`), `shareWindow` (`9`), optional `maxTokens` |
 
 `Session.start` composes self from the verified chain, derives a session key via HKDF-SHA-512 (`deriveSessionKey(doorId, epoch)`), appends an arrival attestation, and arms the heartbeat timer. Inbound frames are handled with `handleInbound` (serialized per session — one in-flight Brain call); call `drainAppends()` in tests to await async chain writes. Call `stop()` to end the residency. Before departure (T2.5), call `stop()` then `await drainAppends()` so no heartbeat attestation races the departure record — `Session.depart` does this automatically.
@@ -200,118 +201,41 @@ Vectors live under `spec/pop/vectors/`; the runner is `test/pop-vectors.test.ts`
 
 ### Door stub (integration tests)
 
-`test/helpers/door-stub.ts` is a thin wrapper around `@npc/door-sdk` `Door` for T2.4/T2.5 integration tests. It maps `DoorError` to `DoorStubError`, supports per-shard cosign policy via `decide` / `rejectShardIds`, and exposes `verifyOutbound(frame)` for outbound frame checks. See `test/session-integration.test.ts` for the full 20-message residency acceptance test.
+`test/helpers/door-stub.ts` is a thin wrapper around `@npc/door-sdk` `Door` (real signatures and core binding; `DoorError`s propagate) with a `ScriptedWitness` (witness / decline with a reason / `"unavailable"`, recording every input; `witness: null` = no `attest.memory`). `test/helpers/test-doors.ts` serves real Doors over HTTP + WebSocket for daemon tests. See `test/session-integration.test.ts` for the full 20-message residency acceptance test.
 
-## Departure / handover (T2.5)
+## Departure (witnessed memory)
 
-End-of-residency departure and manual handover to the next Door.
+No human approves memories. At departure the Door's AI **witness** checks each memory against the Door's own record of the stay and co-signs it; a witnessed memory is final immediately (`spec/door/api.md` §Memory witnessing, `spec/osp/records.md` §memory).
 
-```ts
-import { Session, move, type DepartOptions } from "@npc/runtime";
-```
+### `Session.depart({ journalDir, toDoorId?, minMemoryLines?, transcript?, brain? })`
 
-### `Session.depart`
+Enters `departing` immediately (`stop()` + `drainAppends()`, then waits for any in-flight inbound decision; a late Brain reply is dropped, never recorded or signed). All records use this residency (`door:<id>/epoch:<n>`, `osp/0.2`), in spec order:
 
-Call on a live session to end the residency. Enters a `departing` phase immediately (`stop()` + `await drainAppends()` — no further heartbeats or inbound handling — then it waits for any in-flight inbound decision to settle; a Brain reply that lands after `stop()` is dropped, never recorded or signed). Safe to retry after a mid-pipeline failure until `travel` is appended (`departed`); transcript lines, candidates, journal, and review decisions are cached in-process across retries. The transcript is read once then destroyed; subsequent distill attempts use `MemoryTranscriptSource` over the cached lines. Retry is **in-process only** — a process crash mid-depart cannot re-read the destroyed transcript (privacy deliberately wins over durability).
+1. Read the transcript once and destroy it (cached in-process for retries).
+2. No memories (no distill call) when the Door did not advertise `attest.memory` (`witnessesMemories`) or the stay has fewer than `minMemoryLines` lines (default `10`). Otherwise distill (cached); one `rejected` record per immune-screen category.
+3. For each shard: compute the side blob (CID + hash) **without storing it**, build the memory core `{kind: "shard", text_cid, text_hash, distilled_at}` and `attest` it as `kind: "memory"` with the `text` (session-signed; `core` binds the text by hash). Witnessed → store the blob, append the shard with the Door co-signature. `witness_declined` → append `rejected` `witness_<reason>` — declined prose never reaches the store.
+4. With ≥ 1 witnessed shard: generate the journal from the **witnessed** shard texts only and witness it the same way (`{kind: "journal", journal_cid, journal_hash, written_at}`). Witnessed → store + append, then write it to `journalDir`. Declined → `rejected` `witness_<reason>`, no file.
+5. `departure` (Door co-signed) and soul-signed `travel` (`to_door_id`).
 
-Order of operations:
+Returns `{ witnessed, declined, screened, journalPath }` (counts for the whole residency; `journalPath` is `null` without a witnessed journal).
 
-1. Read+destroy transcript; distill → candidate shards (`distillTranscripts`)
-2. Two-phase Door cosign: `review` (approve/reject shards) — decisions are filtered to the proposed `shard_id` set and deduped (first wins)
-3. Generate residency journal markdown (`generateJournal`) from the **host-approved** shards only (rejected prose never reaches the journal, which is later published on chain) and write a journal file (`writeJournalFile`)
-4. Append `memory.rejected` for immune-screen drops and host rejections (category only, no shard text)
-5. Append `memory.candidate` records for host-approved shards (`cosigners: []`; text on chain, not yet composed)
-6. Append `departure` attestation (Door cosigned) and soul-signed `travel` attestation
+**Retry:** any other error — `witness_unavailable`, network, Brain, store — throws and leaves the session `departing`; call `depart` again. Shards already on chain (deduped by decoded text) or already decided in this process are never re-attested; a decided journal is never re-attested; departure/travel already on chain are skipped. Retry is **in-process only**: a crash mid-depart loses the transcript by design.
 
-Returns `{ journalPath, journalMarkdown, approvedShardIds, rejectedShardIds, candidateCids }`. On success the session is `departed` (not live). Candidates are **not** committed shards yet — see Quarantine (T3.2).
+### `Session.departBare(toDoorId?)`
 
-### `move()`
-
-Orchestrates depart at the current door and `Session.start` at the next:
-
-```ts
-import { move } from "@npc/runtime";
-
-const { depart, session } = await move({
-  session,
-  transcript,
-  journalDir,
-  nextDoor,
-  nextDoorId,
-  arrive: { store, brain, keyring, timer, clock, doorPublicKeys },
-});
-```
-
-No Door session traffic is accepted on the departed session during the travel gap.
+Departure + travel without memories (destroys the transcript; skips records already on chain). The controller's best-effort fallback after `depart` kept failing; throws when the Door cannot attest the departure.
 
 ### Operator CLI
 
 ```bash
 wanderer depart [--control-dir <dir>] [--timeout-ms <ms>]
-wanderer move <door-id>
-wanderer quarantine commit
-wanderer quarantine flag <candidate-cid> [--category <cat>]
 ```
 
-`wanderer depart` is production-wired: it asks the running daemon for one residency cycle (see [Residency lifecycle](#residency-lifecycle)) by dropping a request into `NPC_CONTROL_DIR` (default `/tmp/npc-control`) and waiting for pick-up — exit `0` accepted, `1` not picked up (request withdrawn), `2` usage. In Ghost: `ghostc exec runtime node dist/cli.js depart`.
-
-Bin at `packages/runtime/src/cli.ts` (`wanderer` in package `bin`). Production wiring is env-based (`SOUL_KEY_PATH`, `SOULCHAIN_DIR`, `TRANSCRIPT_PATH`, `JOURNAL_DIR`, `CURRENT_DOOR_ID`, `NPC_QUARANTINE_WINDOW_MS`); tests inject `runMove`, `runQuarantineCommit`, and `runQuarantineFlag` via `runWandererCli` deps.
+Asks the running daemon to travel now (see [Residency lifecycle](#residency-lifecycle)) by dropping a request into `NPC_CONTROL_DIR` (default `/tmp/npc-control`) and waiting for pick-up — exit `0` accepted, `1` not picked up (request withdrawn), `2` usage. In Ghost: `ghostc exec runtime node dist/cli.js depart`. Bin at `packages/runtime/src/cli.ts` (`wanderer` in package `bin`).
 
 ### Journal
 
-Markdown residency summary generated via Brain at depart time, after host review, from the approved shards only. Written to `journalDir` as a file; the same markdown is attached to the first committed `memory.shard` record's `body.journal` field when `commitQuarantinedShards` runs (see Quarantine).
-
-### Integration test
-
-`test/handover-integration.test.ts` — full reside → depart → arrive across two stub Doors yields one continuous verifying chain; journal file on disk; epoch increments at the next door.
-
-## Quarantine (T3.2)
-
-After depart, approved distillation output lives on the soulchain as `memory.candidate` records (not `memory.shard`). Host rejections and immune-screen drops become category-only `memory.rejected` records. Full shards enter composition only after a deferred commit step.
-
-```ts
-import {
-  commitQuarantinedShards,
-  flagCandidate,
-  loadQuarantineConfig,
-  resolveJournalPath,
-} from "@npc/runtime";
-```
-
-### Lifecycle
-
-1. **Depart** — `Session.depart` appends `memory.candidate` (approved shards) and `memory.rejected` (drops/rejections). Departure/travel attestations always append, even when every shard is rejected.
-2. **Quarantine window** — candidates ripen for `NPC_QUARANTINE_WINDOW_MS` (default 24h) before they can commit.
-3. **Operator flag** — `flagCandidate({ store, keyring, candidateCid, clock, category? })` appends a `memory.rejected` referencing the candidate CID (category only). Throws `QuarantineError` with reason `"already_rejected"` if that CID was already flagged.
-4. **Commit** — `commitQuarantinedShards({ store, keyring, door, doorId, clock, quarantineWindowMs, journalMarkdown?, journalFor?, residency?, skipCids? })` promotes ripe, unflagged candidates of this Door to cosigned `memory.shard` records. Each commit request is for the candidate's own epoch (parsed from its `residency`) and signed with that epoch's session key (re-derived from the soul key), so past epochs commit while a later residency is live at a Door with `cosign.past_epochs`. Re-checks for rejection records before each Door cosign and again before seal (TOCTOU). A `review_not_retained` Door answer marks the candidate stranded instead of failing the run. Returns `{ committedCids, ripeningCids, skippedCids, strandedCids, journalAttached }`.
-
-`composeSelf` includes only committed `memory.shard` texts — candidates and rejections are excluded (see fixture B goldens and `test/quarantine-integration.test.ts`). Under `osp/0.2`, shard prose lives in SoulStore side blobs (`text_cid`/`text_hash`); tombstoned or missing blobs render as a visible `[memory erased: <reason>]` marker (never silently omitted).
-
-### v0.1 constraints
-
-- **Door review retention:** the Door co-signs only while it retains the epoch's review: door-sdk keeps it per epoch (default 64 epochs / 7 days; durable with a `cosignStateStore`, e.g. door-discord `DOOR_STATE_DIR`). Candidates whose review is gone come back in `strandedCids`.
-- **All-rejected gap:** if every candidate is rejected or flagged, no shard ever commits and the residency journal never reaches the chain — it remains on disk only until a future task wires journal-only persistence.
-- **Journal attach:** pass `journalMarkdown` (one residency) until a commit run reports `journalAttached: true`, then stop — or `journalFor(residency)` for runs spanning several residencies. Attachment is chain-aware (at most one journal-bearing shard per residency).
-- **Screen drop dedup:** depart emits one `memory.rejected` per unique immune-screen category; the *count* of drops sharing a category is not preserved.
-- **Strict quarantine scan:** `scanQuarantineState` throws on malformed `candidate_cid` cross-references or unparseable candidate timestamps (assumes schema-validated local appends).
-- **`distilled_at`:** set at commit time; candidates keep the original `proposed_at`.
-
-### Environment
-
-| Variable | Required | Default | Purpose |
-|----------|----------|---------|---------|
-| `NPC_QUARANTINE_WINDOW_MS` | no | `86400000` | Ms before a candidate may commit to `memory.shard` |
-
-Load via `loadQuarantineConfig()`; inject a plain `env` object in tests.
-
-### Operator CLI
-
-```bash
-wanderer quarantine commit    # promote ripe candidates (stdout: committed / ripening counts)
-wanderer quarantine flag <candidate-cid> [--category <cat>]
-```
-
-Production handlers are not wired yet (same pattern as `wanderer move`); tests inject `runQuarantineCommit` / `runQuarantineFlag` on `runWandererCli`.
+Markdown account of the residency, generated via Brain from the witnessed shards only (`src/prompts/journal/`), witnessed as a `journal` memory record (side blob), and written to `NPC_JOURNAL_DIR` as `journal-<door>-epoch-<n>.md`. Never composed into the self.
 
 ## Test
 
@@ -321,7 +245,7 @@ pnpm --filter @npc/runtime test
 
 ## Residency daemon (`npc-runtime`)
 
-Long-running process that opens the soulchain, arrives at a Door via HTTP, binds the session WebSocket, and maintains inbound → outbound handling until SIGTERM/SIGINT. It departs only when a residency-lifecycle trigger is enabled (all off by default — see [Residency lifecycle](#residency-lifecycle)); `cosign.manual` review needs a host.
+Long-running process that opens the soulchain, probes the configured Doors, arrives at one, binds the session WebSocket, and maintains inbound → outbound handling until SIGTERM/SIGINT. About once a day it travels to another online Door (see [Residency lifecycle](#residency-lifecycle)).
 
 ```bash
 pnpm --filter @npc/runtime build
@@ -336,15 +260,15 @@ Or after install: `npc-runtime` (bin in `@npc/runtime`). Ghost image `CMD` is `n
 |----------|----------|---------|---------|
 | `SOUL_KEY_PATH` | yes | — | Path to soul private key file (32 raw bytes or base64url) |
 | `SOULCHAIN_DIR` | yes | — | Append-only soulchain directory |
-| `DOOR_HTTP_HOST` | yes | — | Door HTTP/WS connect host |
-| `DOOR_HTTP_PORT` | yes | — | Door HTTP/WS connect port |
-| `CURRENT_DOOR_ID` | yes | — | Expected Door id (e.g. `discord:123…`); must match Door hello |
-| `ATLAS_DOOR_PUBKEYS` | yes | — | Comma-separated `doorId=base64url` Door public key bindings for chain verify |
-| `ANTHROPIC_API_KEY` | anthropic* | — | Anthropic API key (direct; see Brain section) |
-| `ANTHROPIC_API_KEY_FILE` | anthropic* | — | Path to file containing the Anthropic API key |
+| `NPC_DOOR_URLS` | yes* | — | Comma-separated Door base URLs (`http://door-discord:8787,http://door-web:8788`); WebSocket URL = `http`→`ws`, `https`→`wss` |
+| `DOOR_HTTP_HOST` / `DOOR_HTTP_PORT` | yes* | — | Legacy single Door (`http://host:port`) when `NPC_DOOR_URLS` is unset |
+| `ATLAS_DOOR_PUBKEYS` | yes | — | Comma-separated `doorId=base64url` — the trusted Doors. A Door whose `hello` `door_id` is not listed, or whose `door_pubkey` differs, is rejected (`door_rejected`) and treated as unavailable |
+| `CURRENT_DOOR_ID` | no | — | Boot preference only, used when the chain's last arrival Door is not online |
+| `ANTHROPIC_API_KEY` | anthropic† | — | Anthropic API key (direct; see Brain section) |
+| `ANTHROPIC_API_KEY_FILE` | anthropic† | — | Path to file containing the Anthropic API key |
 | `NPC_BRAIN_PROVIDER` | no | `anthropic` | `anthropic` \| `openai-compat` \| `fake` |
-| `NPC_BRAIN_API_KEY` | openai-compat* | — | OpenAI-compat API key (direct) |
-| `NPC_BRAIN_API_KEY_FILE` | openai-compat* | — | Path to file containing the openai-compat API key |
+| `NPC_BRAIN_API_KEY` | openai-compat† | — | OpenAI-compat API key (direct) |
+| `NPC_BRAIN_API_KEY_FILE` | openai-compat† | — | Path to file containing the openai-compat API key |
 | `NPC_BRAIN_BASE_URL` | openai-compat | — | OpenAI-compat API origin |
 | `NPC_BRAIN_PROVIDER_ALLOWLIST` | OpenRouter | — | Comma-separated OpenRouter provider slugs |
 | `NPC_BRAIN_MODEL` | openai-compat; optional for anthropic | Anthropic: `claude-sonnet-4-20250514` | Model id |
@@ -352,41 +276,42 @@ Or after install: `npc-runtime` (bin in `@npc/runtime`). Ghost image `CMD` is `n
 | `NPC_BRAIN_TIMEOUT_MS` | no | `60000` | Request timeout (ms) |
 | `NPC_RUNTIME_READY_FILE` | no | `/tmp/npc-runtime.ready` | Compose healthcheck path (present only while the session WS is connected) |
 | `NPC_ATTENTION_MODE` | no | `selective` | `selective`: `Session.observe` (speak / react / stay quiet); `always`: legacy reply-to-every-message |
-| `NPC_RESIDENCY_OPERATOR_TRIGGER` | no | `0` (off) | `1`/`true`: SIGUSR2 and `wanderer depart` requests start a residency cycle |
-| `NPC_RESIDENCY_MAX_MS` | no | `0` (off) | Cycle once the residency is older than this (≥ `3600000`; checked every minute) |
-| `NPC_RESIDENCY_MIN_LINES` | no | `10` | Timer trigger waits for this many transcript lines |
-| `NPC_QUARANTINE_COMMIT_INTERVAL_MS` | no | `0` (off) | Commit-sweep interval (≥ `10000`): live timer with a `cosign.past_epochs` Door, travel-gap polling otherwise |
-| `NPC_QUARANTINE_WINDOW_MS` | no | `86400000` | Candidate ripening window; boot refuses > `3600000` with the sweep on only against a legacy Door |
-| `NPC_CONTROL_DIR` | no | `/tmp/npc-control` | Polled for `wanderer depart` requests (only with the operator trigger) |
-| `NPC_JOURNAL_DIR` | no | `/data/published/journals` | Where depart writes journal markdown |
+| `NPC_RESIDENCY_MAX_MS` | no | `86400000` | Travel once the residency is older than this (checked every minute); `0` disables, else ≥ `3600000` |
+| `NPC_RESIDENCY_MIN_LINES` | no | `10` | Memory threshold: a timer departure after fewer transcript lines forms no memories (it still travels). Operator departures need one line |
+| `NPC_RESIDENCY_OPERATOR_TRIGGER` | no | on | `0`/`false` disables SIGUSR2 and `wanderer depart` |
+| `NPC_CONTROL_DIR` | no | `/tmp/npc-control` | Polled for `wanderer depart` requests |
+| `NPC_JOURNAL_DIR` | no | `/data/published/journals` | Where depart writes witnessed journals |
 
-\* Set exactly one of `NAME` or `NAME_FILE` for the active Brain provider (see Brain section).
+\* `NPC_DOOR_URLS`, or the legacy `DOOR_HTTP_HOST` + `DOOR_HTTP_PORT` pair.
+† Set exactly one of `NAME` or `NAME_FILE` for the active Brain provider (see Brain section).
 
-Selective-mode logs (info): `attention_config` at boot (mode, whether the Door supports reactions), then `attention_acted` (`spoke`, `reacted`, `batchSize`, `notes`) or `attention_silent` (`batchSize`, `notes` e.g. `floor_guard`) per decision. Silence is expected and is not an error.
+Boot logs one `residency_lifecycle_config` line (`doors`, `maxResidencyMs`, `minLines`, `operatorTrigger`, `journalDir`). Selective-mode logs (info): `attention_config` per arrival (mode, reactions, whether the Door witnesses memories), then `attention_acted` (`spoke`, `reacted`, `batchSize`, `notes`) or `attention_silent` (`batchSize`, `notes` e.g. `floor_guard`) per decision. Silence is expected and is not an error.
 
-Graceful shutdown (SIGTERM/SIGINT): remove ready file → stop control-dir polling → `ResidencyController.shutdown()` (abort any cycle wait, give an in-flight cycle step ≤ 5 s, then close WS → `session.stop()` → `drainAppends()`; never departs) → stop replication drain → `store.close()` → exit 0. Each step runs even if an earlier one throws (the first error is rethrown after all steps). A boot failure after the store is opened (Door hello, session start, WS connect) releases what was acquired — WS client, session timer, replication drain, store — before rethrowing.
+Graceful shutdown (SIGTERM/SIGINT): remove ready file → stop control-dir polling → `ResidencyController.shutdown()` (abort any cycle wait, give an in-flight cycle step ≤ 5 s, then close WS → `session.stop()` → `drainAppends()`; never departs) → stop replication drain → `store.close()` → exit 0. Each step runs even if an earlier one throws (the first error is rethrown after all steps). A fatal boot failure after the store is opened releases what was acquired before rethrowing.
 
 ## Residency lifecycle
 
-The daemon runs the core loop **reside → distill → publish → move** through a `ResidencyController` (`src/residency/controller.ts`) that owns the live residency (Session + its session WebSocket). Ops guide: [`ops/RUNBOOK.md` §7](../../ops/RUNBOOK.md#7-residency-lifecycle).
+The Wanderer is in **one place at a time** and **travels** between Doors. The daemon runs **reside → depart → travel** through a `ResidencyController` (`src/residency/controller.ts`) that owns the live residency (Session + its session WebSocket). Ops guide: [`ops/RUNBOOK.md` §7](../../ops/RUNBOOK.md#7-residency-lifecycle).
 
 ```ts
-import { ResidencyController, type LiveResidency, type CycleOutcome } from "@npc/runtime";
+import { ResidencyController, probeDoors, type LiveResidency, type CycleOutcome } from "@npc/runtime";
 ```
+
+**Doors.** One base URL per Door. `probeDoors` sends `hello` to all of them in parallel (10 s timeout each) and keeps the ones that answer with a verified `hello` whose `door_id` / `door_pubkey` match `ATLAS_DOOR_PUBKEYS`. Each arrival does its own `hello` on a fresh connection, so the Door identity is pinned per residency.
+
+**Boot:** arrive at the Door of the chain's latest `arrival` if it is online, else `CURRENT_DOOR_ID` if online, else a random online Door. No Door online → retry with backoff (5 s doubling to 5 min) — never a crash loop. Door trouble (unreachable, refused, socket bind failure) is retried; local failures (invalid chain, `osp/0.1` chain, storage) fail boot.
 
 **One cycle** (`requestCycle("operator" | "timer")`, single-flight — a second request resolves `busy`):
 
-1. `detach()` — close the session socket. Inbound frames in the travel gap are **dropped, not queued** (they are bound to the old epoch and belong to neither residency's transcript); a frame already in flight is discarded by `Session`'s phase check.
-2. `Session.depart` (reused as-is — no duplicate depart logic): distill the live `ResidencyTranscript`, host cosign review, rejected/candidate records, journal file, departure + travel (`to_door_id` = same Door). Failures retry with backoff (default 30 s, 120 s); after the last attempt the residency is **abandoned** (no departure records — the chain shape of a crash) so the Wanderer is never stranded between Doors.
-3. Commit sweep (daemon: `NPC_QUARANTINE_COMMIT_INTERVAL_MS`). With a Door that advertises `cosign.past_epochs` (door-discord), the cycle re-arrives immediately and the `commitPending` hook runs **every interval while the next residency is live** (serialized with its heartbeat appends via `LiveResidency.withAppendLock`): it commits ripe candidates of every past epoch, signed per epoch, journals read back from `NPC_JOURNAL_DIR`, stranded candidates (`review_not_retained`) remembered and skipped for the rest of the process. Against a legacy Door the old `commit` hook runs **in the travel gap** (`commitQuarantinedShards({ residency })` scoped to the departed epoch, polled until nothing is ripening) — only with a window ≤ 1 h (the daemon refuses to boot otherwise; a later re-arrival at a downgraded Door logs `residency_commit_sweep_unsupported`).
-4. Re-arrive: Door `hello` (door id check; `active_epoch` crash floor) → `Session.start` at `epoch + 1` (the Door retired the old epoch at departure; `epoch > lastKnownEpoch` passes its replay check) → bind a new `WsDoorSessionClient` for the new `(door_id, epoch)`. Retries with backoff (5 s → 5 min) until success or shutdown.
+1. `detach()` — close the session socket. Inbound frames in the travel gap are **dropped, not queued**.
+2. Choose the next Door: probe, then uniformly random among online Doors **other than the current one** (the current one only when it is the only one online; `random` is injectable).
+3. `Session.depart({ toDoorId, minMemoryLines })` — witnessed memories, journal, departure, travel. Operator departures use `minMemoryLines: 1`, timer departures `NPC_RESIDENCY_MIN_LINES`. Failures retry with backoff (default 30 s, 120 s); after the last attempt the cycle is **abandoned**: `departBare(next)` (departure + travel, no memories; best effort) so the Wanderer is never stranded.
+4. Arrive at the chosen Door: `hello` (identity check; `active_epoch` crash floor; `attest.memory` → `witnessesMemories`) → `Session.start` → bind a new `WsDoorSessionClient`. On failure: re-probe and retry with backoff at any online Door, until success or shutdown.
 
-`move()` is not used by the daemon because the controller needs stage-level retry (depart vs arrive) and the commit sweep between them; both stages call the same `Session.depart` / `Session.start`.
+Outcomes: `cycled` / `abandoned` (both with `fromDoor`, `toDoor`, `fromEpoch`, `toEpoch`), `busy`, `shutting_down`, `aborted`. Each cycle logs `residency_cycle_outcome` (with `witnessed` / `declined` on `cycled`).
 
-**Triggers** (all off by default): operator — SIGUSR2 or a `wanderer depart` request file in `NPC_CONTROL_DIR` (polled every second); timer — `NPC_RESIDENCY_MAX_MS`, checked every minute, waits for `NPC_RESIDENCY_MIN_LINES`. SIGUSR2 is always handled (ignored with a warning when the trigger is off) so a stray signal cannot terminate the daemon. An empty transcript skips the cycle.
+**Triggers:** timer — `NPC_RESIDENCY_MAX_MS` (default a day), checked every minute; a quiet stay still travels, it just forms no memories. Operator (on by default) — SIGUSR2 or a `wanderer depart` request file in `NPC_CONTROL_DIR` (polled every second). SIGUSR2 is always handled (ignored with a warning when the trigger is off) so a stray signal cannot terminate the daemon. The daemon handle exposes `requestCycle`, `currentEpoch`, `currentDoorId`, `shutdown`.
 
-**Shutdown during a cycle** aborts backoff / sweep / re-arrival waits, never re-arrives, and leaves the chain valid; the next boot arrives at a fresh epoch exactly as after any restart. Depart retry stays in-process (Bug #69): a restart mid-depart loses that residency's memories by design (the transcript is never on disk).
+**Shutdown during a cycle** aborts backoff / arrival waits, never re-arrives, and leaves the chain valid; the next boot arrives at a fresh epoch exactly as after any restart.
 
-Library change for the sweep: `commitQuarantinedShards` accepts `residency?: string` — only candidates of that residency are considered (others are neither committed nor reported) — plus `journalFor` / `skipCids`, and signs each commit for the candidate's own epoch.
-
-Tests: `test/residency-controller.test.ts` (triggers, single-flight, retries/abandon, shutdown, sweep), `test/residency-config.test.ts`, `test/residency-control-dir.test.ts` (request protocol + `wanderer depart`), `test/daemon-residency.test.ts` (real daemon ↔ door-sdk Door over HTTP/WS: control-dir and SIGUSR2 cycles, travel-gap drop, epoch + 1, heartbeats, commit sweep, `verifyChain`), `test/quarantine-commit-scope.test.ts` (past-epoch commit after re-arrival, stranded candidates); door-discord `test/runtime-daemon-cycle-e2e.test.ts` (daemon ↔ real `startDiscordDoor` with Discord review reactions) and `test/runtime-daemon-past-epoch-e2e.test.ts` (live sweep commits epoch 1 through a restarted door-discord with `DOOR_STATE_DIR`).
+Tests: `test/residency-controller.test.ts` (Door choice, boot preference / no-Door retry, triggers, single-flight, depart retry / abandon → `departBare`, arrival retry, shutdown), `test/residency-config.test.ts`, `test/daemon-config.test.ts`, `test/residency-control-dir.test.ts`, `test/session-depart.test.ts` (witnessed / declined / journal / retry / no-witness / quiet stay / `departBare`), `test/daemon-residency.test.ts` and `test/daemon-residency-abandon.test.ts` (real daemon ↔ two door-sdk Doors over HTTP/WS: travel A → B, `verifyChain` with both keys, boot preference, rogue Door, quiet-stay timer travel, no-Door boot retry, SIGUSR2).

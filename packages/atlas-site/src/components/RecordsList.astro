@@ -2,6 +2,7 @@
 import type { RecordListItem } from "@npc/atlas";
 
 import { withBase } from "../lib/paths.ts";
+import { recordKindLabel } from "../lib/residency-labels.ts";
 
 interface Props {
   records: RecordListItem[];
@@ -16,7 +17,7 @@ const base = import.meta.env.BASE_URL;
     records.map((record) => (
       <li class="record-list__item">
         <p class="record-list__kind">
-          <a href={withBase(`/soul/${record.cid}/`, base)}>{record.kind}</a>
+          <a href={withBase(`/soul/${record.cid}/`, base)}>{recordKindLabel(record.kind)}</a>
         </p>
         <p class="record-list__meta">
           seq {record.seq}

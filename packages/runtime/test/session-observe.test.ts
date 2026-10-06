@@ -74,6 +74,7 @@ async function startSession(
     timer: new FakeTimer(),
     clock,
     doorPublicKeys: doorPublicKeyFor(DOOR_ID, DOOR.publicKey),
+    witnessesMemories: true,
     attention: { reactions: options.reactions ?? true },
     ...(options.transcript === undefined ? {} : { transcript: options.transcript }),
     ...(options.maxHistoryMessages === undefined
@@ -314,10 +315,10 @@ describe("live residency transcript (WHITEPAPER §3.2)", () => {
     const journalDir = await mkdtemp(join(tmpdir(), "observe-journal-"));
     tempDirs.push(journalDir);
 
-    const result = await session.depart({ journalDir });
+    const result = await session.depart({ journalDir, minMemoryLines: 1 });
 
     expect(distillInput).toContain("the quiet ones laugh the loudest");
-    expect(result.candidateCids).toHaveLength(5);
+    expect(result.witnessed).toBe(5);
     expect(transcript.size).toBe(0);
   });
 
@@ -460,7 +461,7 @@ describe("review fixes (2026-10)", () => {
       (error: unknown) => error
     );
     await started;
-    const departing = session.depart({ journalDir });
+    const departing = session.depart({ journalDir, minMemoryLines: 1 });
     release?.();
 
     expect(await pendingOutcome).toBeInstanceOf(SessionError);

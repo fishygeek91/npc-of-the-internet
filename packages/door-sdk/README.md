@@ -1,26 +1,90 @@
 # @npc/door-sdk
 
-Shared library for building Door adapters: wire schemas, signing helpers, host policy hooks, and transport-agnostic `Door` core.
+Shared library for building Door adapters (`door/0.2`, `spec/door/api.md`): wire schemas, signing helpers, host policy hooks, the transport-agnostic `Door` core, HTTP/WS transports, and the reference AI memory witness.
+
+The Wanderer is in one place at a time. Every outlet is a Door: while it resides here the Door relays community messages in and delivers its words out; at departure the Door's **witness** checks each memory the Wanderer wants to keep against the Door's own record of the stay and co-signs it. Witnessed memories are final — there is no approval queue.
 
 ## Public API
 
-- **`Door`** — transport-agnostic host core (`hello`, `attest`, `heartbeat`, `cosign`, session bind, WebSocket frame helpers)
-- **Schemas** — Zod validators for Door API request/response and WebSocket frame types (`AttestRequestSchema`, `CosignRequestSchema`, `InboundFrameSchema`, …)
-- **Signing** — canonical payload builders (`attestSigningPayload`, `cosignReviewSigningPayload`, `heartbeatSigningPayload`, …)
-- **`HostPolicy`** — community descriptor, capabilities, and per-shard cosign review hooks
-- **Transports** — `InProcessDoorConnection`, `HttpDoorServer`, `WsDoorSessionServer`, `HttpDoorConnection`, `WsDoorSessionClient`
-- **`DoorError`** — typed API errors with stable machine codes
+### `Door`
 
-Co-signing is content-bound (`spec/door/api.md`): `attest` only co-signs a canonical `attestation` core of the requested `kind` for this Door's residency, and `cosign` commit only co-signs a `memory` shard core whose `text_hash` (or inline `text`) matches the reviewed shard, once per chain position. Outbound frames are replay-checked (`msg_replay`, `timestamp_stale`). `WsDoorSessionServer` bounds frames (`WS_MAX_PAYLOAD_BYTES`), uses short fixed close reasons, and never lets a malformed peer crash the process.
+```ts
+const door = new Door({ doorId, doorKeypair, soulPublicKey, clock, policy });
+```
 
-**Review retention (`cosign.past_epochs`).** `Door` keeps each completed cosign review per epoch — not reset on arrival — bounded by `cosignRetention` (`{ maxEpochs, maxAgeMs }`, defaults `DEFAULT_COSIGN_RETAIN_EPOCHS` = 64 / `DEFAULT_COSIGN_RETAIN_MS` = 7 days). A commit for a retained past epoch is accepted while a newer residency is live, authenticated by that epoch's review `session_pubkey`; an unretained past epoch gets `review_not_retained` (410). Reviews stay closed for past epochs (`epoch_closed`). Pass `cosignStateStore: new FileCosignStateStore(dir)` to persist retained reviews (atomic temp-file + fsync + rename; only approved shard text is written) so they survive a restart; a failed save returns `internal_error` and no co-signature. `getRetainedReviewEpochs()` lists what is held. Advertise `cosign.past_epochs` in `HostPolicy.capabilities` when using this behaviour.
+| Method | Purpose |
+|---|---|
+| `hello(req)` | `POST /door/hello` — signed community descriptor and `capabilities` |
+| `attest(req)` | `POST /door/attest` — `arrival`, `heartbeat`, `memory`, `departure`; returns `door_cosig` over the raw `core` bytes |
+| `heartbeat(req)` | `POST /door/heartbeat` — session-key presence ping (transport ack) |
+| `bindSession(params)` | verify a `WS /door/session` binding proof |
+| `handleOutbound(frame)` / `verifyOutbound(frame)` | accept a session-signed outbound frame (signature, freshness, `msg_id` replay) |
+| `createInboundFrame({ msg_id, body })` | build an inbound frame for the active epoch (and record it) |
+| `handleControl(frame)` / `createSessionEndFrame(epoch, reason)` | Door-signed `pong` / `session_end` |
+| `addOutboundListener(fn)` | called once per **accepted** outbound frame (never for replays or bad signatures) — platform adapters deliver the Wanderer's words from here |
+| `addSessionLifecycleListener(fn)` | `{ type: "arrived" \| "retired" \| "superseded", doorId, epoch }` — e.g. announce presence, close stale sockets |
+| `getActiveEpoch()`, `getActiveSessionPubkey()`, `getLastKnownEpoch()`, `capabilities()`, `witnessesMemories()`, `residencyRecordSize()` | state for transports and ops |
+
+Both `add…Listener` calls return an unsubscribe function; a throwing listener is isolated (the protocol call still succeeds and other listeners still run).
+
+**Core binding.** `attest` never co-signs arbitrary bytes. `core` must be canonical OSP JSON for this Door's residency (`door:<door_id>/epoch:<epoch>`): an `attestation` of the requested kind for presence attests, or for `memory` an `osp/0.2` `memory` record whose body is exactly a shard (`kind, text_cid, text_hash, distilled_at`) or a journal (`kind, journal_cid, journal_hash, written_at`) whose hash binds the request `text` (side-blob encoding; shard text ≤ 500 code points). Anything else is `core_invalid`.
+
+**Memory attests** (`kind: "memory"`, with `text`) are accepted only for the active session (after arrival, before departure). The Door binds `core` to `text`, then asks `policy.witnessMemory` to judge `text` against its own record of the residency, and re-checks the session after the witness answers (a departure or supersession meanwhile means no co-signature). Outcomes: `door_cosig` (witnessed), `witness_declined` (422, `details.reason` ∈ `ungrounded | private | harmful | manipulation | other`, final), `witness_unavailable` (503 — the witness threw or returned a malformed verdict; retry later, an outage is never a decline), `unsupported_kind` when the Door has no witness.
+
+### `HostPolicy`
+
+| Field | Purpose |
+|---|---|
+| `community` | descriptor returned by hello |
+| `capabilities` | advertised capabilities; `attest.memory` is added automatically when `witnessMemory` is set and removed when it is not |
+| `isAvailable?()` | `false` → hello answers `door_unavailable` |
+| `acceptArrival?(args)` | throw to refuse an arrival (`not_hosting`) |
+| `witnessMemory?(input)` | the memory witness: `({ doorId, epoch, kind: "shard" \| "journal", text, transcript }) => Promise<{ witnessed: true } \| { witnessed: false, reason }>`; throw when no verdict can be reached. Unset = no memories are formed at this Door |
+
+### `ResidencyRecord`
+
+The Door's in-memory record of the active epoch — community messages relayed inbound (`createInboundFrame`) and Wanderer text accepted outbound (`handleOutbound`), oldest first. It is the witness's only input (never a transcript supplied by the Wanderer), is bounded to the most recent `maxChars` of text (default `DEFAULT_RESIDENCY_RECORD_CHARS` = 120 000; set via `DoorOptions.residencyRecord`), is never persisted, and is cleared on arrival, departure and supersession.
+
+### Reference AI witness
+
+```ts
+const config = loadWitnessConfig(process.env); // null = witnessing off
+const policy: HostPolicy = {
+  community,
+  capabilities: ["session.text", "heartbeat", "attest"],
+  ...(config === null ? {} : { witnessMemory: createAiWitness({ complete: openAiCompatComplete(config) }) })
+};
+```
+
+- **`createAiWitness({ complete, attempts?, randomTag? })`** — one independent model call per memory with the fixed rubric `WITNESS_SYSTEM_PROMPT` (`src/prompts/witness.ts`, snapshot-tested). Untrusted text goes only in the user prompt (`buildWitnessUserPrompt`), inside delimiters that carry a fresh random tag per attempt; record lines are collapsed to one line each. Failed calls and unparseable replies are retried (default 2 attempts), then thrown — never turned into a witness.
+- **`parseWitnessReply(reply)`** — the verdict is the JSON object that ends the reply (reasoning before it and a closing code fence after are fine). A reply that does not end in a verdict object is `null`, so a truncated answer never falls back to a verdict quoted earlier.
+- **`openAiCompatComplete(settings)`** — `CompleteFn` over any OpenAI-compatible chat-completions API (`temperature: 0`, bearer auth, OpenRouter `provider.only` when an allowlist is set, `max_tokens` default 2048, timeout). HTTP errors never echo the response body; a reply cut off at `max_tokens` is an error.
+- **`loadWitnessConfig(env)`** — each `DOOR_WITNESS_*` value falls back to the matching `NPC_BRAIN_*` value, so a Door beside the Wanderer's runtime needs no extra setup. Returns `null` when off or nothing is configured; throws `WitnessConfigError` (with `envVar`, never a secret) when configuration is partial or invalid.
+
+| Setting | Env (fallback) | Default |
+|---|---|---|
+| on/off | `DOOR_WITNESS=off` (also `0`, `false`) | on when configured |
+| base URL | `DOOR_WITNESS_BASE_URL` (`NPC_BRAIN_BASE_URL`) | required |
+| API key | `DOOR_WITNESS_API_KEY`, `DOOR_WITNESS_API_KEY_FILE` (`NPC_BRAIN_API_KEY`, `NPC_BRAIN_API_KEY_FILE`) — first set wins, in that order | required |
+| model | `DOOR_WITNESS_MODEL` (`NPC_BRAIN_MODEL`) | required |
+| OpenRouter allowlist | `DOOR_WITNESS_PROVIDER_ALLOWLIST` (`NPC_BRAIN_PROVIDER_ALLOWLIST`), comma-separated | none |
+| timeout | `DOOR_WITNESS_TIMEOUT_MS` (integer ≥ 1000) | 60000 |
+
+### Wire, signing, errors
+
+- **Schemas** — Zod validators for every request/response and WebSocket frame (`AttestRequestSchema` requires `text` for `memory` and forbids it otherwise, ≤ `MEMORY_ATTEST_TEXT_MAX` = 32 000 code points; `HelloResponseSchema.capabilities` accepts unknown strings for forward compatibility; `WitnessReasonSchema`). `DOOR_PROTOCOL_VERSION` = `door/0.2`.
+- **Signing** — canonical payload builders (`attestSigningPayload`, `heartbeatSigningPayload`, `outboundSigningPayload`, `sessionBindSigningPayload`, response payloads), `signDoorCosig` / `verifyDoorCosig` over raw `core` bytes. Attest `text` is not in the request signature: `core` binds it by hash.
+- **`DoorError`** — typed errors with stable `code`, `httpStatus` and optional `details`.
+
+### Transports
+
+- **`InProcessDoorConnection`** — same-process `DoorConnection` for tests and wiring.
+- **`HttpDoorServer`** — `POST /door/hello`, `/door/attest`, `/door/heartbeat` (bodies ≤ `MAX_HTTP_BODY_BYTES`, schema-validated, `DoorError` → status + JSON body).
+- **`HttpDoorConnection`** — `DoorConnection` over HTTP. Requires a verified `hello()` first; verifies every response `door_sig` and `door_cosig`; Door error responses become `DoorError` (with `details`, e.g. the witness `reason`).
+- **`WsDoorSessionServer`** — `WS /door/session`: session binding (close `4401` on failure), outbound frames through `Door.handleOutbound`, ping/pong, `session_end` and close on departure/supersession. Frames are bounded (`WS_MAX_PAYLOAD_BYTES`) and a malformed peer never crashes the process.
+- **`WsDoorSessionClient`** — Wanderer-side session client: binds, delivers inbound/control/error frames via callbacks, sends signed outbound frames, answers `ping`, reconnects with exponential backoff (fatal on `4401`).
 
 `@npc/runtime` re-exports Door wire types from this package; integration tests use `DoorStub`, a thin wrapper around `Door`.
-
-### Network clients
-
-- **`HttpDoorConnection`** — `DoorConnection` over HTTP (`POST /door/hello`, `/door/attest`, `/door/heartbeat`, `/door/cosign`). Parses success bodies with Zod; throws `DoorError` on Door error responses.
-- **`WsDoorSessionClient`** — WebSocket session client for `WS /door/session`. Binds with `SessionBindParams`, delivers inbound/control/error frames via callbacks, sends signed outbound frames, auto-responds to Door `ping` with `pong`, and reconnects with exponential backoff (fatal on close code `4401`).
 
 ## Test
 

@@ -2,6 +2,7 @@
 import BaseLayout from "../layouts/BaseLayout.astro";
 import { loadSiteData } from "../lib/load-site-data.ts";
 import { withBase } from "../lib/paths.ts";
+import { residencyMemoryLine, residencyTravelLine } from "../lib/residency-labels.ts";
 
 const data = await loadSiteData();
 const base = import.meta.env.BASE_URL;
@@ -9,33 +10,39 @@ const base = import.meta.env.BASE_URL;
 
 <BaseLayout
   title="Journey"
-  description="Timeline of Atlas residencies across doors and epochs."
+  description="Every Door the Wanderer has stayed at, with what each Door witnessed."
   current="journey"
 >
   <h1 class="page-title">Journey</h1>
   <p class="lead">
-    Every door the Wanderer has entered, reconstructed from arrival attestations — oldest first,
-    nothing invented beyond the chain.
+    Every Door the Wanderer has stayed at, most recent first. At each departure the Door's witness
+    checks the Wanderer's memories against what happened there; witnessed memories are final.
   </p>
 
   {
-    data.journey.length === 0 ? (
-      <p>No arrivals recorded yet.</p>
+    data.residencies.length === 0 ? (
+      <p>No residencies recorded yet.</p>
     ) : (
       <ol class="timeline">
-        {
-          data.journey.map((entry) => (
+        {data.residencies.map((entry) => {
+          const travel = residencyTravelLine(entry);
+          return (
             <li class="timeline__item">
               <p class="timeline__meta">
-                Epoch {entry.epoch} · {entry.at}
+                Epoch {entry.epoch} · arrived {entry.arrived_at ?? "—"}
+                {entry.departed_at !== null && <> · departed {entry.departed_at}</>}
               </p>
               <p class="timeline__door">{entry.door_id}</p>
-              <p>
-                <a href={withBase(`/soul/${entry.cid}/`, base)}>Arrival record</a>
-              </p>
+              <p>{residencyMemoryLine(entry)}</p>
+              {entry.journal !== null && (
+                <p>
+                  <a href={withBase(`/journals/${entry.journal.cid}/`, base)}>Journal</a>
+                </p>
+              )}
+              {travel !== null && <p class="timeline__meta">{travel}</p>}
             </li>
-          ))
-        }
+          );
+        })}
       </ol>
     )
   }

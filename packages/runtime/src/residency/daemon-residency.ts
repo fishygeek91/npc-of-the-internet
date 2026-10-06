@@ -1,11 +1,4 @@
-import {
-  DoorError,
-  DOOR_PROTOCOL_VERSION,
-  sessionBindSigningPayload,
-  WsDoorSessionClient,
-  type HelloResponse,
-  type HttpDoorConnection
-} from "@npc/door-sdk";
+import { DoorError, sessionBindSigningPayload, WsDoorSessionClient } from "@npc/door-sdk";
 import { encodePublicKey, encodeSignature, type SoulStore } from "@npc/osp-core";
 import type { Logger } from "pino";
 
@@ -18,13 +11,11 @@ import { SessionError } from "../session/errors.js";
 import { Session } from "../session/session.js";
 import type { Clock, InboundFrame, OutboundFrame, Timer } from "../session/types.js";
 import type { LiveResidency } from "./controller.js";
+import { helloDoor, verifyDoorHello, type DoorEndpoint } from "./doors.js";
 
 /** Shared, residency-independent wiring for {@link arriveDaemonResidency}. */
 export type DaemonResidencyContext = {
   store: SoulStore;
-  door: HttpDoorConnection;
-  wsBaseUrl: string;
-  doorId: string;
   doorPublicKeys: Readonly<Record<string, Uint8Array>>;
   keyring: SingleKeyKeyring;
   brain: Brain;
@@ -38,20 +29,13 @@ export type DaemonResidencyContext = {
   onHeartbeatError: (error: unknown, stage: "door" | "append") => void;
   /** Ready-file hook: `true` once this residency's socket is connected, `false` on drop. */
   onConnectionChange: (connected: boolean) => void;
-  /**
-   * Called with the verified `hello` before `Session.start` (nothing appended yet);
-   * throwing aborts this arrival (boot-time capability checks).
-   */
-  onHello?: (hello: HelloResponse) => void;
 };
 
-/** Door capability: completed cosign reviews are retained per epoch across arrivals. */
-export const PAST_EPOCH_COMMITS_CAPABILITY = "cosign.past_epochs";
-
 /**
- * Arrive at the Door for one residency: `hello` (door id check + `active_epoch` crash
- * floor) → `Session.start` with a fresh in-memory transcript → bind a WebSocket client
- * to this `(door_id, epoch)`.
+ * Arrive at one Door for one residency: `hello` on a fresh connection (identity pinned:
+ * `door_id` must be `target.doorId` and trusted by `doorPublicKeys`; `active_epoch` crash
+ * floor; `attest.memory` → the Session may form memories) → `Session.start` with a fresh
+ * in-memory transcript → bind a WebSocket client to this `(door_id, epoch)`.
  *
  * Inbound frames reach the Session only while the residency is attached; after
  * {@link LiveResidency.detach} (start of a cycle) the socket is closed and any straggler
@@ -62,31 +46,38 @@ export const PAST_EPOCH_COMMITS_CAPABILITY = "cosign.past_epochs";
  * stopped (no departure — the next arrival supersedes it, as after a crash) and the error
  * propagates.
  */
-export async function arriveDaemonResidency(ctx: DaemonResidencyContext): Promise<LiveResidency> {
+export async function arriveDaemonResidency(
+  ctx: DaemonResidencyContext,
+  target: { doorId: string; endpoint: DoorEndpoint }
+): Promise<LiveResidency> {
   const { logger } = ctx;
-  const hello = await ctx.door.hello({
-    protocol_version: DOOR_PROTOCOL_VERSION,
-    soul_pubkey: encodePublicKey(ctx.keyring.getSoulPublicKey())
-  });
+  const doorId = target.doorId;
+  const { connection: door, hello } = await helloDoor(
+    target.endpoint,
+    ctx.keyring.getSoulPublicKey()
+  );
   logger.info(
     { door_id: hello.door_id, active_epoch: hello.active_epoch, capabilities: hello.capabilities },
     "door_hello"
   );
-  if (hello.door_id !== ctx.doorId) {
+  if (hello.door_id !== doorId) {
     throw new DaemonError(
-      `CURRENT_DOOR_ID mismatch: config has ${ctx.doorId}, door reports ${hello.door_id}`,
+      `door mismatch: expected ${doorId} at ${target.endpoint.baseUrl}, door reports ${hello.door_id}`,
       "door_mismatch"
     );
   }
-
-  ctx.onHello?.(hello);
+  const rejected = verifyDoorHello(hello, ctx.doorPublicKeys);
+  if (rejected !== null) {
+    throw new DaemonError(`door ${doorId} rejected: ${rejected}`, "door_mismatch");
+  }
 
   // WHITEPAPER §3.2: raw conversation lives only in memory for the residency; depart
   // distills it into shards and destroys it. Never written to disk.
   const transcript = new ResidencyTranscript();
   const reactionsSupported = hello.capabilities.includes("session.reactions");
+  const witnessesMemories = hello.capabilities.includes("attest.memory");
   logger.info(
-    { attentionMode: ctx.attentionMode, reactions: reactionsSupported },
+    { attentionMode: ctx.attentionMode, reactions: reactionsSupported, witnessesMemories },
     "attention_config"
   );
 
@@ -94,8 +85,9 @@ export async function arriveDaemonResidency(ctx: DaemonResidencyContext): Promis
     store: ctx.store,
     transcript,
     attention: { reactions: reactionsSupported },
-    door: ctx.door,
-    doorId: ctx.doorId,
+    witnessesMemories,
+    door,
+    doorId,
     keyring: ctx.keyring,
     brain: ctx.brain,
     clock: ctx.clock,
@@ -109,16 +101,16 @@ export async function arriveDaemonResidency(ctx: DaemonResidencyContext): Promis
     ...(ctx.onDeparted !== undefined ? { onDeparted: ctx.onDeparted } : {})
   });
 
-  const sessionSigner = ctx.keyring.deriveSessionKey(ctx.doorId, session.epoch);
+  const sessionSigner = ctx.keyring.deriveSessionKey(doorId, session.epoch);
   const sessionPubkey = encodePublicKey(sessionSigner.publicKey);
   const bind = {
-    door_id: ctx.doorId,
+    door_id: doorId,
     epoch: session.epoch,
     session_pubkey: sessionPubkey,
     session_sig: encodeSignature(
       sessionSigner.sign(
         sessionBindSigningPayload({
-          door_id: ctx.doorId,
+          door_id: doorId,
           epoch: session.epoch,
           session_pubkey: sessionPubkey
         })
@@ -131,7 +123,7 @@ export async function arriveDaemonResidency(ctx: DaemonResidencyContext): Promis
 
   // onInbound runs after construction, so `const` is safe for the closed-over client.
   const wsClient = new WsDoorSessionClient({
-    wsBaseUrl: ctx.wsBaseUrl,
+    wsBaseUrl: target.endpoint.wsBaseUrl,
     bind,
     onConnectionChange: (connected) => {
       if (attached) {
@@ -258,15 +250,14 @@ export async function arriveDaemonResidency(ctx: DaemonResidencyContext): Promis
     throw error;
   }
 
-  logger.info({ doorId: ctx.doorId, epoch: session.epoch }, "residency_live");
+  logger.info({ doorId, epoch: session.epoch, witnessesMemories }, "residency_live");
 
   return {
+    doorId,
     epoch: session.epoch,
-    transcriptSize: () => transcript.size,
     detach,
-    depart: () => session.depart({ journalDir: ctx.journalDir, toDoorId: ctx.doorId }),
-    close,
-    pastEpochCommits: hello.capabilities.includes(PAST_EPOCH_COMMITS_CAPABILITY),
-    withAppendLock: (fn) => session.withAppendLock(fn)
+    depart: (request) => session.depart({ journalDir: ctx.journalDir, ...request }),
+    departBare: (toDoorId) => session.departBare(toDoorId),
+    close
   };
 }

@@ -36,11 +36,13 @@ export DOOR_KEY_PATH=/tmp/door.key
 export SOUL_PUBLIC_KEY=...
 export SOUL_KEY_PATH=...         # for the residency harness (soul private key)
 export SOULCHAIN_DIR=./soulchain-data-manual
-export DISCORD_REVIEW_TIMEOUT_MS=300000
-# Timeout without ✅/❌ or /wanderer approve|reject REJECTS the shard (safe default).
+# Memory witness (any OpenAI-compatible endpoint; falls back to NPC_BRAIN_*):
+export DOOR_WITNESS_BASE_URL=https://openrouter.ai/api/v1
+export DOOR_WITNESS_API_KEY=...
+export DOOR_WITNESS_MODEL=...
 ```
 
-Optional: `DISCORD_REVIEW_CHANNEL_ID` for a host-only review channel.
+Without a witness (no `DOOR_WITNESS_*` / `NPC_BRAIN_*`, or `DOOR_WITNESS=off`) the Door still hosts the Wanderer, but it forms no memories here. Optional: `DISCORD_PRESENCE_NOTICES=0` silences the arrived / moved-on posts.
 
 ## 4. Run the adapter + residency harness
 
@@ -53,11 +55,11 @@ pnpm --filter @npc/door-discord manual-residency
 
 What you should see:
 
-1. Bot online in the guild.
-2. `/wanderer status` → `presence: absent` before arrival, then `present` after the harness arrives.
-3. Post a normal (non-bot) message in the bound channel → Wanderer replies (FakeBrain or a real Brain if provider env is set — harness uses FakeBrain by default).
-4. On depart, candidate shards are posted for review. React ✅/❌ as an allowlisted operator, or `/wanderer approve <shard_id>` / `/wanderer reject <shard_id>`.
-5. Ignoring review until timeout **rejects** (documented safe default).
+1. Bot online in the guild; the log shows `door_witness_config` with `enabled: true` and your model (never the key).
+2. `/wanderer status` → `presence: absent` before arrival, then `present` after the harness arrives; `memories: witnessed by this Door's AI witness`.
+3. On arrival the channel shows `✨ The Wanderer has arrived.`
+4. Post a normal (non-bot) message in the bound channel → Wanderer replies (FakeBrain by default).
+5. Ctrl+C departs: the Door's witness judges each memory against what was said in the channel — nobody reacts or approves anything. Witnessed memories are co-signed and final; declined ones are recorded as `rejected` (`witness_<reason>`). The harness distills canned FakeBrain shards ("a brief stay and question N"), so expect declines for any your conversation does not support. Then the channel shows `🌫️ The Wanderer has moved on.`
 
 ## 5. Verify the chain
 
@@ -65,7 +67,7 @@ What you should see:
 pnpm --filter @npc/osp-cli exec osp verify "$SOULCHAIN_DIR"
 ```
 
-Expect a valid chain with `memory.candidate` records from depart (not committed `memory.shard` until a later quarantine commit).
+Expect a valid chain with witnessed (Door-cosigned) memory records from depart — no candidates, no later commit step.
 
 ## 6. Production adapter only (no Session)
 
@@ -124,7 +126,7 @@ Post a normal (non-bot) message in the bound channel. The Wanderer should reply 
 docker compose --env-file ops/.env -f ops/compose.ghost.yml stop runtime
 ```
 
-SIGTERM removes the ready file, closes the WS, drains appends, and releases `.append.lock`. It does **not** run ceremonial depart — no departure attestation lands on-chain (same as an abrupt crash). Restart assigns a **new epoch** (no distill/shard cosign) and confirm `residency_live` again:
+SIGTERM removes the ready file, closes the WS, drains appends, and releases `.append.lock`. It does **not** run ceremonial depart — no departure attestation lands on-chain (same as an abrupt crash). Restart assigns a **new epoch** (no memories are formed for the interrupted stay; no presence notice is posted for a restart) and confirm `residency_live` again:
 
 ```bash
 docker compose --env-file ops/.env -f ops/compose.ghost.yml start runtime

@@ -1,4 +1,5 @@
 import { encodePublicKey } from "@npc/osp-core";
+import { DOOR_PROTOCOL_VERSION } from "@npc/door-sdk";
 import { FakeBrain, Session, SingleKeyKeyring, type InboundFrame } from "@npc/runtime";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -64,7 +65,7 @@ async function selectiveHarness(script: string[]) {
   });
 
   const hello = await handle.door.hello({
-    protocol_version: "door/0.1",
+    protocol_version: DOOR_PROTOCOL_VERSION,
     soul_pubkey: encodePublicKey(SOUL.publicKey)
   });
   session = await Session.start({
@@ -99,7 +100,7 @@ describe("selective attention through the Discord Door", () => {
       disableServers: true
     });
     const hello = await handle.door.hello({
-      protocol_version: "door/0.1",
+      protocol_version: DOOR_PROTOCOL_VERSION,
       soul_pubkey: encodePublicKey(SOUL.publicKey)
     });
     expect(hello.capabilities).toContain("session.reactions");

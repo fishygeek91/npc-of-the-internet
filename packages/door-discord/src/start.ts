@@ -1,12 +1,16 @@
 import {
-  FileCosignStateStore,
+  createAiWitness,
+  Door,
   HttpDoorServer,
   InProcessDoorConnection,
+  openAiCompatComplete,
   WsDoorSessionServer,
   type Clock,
   type HostPolicy,
   type InboundFrame,
-  type OutboundFrame
+  type OutboundFrame,
+  type SessionLifecycleEvent,
+  type WitnessMemory
 } from "@npc/door-sdk";
 import type { Logger } from "pino";
 import pino from "pino";
@@ -19,11 +23,14 @@ import { MessageRelay } from "./discord/relay.js";
 import { DiscordDoorError, operatorNotice } from "./errors.js";
 import { loadDoorKeypairFromPath } from "./load-door-key.js";
 import { DualRateLimiter, type RateClock } from "./rate-limit.js";
-import { ReviewGate, type ReviewGateSleep } from "./review-gate.js";
-import { ReviewGatedDoor } from "./review-gated-door.js";
 import { formatStatusReply, type DoorStatusSnapshot } from "./status.js";
 
-/** Wall-clock adapter for Door + rate limits + review timeouts. */
+/** Posted in the residency channel when the Wanderer arrives here. */
+export const ARRIVED_NOTICE = "✨ The Wanderer has arrived.";
+/** Posted in the residency channel when the Wanderer departs (travels on). */
+export const MOVED_ON_NOTICE = "🌫️ The Wanderer has moved on.";
+
+/** Wall-clock adapter for Door + rate limits. */
 class SystemClock implements Clock, RateClock {
   now(): string {
     return new Date().toISOString();
@@ -33,11 +40,6 @@ class SystemClock implements Clock, RateClock {
     return Date.now();
   }
 }
-
-const systemSleep: ReviewGateSleep = (ms) =>
-  new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
 
 export type SessionBridge = {
   /**
@@ -52,8 +54,12 @@ export type StartDiscordDoorOptions = {
   /** Inject a fake gateway in tests; defaults to discord.js binding. */
   gateway?: DiscordGateway;
   clock?: Clock & RateClock;
-  sleep?: ReviewGateSleep;
   logger?: Logger;
+  /**
+   * Memory witness override (tests). Defaults to the AI witness built from
+   * `config.witness`, or none when that is `null`.
+   */
+  witness?: WitnessMemory;
   /**
    * When set, community messages are delivered here (in-process Session).
    * When omitted, inbound frames are broadcast on the WS session server.
@@ -65,19 +71,18 @@ export type StartDiscordDoorOptions = {
 
 export type DiscordDoorHandle = {
   doorId: string;
-  door: ReviewGatedDoor;
-  /** In-process DoorConnection for Session.attest / heartbeat / cosign. */
+  door: Door;
+  /** In-process DoorConnection for Session.attest / heartbeat. */
   connection: InProcessDoorConnection;
   gateway: DiscordGateway;
-  reviewGate: ReviewGate;
   relay: MessageRelay;
   status: () => DoorStatusSnapshot;
   stop: () => Promise<void>;
 };
 
 /**
- * Start the Discord Door adapter: Door core, review gate, optional HTTP/WS servers, Discord gateway.
- * Clean entrypoint for T6.1 compose wrapping.
+ * Start the Discord Door adapter: Door core (with the memory witness when configured),
+ * optional HTTP/WS servers, Discord gateway, channel relay, and presence notices.
  */
 export async function startDiscordDoor(
   options: StartDiscordDoorOptions
@@ -85,7 +90,6 @@ export async function startDiscordDoor(
   const config = options.config;
   const logger = options.logger ?? pino({ name: "door-discord", level: "info" });
   const clock = options.clock ?? new SystemClock();
-  const sleep = options.sleep ?? systemSleep;
   const doorId = doorIdForGuild(config.guildId);
   const doorKeypair = loadDoorKeypairFromPath(config.doorKeyPath);
 
@@ -99,18 +103,16 @@ export async function startDiscordDoor(
       }
     });
 
-  const reviewChannelId = config.reviewChannelId ?? config.channelId;
-  const reviewGate = new ReviewGate({
-    gateway,
-    reviewChannelId,
-    operatorIds: new Set(config.operatorIds),
-    timeoutMs: config.reviewTimeoutMs,
-    clock,
-    sleep,
-    debug: (message, fields) => {
-      logger.debug({ ...fields }, message);
-    }
-  });
+  const witnessMemory =
+    options.witness ??
+    (config.witness === null
+      ? undefined
+      : createAiWitness({ complete: openAiCompatComplete(config.witness) }));
+  // Never log the key: model name only.
+  logger.info(
+    { enabled: witnessMemory !== undefined, model: config.witness?.model ?? null },
+    "door_witness_config"
+  );
 
   const policy: HostPolicy = {
     community: {
@@ -119,45 +121,25 @@ export async function startDiscordDoor(
       platform: "discord",
       invitation_required: false
     },
+    // `attest.memory` is added by the Door when a witness is set.
     capabilities: [
       "session.text",
       "session.threads",
       "session.reactions",
       "session.addressing",
       "heartbeat",
-      "attest",
-      "cosign.manual",
-      "cosign.past_epochs"
+      "attest"
     ],
-    decideShard: (shard) => reviewGate.decideShard(shard)
+    ...(witnessMemory === undefined ? {} : { witnessMemory })
   };
 
-  const door = new ReviewGatedDoor(
-    {
-      doorId,
-      doorKeypair,
-      soulPublicKey: config.soulPublicKey,
-      clock,
-      policy,
-      cosignRetention: {
-        maxEpochs: config.cosignRetainEpochs,
-        maxAgeMs: config.cosignRetainMs
-      },
-      ...(config.stateDir !== undefined
-        ? { cosignStateStore: writableStateStore(config.stateDir) }
-        : {})
-    },
-    reviewGate
-  );
-  logger.info(
-    {
-      durable: config.stateDir !== undefined,
-      retainEpochs: config.cosignRetainEpochs,
-      retainMs: config.cosignRetainMs,
-      retainedEpochs: door.getRetainedReviewEpochs()
-    },
-    "door_cosign_retention"
-  );
+  const door = new Door({
+    doorId,
+    doorKeypair,
+    soulPublicKey: config.soulPublicKey,
+    clock,
+    policy
+  });
 
   const connection = new InProcessDoorConnection(door);
 
@@ -214,7 +196,7 @@ export async function startDiscordDoor(
       if (sessionBridge !== undefined) {
         const outbound = await sessionBridge.handleInbound(frame);
         if (outbound !== null) {
-          // Already verified path via postOutbound(false) below — Session signs; Door verifies.
+          // Session signs; postOutbound verifies through the Door, then posts.
           await relay.postOutbound(outbound);
         }
         return;
@@ -222,7 +204,8 @@ export async function startDiscordDoor(
       if (activeWs === null) {
         throw new DiscordDoorError("internal_error", "no session bridge and WS server is disabled");
       }
-      activeWs.broadcastInbound(frame.body, frame.msg_id);
+      // The relay already created (and recorded) this frame: send it as-is.
+      activeWs.sendInbound(frame);
     },
     notifyOperators: async (notice) => {
       await gateway.sendMessage(config.channelId, notice);
@@ -230,34 +213,27 @@ export async function startDiscordDoor(
   });
 
   // WS clients: Door verifies outbound, then we post to Discord (skip re-verify).
-  door.setOutboundListener((frame) => {
+  // The in-process bridge posts its own replies above.
+  const removeOutboundListener = door.addOutboundListener((frame) => {
     if (sessionBridge !== undefined) {
       return;
     }
     void relay.postOutbound(frame, true);
   });
 
-  gateway.onReaction((reaction) => {
-    reviewGate.handleReaction(reaction);
-  });
+  const removeLifecycleListener = config.presenceNotices
+    ? door.addSessionLifecycleListener(presenceNotifier(gateway, config.channelId, logger))
+    : (): void => undefined;
 
   const operatorIds = new Set(config.operatorIds);
 
   gateway.onCommand(async (command) => {
     try {
-      if (command.kind === "status") {
-        if (!operatorIds.has(command.userId)) {
-          await gateway.replyEphemeral(command.interactionId, "Ignored (not an operator).");
-          return;
-        }
-        await gateway.replyEphemeral(command.interactionId, formatStatusReply(readStatus()));
+      if (!operatorIds.has(command.userId)) {
+        await gateway.replyEphemeral(command.interactionId, "Ignored (not an operator).");
         return;
       }
-      const handled = reviewGate.handleCommand(command);
-      const reply = handled
-        ? `Recorded ${command.kind} for \`${command.shardId}\`.`
-        : "Ignored (not an operator, or no matching pending shard).";
-      await gateway.replyEphemeral(command.interactionId, reply);
+      await gateway.replyEphemeral(command.interactionId, formatStatusReply(readStatus()));
     } catch (error: unknown) {
       logger.warn({ notice: operatorNotice(error) }, "command_error");
       try {
@@ -280,7 +256,7 @@ export async function startDiscordDoor(
       epoch,
       // T6.1: distinguish WS session attachment from Door active epoch, or drop this field.
       sessionLive: present,
-      pendingReviewCount: reviewGate.pendingCount()
+      witnessesMemories: door.witnessesMemories()
     };
   }
 
@@ -289,11 +265,11 @@ export async function startDiscordDoor(
     door,
     connection,
     gateway,
-    reviewGate,
     relay,
     status: readStatus,
     stop: async () => {
-      door.setOutboundListener(null);
+      removeOutboundListener();
+      removeLifecycleListener();
       await gateway.stop();
       if (wsServer !== null) {
         await wsServer.stop();
@@ -305,9 +281,36 @@ export async function startDiscordDoor(
   };
 }
 
-/** File-backed cosign state store, verified writable before the Door starts. */
-function writableStateStore(dir: string): FileCosignStateStore {
-  const store = new FileCosignStateStore(dir);
-  store.assertWritable();
-  return store;
+/**
+ * Session lifecycle → presence notice in the residency channel: `arrived` and `retired`
+ * post a notice; `superseded` (the Wanderer restarted here) posts nothing, and neither
+ * does the arrival that immediately follows it — the Wanderer never left. Post failures
+ * are logged, never thrown.
+ */
+function presenceNotifier(
+  gateway: DiscordGateway,
+  channelId: string,
+  logger: Logger
+): (event: SessionLifecycleEvent) => void {
+  let restarting = false;
+  return (event) => {
+    if (event.type === "superseded") {
+      restarting = true;
+      return;
+    }
+    const afterRestart = restarting;
+    restarting = false;
+    if (event.type === "arrived" && afterRestart) {
+      return;
+    }
+    const notice = event.type === "arrived" ? ARRIVED_NOTICE : MOVED_ON_NOTICE;
+    void (async (): Promise<void> => {
+      await gateway.sendMessage(channelId, notice);
+    })().catch((error: unknown) => {
+      logger.warn(
+        { event: event.type, epoch: event.epoch, notice: operatorNotice(error) },
+        "presence_notice_failed"
+      );
+    });
+  };
 }

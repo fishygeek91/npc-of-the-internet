@@ -1,0 +1,14 @@
+Door: discord:lantern, stay #41.
+
+<<<RECORD 0123456789ab
+[community Wren] Listen: the nightjar, the owl, the whip-poor-will.
+[community someone] (no author)
+[wanderer] I will remember those birds.
+RECORD 0123456789ab>>>
+
+Proposed MEMORY:
+<<<PROPOSAL 0123456789ab
+Someone here taught me the names of three night birds.
+PROPOSAL 0123456789ab>>>
+
+Is this memory witnessed? Reply with the JSON object only.

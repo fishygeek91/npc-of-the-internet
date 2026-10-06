@@ -1,9 +1,13 @@
 import {
+  OSP_SPEC_V01,
+  OSP_SPEC_V02,
   createRecord,
   encodePublicKey,
   signCore,
+  type CreateRecordFields,
   type CreateRecordResult,
-  type Ed25519Keypair
+  type Ed25519Keypair,
+  type OspSpecVersion
 } from "@npc/osp-core";
 
 import {
@@ -20,8 +24,12 @@ import {
 const CHARTER = "# Wanderer\n\nI travel the doors.";
 
 /** Build a signed genesis record. */
-export async function createGenesisRecord(soul: Ed25519Keypair): Promise<CreateRecordResult> {
+export async function createGenesisRecord(
+  soul: Ed25519Keypair,
+  spec: OspSpecVersion = OSP_SPEC_V01
+): Promise<CreateRecordResult> {
   return createRecord({
+    spec,
     seq: 0,
     prev: null,
     type: "genesis",
@@ -46,9 +54,11 @@ export async function createArrivalRecord(
   doorId: string,
   epoch: number,
   residency: string,
-  at: string
+  at: string,
+  spec: OspSpecVersion = OSP_SPEC_V01
 ): Promise<CreateRecordResult> {
   const fields = {
+    spec,
     seq,
     prev,
     type: "attestation" as const,
@@ -80,9 +90,11 @@ export async function createHeartbeatRecord(
   doorId: string,
   epoch: number,
   residency: string,
-  at: string
+  at: string,
+  spec: OspSpecVersion = OSP_SPEC_V01
 ): Promise<CreateRecordResult> {
   const fields = {
+    spec,
     seq,
     prev,
     type: "attestation" as const,
@@ -113,9 +125,11 @@ export async function createDepartureRecord(
   doorId: string,
   epoch: number,
   residency: string,
-  at: string
+  at: string,
+  spec: OspSpecVersion = OSP_SPEC_V01
 ): Promise<CreateRecordResult> {
   const fields = {
+    spec,
     seq,
     prev,
     type: "attestation" as const,
@@ -145,7 +159,8 @@ export async function createTravelRecord(
   fromEpoch: number,
   residency: string,
   at: string,
-  toDoorId?: string
+  toDoorId?: string,
+  spec: OspSpecVersion = OSP_SPEC_V01
 ): Promise<CreateRecordResult> {
   const body: {
     kind: "travel";
@@ -166,6 +181,7 @@ export async function createTravelRecord(
   }
 
   return createRecord({
+    spec,
     seq,
     prev,
     type: "attestation",
@@ -241,6 +257,147 @@ export async function createShardRecord(
   return createRecord({
     ...fields,
     cosigners: [cosig],
+    soulPrivateKey: soul.privateKey
+  });
+}
+
+/** Side-blob address (`cid` + `hash`) as returned by `contentAddressSideBlob` / `putSideBlob`. */
+export type BlobAddress = { cid: string; hash: string };
+
+/** Sign `fields` with the soul key after the Door co-signs its core (witnessed records). */
+async function createWitnessedV02(
+  soul: Ed25519Keypair,
+  door: Ed25519Keypair,
+  fields: {
+    seq: number;
+    prev: string;
+    type: "memory";
+    body: CreateRecordFields["body"];
+    residency: string;
+  }
+): Promise<CreateRecordResult> {
+  const withSpec = { ...fields, spec: OSP_SPEC_V02 };
+  return createRecord({
+    ...withSpec,
+    cosigners: [signCore(withSpec, door.privateKey)],
+    soulPrivateKey: soul.privateKey
+  });
+}
+
+/** Build an `osp/0.2` witnessed shard (optionally with a legacy shard-embedded journal). */
+export async function createShardRecordV02(
+  soul: Ed25519Keypair,
+  door: Ed25519Keypair,
+  seq: number,
+  prev: string,
+  text: BlobAddress,
+  residency: string,
+  opts?: { journal?: BlobAddress; distilled_at?: string }
+): Promise<CreateRecordResult> {
+  const distilledAt = opts?.distilled_at ?? "2026-01-02T01:00:00.000Z";
+  const body =
+    opts?.journal === undefined
+      ? {
+          kind: "shard" as const,
+          text_cid: text.cid,
+          text_hash: text.hash,
+          distilled_at: distilledAt
+        }
+      : {
+          kind: "shard" as const,
+          text_cid: text.cid,
+          text_hash: text.hash,
+          journal_cid: opts.journal.cid,
+          journal_hash: opts.journal.hash,
+          distilled_at: distilledAt
+        };
+  return createWitnessedV02(soul, door, { seq, prev, type: "memory", body, residency });
+}
+
+/** Build an `osp/0.2` witnessed residency journal record. */
+export async function createJournalRecord(
+  soul: Ed25519Keypair,
+  door: Ed25519Keypair,
+  seq: number,
+  prev: string,
+  journal: BlobAddress,
+  residency: string,
+  writtenAt: string
+): Promise<CreateRecordResult> {
+  return createWitnessedV02(soul, door, {
+    seq,
+    prev,
+    type: "memory",
+    body: {
+      kind: "journal",
+      journal_cid: journal.cid,
+      journal_hash: journal.hash,
+      written_at: writtenAt
+    },
+    residency
+  });
+}
+
+/** Build a `rejected` memory record (category only, no cosigners). */
+export async function createRejectedRecord(
+  soul: Ed25519Keypair,
+  seq: number,
+  prev: string,
+  category: string,
+  residency: string,
+  rejectedAt: string,
+  spec: OspSpecVersion = OSP_SPEC_V02
+): Promise<CreateRecordResult> {
+  return createRecord({
+    spec,
+    seq,
+    prev,
+    type: "memory",
+    body: { kind: "rejected", category, rejected_at: rejectedAt },
+    residency,
+    cosigners: [],
+    soulPrivateKey: soul.privateKey
+  });
+}
+
+/** Build a legacy `osp/0.2` candidate record (verify-only form; never written by runtimes). */
+export async function createLegacyCandidateRecordV02(
+  soul: Ed25519Keypair,
+  seq: number,
+  prev: string,
+  text: BlobAddress,
+  residency: string,
+  proposedAt: string
+): Promise<CreateRecordResult> {
+  return createRecord({
+    spec: OSP_SPEC_V02,
+    seq,
+    prev,
+    type: "memory",
+    body: { kind: "candidate", text_cid: text.cid, text_hash: text.hash, proposed_at: proposedAt },
+    residency,
+    cosigners: [],
+    soulPrivateKey: soul.privateKey
+  });
+}
+
+/** Build an `osp/0.2` tombstone erasing one side blob of `targetCid`. */
+export async function createTombstoneRecord(
+  soul: Ed25519Keypair,
+  seq: number,
+  prev: string,
+  targetCid: string,
+  blobCid: string,
+  erasedAt: string
+): Promise<CreateRecordResult> {
+  return createRecord({
+    spec: OSP_SPEC_V02,
+    seq,
+    prev,
+    type: "tombstone",
+    body: { target_cid: targetCid, blob_cid: blobCid, reason: "operator", erased_at: erasedAt },
+    residency: null,
+    cosigners: [],
     soulPrivateKey: soul.privateKey
   });
 }
