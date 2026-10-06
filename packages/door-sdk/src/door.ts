@@ -106,6 +106,7 @@ export class Door {
   private lastKnownEpoch: number | null = null;
   private lastHeartbeatSeq = 0;
   private readonly sessionLifecycleListeners = new Set<(event: SessionLifecycleEvent) => void>();
+  private readonly outboundListeners = new Set<(frame: OutboundFrame) => void>();
   private sessionEndMsgCounter = 0;
   /** Outbound `msg_id`s accepted for the active epoch (bounded; reset on arrival). */
   private readonly seenOutboundMsgIds = new Set<string>();
@@ -167,6 +168,18 @@ export class Door {
     this.sessionLifecycleListeners.add(listener);
     return () => {
       this.sessionLifecycleListeners.delete(listener);
+    };
+  }
+
+  /**
+   * Subscribe to verified outbound frames: called once per frame accepted by
+   * {@link handleOutbound}, after verification, freshness and replay checks. Platform
+   * adapters deliver the Wanderer's words from here. Returns an unsubscribe function.
+   */
+  addOutboundListener(listener: (frame: OutboundFrame) => void): () => void {
+    this.outboundListeners.add(listener);
+    return () => {
+      this.outboundListeners.delete(listener);
     };
   }
 
@@ -515,6 +528,13 @@ export class Door {
     this.seenOutboundMsgIds.add(frame.msg_id);
     if (frame.body.text !== undefined) {
       this.transcript.record({ role: "wanderer", text: frame.body.text, at: frame.issued_at });
+    }
+    for (const listener of [...this.outboundListeners]) {
+      try {
+        listener(frame);
+      } catch {
+        // Delivery problems belong to the adapter; the frame was accepted.
+      }
     }
     while (this.seenOutboundMsgIds.size > OUTBOUND_MSG_ID_MEMORY) {
       const oldest = this.seenOutboundMsgIds.values().next();
