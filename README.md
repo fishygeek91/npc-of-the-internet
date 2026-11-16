@@ -31,7 +31,7 @@ Ghost (v0.1) is live, and the loop now runs across more than one Door: the Wande
 
 ## Principles
 
-Open source (MIT/Apache). No token. No raw conversation storage — only distilled memories, each witnessed by the community where it formed. Honest about what it is: a character and a protocol experiment, raised by the internet.
+Open source (MIT for code, CC-BY-4.0 for specs and the whitepaper). No token. No raw conversation storage — only distilled memories, each witnessed by the community where it formed. Honest about what it is: a character and a protocol experiment, raised by the internet.
 
 ## Contributing
 
