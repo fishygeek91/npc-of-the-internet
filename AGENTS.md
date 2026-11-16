@@ -27,6 +27,7 @@ The delivery workflow (issues, branches, PRs, review, the two human gates) is de
 ```
 1. Pick the lowest-numbered GitHub issue that is labeled `approved`, unblocked, and
    unassigned (issues mirror TASKS.md tasks). No approved issue = no implementation.
+ The label alone is authoritative; an in-body `## Approval` block is optional context.
 2. Assign yourself; branch from fresh main: task/T1.2-short-slug.
 3. Mark the task ⏳ in TASKS.md (agent name + date), in this branch.
 4. Implement. Follow ENGINEERING.md conventions (TypeScript ESM, Zod, noble crypto, pino, typed errors).
