@@ -263,7 +263,7 @@ These are sequenced but intentionally coarser; split them into T-numbered subtas
 - **T7.14 ⬜ Branded crypto vocabulary** (opaque `Cid` / `SoulPublicKey` / `Ed25519Signature` / `Base64Url` / `Residency` types across osp-core) — Deps: none — Issue: #77
 - **T7.15 ⬜ Single-source record sealing** (one sealing path; dedup crypto/key helpers; CI check enforcing the osp-core/osp-cli extraction boundary) — Deps: none — Issue: #78
 - **T7.16 ✅ Decompose FileSoulStore primitives** (BlobDir/FileLock/fsync; Session/Door deferred) — Deps: Bug #67 — Issue: #79
-  - Notes: Agent: Cursor Grok 4.5 Maestro, 2026-08-08. Extracted `store/blob-dir.ts`, `file-lock.ts`, `fsync.ts`, `node-fs-error.ts`; FileSoulStore composes them with no behavior change. #79 items 1 (Session) and 3 (Door) remain open. G2 gate for T7.1/#55 store reuse now satisfied.
+  - Notes: Agent: Cursor Grok 4.5 Maestro, 2026-08-08. Extracted `store/blob-dir.ts`, `file-lock.ts`, `fsync.ts`, `node-fs-error.ts`; FileSoulStore composes them with no behavior change. #79 items 1 (Session) and 3 (Door) remain open — tracked in #170. G2 gate for T7.1/#55 store reuse now satisfied.
 - **T7.17 ⬜ Structured error discriminants** (exhaustive `VerificationError.reason` and `DoorError.code` unions instead of prose-string classification; shared shard bounds) — Deps: none — Issue: #80
 - **T7.18 ⬜ Test-suite rigor** (fast-check property invariants; per-vector `it.each` with exact negative-vector matching; de-flake real-timer tests; missing adversarial cases) — Deps: none — Issue: #81
 - **Hotfix ✅ First-boot launch blockers** (DualSoulStore IPFS-mirror backfill at open; Dockerfile.runtime chowns all three /data mountpoints) — Deps: T7.1, T7.11 — PR: #144, docs follow-up: #145
