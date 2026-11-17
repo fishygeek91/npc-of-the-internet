@@ -14,7 +14,7 @@
     "@npc/atlas": "workspace:*",
     "@npc/osp-core": "workspace:*",
     "astro": "^7.4.7",
-    "marked": "^15.0.12",
+    "marked": "^18.0.9",
     "zod": "^4.6.6"
   },
   "devDependencies": {
