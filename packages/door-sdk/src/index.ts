@@ -99,7 +99,7 @@ export { DoorError, defaultHttpStatusForDoorError, doorErrorToBody } from "./err
 
 export { InProcessDoorConnection } from "./transports/in-process.js";
 export { HttpDoorServer, MAX_HTTP_BODY_BYTES } from "./transports/http.js";
-export type { HttpDoorServerOptions } from "./transports/http.js";
+export type { HttpDoorServerLog, HttpDoorServerOptions } from "./transports/http.js";
 export {
   HttpDoorConnection,
   DEFAULT_HTTP_TIMEOUT_MS,

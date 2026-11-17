@@ -13,7 +13,7 @@ import WebSocket from "ws";
 import { Door } from "../src/door.js";
 import type { HostPolicy } from "../src/policy.js";
 import { DOOR_PROTOCOL_VERSION } from "../src/schemas.js";
-import type { AttestRequest, HeartbeatRequest } from "../src/schemas.js";
+import type { AttestRequest, HeartbeatRequest, HelloResponse } from "../src/schemas.js";
 import {
   attestSigningPayload,
   generateDoorKeypair,
@@ -66,6 +66,26 @@ function createDoor(soulPublicKey: Uint8Array): Door {
     clock: new FakeClock(RECEIVED_AT),
     policy: defaultPolicy
   });
+}
+
+/** Door whose hello throws a plain Error (not a DoorError). */
+class HelloThrowingDoor extends Door {
+  readonly failureMessage: string;
+
+  constructor(soulPublicKey: Uint8Array, failureMessage: string) {
+    super({
+      doorId: DOOR_ID,
+      doorKeypair: generateDoorKeypair(),
+      soulPublicKey,
+      clock: new FakeClock(RECEIVED_AT),
+      policy: defaultPolicy
+    });
+    this.failureMessage = failureMessage;
+  }
+
+  override async hello(_req: unknown): Promise<HelloResponse> {
+    throw new Error(this.failureMessage);
+  }
 }
 
 function signAttestRequest(
@@ -219,6 +239,35 @@ describe("HTTP transport", () => {
       await httpServer.stop();
       httpServer = null;
     }
+  });
+
+  it("hides non-DoorError text from the client and logs it without the request", async () => {
+    const soul = generateKeypair();
+    const leaked = "SECRET_STORAGE_/var/npc/chain.jsonl";
+    const requestSecret = "REQUEST_BODY_SHOULD_NOT_BE_LOGGED";
+    const logged: string[] = [];
+    const door = new HelloThrowingDoor(soul.publicKey, leaked);
+    httpServer = new HttpDoorServer({
+      door,
+      log: (_event, message) => {
+        logged.push(message);
+      }
+    });
+    const { baseUrl } = await httpServer.start();
+
+    const response = await postJson(baseUrl, "/door/hello", {
+      protocol_version: DOOR_PROTOCOL_VERSION,
+      soul_pubkey: encodePublicKey(soul.publicKey),
+      note: requestSecret
+    });
+
+    expect(response.status).toBe(500);
+    expect(response.body).toEqual({
+      error: { code: "internal_error", message: "internal server error" }
+    });
+    expect(JSON.stringify(response.body).includes(leaked)).toBe(false);
+    expect(logged).toEqual([leaked]);
+    expect(logged.join("\n").includes(requestSecret)).toBe(false);
   });
 
   it("hello returns 200 with signed response", async () => {

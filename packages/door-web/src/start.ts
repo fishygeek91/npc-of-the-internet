@@ -18,6 +18,7 @@ import type { WebDoorConfig } from "./config.js";
 import { loadDoorKeypairFromPath } from "./load-door-key.js";
 import type { MsClock } from "./rate-limit.js";
 import { Room } from "./room.js";
+import { stopAll } from "./shutdown.js";
 import { VisitorSite } from "./site.js";
 import { relayText } from "./visitor.js";
 
@@ -226,9 +227,7 @@ export async function startWebDoor(options: StartWebDoorOptions): Promise<WebDoo
       clearInterval(poll);
       offLifecycle();
       offOutbound();
-      await site.stop();
-      await wsServer.stop();
-      await httpServer.stop();
+      await stopAll([() => site.stop(), () => wsServer.stop(), () => httpServer.stop()]);
     }
   };
 }

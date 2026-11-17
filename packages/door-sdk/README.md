@@ -86,7 +86,7 @@ const policy: HostPolicy = {
 ### Transports
 
 - **`InProcessDoorConnection`** — same-process `DoorConnection` for tests and wiring.
-- **`HttpDoorServer`** — `POST /door/hello`, `/door/attest`, `/door/heartbeat` (bodies ≤ `MAX_HTTP_BODY_BYTES`, schema-validated, `DoorError` → status + JSON body).
+- **`HttpDoorServer`** — `POST /door/hello`, `/door/attest`, `/door/heartbeat` (bodies ≤ `MAX_HTTP_BODY_BYTES`, schema-validated, `DoorError` → status + JSON body). Any other throw is HTTP 500 `{ code: "internal_error", message: "internal server error" }`; the thrown message is logged server-side (optional `log`, stderr by default) and is not returned.
 - **`HttpDoorConnection`** — `DoorConnection` over HTTP. Requires a verified `hello()` first; verifies every response `door_sig` and `door_cosig`; Door error responses become `DoorError` (with `details`, e.g. the witness `reason`). Timeouts (→ `door_unavailable`): `memoryTimeoutMs` for `memory` attests (`DEFAULT_MEMORY_ATTEST_TIMEOUT_MS` = 180 000 — the witness may be slow), `timeoutMs` for everything else (`DEFAULT_HTTP_TIMEOUT_MS` = 30 000).
 - **`WsDoorSessionServer`** — `WS /door/session`: session binding (close `4401` on failure), outbound frames through `Door.handleOutbound`, ping/pong, `session_end` and close on departure/supersession. Frames are bounded (`WS_MAX_PAYLOAD_BYTES`) and a malformed peer never crashes the process.
 - **`WsDoorSessionClient`** — Wanderer-side session client: binds, delivers inbound/control/error frames via callbacks, sends signed outbound frames, answers `ping`, reconnects with exponential backoff (fatal on `4401`).
