@@ -189,6 +189,19 @@ jobs:
       - name: Linux bind-mount uid/gid check (#84)
         run: bash ops/scripts/uid-mount-check.sh
 
+  ops-ai-run:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - name: Shellcheck watchdog (T7.13)
+        run: shellcheck ops/scripts/watchdog.sh ops/scripts/watchdog-fixture-test.sh
+      - name: Watchdog fixture dry-run
+        run: bash ops/scripts/watchdog-fixture-test.sh
+
   secret-scan:
     runs-on: ubuntu-latest
     permissions:

@@ -17,6 +17,8 @@ Production genesis — generating the real soul key, seeding the live soulchain 
 
 Do **not** run the numbered sections below on production infrastructure until a human replies **approved** on the release issue. Public GitHub Pages deploy for Atlas is also Gate 2 (prepare the build locally; deploy only after approval).
 
+Script names, dry-run defaults, and the same Gate 2 list are in [`AI-OPERATOR.md`](AI-OPERATOR.md). If a step has no script yet, do not improvise one — the follow-ups are listed there.
+
 ---
 
 ## Dry-run (offline rehearsal)

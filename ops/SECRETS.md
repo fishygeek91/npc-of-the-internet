@@ -95,6 +95,8 @@ Environment variable names and purposes only. **Never commit values.**
 | `KEY_BACKUP_RCLONE_CONFIG` | Optional path to a separate `rclone.conf` (different B2 app key) for key backup. |
 | `NPC_KEY_DRILL_LIVE` | Set to `1` to force live key-backup drill (decrypt remote `latest/` and cmp host keys). Set to `0` to force offline fixture mode even if `AGE_IDENTITY_PATH` is set. |
 | `NPC_COMPOSE_SECRETS` | `1`: `ghostc` also loads `ops/compose.secrets.yml` (production openai-compat: bind-mounts `NPC_BRAIN_API_KEY_HOST_PATH` into runtime and both Doors' witnesses, + `DISCORD_BOT_TOKEN_HOST_PATH`). `anthropic`: loads `ops/compose.secrets.anthropic.yml` (`ANTHROPIC_API_KEY_HOST_PATH` + `DISCORD_BOT_TOKEN_HOST_PATH`). Each overlay fails fast if one of its host paths is unset. |
+| `DISCORD_OPERATOR_WEBHOOK` | Discord incoming-webhook URL for operator alerts from `ops/scripts/watchdog.sh`. Host-only. The script POSTs only when `NPC_WATCHDOG_LIVE=1` and the value is `https://discord.com/api/webhooks/…` or `https://discordapp.com/api/webhooks/…`. Otherwise it prints alerts and does not POST. Not a GitHub Actions secret; `.github/workflows/ops-drill.yml` does not receive it. |
+| `NPC_WATCHDOG_LIVE` | Set to exactly `1` to let the watchdog page Discord and, when probe files are unset, run `ghostc ps` and `df` on this machine. Any other value is a dry-run. Not a secret. |
 
 ## OpenRouter account hardening
 
