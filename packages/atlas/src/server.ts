@@ -13,7 +13,8 @@ import {
   buildChainExport,
   chainExportEtag,
   headerSingle,
-  ifNoneMatchSatisfied
+  ifNoneMatchSatisfied,
+  type ChainExportBody
 } from "./export-chain.js";
 import {
   deriveHead,
@@ -78,14 +79,13 @@ export async function createAtlasServer(config: AtlasConfig): Promise<FastifyIns
       return;
     }
 
-    const body = buildChainExport(snap, config.doorPublicKeys);
-    const etag = chainExportEtag(body);
-    void reply.header("ETag", etag).header("Cache-Control", "no-cache");
-    if (ifNoneMatchSatisfied(headerSingle(request.headers["if-none-match"]), etag)) {
+    const exported = cachedChainExport(snap, config.doorPublicKeys);
+    void reply.header("ETag", exported.etag).header("Cache-Control", "no-cache");
+    if (ifNoneMatchSatisfied(headerSingle(request.headers["if-none-match"]), exported.etag)) {
       void reply.code(304).send();
       return;
     }
-    void reply.send(body);
+    void reply.send(exported.body);
   });
 
   app.get("/chain/head", async (_request, reply) => {
@@ -224,6 +224,32 @@ function replyIfUnreadable(snap: ChainSnapshot, reply: FastifyReply): boolean {
     .status(503)
     .send(atlasErrorToBody(new AtlasError("chain_unreadable", "chain is unreadable", 503)));
   return true;
+}
+
+type CachedExport = {
+  body: ChainExportBody;
+  etag: string;
+};
+
+/**
+ * One encoded body and `ETag` per snapshot object. `ChainView` returns the same
+ * object until the chain file changes, so a `304` does not hash the chain again.
+ * Door keys are the process config and do not change under a live snapshot.
+ */
+const chainExportCache = new WeakMap<ChainSnapshot, CachedExport>();
+
+function cachedChainExport(
+  snapshot: ChainSnapshot,
+  doorPublicKeys: Readonly<Record<string, Uint8Array>> | undefined
+): CachedExport {
+  const hit = chainExportCache.get(snapshot);
+  if (hit !== undefined) {
+    return hit;
+  }
+  const body = buildChainExport(snapshot, doorPublicKeys);
+  const entry = { body, etag: chainExportEtag(body) };
+  chainExportCache.set(snapshot, entry);
+  return entry;
 }
 
 /** Parse `page` / `per_page` query strings for paginated journal-style routes. */

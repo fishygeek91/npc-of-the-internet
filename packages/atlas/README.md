@@ -57,7 +57,7 @@ Wanderer presence snapshot.
 
 Full chain for in-browser verification (`spec/door/web.md`). Not a summary.
 
-Returns `{ records, doorPublicKeys, blobs }`. `records` are OSP records in chain order. `doorPublicKeys` is door id → base64url **public** key (the `ATLAS_DOOR_PUBKEYS` set; private keys are not a field). `blobs` is journal side-blob CID → base64url bytes; shard `text_cid` blobs are omitted. Missing CIDs are unavailable, not erased. There is no `verified` field.
+Returns `{ records, doorPublicKeys, blobs }`. `records` are the full signed bodies in chain order, so an `osp/0.1` shard's inline `text` is included (`GET /records` serves summaries instead). `doorPublicKeys` is door id → base64url **public** key (the `ATLAS_DOOR_PUBKEYS` set; private keys are not a field). `blobs` is journal side-blob CID → base64url bytes; shard `text_cid` blobs are omitted, and so is any CID named by a tombstone `blob_cid`. Missing CIDs are unavailable, not erased. There is no `verified` field.
 
 `200` includes `ETag` and `Cache-Control: no-cache`. `If-None-Match` of that tag (or `*`) returns `304` with an empty body. `503 chain_unreadable` uses the same error object as the other routes.
 

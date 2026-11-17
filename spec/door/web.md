@@ -63,7 +63,7 @@ The shrine and the porch obtain an ordered record array and verify it with `veri
 | `doorPublicKeys` | object | yes | door id → base64url Ed25519 **public** key. Private keys are forbidden. |
 | `blobs` | object | no | Journal side-blob CID → base64url bytes. Omitted CIDs are unavailable, not erased. |
 
-`@npc/atlas` serves this route. The body has no `verified` and no `status` field. `blobs` includes journal side blobs (`journal_cid` on `journal` records and on shards). Shard `text_cid` blobs are omitted: they are not journals, and leaving them out does not fail verification. A tombstoned journal blob may still be present; clients still render `[journal erased]`.
+`@npc/atlas` serves this route. The body has no `verified` and no `status` field. `blobs` includes journal side blobs (`journal_cid` on `journal` records and on shards). Shard `text_cid` blobs are omitted: they are not journals, and leaving them out does not fail verification. Atlas omits a blob whose CID is the `blob_cid` of any tombstone on the chain. A client that receives one anyway still renders `[journal erased]`.
 
 The response SHOULD include an `ETag`, and SHOULD expose that header to cross-origin callers (`Access-Control-Expose-Headers: ETag`). A client SHOULD send the previous tag as `If-None-Match`. `304` (empty body, same `ETag`) means the previous successful body is unchanged and MUST be kept. A client with no previous success MUST NOT treat `304` as a chain. `Cache-Control: no-cache` means revalidate; it does not replace the shrine's 60-second refetch.
 

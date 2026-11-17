@@ -11,19 +11,19 @@ import type { ChainSnapshot } from "./chain-view.js";
 export type ChainExportBody = {
   /** Full OSP records in chain order. */
   records: OspRecord[];
-  /** Door id → base64url Ed25519 public key. Never a private key. */
+  /** Door id → base64url Ed25519 public key from `ATLAS_DOOR_PUBKEYS`. */
   doorPublicKeys: Record<string, string>;
   /**
    * Journal side-blob CID → base64url bytes. Shard `text_cid` blobs are omitted.
-   * A missing CID is unavailable, not erased.
+   * A CID named by any tombstone `blob_cid` is omitted. A missing CID is unavailable, not erased.
    */
   blobs: Record<string, string>;
 };
 
 /**
  * Build the public export from a snapshot and the configured door public keys.
- * Keys that are not 32 bytes are rejected by `encodePublicKey` (the error names
- * the length, not the key bytes).
+ * Those keys come only from `ATLAS_DOOR_PUBKEYS`. `encodePublicKey` rejects a
+ * value that is not 32 bytes and names the length, not the key bytes.
  */
 export function buildChainExport(
   snapshot: ChainSnapshot,
@@ -79,7 +79,7 @@ export function headerSingle(value: string | string[] | undefined): string | und
   return Array.isArray(value) ? value.join(", ") : value;
 }
 
-/** Configured door public keys, base64url, keys sorted. Private keys cannot pass the 32-byte check. */
+/** Configured `ATLAS_DOOR_PUBKEYS` entries, base64url, door ids sorted. The map holds public keys only. */
 function encodeDoorPublicKeys(
   doorPublicKeys: Readonly<Record<string, Uint8Array>> | undefined
 ): Record<string, string> {
@@ -99,7 +99,8 @@ function encodeDoorPublicKeys(
 
 /**
  * Journal blobs only. Shard text stays out of this response so the export is
- * not a residency transcript (`spec/door/web.md`).
+ * not a residency transcript (`spec/door/web.md`). Tombstoned CIDs are omitted
+ * even when the bytes are still in the snapshot, matching `/journals`.
  */
 function encodeJournalBlobs(
   records: readonly OspRecord[],
@@ -109,10 +110,11 @@ function encodeJournalBlobs(
   if (sideBlobs === undefined) {
     return blobs;
   }
+  const erased = tombstonedBlobCids(records);
   const cids = new Set<string>();
   for (const record of records) {
     const cid = journalCidOf(record);
-    if (cid !== null) {
+    if (cid !== null && !erased.has(cid)) {
       cids.add(cid);
     }
   }
@@ -123,6 +125,17 @@ function encodeJournalBlobs(
     }
   }
   return blobs;
+}
+
+/** Blob CIDs named by a tombstone anywhere on the chain. Same scan as `derive.ts`. */
+function tombstonedBlobCids(records: readonly OspRecord[]): Set<string> {
+  const erased = new Set<string>();
+  for (const record of records) {
+    if (record.type === "tombstone") {
+      erased.add(record.body.blob_cid);
+    }
+  }
+  return erased;
 }
 
 /** `journal_cid` on an osp/0.2 journal record or a shard that embeds one. */
