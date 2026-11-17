@@ -268,6 +268,7 @@ These are sequenced but intentionally coarser; split them into T-numbered subtas
 - **T7.14 ⬜ Branded crypto vocabulary** (opaque `Cid` / `SoulPublicKey` / `Ed25519Signature` / `Base64Url` / `Residency` types across osp-core) — Deps: none — Issue: #77
 - **T7.15 ⏳ Single-source record sealing** (one sealing path; dedup crypto/key helpers; CI check enforcing the osp-core/osp-cli extraction boundary) — Deps: none — Issue: #78
   - Notes: Agent: Cursor Grok 4.7, 2026-11-16. PR1 of 4: single sealer landed (`createRecordWithSigner`; runtime `sealRecord` delegates). Remaining: key-parse/noble facade, RECORD_TYPES export, CI extract check.
+  - Notes: Agent: Cursor Grok 4.7, 2026-11-16. PR4 of 4: CI extractability check (`scripts/check-extractability.mjs`) replaces the governance grep. Status stays ⏳ until the last PR. Remaining on other branches: single sealer, key-parse/noble facade, RECORD_TYPES export.
 - **T7.16 ✅ Decompose FileSoulStore primitives** (BlobDir/FileLock/fsync; Session/Door deferred) — Deps: Bug #67 — Issue: #79
   - Notes: Agent: Cursor Grok 4.5 Maestro, 2026-08-08. Extracted `store/blob-dir.ts`, `file-lock.ts`, `fsync.ts`, `node-fs-error.ts`; FileSoulStore composes them with no behavior change. #79 items 1 (Session) and 3 (Door) remain open — tracked in #170. G2 gate for T7.1/#55 store reuse now satisfied.
 - **T7.17 ⬜ Structured error discriminants** (exhaustive `VerificationError.reason` and `DoorError.code` unions instead of prose-string classification; shared shard bounds) — Deps: none — Issue: #80
