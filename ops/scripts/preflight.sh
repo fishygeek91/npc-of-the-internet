@@ -59,6 +59,7 @@ example_get() {
 # Secret / identity / path keys that must not equal .env.example (plan decision 11).
 COMPARE_KEYS=(
   ANTHROPIC_API_KEY
+  NPC_BRAIN_API_KEY
   DISCORD_BOT_TOKEN
   DISCORD_GUILD_ID
   DISCORD_CHANNEL_ID
@@ -88,7 +89,7 @@ for key in "${PATH_KEYS[@]}"; do
   fi
 done
 
-for key in ANTHROPIC_API_KEY_HOST_PATH DISCORD_BOT_TOKEN_HOST_PATH; do
+for key in ANTHROPIC_API_KEY_HOST_PATH NPC_BRAIN_API_KEY_HOST_PATH DISCORD_BOT_TOKEN_HOST_PATH; do
   value="$(env_get "$key")"
   if [[ -n "$value" && "$value" == /tmp/* ]]; then
     die "${key}=${value} starts with /tmp"
@@ -109,7 +110,24 @@ assert_exactly_one_secret() {
     die "${name} or ${file_name} is required"
   fi
 }
-assert_exactly_one_secret ANTHROPIC_API_KEY ANTHROPIC_API_KEY_FILE
+brain_provider="$(env_get NPC_BRAIN_PROVIDER)"
+if [[ -z "$brain_provider" || "$brain_provider" == "anthropic" ]]; then
+  assert_exactly_one_secret ANTHROPIC_API_KEY ANTHROPIC_API_KEY_FILE
+elif [[ "$brain_provider" == "openai-compat" ]]; then
+  assert_exactly_one_secret NPC_BRAIN_API_KEY NPC_BRAIN_API_KEY_FILE
+  brain_base="$(env_get NPC_BRAIN_BASE_URL)"
+  [[ -n "$brain_base" ]] || die "NPC_BRAIN_BASE_URL is required when NPC_BRAIN_PROVIDER=openai-compat"
+  brain_model="$(env_get NPC_BRAIN_MODEL)"
+  [[ -n "$brain_model" ]] || die "NPC_BRAIN_MODEL is required when NPC_BRAIN_PROVIDER=openai-compat"
+  case "$brain_base" in
+    *openrouter.ai*)
+      allowlist="$(env_get NPC_BRAIN_PROVIDER_ALLOWLIST)"
+      [[ -n "$allowlist" ]] || die "NPC_BRAIN_PROVIDER_ALLOWLIST is required and must be non-empty for OpenRouter"
+      ;;
+  esac
+else
+  die "NPC_BRAIN_PROVIDER must be anthropic or openai-compat (got ${brain_provider})"
+fi
 assert_exactly_one_secret DISCORD_BOT_TOKEN DISCORD_BOT_TOKEN_FILE
 
 key_remote="$(env_get KEY_BACKUP_RCLONE_REMOTE)"

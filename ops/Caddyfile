@@ -1,0 +1,14 @@
+# Public HTTPS for the web Door (compose profile `public`). WEB_DOMAIN comes from ops/.env.
+{$WEB_DOMAIN:localhost} {
+	encode zstd gzip
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		-Server
+	}
+	reverse_proxy door-web:8080 {
+		# Hold request bodies here so slow uploads never tie up door-web sockets.
+		request_buffers 8k
+		# Server-Sent Events: stream, don't buffer responses.
+		flush_interval -1
+	}
+}

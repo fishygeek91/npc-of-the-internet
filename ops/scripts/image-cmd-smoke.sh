@@ -10,6 +10,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 RUNTIME_IMAGE="npc-cmd-smoke-runtime:local"
 DOOR_IMAGE="npc-cmd-smoke-door:local"
 ATLAS_IMAGE="npc-cmd-smoke-atlas:local"
+DOOR_WEB_IMAGE="npc-cmd-smoke-door-web:local"
 
 CONTAINER_PREFIX="npc-cmd-smoke-"
 
@@ -77,7 +78,7 @@ smoke_cmd() {
   fi
 
   # Match Docker/shell bin-miss messages only — avoid false positives on app boot_failed text.
-  if printf '%s\n' "$output" | grep -qE 'executable file not found|(atlas-api|door-discord|npc-runtime): not found'; then
+  if printf '%s\n' "$output" | grep -qE 'executable file not found|(atlas-api|door-discord|door-web|npc-runtime): not found'; then
     die "${label}: output suggests broken CMD (bin shim not found): ${output}"
   fi
 
@@ -93,12 +94,17 @@ docker build -f "${REPO_ROOT}/ops/Dockerfile.door-discord" -t "$DOOR_IMAGE" "$RE
 log "Building atlas-api image (${ATLAS_IMAGE})..."
 docker build -f "${REPO_ROOT}/ops/Dockerfile.atlas-api" -t "$ATLAS_IMAGE" "$REPO_ROOT"
 
+log "Building door-web image (${DOOR_WEB_IMAGE})..."
+docker build -f "${REPO_ROOT}/ops/Dockerfile.door-web" -t "$DOOR_WEB_IMAGE" "$REPO_ROOT"
+
 assert_dist_exists "$RUNTIME_IMAGE" "dist/daemon.js" "runtime"
 assert_dist_exists "$DOOR_IMAGE" "dist/server.js" "door-discord"
 assert_dist_exists "$ATLAS_IMAGE" "dist/server.js" "atlas-api"
+assert_dist_exists "$DOOR_WEB_IMAGE" "dist/server.js" "door-web"
 
 smoke_cmd "$RUNTIME_IMAGE" "runtime"
 smoke_cmd "$DOOR_IMAGE" "door-discord"
 smoke_cmd "$ATLAS_IMAGE" "atlas-api"
+smoke_cmd "$DOOR_WEB_IMAGE" "door-web"
 
 log "All image CMD smoke checks passed"

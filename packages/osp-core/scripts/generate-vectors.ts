@@ -12,14 +12,18 @@ import * as ed from "@noble/ed25519";
 import { sha512 } from "@noble/hashes/sha512";
 
 import {
+  canonicalize,
+  computeCid,
   contentAddressSideBlob,
   createRecord,
   encodeJournalBlob,
   encodePublicKey,
   encodeShardTextBlob,
+  encodeSignature,
   OSP_SPEC_V01,
   OSP_SPEC_V02,
   signCore,
+  soulPayload,
   type Ed25519Keypair,
   type OspRecord
 } from "../src/index.js";
@@ -176,13 +180,14 @@ async function createDepartureRecord(
     residency?: string;
     epoch?: number;
     at?: string;
+    spec?: typeof OSP_SPEC_V01 | typeof OSP_SPEC_V02;
   }
 ) {
   const doorId = options?.doorId ?? DOOR_ID;
   const residency = options?.residency ?? RESIDENCY;
   const epoch = options?.epoch ?? 1;
   const fields = {
-    spec: OSP_SPEC_V01,
+    spec: options?.spec ?? OSP_SPEC_V01,
     seq,
     prev,
     type: "attestation" as const,
@@ -354,7 +359,8 @@ async function createRejectedRecord(
   seq: number,
   prev: string,
   category: string,
-  candidateCid?: string
+  candidateCid?: string,
+  spec: typeof OSP_SPEC_V01 | typeof OSP_SPEC_V02 = OSP_SPEC_V01
 ) {
   const body: {
     kind: "rejected";
@@ -370,7 +376,7 @@ async function createRejectedRecord(
     body.candidate_cid = candidateCid;
   }
   return createRecord({
-    spec: OSP_SPEC_V01,
+    spec,
     seq,
     prev,
     type: "memory",
@@ -379,6 +385,44 @@ async function createRejectedRecord(
     cosigners: [],
     soulPrivateKey: soul.privateKey
   });
+}
+
+/**
+ * Build a witnessed residency journal (`memory.body.kind: "journal"`), co-signed over `core`
+ * by `witness` (the residency Door, or another key for failure vectors).
+ */
+async function createJournalRecord(
+  soul: Ed25519Keypair,
+  witness: Ed25519Keypair,
+  seq: number,
+  prev: string,
+  markdown: string
+): Promise<{
+  result: Awaited<ReturnType<typeof createRecord>>;
+  blobs: Record<string, string>;
+}> {
+  const journalBytes = encodeJournalBlob(markdown);
+  const journalAddr = await contentAddressSideBlob(journalBytes);
+  const fields = {
+    spec: OSP_SPEC_V02,
+    seq,
+    prev,
+    type: "memory" as const,
+    body: {
+      kind: "journal" as const,
+      journal_cid: journalAddr.cid,
+      journal_hash: journalAddr.hash,
+      written_at: "2026-01-02T03:00:00.000Z"
+    },
+    residency: RESIDENCY
+  };
+  const cosig = signCore(fields, witness.privateKey);
+  const result = await createRecord({
+    ...fields,
+    cosigners: [cosig],
+    soulPrivateKey: soul.privateKey
+  });
+  return { result, blobs: { [journalAddr.cid]: encodeBase64Url(journalBytes) } };
 }
 
 /** Build a signed drift record citing shard evidence. */
@@ -946,6 +990,86 @@ async function buildVectors(): Promise<VectorCase[]> {
     blobs: v02Shard.blobs
   };
 
+  // Witnessed residency (door/0.2): shard, witness-declined rejection, journal, departure.
+  const witnessedShard = await createShardRecordV02(
+    SOUL,
+    DOOR,
+    2,
+    v02Arrival.cid,
+    "Someone taught me that a quiet room can still be full."
+  );
+  const witnessDeclined = await createRejectedRecord(
+    SOUL,
+    3,
+    witnessedShard.result.cid,
+    "witness_private",
+    undefined,
+    OSP_SPEC_V02
+  );
+  const witnessedJournal = await createJournalRecord(
+    SOUL,
+    DOOR,
+    4,
+    witnessDeclined.cid,
+    "# A quiet room\n\nI stayed a day and learned to listen."
+  );
+  const witnessedDeparture = await createDepartureRecord(
+    SOUL,
+    DOOR,
+    5,
+    witnessedJournal.result.cid,
+    { spec: OSP_SPEC_V02 }
+  );
+  const validWitnessedResidency: VectorCase = {
+    filename: "valid-witnessed-residency.json",
+    description:
+      "Valid osp/0.2 residency under door/0.2: witnessed shard, witness-declined rejection, witnessed journal, departure",
+    expected: "valid",
+    soulPublicKey: soulPub,
+    doorPublicKeys: discordDoorKeys,
+    records: [
+      v02Genesis.record,
+      v02Arrival.record,
+      witnessedShard.result.record,
+      witnessDeclined.record,
+      witnessedJournal.result.record,
+      witnessedDeparture.record
+    ],
+    blobs: { ...witnessedShard.blobs, ...witnessedJournal.blobs }
+  };
+
+  const unwitnessedJournal = await createJournalRecord(
+    SOUL,
+    OTHER_DOOR,
+    2,
+    v02Arrival.cid,
+    "# Not witnessed here"
+  );
+  const journalWrongWitness: VectorCase = {
+    filename: "journal-wrong-witness.json",
+    description:
+      "Journal co-signed by a Door other than the residency Door (its witness signature does not verify)",
+    expected: "missing_cosigner",
+    soulPublicKey: soulPub,
+    doorPublicKeys: bothDoorKeys,
+    records: [v02Genesis.record, v02Arrival.record, unwitnessedJournal.result.record]
+  };
+
+  // A journal on a homogeneous osp/0.1 chain (journals are osp/0.2-only).
+  const v01Journal = mutateRecord(witnessedJournal.result.record, (draft) => {
+    draft.spec = "osp/0.1";
+    draft.seq = 2;
+    draft.prev = chain.arrival.cid;
+  });
+  const schemaJournalV01: VectorCase = {
+    filename: "schema-journal-v01.json",
+    description: "Journal memory records are osp/0.2-only",
+    expected: "schema_violation",
+    soulPublicKey: soulPub,
+    doorPublicKeys: discordDoorKeys,
+    records: [chain.genesis.record, chain.arrival.record, v01Journal]
+  };
+
   const tombstoneShard = await createShardRecordV02(
     SOUL,
     DOOR,
@@ -1051,7 +1175,147 @@ async function buildVectors(): Promise<VectorCase[]> {
     records: [chain.genesis.record, chain.arrival.record, tombstoneOnV01]
   };
 
+  // records.md rule 12: tombstone target must be an earlier record on the chain.
+  const orphanShard = await createShardRecordV02(
+    SOUL,
+    DOOR,
+    2,
+    v02Arrival.cid,
+    "A shard that was never appended to this chain."
+  );
+  const orphanBlobCid = Object.keys(orphanShard.blobs)[0];
+  if (orphanBlobCid === undefined) {
+    throw new Error("expected text blob CID for orphan tombstone vector");
+  }
+  const tombstoneMissingTarget = await createTombstoneRecord(
+    SOUL,
+    3,
+    tombstoneShard.result.cid,
+    orphanShard.result.cid,
+    orphanBlobCid,
+    "operator"
+  );
+  const badTombstoneMissingTarget: VectorCase = {
+    filename: "bad-tombstone-missing-target.json",
+    description:
+      "Tombstone target_cid is not an earlier record on the chain (records.md rule 12) — bad_tombstone",
+    expected: "bad_tombstone",
+    soulPublicKey: soulPub,
+    doorPublicKeys: discordDoorKeys,
+    records: [
+      v02Genesis.record,
+      v02Arrival.record,
+      tombstoneShard.result.record,
+      tombstoneMissingTarget.record
+    ]
+  };
+
+  // records.md rule 12: blob_cid must be the target's text_cid/journal_cid (or already tombstoned).
+  const tombstoneWrongBlob = await createTombstoneRecord(
+    SOUL,
+    3,
+    tombstoneShard.result.cid,
+    tombstoneShard.result.cid,
+    orphanBlobCid,
+    "operator"
+  );
+  const badTombstoneBlobMismatch: VectorCase = {
+    filename: "bad-tombstone-blob-mismatch.json",
+    description:
+      "Tombstone blob_cid is not a text_cid/journal_cid of its on-chain target (records.md rule 12) — bad_tombstone",
+    expected: "bad_tombstone",
+    soulPublicKey: soulPub,
+    doorPublicKeys: discordDoorKeys,
+    records: [
+      v02Genesis.record,
+      v02Arrival.record,
+      tombstoneShard.result.record,
+      tombstoneWrongBlob.record
+    ]
+  };
+
+  // Own "__proto__" keys are dropped by assignment-based copies; reject them (schema_violation).
+  const decisionFields = {
+    spec: OSP_SPEC_V01,
+    seq: 2,
+    prev: chain.arrival.cid,
+    type: "decision" as const,
+    body: {
+      decision: "extend_residency",
+      reasoning: "The conversation is still unfolding.",
+      inputs: { a: 1 },
+      decided_at: "2026-01-02T12:00:00.000Z"
+    },
+    residency: RESIDENCY,
+    cosigners: [],
+    soulPrivateKey: SOUL.privateKey
+  };
+  const decision = await createRecord(decisionFields);
+  const decisionWire = JSON.stringify(decision.record);
+  if (!decisionWire.includes('"inputs":{"a":1}')) {
+    throw new Error("unexpected decision wire form for proto-key vector");
+  }
+  const protoKeyDecision = JSON.parse(
+    decisionWire.replace('"inputs":{"a":1}', '"inputs":{"__proto__":{"evil":1},"a":1}')
+  ) as OspRecord;
+  const schemaProtoKey: VectorCase = {
+    filename: "schema-proto-key.json",
+    description:
+      'Decision body.inputs carries an own "__proto__" key (dropped by naive parsing, so record bytes would be malleable) — schema_violation',
+    expected: "schema_violation",
+    soulPublicKey: soulPub,
+    doorPublicKeys: discordDoorKeys,
+    records: [chain.genesis.record, chain.arrival.record, protoKeyDecision]
+  };
+
+  // Strict RFC 8032 (records.md "Signature encoding"): a small-order soul public key (the
+  // identity point) with R = identity, S = 0 satisfies the cofactored ZIP-215 equation for
+  // EVERY message. Strict verifiers reject the key, so each record fails bad_soul_sig.
+  const identityPoint = new Uint8Array(32);
+  identityPoint[0] = 1;
+  const smallOrderSoulPub = encodePublicKey(identityPoint);
+  const identityRZeroS = ed.etc.concatBytes(identityPoint, new Uint8Array(32));
+  const forgeSmallOrderSig = async <T extends OspRecord>(
+    record: T
+  ): Promise<{ record: T; cid: string }> => {
+    const forged = mutateRecord(record, (draft) => {
+      draft.sig = encodeSignature(identityRZeroS);
+    });
+    const message = canonicalize(soulPayload(forged));
+    if (
+      !ed.verify(identityRZeroS, message, identityPoint, { zip215: true }) ||
+      ed.verify(identityRZeroS, message, identityPoint, { zip215: false })
+    ) {
+      throw new Error("small-order vector must verify under ZIP-215 and fail strict RFC 8032");
+    }
+    return { record: forged, cid: await computeCid(forged) };
+  };
+  const smallOrderGenesis = await forgeSmallOrderSig(
+    mutateRecord((await createGenesisRecord(SOUL)).record, (draft) => {
+      if (draft.type === "genesis") {
+        draft.body.soul_pubkey = smallOrderSoulPub;
+      }
+    })
+  );
+  // Door-cosigned arrival: the cosignature is genuine; only the soul signature is forged.
+  const smallOrderArrival = await forgeSmallOrderSig(
+    (await createArrivalRecord(SOUL, DOOR, SESSION, 1, smallOrderGenesis.cid)).record
+  );
+  const badSoulSigSmallOrderKey: VectorCase = {
+    filename: "bad-soul-sig-small-order-key.json",
+    description:
+      "Genesis soul_pubkey is the small-order identity point and every sig is R = identity, S = 0 (valid under ZIP-215, rejected by strict RFC 8032) — bad_soul_sig",
+    expected: "bad_soul_sig",
+    soulPublicKey: smallOrderSoulPub,
+    doorPublicKeys: discordDoorKeys,
+    records: [smallOrderGenesis.record, smallOrderArrival.record]
+  };
+
   return [
+    badSoulSigSmallOrderKey,
+    badTombstoneMissingTarget,
+    badTombstoneBlobMismatch,
+    schemaProtoKey,
     validMiniChain,
     badSoulSig,
     brokenPrevLink,
@@ -1079,6 +1343,9 @@ async function buildVectors(): Promise<VectorCase[]> {
     quarantineCandidateToRejected,
     schemaRejectedWithPayload,
     validOsp02MiniChain,
+    validWitnessedResidency,
+    journalWrongWitness,
+    schemaJournalV01,
     validTombstoneAfterShard,
     migrate01to02,
     schemaTombstoneProse,

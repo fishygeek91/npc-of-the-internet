@@ -1,8 +1,8 @@
 import { decodePublicKey, decodeSignature } from "@npc/osp-core";
 import { z } from "zod";
 
-/** Door API protocol version for v0.1 wire messages. */
-export const DOOR_PROTOCOL_VERSION = "door/0.1" as const;
+/** Door API protocol version (`spec/door/api.md`). */
+export const DOOR_PROTOCOL_VERSION = "door/0.2" as const;
 
 const ProtocolVersionSchema = z.literal(DOOR_PROTOCOL_VERSION);
 
@@ -53,14 +53,15 @@ export const CommunityDescriptorSchema = z.object({
 
 export type CommunityDescriptor = z.infer<typeof CommunityDescriptorSchema>;
 
-/** Machine-readable feature flags the Door supports. */
+/** Machine-readable feature flags registered by `door/0.2`. */
 export const CapabilitySchema = z.enum([
   "session.text",
   "session.threads",
   "heartbeat",
   "attest",
-  "cosign.manual",
-  "cosign.auto"
+  "attest.memory",
+  "session.reactions",
+  "session.addressing"
 ]);
 
 export type Capability = z.infer<typeof CapabilitySchema>;
@@ -68,7 +69,7 @@ export type Capability = z.infer<typeof CapabilitySchema>;
 const DoorErrorObjectSchema = z.object({
   code: z.string().min(1),
   message: z.string().min(1),
-  details: z.record(z.unknown()).optional()
+  details: z.record(z.string(), z.unknown()).optional()
 });
 
 /** HTTP / WebSocket error body shape. */
@@ -93,7 +94,8 @@ export const HelloResponseSchema = z.object({
   door_id: DoorIdSchema,
   door_pubkey: PublicKeyStringSchema,
   active_epoch: EpochSchema.nullable(),
-  capabilities: z.array(CapabilitySchema),
+  /** Registered values are {@link Capability}; unknown values are ignored (forward compat). */
+  capabilities: z.array(z.string().min(1)),
   community: CommunityDescriptorSchema,
   issued_at: IsoTimestampSchema,
   sig: SignatureStringSchema
@@ -101,19 +103,42 @@ export const HelloResponseSchema = z.object({
 
 export type HelloResponse = z.infer<typeof HelloResponseSchema>;
 
-const AttestKindSchema = z.enum(["arrival", "departure", "heartbeat"]);
+const AttestKindSchema = z.enum(["arrival", "heartbeat", "memory", "departure"]);
+
+export type AttestKind = z.infer<typeof AttestKindSchema>;
+
+/** Max code points of the `text` a `memory` attest carries (journal markdown). */
+export const MEMORY_ATTEST_TEXT_MAX = 32_000;
 
 /** `POST /door/attest` request body. */
-export const AttestRequestSchema = z.object({
-  protocol_version: ProtocolVersionSchema,
-  door_id: DoorIdSchema,
-  epoch: EpochSchema,
-  kind: AttestKindSchema,
-  core: CoreStringSchema,
-  session_pubkey: PublicKeyStringSchema,
-  issued_at: IsoTimestampSchema,
-  sig: SignatureStringSchema
-});
+export const AttestRequestSchema = z
+  .object({
+    protocol_version: ProtocolVersionSchema,
+    door_id: DoorIdSchema,
+    epoch: EpochSchema,
+    kind: AttestKindSchema,
+    core: CoreStringSchema,
+    session_pubkey: PublicKeyStringSchema,
+    /** `memory` only: the prose `core` references by hash (shard text or journal). */
+    text: z
+      .string()
+      .min(1)
+      .refine((value) => [...value].length <= MEMORY_ATTEST_TEXT_MAX, {
+        message: `text must be at most ${String(MEMORY_ATTEST_TEXT_MAX)} code points`
+      })
+      .optional(),
+    issued_at: IsoTimestampSchema,
+    sig: SignatureStringSchema
+  })
+  .superRefine((request, ctx) => {
+    if ((request.kind === "memory") !== (request.text !== undefined)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "text is required for kind memory and not allowed otherwise",
+        path: ["text"]
+      });
+    }
+  });
 
 export type AttestRequest = z.infer<typeof AttestRequestSchema>;
 
@@ -154,92 +179,28 @@ export const HeartbeatResponseSchema = z.object({
 
 export type HeartbeatResponse = z.infer<typeof HeartbeatResponseSchema>;
 
-/** Candidate memory shard submitted in `/door/cosign` review phase. */
-export const CandidateShardSchema = z.object({
-  shard_id: z.string().min(1),
-  text: z.string().min(1).max(500),
-  tags: z.array(z.string()).optional()
-});
-
-export type CandidateShard = z.infer<typeof CandidateShardSchema>;
-
-/** Alias for runtime compatibility with prior `CosignCandidateShard` naming. */
-export type CosignCandidateShard = CandidateShard;
-
-const CosignReviewRequestSchema = z.object({
-  protocol_version: ProtocolVersionSchema,
-  phase: z.literal("review"),
-  door_id: DoorIdSchema,
-  epoch: EpochSchema,
-  session_pubkey: PublicKeyStringSchema,
-  farewell: z.string().max(500).optional(),
-  shards: z.array(CandidateShardSchema).min(5).max(20),
-  issued_at: IsoTimestampSchema,
-  sig: SignatureStringSchema
-});
-
-const CosignCommitRequestSchema = z.object({
-  protocol_version: ProtocolVersionSchema,
-  phase: z.literal("commit"),
-  door_id: DoorIdSchema,
-  epoch: EpochSchema,
-  session_pubkey: PublicKeyStringSchema,
-  shard_id: z.string().min(1),
-  core: CoreStringSchema,
-  issued_at: IsoTimestampSchema,
-  sig: SignatureStringSchema
-});
-
-/** `POST /door/cosign` request body (review or commit phase). */
-export const CosignRequestSchema = z.discriminatedUnion("phase", [
-  CosignReviewRequestSchema,
-  CosignCommitRequestSchema
+/** Why a Door's witness declined a memory (`witness_declined` → `error.details.reason`). */
+export const WitnessReasonSchema = z.enum([
+  "ungrounded",
+  "private",
+  "harmful",
+  "manipulation",
+  "other"
 ]);
 
-export type CosignRequest = z.infer<typeof CosignRequestSchema>;
-
-const ReviewDecisionSchema = z.object({
-  shard_id: z.string().min(1),
-  status: z.enum(["approved", "rejected"]),
-  reason: z.string().optional(),
-  host_audit_sig: SignatureStringSchema.optional()
-});
-
-export type ReviewDecision = z.infer<typeof ReviewDecisionSchema>;
-
-const CosignReviewResponseSchema = z.object({
-  phase: z.literal("review"),
-  door_id: DoorIdSchema,
-  epoch: EpochSchema,
-  decisions: z.array(ReviewDecisionSchema),
-  received_at: IsoTimestampSchema,
-  door_sig: SignatureStringSchema
-});
-
-const CosignCommitResponseSchema = z.object({
-  phase: z.literal("commit"),
-  door_id: DoorIdSchema,
-  epoch: EpochSchema,
-  shard_id: z.string().min(1),
-  door_cosig: SignatureStringSchema,
-  received_at: IsoTimestampSchema,
-  door_sig: SignatureStringSchema
-});
-
-/** `POST /door/cosign` success response (review or commit phase). */
-export const CosignResponseSchema = z.discriminatedUnion("phase", [
-  CosignReviewResponseSchema,
-  CosignCommitResponseSchema
-]);
-
-export type CosignResponse = z.infer<typeof CosignResponseSchema>;
+export type WitnessReason = z.infer<typeof WitnessReasonSchema>;
 
 const InboundFrameBodySchema = z.object({
   text: z.string().min(1).max(4000),
   author_id: z.string().min(1),
   author_display: z.string().optional(),
   reply_to: z.string().optional(),
-  channel_id: z.string().optional()
+  channel_id: z.string().optional(),
+  /**
+   * `session.addressing`: Door-observed platform signal that the message is aimed at
+   * the Wanderer (e.g. @mention or a reply to one of its messages). Advisory, untrusted.
+   */
+  addressed: z.boolean().optional()
 });
 
 /** WebSocket `inbound` frame (Door → Wanderer). */
@@ -254,11 +215,65 @@ export const InboundFrameSchema = z.object({
 
 export type InboundFrame = z.infer<typeof InboundFrameSchema>;
 
-const OutboundFrameBodySchema = z.object({
-  text: z.string().min(1).max(4000),
-  reply_to: z.string().optional(),
-  channel_id: z.string().optional()
+const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
+/** U+20E3 COMBINING ENCLOSING KEYCAP: keycap emoji (digit + VS16 + U+20E3) are not Extended_Pictographic. */
+const KEYCAP_COMBINING_MARK = String.fromCodePoint(0x20e3);
+
+/** The only valid keycap emoji: `[0-9#*]`, optional U+FE0F, then U+20E3. */
+const KEYCAP_SEQUENCE = /^[0-9#*]\u{FE0F}?\u{20E3}$/u;
+
+/** True for a single Unicode emoji candidate (pictographic, flag, or a valid keycap). */
+function isEmojiCandidate(value: string): boolean {
+  if (value.includes(KEYCAP_COMBINING_MARK)) {
+    // U+20E3 is only an emoji inside a keycap sequence ("a⃣" / lone U+20E3 are not).
+    return KEYCAP_SEQUENCE.test(value);
+  }
+  return /\p{Extended_Pictographic}|\p{Regional_Indicator}/u.test(value);
+}
+
+function graphemeCount(value: string): number {
+  return Array.from(graphemeSegmenter.segment(value)).length;
+}
+
+/**
+ * Max length of an outbound reaction emoji string (a single Unicode emoji,
+ * including ZWJ sequences and skin-tone / variation modifiers).
+ */
+export const REACTION_EMOJI_MAX_LENGTH = 32;
+
+/** `session.reactions`: Wanderer reacts to a prior message with a single Unicode emoji. */
+export const OutboundReactionSchema = z.object({
+  emoji: z
+    .string()
+    .min(1)
+    .max(REACTION_EMOJI_MAX_LENGTH)
+    .refine((value) => isEmojiCandidate(value), {
+      message: "reaction emoji must be a Unicode emoji"
+    })
+    .refine((value) => !/[\s<>:]/u.test(value), {
+      message: "reaction emoji must not contain whitespace or custom-emoji syntax"
+    })
+    .refine((value) => graphemeCount(value) === 1, {
+      message: "reaction must be exactly one emoji"
+    }),
+  /** `msg_id` of the inbound (or prior outbound) message being reacted to. */
+  target_msg_id: z.string().min(1)
 });
+
+export type OutboundReaction = z.infer<typeof OutboundReactionSchema>;
+
+const OutboundFrameBodySchema = z
+  .object({
+    /** Spoken text. Optional only when `reaction` is present (`session.reactions`). */
+    text: z.string().min(1).max(4000).optional(),
+    reply_to: z.string().optional(),
+    channel_id: z.string().optional(),
+    reaction: OutboundReactionSchema.optional()
+  })
+  .refine((body) => body.text !== undefined || body.reaction !== undefined, {
+    message: "outbound body must carry text, reaction, or both"
+  });
 
 /** WebSocket `outbound` frame (Wanderer → Door), session-key signed. */
 export const OutboundFrameSchema = z.object({
@@ -325,11 +340,10 @@ export interface Clock {
 }
 
 /**
- * Door transport surface used by Session (attest, heartbeat, cosign).
+ * Door transport surface used by Session (attest, heartbeat).
  * Implemented by network adapters and in-process transports in tests.
  */
 export interface DoorConnection {
   attest(request: AttestRequest): Promise<AttestResponse>;
   heartbeat(request: HeartbeatRequest): Promise<HeartbeatResponse>;
-  cosign(request: CosignRequest): Promise<CosignResponse>;
 }

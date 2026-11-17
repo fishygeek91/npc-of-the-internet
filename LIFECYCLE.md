@@ -16,7 +16,7 @@ Every unit of work is a GitHub issue created from the **Task** issue template, r
 
 ### 2. Human gate 1 — approval to begin
 
-No agent starts implementation until a human adds the **`approved`** label to the issue. Unlabeled issues are backlog. An agent asked to "pick up work" selects the lowest-numbered approved, unblocked, unassigned issue.
+No agent starts implementation until a human adds the **`approved`** label to the issue. Unlabeled issues are backlog. The label alone is authoritative: an in-body `## Approval` block (from the Task template) is optional context such as who approved and sequencing notes — its absence, or an unticked box, does not block an approved issue. An agent asked to "pick up work" selects the lowest-numbered approved, unblocked, unassigned issue.
 
 ### 3. Branch
 

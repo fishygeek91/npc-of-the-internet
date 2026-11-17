@@ -5,6 +5,7 @@ import * as path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  canonicalize,
   FileSoulStore,
   OSP_SPEC_V02,
   contentAddressSideBlob,
@@ -213,6 +214,79 @@ describe("eraseSideBlob", () => {
       expect(await store.getSideBlob(textCid)).toEqual(textBytes);
       const head = await store.head();
       expect(head?.cid).toBe(shard.cid);
+    } finally {
+      await store.close();
+    }
+  });
+
+  it("refuses an orphan target: a CID-verified record block that is not ON the chain", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "erase-guard-orphan-"));
+    dirs.push(dir);
+
+    const soul = generateKeypair();
+    const door = generateKeypair();
+    const store = await FileSoulStore.open(dir, {
+      doorPublicKeys: { [DOOR_ID]: door.publicKey }
+    });
+
+    try {
+      const genesis = await createRecord({
+        spec: OSP_SPEC_V02,
+        seq: 0,
+        prev: null,
+        type: "genesis",
+        body: {
+          charter: "# Wanderer",
+          soul_pubkey: encodePublicKey(soul.publicKey),
+          created_at: "2026-01-01T00:00:00.000Z"
+        },
+        residency: null,
+        cosigners: [],
+        soulPrivateKey: soul.privateKey
+      });
+      await store.append(genesis.record);
+
+      const textBytes = encodeShardTextBlob("prose of a shard that never made it on chain");
+      const { cid: textCid, hash: textHash } = await contentAddressSideBlob(textBytes);
+      await store.putSideBlob(textBytes);
+
+      const shardFields = {
+        spec: OSP_SPEC_V02,
+        seq: 1,
+        prev: genesis.cid,
+        type: "memory" as const,
+        body: {
+          kind: "shard" as const,
+          text_cid: textCid,
+          text_hash: textHash,
+          distilled_at: "2026-01-02T01:00:00.000Z"
+        },
+        residency: RESIDENCY
+      };
+      const orphan = await createRecord({
+        ...shardFields,
+        cosigners: [signCore(shardFields, door.privateKey)],
+        soulPrivateKey: soul.privateKey
+      });
+      // Orphan record block (e.g. crash between blob write and chain line): store.get finds
+      // and signature-verifies it even though it is not on the chain.
+      await store.putSideBlob(canonicalize(orphan.record));
+      expect((await store.get(orphan.cid)).seq).toBe(1);
+
+      await expect(
+        eraseSideBlob({
+          store,
+          soulPrivateKey: soul.privateKey,
+          targetCid: orphan.cid,
+          blobCid: textCid,
+          reason: "operator",
+          erasedAt: "2026-01-03T00:00:00.000Z"
+        })
+      ).rejects.toThrow(/not a record on this soulchain/);
+
+      // Nothing was deleted and no tombstone was appended.
+      expect(await store.getSideBlob(textCid)).toEqual(textBytes);
+      expect((await store.head())?.cid).toBe(genesis.cid);
     } finally {
       await store.close();
     }

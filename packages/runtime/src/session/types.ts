@@ -4,31 +4,20 @@ export {
   AttestResponseSchema,
   HeartbeatRequestSchema,
   HeartbeatResponseSchema,
-  CandidateShardSchema,
-  CosignRequestSchema,
-  CosignResponseSchema,
   InboundFrameSchema,
   OutboundFrameSchema,
-  attestSigningPayload,
-  cosignReviewSigningPayload,
-  cosignCommitSigningPayload
+  attestSigningPayload
 } from "@npc/door-sdk";
 
 export type {
   AttestRequest,
   AttestResponse,
   Clock,
-  CosignCandidateShard,
-  CosignCommitSigningFields,
-  CosignRequest,
-  CosignResponse,
-  CosignReviewSigningFields,
   DoorConnection,
   HeartbeatRequest,
   HeartbeatResponse,
   InboundFrame,
-  OutboundFrame,
-  ReviewDecision
+  OutboundFrame
 } from "@npc/door-sdk";
 
 /** Injectable timer for heartbeat cadence without real sleeps in tests. */

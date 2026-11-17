@@ -32,14 +32,25 @@ export const OTHER_DOOR = testKeypair(
   "Q6cucUQBdi32a2jCbfvfJoKq7J8kdOykYT5CSg-6_Tw"
 );
 
+/** TEST-ONLY door key for the witnessed residency at `web:home` (fill 11). */
+export const WEB_DOOR = testKeypair(
+  "CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCws",
+  "Zr5-Myx6RTMyvZ0Kf32wVfXF7xoGraZtmLOftoEMRzo"
+);
+
 export const DOOR_ID = "discord:g";
 export const OTHER_DOOR_ID = "irc:libera-wanderer";
 export const RESIDENCY_1 = "door:discord:g/epoch:1";
+export const WEB_DOOR_ID = "web:home";
 export const RESIDENCY_2 = "door:irc:libera-wanderer/epoch:2";
+export const RESIDENCY_3 = "door:web:home/epoch:3";
 
 export const JOURNAL_EPOCH_1 = "JOURNAL_EPOCH_1";
 export const JOURNAL_EPOCH_2 = "JOURNAL_EPOCH_2";
+/** Journal for residency 3, carried by a witnessed `journal` record (not a shard). */
+export const JOURNAL_EPOCH_3 = "JOURNAL_EPOCH_3";
 export const LEAK_SHARD_TEXT = "LEAK_SHARD_TEXT_DO_NOT_APPEAR_IN_RECORDS";
 
 export const DOOR_PUBLIC_KEY_B64 = "E5j2LG0aRXxRumpLXz29L2n8qTIWIY3ImX5Ba9F9k8o";
 export const OTHER_DOOR_PUBLIC_KEY_B64 = "Q6cucUQBdi32a2jCbfvfJoKq7J8kdOykYT5CSg-6_Tw";
+export const WEB_DOOR_PUBLIC_KEY_B64 = "Zr5-Myx6RTMyvZ0Kf32wVfXF7xoGraZtmLOftoEMRzo";

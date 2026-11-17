@@ -12,8 +12,6 @@ import { describe, expect, it } from "vitest";
 
 import {
   attestSigningPayload,
-  cosignCommitSigningPayload,
-  cosignReviewSigningPayload,
   generateDoorKeypair,
   heartbeatSigningPayload,
   helloResponseSigningPayload,
@@ -113,34 +111,7 @@ describe("door-sdk signing", () => {
       seq: 2,
       issued_at: ISSUED_AT
     });
-    expect(new TextDecoder().decode(heartbeatPayload)).toContain('"protocol_version":"door/0.1"');
-
-    const reviewPayload = cosignReviewSigningPayload({
-      protocol_version: DOOR_PROTOCOL_VERSION,
-      phase: "review",
-      door_id: DOOR_ID,
-      epoch: 77,
-      session_pubkey: sessionPubkey,
-      farewell: "Goodbye",
-      shards: Array.from({ length: 5 }, (_, index) => ({
-        shard_id: `shard_${String(index + 1)}`,
-        text: `Shard ${String(index + 1)}`
-      })),
-      issued_at: ISSUED_AT
-    });
-    expect(new TextDecoder().decode(reviewPayload)).toContain('"phase":"review"');
-
-    const commitPayload = cosignCommitSigningPayload({
-      protocol_version: DOOR_PROTOCOL_VERSION,
-      phase: "commit",
-      door_id: DOOR_ID,
-      epoch: 77,
-      session_pubkey: sessionPubkey,
-      shard_id: "shard_1",
-      core: '{"spec":"osp/0.1"}',
-      issued_at: ISSUED_AT
-    });
-    expect(new TextDecoder().decode(commitPayload)).toContain('"phase":"commit"');
+    expect(new TextDecoder().decode(heartbeatPayload)).toContain('"protocol_version":"door/0.2"');
 
     const outboundPayload = outboundSigningPayload({
       type: "outbound",

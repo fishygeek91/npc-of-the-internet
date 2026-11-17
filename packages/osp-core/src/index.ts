@@ -48,6 +48,8 @@ export {
   encodeSignature,
   decodeSignature
 } from "./encoding/base64url.js";
+export { parsePrivateKeyBytes, PrivateKeyParseError } from "./encoding/private-key.js";
+export type { PrivateKeyParseFailure } from "./encoding/private-key.js";
 export { generateKeypair, publicKeyFromPrivate, sign, verify } from "./crypto/ed25519.js";
 export type { Ed25519Keypair } from "./crypto/ed25519.js";
 export {
@@ -57,11 +59,19 @@ export {
   computeCid,
   isValidCid
 } from "./crypto/cid.js";
-export { corePayload, soulPayload, signCore, createRecord, verifyRecord } from "./record.js";
+export {
+  corePayload,
+  soulPayload,
+  signCore,
+  createRecord,
+  createRecordWithSigner,
+  verifyRecord
+} from "./record.js";
 export type {
   CreateRecordFields,
   CreateRecordInput,
   CreateRecordResult,
+  SoulSigner,
   VerifyRecordOptions,
   VerifyRecordResult
 } from "./record.js";

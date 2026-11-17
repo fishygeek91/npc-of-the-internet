@@ -3,6 +3,7 @@ import VerificationBadge from "../../components/VerificationBadge.astro";
 import BaseLayout from "../../layouts/BaseLayout.astro";
 import { loadSiteData } from "../../lib/load-site-data.ts";
 import { withBase } from "../../lib/paths.ts";
+import { recordKindLabel } from "../../lib/residency-labels.ts";
 
 export async function getStaticPaths() {
   const data = await loadSiteData();
@@ -14,14 +15,15 @@ export async function getStaticPaths() {
 
 const { record } = Astro.props;
 const base = import.meta.env.BASE_URL;
+const kindLabel = recordKindLabel(record.kind);
 ---
 
 <BaseLayout
   title={`Record ${record.seq}`}
-  description={`${record.kind} — soulchain record ${record.seq}.`}
+  description={`${kindLabel} — soulchain record ${record.seq}.`}
   current="soul"
 >
-  <h1 class="page-title">{record.kind}</h1>
+  <h1 class="page-title">{kindLabel}</h1>
   <p class="lead">
     seq {record.seq} · <VerificationBadge verified={record.verified} />
   </p>
