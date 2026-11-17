@@ -7,70 +7,35 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
-import assert from "node:assert/strict";
 
 const checker = join(dirname(fileURLToPath(import.meta.url)), "check-extractability.mjs");
+const npc = 'import { x } from "@npc/runtime";\n';
+const bad = "packages/osp-core/src/bad.ts";
+const runtime = /@npc\/runtime disallowed @npc import/;
 
-/**
- * @param {string} root
- * @param {string} rel
- * @param {string} contents
- */
 function write(root, rel, contents) {
   const full = join(root, rel);
   mkdirSync(dirname(full), { recursive: true });
   writeFileSync(full, contents);
 }
 
-/**
- * @param {string} root
- */
-function writeClean(root) {
-  write(
-    root,
-    "packages/osp-core/package.json",
-    `${JSON.stringify({ name: "@npc/osp-core", private: true, dependencies: {} }, null, 2)}\n`
-  );
-  write(
-    root,
-    "packages/osp-cli/package.json",
-    `${JSON.stringify(
-      {
-        name: "@npc/osp-cli",
-        private: true,
-        dependencies: { "@npc/osp-core": "workspace:*" }
-      },
-      null,
-      2
-    )}\n`
-  );
-  write(
-    root,
-    "packages/osp-core/src/ok.ts",
-    'export const ok = 1;\nconst note = \'from "@npc/runtime"\';\nconst tmpl = `import { x } from "@npc/runtime"`;\n'
-  );
-  write(
-    root,
-    "packages/osp-core/test/local.test.ts",
-    'import { ok } from "../src/ok.js";\nexport const value = ok;\n'
-  );
-  write(
-    root,
-    "packages/osp-cli/src/ok.ts",
-    'import { ok } from "@npc/osp-core";\nexport const value = ok;\n'
-  );
-  write(root, "spec/note.ts", "export const note = 1;\n");
-}
-
-/**
- * @param {(root: string) => void} fill
- */
 function runTree(fill) {
   const root = mkdtempSync(join(tmpdir(), "extract-"));
+  const files = {
+    "packages/osp-core/package.json": '{"name":"@npc/osp-core","dependencies":{}}\n',
+    "packages/osp-cli/package.json":
+      '{"name":"@npc/osp-cli","dependencies":{"@npc/osp-core":"workspace:*"}}\n',
+    "packages/osp-core/src/ok.ts":
+      'export const ok = 1;\nconst note = \'from "@npc/runtime"\';\nconst tmpl = `import { x } from "@npc/runtime"`;\n',
+    "packages/osp-core/test/local.test.ts": 'import { ok } from "../src/ok.js";\n',
+    "packages/osp-cli/src/ok.ts": 'import { ok } from "@npc/osp-core";\n',
+    "spec/note.ts": "export const note = 1;\n"
+  };
   try {
-    writeClean(root);
+    for (const [rel, contents] of Object.entries(files)) write(root, rel, contents);
     fill(root);
     return spawnSync(process.execPath, [checker, root], { encoding: "utf8" });
   } finally {
@@ -78,96 +43,106 @@ function runTree(fill) {
   }
 }
 
-/**
- * @param {import("node:child_process").SpawnSyncReturns<string>} result
- */
-function assertPass(result) {
-  assert.equal(result.status, 0, `stdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
+function pass(fill) {
+  const result = runTree(fill);
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
   assert.equal(result.stdout, "");
 }
 
-/**
- * @param {import("node:child_process").SpawnSyncReturns<string>} result
- * @param {RegExp} pattern
- */
-function assertFail(result, pattern) {
-  assert.equal(result.status, 1, `stdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
-  assert.equal(
-    pattern.test(result.stdout),
-    true,
-    `expected ${String(pattern)}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`
-  );
+function fail(rel, src, pattern) {
+  const result = runTree((root) => write(root, rel, src));
+  assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
+  assert.match(result.stdout, pattern);
 }
 
 describe("check-extractability", () => {
   it("passes a clean tree, including osp-cli importing @npc/osp-core", () => {
-    assertPass(runTree(() => {}));
+    pass(() => {});
   });
 
-  it("fails when osp-core imports @npc/runtime", () => {
-    const result = runTree((root) => {
-      write(root, "packages/osp-core/src/bad.ts", 'import { x } from "@npc/runtime";\n');
-    });
-    assertFail(result, /packages\/osp-core\/src\/bad\.ts:\d+ @npc\/runtime disallowed @npc import/);
-  });
-
-  it("fails when osp-core imports @npc/osp-cli", () => {
-    const result = runTree((root) => {
-      write(root, "packages/osp-core/src/bad.ts", 'import { x } from "@npc/osp-cli";\n');
-    });
-    assertFail(result, /packages\/osp-core\/src\/bad\.ts:\d+ @npc\/osp-cli disallowed @npc import/);
-  });
-
-  it("fails when a relative import escapes the package root", () => {
-    const result = runTree((root) => {
-      write(
-        root,
-        "packages/osp-core/src/escape.ts",
-        'import { x } from "../../runtime/src/index.js";\n'
-      );
-    });
-    assertFail(
-      result,
-      /packages\/osp-core\/src\/escape\.ts:\d+ \.\.\/\.\.\/runtime\/src\/index\.js relative import escapes package root/
-    );
-  });
-
-  it("passes a commented-out import", () => {
-    const result = runTree((root) => {
+  it("passes comments, division, in-root specifiers, and workspace:*", () => {
+    pass((root) => {
       write(
         root,
         "packages/osp-core/src/ok.ts",
-        '// import { x } from "@npc/runtime";\n/* import { y } from "@npc/osp-cli"; */\nexport const ok = 1;\n'
+        '// import { x } from "@npc/runtime";\n/* import { y } from "@npc/osp-cli"; */\nconst a = b / c;\nconst d = e / f;\n'
+      );
+      const inside = join(root, "packages/osp-core/src/inside.js");
+      write(
+        root,
+        "packages/osp-core/src/abs.ts",
+        `import x from ${JSON.stringify(inside)};\nimport y from ${JSON.stringify(`file://${inside}`)};\nimport z from "file:./inside.js";\n`
+      );
+      write(
+        root,
+        "packages/osp-core/package.json",
+        '{"name":"@npc/osp-core","dependencies":{"leftpad":"workspace:*"}}\n'
       );
     });
-    assertPass(result);
   });
 
-  it("fails when package.json declares a disallowed workspace dependency", () => {
+  const cases = [
+    [bad, npc, runtime],
+    [bad, 'import { x } from "@npc/osp-cli";\n', /@npc\/osp-cli disallowed @npc import/],
+    [
+      "packages/osp-core/src/escape.ts",
+      'import { x } from "../../runtime/src/index.js";\n',
+      /escape\.ts:\d+ \.\.\/\.\.\/runtime\/src\/index\.js relative import escapes package root/
+    ],
+    ["packages/osp-core/test/bad.test.ts", npc, runtime],
+    [bad, 'const re = /["]/;\n' + npc, runtime],
+    [bad, "const re = /'/;\n" + npc, runtime],
+    [bad, "const re = /a\\/*b/;\n" + npc, runtime],
+    [bad, "const re = /https?:\\/\\//;\n" + npc, runtime],
+    [bad, "const a = b / c;\nconst d = e / f;\n" + npc, runtime],
+    ["packages/osp-core/src/bad.jsx", npc, /bad\.jsx:\d+ @npc\/runtime disallowed @npc import/],
+    [bad, '/// <reference types="@npc/runtime" />\n', runtime],
+    [bad, '/// <reference path="../../runtime/src/index.js" />\n', /escapes package root/],
+    [bad, 'declare module "@npc/runtime" {}\n', runtime],
+    [bad, 'import x from "/tmp/outside.js";\n', /\/tmp\/outside\.js relative import escapes/],
+    [
+      bad,
+      'import x from "file:///tmp/outside.js";\n',
+      /file:\/\/\/tmp\/outside\.js relative import escapes/
+    ],
+    [bad, 'const s = "unterminated;\n', /unterminated string; cannot verify imports/],
+    [bad, "const s = `unterminated;\n", /unterminated template; cannot verify imports/],
+    [bad, "const s = 1; /* unterminated\n", /unterminated block comment; cannot verify imports/],
+    [bad, "const s = /unterminated\n", /unterminated regex; cannot verify imports/]
+  ];
+
+  for (const [rel, src, pattern] of cases) {
+    it(`flags ${rel} ${src.split("\n")[0] ?? ""}`, () => {
+      fail(rel, src, pattern);
+    });
+  }
+
+  it("flags optionalDependencies, @npc specs, and file or link paths", () => {
     const result = runTree((root) => {
       write(
         root,
         "packages/osp-core/package.json",
         `${JSON.stringify(
-          { name: "@npc/osp-core", dependencies: { "@npc/runtime": "workspace:*" } },
+          {
+            name: "@npc/osp-core",
+            optionalDependencies: { "@npc/runtime": "1.0.0" },
+            dependencies: {
+              "@npc/atlas": "file:../atlas",
+              helper: "file:../runtime",
+              alias: "workspace:@npc/door-sdk@*",
+              linked: "link:../door-web"
+            }
+          },
           null,
           2
         )}\n`
       );
     });
-    assertFail(
-      result,
-      /packages\/osp-core\/package\.json:\d+ @npc\/runtime disallowed package\.json dependency/
-    );
-  });
-
-  it("fails when a test file imports a disallowed package", () => {
-    const result = runTree((root) => {
-      write(root, "packages/osp-core/test/bad.test.ts", 'import { x } from "@npc/runtime";\n');
-    });
-    assertFail(
-      result,
-      /packages\/osp-core\/test\/bad\.test\.ts:\d+ @npc\/runtime disallowed @npc import/
-    );
+    assert.equal(result.status, 1, result.stdout);
+    assert.match(result.stdout, /@npc\/runtime disallowed package\.json dependency/);
+    assert.match(result.stdout, /@npc\/atlas disallowed package\.json dependency/);
+    assert.match(result.stdout, /file:\.\.\/runtime disallowed package\.json dependency/);
+    assert.match(result.stdout, /@npc\/door-sdk disallowed package\.json dependency/);
+    assert.match(result.stdout, /link:\.\.\/door-web disallowed package\.json dependency/);
   });
 });
