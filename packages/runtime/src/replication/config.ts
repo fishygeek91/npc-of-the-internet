@@ -12,7 +12,7 @@ const TARGET_NAME_PATTERN = /^[a-z0-9_-]+$/;
 const replicationTargetSchema = z.object({
   name: z.string().regex(TARGET_NAME_PATTERN, "target name must match [a-z0-9_-]+"),
   kind: z.literal("car-upload"),
-  endpoint: z.string().url(),
+  endpoint: z.url(),
   tokenEnv: z.string().min(1)
 });
 
