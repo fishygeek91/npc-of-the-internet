@@ -52,7 +52,7 @@ Save this as `shrine.html` and serve it from another port so the script is cross
 ></script>
 ```
 
-`data-atlas-url` is the porch origin. The porch proxies `GET /chain/export`. Do not point a public page at `http://atlas-api:8787`.
+`data-atlas-url` is the porch origin. The porch proxies `GET /chain/export`. `OPTIONS /chain/export` answers `204` with `Access-Control-Allow-Origin: *`, `Access-Control-Allow-Methods: GET`, and `Access-Control-Allow-Headers: If-None-Match`. The `GET` and `304` responses send that same origin and `Access-Control-Expose-Headers: ETag`, and never `Access-Control-Allow-Credentials`, so this page on port 8090 can read the export on port 8080. Do not point a public page at `http://atlas-api:8787`.
 
 Expect:
 

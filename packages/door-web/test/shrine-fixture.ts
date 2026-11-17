@@ -170,7 +170,8 @@ export async function witnessed(
   seq: number,
   prev: string,
   type: "attestation" | "memory",
-  body: { kind: string }
+  body: { kind: string },
+  residency: string = RESIDENCY
 ): Promise<{ record: OspRecord; cid: string }> {
   const fields = {
     spec: OSP_SPEC_V02,
@@ -178,7 +179,7 @@ export async function witnessed(
     prev,
     type,
     body,
-    residency: RESIDENCY
+    residency
   };
   return createRecord({
     ...fields,

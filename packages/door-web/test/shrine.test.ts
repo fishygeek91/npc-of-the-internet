@@ -170,69 +170,111 @@ describe("shrine embed", () => {
   });
 
   it("follows a mounted shrine from PRESENT to ELSEWHERE and back", async () => {
-    const soul = generateKeypair();
-    const door = generateKeypair();
-    const awake = await stay(soul, door);
-    const left = await witnessed(soul, door, awake.records.length, awake.headCid, "attestation", {
-      kind: "departure",
-      pop_version: POP_VERSION,
-      door_id: DOOR_ID,
-      epoch: 1,
-      at: "2026-01-04T00:00:00.000Z"
-    });
-    const present = {
-      records: awake.records,
-      doorPublicKeys: { [DOOR_ID]: encodePublicKey(door.publicKey) },
-      blobs: awake.blobs
-    };
-    const live: ServedExport = { body: present, etag: '"here"', status: 200 };
-    const served = await serveExport(present, { live });
-    closers.push(served.close);
-    const page = fakePage();
-    let onInterval = (): void => undefined;
-    mountShrine({
-      document: page.document,
-      config: pins(served.url, soul),
-      fetchImpl: fetch,
-      setInterval: (fn) => {
-        onInterval = fn;
-        return 1;
+    let built = 0;
+    class CountingSheet {
+      replaceSync(css: string): void {
+        built += css.length > 0 ? 1 : 0;
       }
+    }
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, "CSSStyleSheet");
+    Object.defineProperty(globalThis, "CSSStyleSheet", {
+      configurable: true,
+      writable: true,
+      value: CountingSheet
     });
-    const shadow = page.host.shadow;
-    await waitFor(() => shadow?.children[0]?.textContent, "PRESENT");
-    page.document.visibilityState = "visible";
-    page.onVisible();
-    await pause();
-    expect(shadow?.children[0]?.textContent).toBe("PRESENT");
+    try {
+      const soul = generateKeypair();
+      const door = generateKeypair();
+      const awake = await stay(soul, door);
+      const left = await witnessed(soul, door, awake.records.length, awake.headCid, "attestation", {
+        kind: "departure",
+        pop_version: POP_VERSION,
+        door_id: DOOR_ID,
+        epoch: 1,
+        at: "2026-01-04T00:00:00.000Z"
+      });
+      const present = {
+        records: awake.records,
+        doorPublicKeys: { [DOOR_ID]: encodePublicKey(door.publicKey) },
+        blobs: awake.blobs
+      };
+      const live: ServedExport = { body: present, etag: '"here"', status: 200 };
+      const served = await serveExport(present, { live });
+      closers.push(served.close);
+      const page = fakePage();
+      let onInterval = (): void => undefined;
+      mountShrine({
+        document: page.document,
+        config: pins(served.url, soul),
+        fetchImpl: fetch,
+        setInterval: (fn) => {
+          onInterval = fn;
+          return 1;
+        }
+      });
+      const shadow = page.host.shadow;
+      await waitFor(() => shadow?.children[0]?.textContent, "PRESENT");
+      page.document.visibilityState = "visible";
+      page.onVisible();
+      await pause();
+      expect(shadow?.children[0]?.textContent).toBe("PRESENT");
 
-    live.body = {
-      records: [...awake.records, left.record],
-      doorPublicKeys: present.doorPublicKeys,
-      blobs: awake.blobs
-    };
-    live.etag = '"gone"';
-    page.document.visibilityState = "hidden";
-    onInterval();
-    await pause();
-    expect(shadow?.children[0]?.textContent).toBe("PRESENT");
-    page.document.visibilityState = "visible";
-    page.onVisible();
-    await waitFor(() => shadow?.children[0]?.textContent, "ELSEWHERE");
-    expect(shadow?.children[1]?.textContent).toBe("traveling");
-    expect(allText(shadow)).toContain(PROSE);
+      live.body = {
+        records: [...awake.records, left.record],
+        doorPublicKeys: present.doorPublicKeys,
+        blobs: awake.blobs
+      };
+      live.etag = '"gone"';
+      page.document.visibilityState = "hidden";
+      onInterval();
+      await pause();
+      expect(shadow?.children[0]?.textContent).toBe("PRESENT");
+      page.document.visibilityState = "visible";
+      page.onVisible();
+      await waitFor(() => shadow?.children[0]?.textContent, "ELSEWHERE");
+      expect(shadow?.children[1]?.textContent).toBe("traveling");
+      expect(allText(shadow)).toContain(PROSE);
 
-    live.body = present;
-    live.etag = '"back"';
-    page.onVisible();
-    await waitFor(() => shadow?.children[0]?.textContent, "PRESENT");
+      const returned = generateKeypair();
+      const back = await witnessed(
+        soul,
+        door,
+        awake.records.length + 1,
+        left.cid,
+        "attestation",
+        {
+          kind: "arrival",
+          pop_version: POP_VERSION,
+          door_id: DOOR_ID,
+          epoch: 2,
+          session_pubkey: encodePublicKey(returned.publicKey),
+          at: "2026-01-05T00:00:00.000Z"
+        },
+        `door:${DOOR_ID}/epoch:2`
+      );
+      live.body = {
+        records: [...awake.records, left.record, back.record],
+        doorPublicKeys: present.doorPublicKeys,
+        blobs: awake.blobs
+      };
+      live.etag = '"back"';
+      page.onVisible();
+      await waitFor(() => shadow?.children[0]?.textContent, "PRESENT");
 
-    live.status = 500;
-    live.etag = '"down"';
-    page.onVisible();
-    await waitFor(() => shadow?.children[1]?.textContent, "verification failed");
-    expect(shadow?.children[0]?.textContent).toBe("ELSEWHERE");
-    expect(allText(shadow)).not.toContain(PROSE);
+      live.status = 500;
+      live.etag = '"down"';
+      page.onVisible();
+      await waitFor(() => shadow?.children[1]?.textContent, "verification failed");
+      expect(shadow?.children[0]?.textContent).toBe("ELSEWHERE");
+      expect(allText(shadow)).not.toContain(PROSE);
+      expect(built).toBe(1);
+    } finally {
+      if (descriptor === undefined) {
+        Reflect.deleteProperty(globalThis, "CSSStyleSheet");
+      } else {
+        Object.defineProperty(globalThis, "CSSStyleSheet", descriptor);
+      }
+    }
   });
 });
 

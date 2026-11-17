@@ -82,7 +82,6 @@ export function renderShrine(
   snapshot: ShrineSnapshot
 ): void {
   root.textContent = "";
-  styleBadge(root);
   const badge = document.createElement("p");
   badge.textContent = snapshot.badge;
   root.appendChild(badge);
@@ -129,6 +128,7 @@ export function mountShrine(options: {
     return;
   }
   const shadow = host.attachShadow({ mode: "closed" });
+  adoptBadgeStyle(shadow);
   if (options.config.atlasUrl === null) {
     renderShrine(options.document, shadow, SHRINE_FAILED_SNAPSHOT);
     return;
@@ -186,8 +186,8 @@ function owns(
   return source !== null && Object.prototype.hasOwnProperty.call(source, key);
 }
 
-/** Bold the badge inside the shadow, without a style element the host CSP would block. */
-function styleBadge(root: ShrineRoot): void {
+/** Bold the badge inside the shadow, once, without a style element the host CSP would block. */
+function adoptBadgeStyle(root: ShrineRoot): void {
   const sheet = badgeSheet();
   if (sheet === null) {
     return;
