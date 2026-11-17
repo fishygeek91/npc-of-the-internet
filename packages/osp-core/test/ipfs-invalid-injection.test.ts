@@ -1,19 +1,24 @@
-import { closeSync, fsyncSync, mkdirSync, openSync } from "node:fs";
-import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { readdirSync, readFileSync } from "node:fs";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it, beforeEach, afterEach } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import { canonicalize, computeCid, CorruptionError, IpfsSoulStore } from "../src/index.js";
 import type { OspRecord } from "../src/schemas/index.js";
 import { writeHeadAtomic } from "../src/store/head-file.js";
-import { fsyncDirectory, fsyncPath, writeAllSync } from "../src/store/fsync.js";
 import { resolveBlockPath } from "../src/store/ipfs-soul-store.js";
 import { decodePublicKey } from "../src/encoding/base64url.js";
 
 const testDir = dirname(fileURLToPath(import.meta.url));
 const vectorsDir = resolve(testDir, "../../../spec/osp/vectors");
+
+/**
+ * Retry directory removal. A timed-out run can still hold a block file, and
+ * Node then fails the cleanup with ENOTEMPTY / EBUSY.
+ */
+const REMOVE_TREE = { recursive: true, force: true, maxRetries: 5, retryDelay: 20 } as const;
 
 type VectorFile = {
   description: string;
@@ -48,8 +53,20 @@ const SKIP_VECTORS = new Set([
   "quarantine-candidate-to-shard.json"
 ]);
 
-async function loadVector(filename: string): Promise<VectorFile> {
-  const raw = await readFile(join(vectorsDir, filename), "utf8");
+/**
+ * One case per injectable vector. The old single `it` fsynced every fixture
+ * block and then opened a store, and under a parallel osp-core run that one
+ * test sat at ~4.9s against Vitest's 5s timeout. Fixture bytes are visible to
+ * this process once `writeFile` closes them; fsync only waits for crash
+ * durability, which this rejection check does not need. `writeHeadAtomic`
+ * still fsyncs HEAD, matching the on-disk layout openReadOnly reads.
+ */
+const vectors = loadVectors(vectorsDir);
+const filenames = [...vectors.keys()];
+const notSkipped = filenames.filter((filename) => !SKIP_VECTORS.has(filename));
+const injectable = notSkipped.filter((filename) => vectors.get(filename)?.expected !== "valid");
+
+function parseVector(filename: string, raw: string): VectorFile {
   const parsed: unknown = JSON.parse(raw);
   if (typeof parsed !== "object" || parsed === null) {
     throw new Error(`${filename}: vector root must be an object`);
@@ -86,28 +103,35 @@ async function loadVector(filename: string): Promise<VectorFile> {
   };
 }
 
-async function listVectorFiles(): Promise<string[]> {
-  const entries = await readdir(vectorsDir);
-  return entries.filter((name) => name.endsWith(".json")).sort();
+/** Read every vector once so each test does not re-parse the suite. */
+function loadVectors(dir: string): Map<string, VectorFile> {
+  const names = readdirSync(dir)
+    .filter((name) => name.endsWith(".json"))
+    .sort();
+  const loaded = new Map<string, VectorFile>();
+  for (const filename of names) {
+    loaded.set(filename, parseVector(filename, readFileSync(join(dir, filename), "utf8")));
+  }
+  return loaded;
 }
 
-/** Write opaque canonical bytes to the IpfsSoulStore blocks layout. */
+/** Door public keys for one vector, decoded the same way openReadOnly expects. */
+function doorKeys(vector: VectorFile): Record<string, Uint8Array> {
+  const doorPublicKeys: Record<string, Uint8Array> = {};
+  for (const [doorId, encoded] of Object.entries(vector.doorPublicKeys)) {
+    doorPublicKeys[doorId] = decodePublicKey(encoded);
+  }
+  return doorPublicKeys;
+}
+
+/**
+ * Write one block into the sharded layout. No fsync: the following
+ * `openReadOnly` runs in this process and observes the closed write.
+ */
 async function writeBlockFile(blocksPath: string, cid: string, bytes: Uint8Array): Promise<void> {
   const blockPath = resolveBlockPath(blocksPath, cid);
-  mkdirSync(dirname(blockPath), { recursive: true });
-
-  const fd = openSync(blockPath, "w");
-
-  try {
-    writeAllSync(fd, bytes);
-    fsyncSync(fd);
-  } finally {
-    closeSync(fd);
-  }
-
-  await fsyncPath(blockPath);
-  await fsyncDirectory(dirname(blockPath));
-  await fsyncDirectory(blocksPath);
+  await mkdir(dirname(blockPath), { recursive: true });
+  await writeFile(blockPath, bytes);
 }
 
 /**
@@ -115,7 +139,7 @@ async function writeBlockFile(blocksPath: string, cid: string, bytes: Uint8Array
  */
 async function injectVectorLayout(dir: string, records: OspRecord[]): Promise<void> {
   const blocksPath = join(dir, "blocks");
-  mkdirSync(blocksPath, { recursive: true });
+  await mkdir(blocksPath, { recursive: true });
 
   const cids: string[] = [];
   for (const record of records) {
@@ -125,14 +149,19 @@ async function injectVectorLayout(dir: string, records: OspRecord[]): Promise<vo
     cids.push(cid);
   }
 
-  const indexPath = join(dir, "seq-index.jsonl");
-  const indexLines = records
-    .map((record, index) => `${JSON.stringify({ seq: record.seq, cid: cids[index] })}\n`)
-    .join("");
-  await writeFile(indexPath, indexLines);
+  const indexLines: string[] = [];
+  for (const [index, record] of records.entries()) {
+    const cid = cids[index];
+    if (cid === undefined) {
+      throw new Error(`missing block cid at index ${String(index)}`);
+    }
+    indexLines.push(`${JSON.stringify({ seq: record.seq, cid })}\n`);
+  }
+  await writeFile(join(dir, "seq-index.jsonl"), indexLines.join(""));
 
-  const lastRecord = records[records.length - 1];
-  const lastCid = cids[cids.length - 1];
+  const lastIndex = records.length - 1;
+  const lastRecord = records[lastIndex];
+  const lastCid = cids[lastIndex];
   if (lastRecord === undefined || lastCid === undefined) {
     throw new Error("vector has no records");
   }
@@ -141,46 +170,27 @@ async function injectVectorLayout(dir: string, records: OspRecord[]): Promise<vo
 }
 
 describe("IpfsSoulStore invalid vector injection", () => {
-  let dir: string;
-
-  beforeEach(async () => {
-    dir = await mkdtemp(join(tmpdir(), "osp-ipfs-invalid-"));
+  it("selects a meaningful set of injectable invalid vectors", () => {
+    expect(notSkipped.length).toBeGreaterThan(0);
+    expect(injectable.length).toBeGreaterThanOrEqual(5);
   });
 
-  afterEach(async () => {
-    await rm(dir, { recursive: true, force: true });
-  });
+  it.each(injectable)("rejects injected %s on openReadOnly", async (filename) => {
+    const vector = vectors.get(filename);
+    if (vector === undefined) {
+      throw new Error(`missing vector ${filename}`);
+    }
 
-  it("rejects injected invalid vectors on openReadOnly or verifyChain", async () => {
-    const files = await listVectorFiles();
-    const invalidFiles = files.filter((filename) => !SKIP_VECTORS.has(filename));
-    expect(invalidFiles.length).toBeGreaterThan(0);
-
-    let exercised = 0;
-
-    for (const filename of invalidFiles) {
-      const vector = await loadVector(filename);
-      if (vector.expected === "valid") {
-        continue;
-      }
-
-      decodePublicKey(vector.soulPublicKey);
-      const doorPublicKeys: Record<string, Uint8Array> = {};
-      for (const [doorId, encoded] of Object.entries(vector.doorPublicKeys)) {
-        doorPublicKeys[doorId] = decodePublicKey(encoded);
-      }
-
+    decodePublicKey(vector.soulPublicKey);
+    const doorPublicKeys = doorKeys(vector);
+    const dir = await mkdtemp(join(tmpdir(), "osp-ipfs-invalid-"));
+    try {
       await injectVectorLayout(dir, vector.records);
-
       await expect(IpfsSoulStore.openReadOnly(dir, { doorPublicKeys })).rejects.toThrow(
         CorruptionError
       );
-
-      exercised += 1;
-      await rm(dir, { recursive: true, force: true });
-      dir = await mkdtemp(join(tmpdir(), "osp-ipfs-invalid-"));
+    } finally {
+      await rm(dir, REMOVE_TREE);
     }
-
-    expect(exercised).toBeGreaterThanOrEqual(5);
   });
 });
