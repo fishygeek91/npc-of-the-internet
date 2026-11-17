@@ -4,6 +4,8 @@ The website Door: a small public web page where anyone can talk with the Wandere
 
 It is an ordinary `door/0.2` Door (`@npc/door-sdk`): the runtime arrives with a soul-signed attest, binds its session WebSocket, and departs. If a memory witness is configured, the Door co-signs only memories its AI witness finds grounded in what was said on the porch.
 
+In-browser signature checks and the embeddable replica shrine are specified in `spec/door/web.md`. Verification uses `@npc/osp-core/browser` (not the package root). The porch does not yet verify lines in the page, and this package does not yet serve `shrine.js` — that embed, the failed-verification state, and `MANUAL_TEST.md` are the rest of T7.2b.
+
 ## Two listeners
 
 | Listener | Default | Who talks to it |
