@@ -91,11 +91,12 @@ Complete these before any production ceremony step.
    touch /var/lib/npc-ghost/rclone/rclone.conf
    # After keys are in place (and rclone.conf is filled), transfer ownership:
    sudo chown -R 10001:10001 /var/lib/npc-ghost/keys /var/lib/npc-ghost/rclone
-   chmod 700 /var/lib/npc-ghost/keys /var/lib/npc-ghost/rclone
-   chmod 600 /var/lib/npc-ghost/keys/* /var/lib/npc-ghost/rclone/rclone.conf
+   sudo chmod 700 /var/lib/npc-ghost/keys /var/lib/npc-ghost/rclone
+   sudo find /var/lib/npc-ghost/keys -type f -exec chmod 600 {} +
+   sudo find /var/lib/npc-ghost/rclone -type f -exec chmod 600 {} +
    ```
 
-   Re-run the `chown` / `chmod` lines whenever you replace a key or rclone
+   Re-run the `chown`, `chmod`, and `find` lines whenever you replace a key or rclone
    config so new files stay readable by uid/gid `10001`. See
    [`ops/SECRETS.md`](SECRETS.md) (`NPC_CONTAINER_UID` / `NPC_CONTAINER_GID`).
 
@@ -216,7 +217,7 @@ Genesis CID: <cid>
      $(grep '^ATLAS_DOOR_PUBKEYS=' ops/.env | cut -d= -f2- | tr ',' '\n' | sed 's/^/--door-key=/')
    ```
 
-5. **Seed the Docker soulchain volume** with **only** `chain.jsonl` and `blobs/` (never `soul.key`). Ensure the stack is not writing to the volume yet:
+5. **Seed the Docker soulchain volume** with **only** `chain.jsonl` and `blobs/` (never `soul.key`). The `soulchain-ipfs` mirror volume needs **no seeding** — `DualSoulStore` backfills an empty (or lagging) mirror from the file store on first open. Ensure the stack is not writing to the volume yet:
 
    ```bash
    docker compose --env-file ops/.env -f ops/compose.ghost.yml down
