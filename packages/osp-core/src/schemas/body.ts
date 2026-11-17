@@ -4,6 +4,7 @@ import { CidSchema } from "../crypto/cid.js";
 import { SoulPublicKeySchema, decodeBase64Url } from "../encoding/base64url.js";
 import { EncodingError } from "../errors.js";
 import { cidMatchesHash } from "../memory-blob.js";
+import { countCodePoints, SHARD_TEXT_MAX_CODE_POINTS } from "../shard-bounds.js";
 import { nonnegativeInteger } from "./nonnegative-integer.js";
 
 /** Historical OSP spec version (inline memory text). */
@@ -33,19 +34,13 @@ export const IsoUtcTimestampSchema = z
 /** PoP spec version literal for attestation bodies. */
 export const POP_VERSION = "pop/0.1" as const;
 
-const MEMORY_TEXT_MAX_CODE_POINTS = 500;
 const SHA256_DIGEST_LENGTH = 32;
 
-/** Count Unicode code points in a string (not UTF-16 code units). */
-function countCodePoints(text: string): number {
-  return [...text].length;
-}
-
-/** Memory shard/candidate text: max 500 Unicode code points. */
+/** Memory shard/candidate text: max {@link SHARD_TEXT_MAX_CODE_POINTS} Unicode code points. */
 const MemoryTextSchema = z
   .string()
-  .refine((text) => countCodePoints(text) <= MEMORY_TEXT_MAX_CODE_POINTS, {
-    message: `text must be at most ${MEMORY_TEXT_MAX_CODE_POINTS} Unicode code points`
+  .refine((text) => countCodePoints(text) <= SHARD_TEXT_MAX_CODE_POINTS, {
+    message: `text must be at most ${String(SHARD_TEXT_MAX_CODE_POINTS)} Unicode code points`
   });
 
 /**

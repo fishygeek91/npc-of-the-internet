@@ -2,6 +2,8 @@ import { z } from "zod";
 
 import { DistillError } from "./errors.js";
 
+export { countCodePoints } from "@npc/osp-core";
+
 const BrainShardSchema = z
   .object({
     text: z.string(),
@@ -14,11 +16,6 @@ const BrainShardsSchema = z
     shards: z.array(BrainShardSchema)
   })
   .strict();
-
-/** Count Unicode code points (not UTF-16 code units). */
-export function countCodePoints(text: string): number {
-  return [...text].length;
-}
 
 /** Strip optional markdown code fences wrapping JSON. */
 function stripMarkdownFences(raw: string): string {

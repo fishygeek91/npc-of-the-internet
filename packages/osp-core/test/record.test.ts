@@ -12,7 +12,7 @@ import {
   verifyRecord
 } from "../src/record.js";
 import { OSP_SPEC, OSP_SPEC_V02 } from "../src/schemas/body.js";
-import { SchemaError, VerificationError } from "../src/errors.js";
+import { SchemaError } from "../src/errors.js";
 
 const PREV_CID = "bagu" + "a".repeat(57);
 const DOOR_ID = "discord:g";
@@ -370,7 +370,10 @@ describe("tamper detection", () => {
         soulPublicKey: soulKeys.publicKey,
         expectedCid: cid
       })
-    ).rejects.toThrow(VerificationError);
+    ).rejects.toMatchObject({
+      reason: "soul_sig",
+      message: "soul signature verification failed"
+    });
   });
 
   it("rejects tampered sig string", async () => {
@@ -394,9 +397,12 @@ describe("tamper detection", () => {
       sig: record.sig.slice(0, 4) + (record.sig[4] === "A" ? "B" : "A") + record.sig.slice(5)
     };
 
-    await expect(verifyRecord(tampered, { soulPublicKey: soulKeys.publicKey })).rejects.toThrow(
-      VerificationError
-    );
+    await expect(
+      verifyRecord(tampered, { soulPublicKey: soulKeys.publicKey })
+    ).rejects.toMatchObject({
+      reason: "soul_sig",
+      message: "soul signature verification failed"
+    });
   });
 
   it("rejects tampered body text", async () => {
@@ -423,9 +429,12 @@ describe("tamper detection", () => {
       }
     };
 
-    await expect(verifyRecord(tampered, { soulPublicKey: soulKeys.publicKey })).rejects.toThrow(
-      VerificationError
-    );
+    await expect(
+      verifyRecord(tampered, { soulPublicKey: soulKeys.publicKey })
+    ).rejects.toMatchObject({
+      reason: "soul_sig",
+      message: "soul signature verification failed"
+    });
   });
 
   it("computes a different CID for tampered canonical bytes", async () => {
@@ -492,7 +501,10 @@ describe("cosigner scope", () => {
         soulPublicKey: soulKeys.publicKey,
         doorPublicKeys: doorPublicKeysForResidency(DOOR_ID, doorKeys.publicKey)
       })
-    ).rejects.toThrow(VerificationError);
+    ).rejects.toMatchObject({
+      reason: "cosigner",
+      message: "cosigner signature at index 0 failed verification over core bytes"
+    });
   });
 
   it("accepts Door signature over core bytes", async () => {
@@ -583,7 +595,8 @@ describe("cosigner scope", () => {
       })
     ).rejects.toMatchObject({
       name: "VerificationError",
-      message: expect.stringMatching(/cosigner signature/)
+      reason: "cosigner",
+      message: expect.stringMatching(/cosigner signature at index 0 failed verification/)
     });
   });
 });
@@ -621,9 +634,71 @@ describe("verifyRecord edge cases", () => {
       soulPrivateKey: soulKeys.privateKey
     });
 
-    await expect(verifyRecord(record, { soulPublicKey: soulKeys.publicKey })).rejects.toThrow(
-      VerificationError
+    await expect(verifyRecord(record, { soulPublicKey: soulKeys.publicKey })).rejects.toMatchObject(
+      {
+        reason: "missing_door_keys",
+        message: "doorPublicKeys required when cosigners are present"
+      }
     );
+  });
+
+  it("reports a missing Door key by discriminant and door id", async () => {
+    const soulKeys = generateKeypair();
+    const doorKeys = generateKeypair();
+    const fields = {
+      seq: 1,
+      prev: PREV_CID,
+      type: "memory" as const,
+      body: {
+        kind: "shard" as const,
+        text: "Needs this Door's key.",
+        distilled_at: "2026-01-02T00:00:00.000Z"
+      },
+      residency: RESIDENCY
+    };
+    const cosig = signCore(fields, doorKeys.privateKey);
+    const { record } = await createRecord({
+      ...fields,
+      cosigners: [cosig],
+      soulPrivateKey: soulKeys.privateKey
+    });
+
+    await expect(
+      verifyRecord(record, {
+        soulPublicKey: soulKeys.publicKey,
+        doorPublicKeys: { [OTHER_DOOR_ID]: doorKeys.publicKey }
+      })
+    ).rejects.toMatchObject({
+      reason: "missing_door_keys",
+      message: `no doorPublicKeys entry for residency Door "${DOOR_ID}"`
+    });
+  });
+
+  it("reports cid_mismatch when expectedCid does not match", async () => {
+    const soulKeys = generateKeypair();
+    const { record, cid } = await createRecord({
+      seq: 1,
+      prev: PREV_CID,
+      type: "memory",
+      body: {
+        kind: "candidate",
+        text: "CID expectation.",
+        proposed_at: "2026-01-02T00:00:00.000Z"
+      },
+      residency: RESIDENCY,
+      cosigners: [],
+      soulPrivateKey: soulKeys.privateKey
+    });
+
+    await expect(
+      verifyRecord(record, {
+        soulPublicKey: soulKeys.publicKey,
+        expectedCid: PREV_CID
+      })
+    ).rejects.toMatchObject({
+      reason: "cid_mismatch",
+      message: `expected CID ${PREV_CID} but computed ${cid}`
+    });
   });
 
   it("rejects records with an extra top-level field", async () => {

@@ -324,7 +324,10 @@ export async function verifyPinManifest(
   const signature = decodeSignature(sig);
 
   if (!verify(unsignedBytes, signature, soulPublicKey)) {
-    throw new VerificationError("pin manifest soul signature verification failed");
+    throw new VerificationError(
+      "pin manifest soul signature verification failed",
+      "pin_manifest_sig"
+    );
   }
 
   const manifestBytes = encodePinManifest(manifest);

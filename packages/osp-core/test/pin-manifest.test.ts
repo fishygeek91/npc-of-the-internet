@@ -14,7 +14,6 @@ import {
   SchemaError,
   signPinManifest,
   verifyPinManifest,
-  VerificationError,
   type OspRecord
 } from "../src/index.js";
 
@@ -139,7 +138,10 @@ describe("pin manifest", () => {
       sig: encodeSignature(sigBytes)
     };
 
-    await expect(verifyPinManifest(tampered, soul.publicKey)).rejects.toThrow(VerificationError);
+    await expect(verifyPinManifest(tampered, soul.publicKey)).rejects.toMatchObject({
+      reason: "pin_manifest_sig",
+      message: "pin manifest soul signature verification failed"
+    });
   });
 
   it("rejects a short manifest signature with the decoder SchemaError", async () => {

@@ -5,12 +5,15 @@ export * from "./schemas/index.js";
 export {
   SchemaError,
   VerificationError,
+  VERIFICATION_REASONS,
   EncodingError,
   StorageError,
   CorruptionError,
   ConcurrentAppendError,
   ChainMismatchError
 } from "./errors.js";
+export type { VerificationReason } from "./errors.js";
+export { SHARD_TEXT_MAX_CODE_POINTS, countCodePoints } from "./shard-bounds.js";
 export type {
   HeadInfo,
   AppendResult,

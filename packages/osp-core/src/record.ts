@@ -239,24 +239,32 @@ export async function verifyRecord(
   if (record.cosigners.length > 0) {
     const doorKeys = options.doorPublicKeys;
     if (doorKeys === undefined || Object.keys(doorKeys).length === 0) {
-      throw new VerificationError("doorPublicKeys required when cosigners are present");
+      throw new VerificationError(
+        "doorPublicKeys required when cosigners are present",
+        "missing_door_keys"
+      );
     }
 
     if (record.residency === null) {
       throw new VerificationError(
-        "cosigners require a non-null residency to resolve Door public key"
+        "cosigners require a non-null residency to resolve Door public key",
+        "cosigner"
       );
     }
 
     const residencyParts = parseResidency(record.residency);
     if (residencyParts === null) {
-      throw new VerificationError("residency must match door:<platform>:<door-id>/epoch:<n>");
+      throw new VerificationError(
+        "residency must match door:<platform>:<door-id>/epoch:<n>",
+        "cosigner"
+      );
     }
 
     const doorKey = Reflect.get(doorKeys, residencyParts.doorId);
     if (!(doorKey instanceof Uint8Array)) {
       throw new VerificationError(
-        `no doorPublicKeys entry for residency Door "${residencyParts.doorId}"`
+        `no doorPublicKeys entry for residency Door "${residencyParts.doorId}"`,
+        "missing_door_keys"
       );
     }
 
@@ -264,7 +272,8 @@ export async function verifyRecord(
       const cosignerSig = decodeSignature(cosignerEncoded);
       if (!verify(coreBytes, cosignerSig, doorKey)) {
         throw new VerificationError(
-          `cosigner signature at index ${index} failed verification over core bytes`
+          `cosigner signature at index ${index} failed verification over core bytes`,
+          "cosigner"
         );
       }
     }
@@ -283,12 +292,15 @@ export async function verifyRecord(
   );
   const soulSig = decodeSignature(record.sig);
   if (!verify(soulBytes, soulSig, options.soulPublicKey)) {
-    throw new VerificationError("soul signature verification failed");
+    throw new VerificationError("soul signature verification failed", "soul_sig");
   }
 
   const cid = await computeCid(record);
   if (options.expectedCid !== undefined && options.expectedCid !== cid) {
-    throw new VerificationError(`expected CID ${options.expectedCid} but computed ${cid}`);
+    throw new VerificationError(
+      `expected CID ${options.expectedCid} but computed ${cid}`,
+      "cid_mismatch"
+    );
   }
 
   return { record, cid };
