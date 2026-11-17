@@ -5,7 +5,14 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { Logger } from "pino";
 
 import type { WandererWhereabouts } from "./atlas.js";
-import { proxyChainExport, requestOrigin } from "./chain-export-proxy.js";
+import {
+  ChainExportGate,
+  CHAIN_EXPORT_CACHE_TTL_MS,
+  ifNoneMatchSatisfied,
+  proxyChainExport,
+  requestOrigin,
+  type ChainExportResult
+} from "./chain-export-proxy.js";
 import { WebDoorError } from "./errors.js";
 import type { Room, RoomEvent, RoomMessage } from "./room.js";
 import { DailyBudget, VisitorRateLimiter, type MsClock } from "./rate-limit.js";
@@ -105,6 +112,10 @@ export type VisitorSiteOptions = {
   exportTimeoutMs?: number;
   /** Test override for the export body cap. */
   exportMaxBytes?: number;
+  /** How long a successful export is reused. Default {@link CHAIN_EXPORT_CACHE_TTL_MS}. */
+  exportCacheTtlMs?: number;
+  /** Clock for the export cache. Defaults to `Date.now`. */
+  exportNow?: () => number;
   /** Deliver a visitor message to the Wanderer; return false when it is not here. */
   relay: (request: RelayRequest) => boolean;
   maxClients: number;
@@ -132,6 +143,7 @@ export class VisitorSite {
   private readonly daily: DailyBudget;
   private readonly ids: VisitorIds;
   private readonly clients = new Set<SseClient>();
+  private readonly exportGate: ChainExportGate;
   private server: Server | null = null;
   private heartbeat: NodeJS.Timeout | null = null;
   private unsubscribe: (() => void) | null = null;
@@ -144,6 +156,11 @@ export class VisitorSite {
     });
     this.daily = new DailyBudget(options.dailyMax, options.clock);
     this.ids = new VisitorIds(options.clock);
+    this.exportGate = new ChainExportGate(
+      () => this.loadChainExport(),
+      options.exportCacheTtlMs ?? CHAIN_EXPORT_CACHE_TTL_MS,
+      options.exportNow ?? Date.now
+    );
   }
 
   /** Start listening; resolves with the bound address. */
@@ -231,12 +248,17 @@ export class VisitorSite {
     const isRead = method === "GET" || method === "HEAD";
 
     if (path === "/chain/export") {
+      if (method === "OPTIONS") {
+        this.chainExportPreflight(res);
+        return;
+      }
       if (method !== "GET") {
-        this.methodNotAllowed(res, "GET");
+        res.setHeader("Allow", "GET");
+        this.chainExportError(res, 405, "method_not_allowed", "method not allowed");
         return;
       }
       void this.handleChainExport(req, res).catch(() => {
-        this.fail(res, 500, "internal_error", "something went wrong");
+        this.chainExportError(res, 500, "internal_error", "something went wrong");
       });
       return;
     }
@@ -491,17 +513,18 @@ export class VisitorSite {
     return requestOrigin(req.headers.host, proto, this.options.trustProxy);
   }
 
-  private async handleChainExport(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  private loadChainExport(): Promise<ChainExportResult> {
     const upstream = this.options.atlasUpstream;
     if (upstream === undefined) {
-      this.fail(res, 503, "atlas_unconfigured", "chain export is not configured");
-      return;
+      return Promise.resolve({
+        kind: "error",
+        status: 503,
+        code: "atlas_unconfigured",
+        message: "chain export is not configured"
+      });
     }
-    const match = req.headers["if-none-match"];
-    const ifNoneMatch = Array.isArray(match) ? match.join(", ") : match;
-    const result = await proxyChainExport({
+    return proxyChainExport({
       upstream,
-      ...(ifNoneMatch === undefined ? {} : { ifNoneMatch }),
       ...(this.options.atlasFetch === undefined ? {} : { fetchImpl: this.options.atlasFetch }),
       ...(this.options.exportTimeoutMs === undefined
         ? {}
@@ -510,12 +533,39 @@ export class VisitorSite {
         ? {}
         : { maxBytes: this.options.exportMaxBytes })
     });
+  }
+
+  private async handleChainExport(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (this.options.atlasUpstream === undefined) {
+      this.chainExportError(res, 503, "atlas_unconfigured", "chain export is not configured");
+      return;
+    }
+    const match = req.headers["if-none-match"];
+    const ifNoneMatch = Array.isArray(match) ? match.join(", ") : match;
+    const result = await this.exportGate.read(ifNoneMatch);
+    this.writeChainExport(res, result);
+  }
+
+  /** Credential-free CORS so a shrine on another origin can read this one route. */
+  private chainExportPreflight(res: ServerResponse): void {
+    res.writeHead(204, {
+      ...this.securityHeaders(),
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "GET",
+      "Access-Control-Allow-Headers": "If-None-Match",
+      "Access-Control-Max-Age": "600"
+    });
+    res.end();
+  }
+
+  private writeChainExport(res: ServerResponse, result: ChainExportResult): void {
     if (result.kind === "error") {
-      this.fail(res, result.status, result.code, result.message);
+      this.chainExportError(res, result.status, result.code, result.message);
       return;
     }
     const headers: Record<string, string> = {
       ...this.securityHeaders(),
+      ...chainExportCors(),
       "Cache-Control": result.cacheControl ?? "no-cache"
     };
     if (result.etag !== null) {
@@ -529,6 +579,25 @@ export class VisitorSite {
     headers["Content-Type"] = "application/json; charset=utf-8";
     res.writeHead(200, headers);
     res.end(result.body);
+  }
+
+  private chainExportError(
+    res: ServerResponse,
+    status: number,
+    code: string,
+    message: string
+  ): void {
+    if (res.headersSent) {
+      res.end();
+      return;
+    }
+    res.writeHead(status, {
+      ...this.securityHeaders(),
+      ...chainExportCors(),
+      "Content-Type": "application/json; charset=utf-8",
+      "Cache-Control": "no-store"
+    });
+    res.end(JSON.stringify({ error: { code, message } }));
   }
 
   private sendAsset(
@@ -597,17 +666,14 @@ export class VisitorSite {
 
 function ifNoneMatch(header: string | string[] | undefined, etag: string): boolean {
   const value = Array.isArray(header) ? header.join(", ") : header;
-  if (value === undefined) {
-    return false;
-  }
-  for (const part of value.split(",")) {
-    const token = part.trim();
-    const bare = token.startsWith("W/") || token.startsWith("w/") ? token.slice(2).trim() : token;
-    if (bare === etag) {
-      return true;
-    }
-  }
-  return false;
+  return ifNoneMatchSatisfied(value, etag);
+}
+
+function chainExportCors(): Record<string, string> {
+  return {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Expose-Headers": "ETag"
+  };
 }
 
 /** Serialize one SSE event (JSON keeps `data` on a single line). */
