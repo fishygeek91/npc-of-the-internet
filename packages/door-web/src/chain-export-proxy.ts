@@ -6,6 +6,113 @@ export const CHAIN_EXPORT_MAX_BYTES = 8 * 1024 * 1024;
 /** How long the porch waits for Atlas before answering an error. */
 export const CHAIN_EXPORT_TIMEOUT_MS = 5_000;
 
+/** How long a successful export is reused before Atlas is asked again. */
+export const CHAIN_EXPORT_CACHE_TTL_MS = 5_000;
+
+/** Successful export kept for {@link CHAIN_EXPORT_CACHE_TTL_MS}. An error is not stored. */
+type StoredExport = {
+  body: Uint8Array;
+  etag: string | null;
+  cacheControl: string | null;
+  storedAt: number;
+};
+
+/**
+ * One Atlas export at a time, shared by concurrent visitors, then reused briefly.
+ * `If-None-Match` is answered from that copy. A failed fetch is not kept.
+ */
+export class ChainExportGate {
+  private stored: StoredExport | null = null;
+  private inflight: Promise<ChainExportResult> | null = null;
+
+  /**
+   * @param load - Full upstream GET. Do not forward a visitor `If-None-Match`; the
+   *   body has to be cacheable for every waiter.
+   */
+  constructor(
+    private readonly load: () => Promise<ChainExportResult>,
+    private readonly ttlMs: number = CHAIN_EXPORT_CACHE_TTL_MS,
+    private readonly now: () => number = Date.now
+  ) {}
+
+  /** Answer from the fresh copy, or join the single upstream fetch. */
+  async read(ifNoneMatch: string | undefined): Promise<ChainExportResult> {
+    const stored = this.stored;
+    if (stored !== null && this.now() - stored.storedAt < this.ttlMs) {
+      return fromStored(stored, ifNoneMatch);
+    }
+    const pending = this.inflight ?? this.start();
+    const result = await pending;
+    if (result.kind === "ok" && result.status === 200) {
+      return fromStored(
+        {
+          body: result.body,
+          etag: result.etag,
+          cacheControl: result.cacheControl,
+          storedAt: this.now()
+        },
+        ifNoneMatch
+      );
+    }
+    return result;
+  }
+
+  private start(): Promise<ChainExportResult> {
+    const pending = this.load().then((result) => {
+      if (result.kind === "ok" && result.status === 200) {
+        this.stored = {
+          body: result.body,
+          etag: result.etag,
+          cacheControl: result.cacheControl,
+          storedAt: this.now()
+        };
+      }
+      return result;
+    });
+    this.inflight = pending;
+    void pending.finally(() => {
+      if (this.inflight === pending) {
+        this.inflight = null;
+      }
+    });
+    return pending;
+  }
+}
+
+/** True when `header` names `etag`, including a weak tag or a comma-separated list. */
+export function ifNoneMatchSatisfied(header: string | undefined, etag: string): boolean {
+  if (header === undefined) {
+    return false;
+  }
+  for (const part of header.split(",")) {
+    const token = part.trim();
+    const bare = token.startsWith("W/") || token.startsWith("w/") ? token.slice(2).trim() : token;
+    if (bare === etag) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function fromStored(stored: StoredExport, ifNoneMatch: string | undefined): ChainExportResult {
+  if (stored.etag !== null && ifNoneMatchSatisfied(ifNoneMatch, stored.etag)) {
+    return {
+      kind: "ok",
+      status: 304,
+      body: new Uint8Array(0),
+      etag: stored.etag,
+      cacheControl: stored.cacheControl
+    };
+  }
+  return {
+    kind: "ok",
+    status: 200,
+    body: stored.body,
+    etag: stored.etag,
+    cacheControl: stored.cacheControl
+  };
+}
+
 /** A pass-through of a successful Atlas export, or a public error. */
 export type ChainExportResult =
   | {
