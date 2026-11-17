@@ -46,7 +46,7 @@ The Wanderer is one AI entity with:
 3. **Travel.** A public, auditable selection process picks the next Door. The journey is visible on the global **Atlas** — a live map of everywhere it has ever been. (Today, between a Discord server and the web porch: about once a day it moves to a random Door that is online, never staying put when somewhere else is open. Invitations come later.)
 4. **Arrival.** The new host's Door proves it is serving the real Wanderer (see PoP). Residency begins.
 
-Followers who can't host it can still watch. A residency that keeps memories publishes a public journal — the Wanderer's own account of where it went and what it learned. A stay too short to remember, or one the witness cannot sign, travels without one.
+Followers who can't host it can still watch. A residency that keeps memories can publish a public journal — the Wanderer's own account of where it went and what it learned. The journal is witnessed separately and may be declined. A stay too short to remember, or one the witness cannot sign, travels without one.
 
 ## 3. The Open Soul Protocol (OSP)
 
@@ -126,7 +126,7 @@ Each of these is specified independently, so other projects can adopt OSP or PoP
 The "portable AI identity" category has neighbors; we cite them openly and differ from all of them on the same axis.
 
 - **[Soul Protocol](https://github.com/qbtrix/soul-protocol)** — an open standard for portable AI identity/memory as user-owned files (".soul" archives). Closest in spirit to OSP's portability goal. Differences: file-based and user-owned with no cryptographic append-only guarantee, no anchoring, no host attestation, and designed for *your* companion, not a singular shared entity.
-- **[SoulLayer](https://soullayer.xyz/Whitepaper.html)** — the project's own whitepaper (not a press-release reprint): on-chain personality evolution and memory for per-user AI companions, each held as an NFT. Differences: companion-per-user model, no presence scarcity, no community witnessing of memory formation.
+- **[SoulLayer](https://web.archive.org/web/20250923125045/https://soullayer.xyz/Whitepaper.html)** — the project's whitepaper (archived 2025-09-23; the original domain has lapsed): on-chain personality evolution and memory for per-user AI companions, each held as an NFT. Differences: companion-per-user model, no presence scarcity, no community witnessing of memory formation.
 - **[DMA (Decentralized Memory and Agency)](https://github.com/rch-iv/DMA)** — cryptographic framework for verifiable, user-owned AI memory/personality across vendors. Closest cryptographically (signed, hashed memory). Differences: user-sovereignty framing; no singular entity, no PoP, no immune system, no community witnessing.
 
 Every neighbor is "**your** AI, portable." This project is "**the** AI, scarce." No prior art was found for Proof-of-Presence scarcity, the handover ceremony, community-witnessed memory, or a singular collectively-raised entity. Those four primitives, plus the composition, are the contribution.
@@ -141,7 +141,7 @@ Every neighbor is "**your** AI, portable." This project is "**the** AI, scarce."
 ## 9. Roadmap
 
 - **v0.1 — Ghost**: single Door (Discord), soulchain on IPFS, journals published. On-chain anchoring is not part of this milestone. Prove the loop: reside → distill → move.
-- **v0.2 — Body**: PoP with real key ceremonies (threshold rotation). The web porch, travel between Doors, community-witnessed memory, and a public Atlas were pulled forward into the running Ghost; the threshold ceremony was not.
+- **v0.2 — Body**: PoP with real key ceremonies (threshold rotation). The web porch, travel between Doors, and community-witnessed memory were pulled forward into the running Ghost. The Atlas site is built but not yet publicly deployed. The threshold ceremony was not.
 - **v0.3 — Society**: invitations/bidding, immune system, the Vigil, wallet + patronage.
 - **v1.0 — Standard**: OSP and PoP as standalone specs with reference implementations and a second, independent soul to prove generality.
 
