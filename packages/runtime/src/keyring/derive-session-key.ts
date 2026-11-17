@@ -1,5 +1,5 @@
-import { hkdf } from "@noble/hashes/hkdf";
-import { sha512 } from "@noble/hashes/sha512";
+import { hkdf } from "@noble/hashes/hkdf.js";
+import { sha512 } from "@noble/hashes/sha2.js";
 import { publicKeyFromPrivate } from "@npc/osp-core";
 
 import { KeyringError } from "./errors.js";
