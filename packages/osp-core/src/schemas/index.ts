@@ -37,6 +37,8 @@ export {
   RESIDENCY_RE,
   parseResidency
 } from "./envelope.js";
+export { RECORD_TYPES } from "./record-types.js";
+export type { RecordType } from "./record-types.js";
 
 import type { z } from "zod";
 

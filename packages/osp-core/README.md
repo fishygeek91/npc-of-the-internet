@@ -6,7 +6,7 @@ OSP soulchain primitives: Zod record schemas, canonical JSON, Ed25519 signing, C
 
 | Area | Exports |
 |------|---------|
-| Schemas | `RecordSchema`, body schemas (`GenesisBodySchema`, …), `OspRecord` types, `RESIDENCY_RE`, `parseResidency` |
+| Schemas | `RecordSchema`, body schemas (`GenesisBodySchema`, …), `OspRecord` types, `RECORD_TYPES`, `RecordType`, `RESIDENCY_RE`, `parseResidency` |
 | Canonical JSON | `canonicalize` — sorted keys, no whitespace (UTF-16 code-unit order) |
 | Encoding | `encodeBase64Url`, `decodeBase64Url`, `encodePublicKey`, `decodePublicKey`, `encodeSignature`, `decodeSignature` |
 | Ed25519 | `generateKeypair`, `sign`, `verify` |
@@ -18,6 +18,8 @@ OSP soulchain primitives: Zod record schemas, canonical JSON, Ed25519 signing, C
 | CAR | `exportSoulchainCar`, `importSoulchainCar` |
 
 `createRecord` signs with a soul private key. `createRecordWithSigner(fields, signSoul)` is the same sealer with a synchronous soul signer (`(bytes: Uint8Array) => Uint8Array`). Both default `spec` to `OSP_SPEC` (`osp/0.1`).
+
+`RECORD_TYPES` is every envelope `type` (including `tombstone`), in schema order. `RecordType` is that union (`OspRecord["type"]`).
 
 ## Chain verification
 
