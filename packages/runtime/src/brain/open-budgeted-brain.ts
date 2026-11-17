@@ -21,6 +21,11 @@ export type OpenBudgetedBrainOptions = {
    * do not log the tier object.
    */
   createTierBrain?: (tier: BudgetTierConfig) => Brain;
+  /**
+   * Passed to {@link BudgetedBrain}. Runs after the completion lock is released.
+   * The daemon uses it to publish `publicStatus` without taking that lock.
+   */
+  afterExclusive?: () => void;
 };
 
 /**
@@ -72,6 +77,7 @@ export async function openBudgetedBrain(options: OpenBudgetedBrainOptions): Prom
     budgetMicros: options.budget.budgetMicros,
     thresholdMicros: options.budget.thresholdMicros,
     defaultTierName: options.budget.defaultTierName,
-    clock: options.clock
+    clock: options.clock,
+    ...(options.afterExclusive !== undefined ? { afterExclusive: options.afterExclusive } : {})
   });
 }

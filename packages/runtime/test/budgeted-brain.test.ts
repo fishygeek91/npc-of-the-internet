@@ -937,4 +937,75 @@ describe("BudgetedBrain", () => {
     });
     expect(cheap.calls).toHaveLength(1);
   });
+
+  it("runs afterExclusive only after the lock, and a throwing listener still returns text", async () => {
+    dir = await mkdtemp(join(tmpdir(), "npc-budget-"));
+    const ledger = await SpendLedger.open({
+      path: join(dir, "notify.jsonl"),
+      createIfMissing: true
+    });
+    let release: () => void = () => undefined;
+    const block = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let entered = 0;
+    let notifies = 0;
+    let seenTier: string | null = "unset";
+    const free = new FakeBrain(async () => {
+      entered += 1;
+      await block;
+      return { text: "ok", usage: { promptTokens: 0, completionTokens: 0 } };
+    });
+    const brain = new BudgetedBrain({
+      tiers: sampleTiers(),
+      brains: new Map<string, Brain>([
+        ["free", free],
+        ["cheap", new FakeBrain(["cheap"])],
+        ["quality", new FakeBrain(["quality"])]
+      ]),
+      ledger,
+      budgetMicros: 1_000_000n,
+      thresholdMicros: 0n,
+      defaultTierName: "free",
+      clock: () => NOW,
+      afterExclusive: () => {
+        notifies += 1;
+        seenTier = brain.publicStatus().tier;
+      }
+    });
+    const pending = brain.complete([{ role: "user", content: "hi" }]);
+    await vi.waitFor(() => {
+      expect(entered).toBe(1);
+    });
+    expect(notifies).toBe(0);
+    expect(brain.publicStatus()).toMatchObject({
+      sleeping: false,
+      tier: "free",
+      remainingFraction: "1"
+    });
+    release();
+    await expect(pending).resolves.toMatchObject({ text: "ok" });
+    expect(notifies).toBe(1);
+    expect(seenTier).toBe("free");
+
+    const noisy = new BudgetedBrain({
+      tiers: sampleTiers(),
+      brains: new Map<string, Brain>([
+        ["free", new FakeBrain(["still-ok"])],
+        ["cheap", new FakeBrain(["cheap"])],
+        ["quality", new FakeBrain(["quality"])]
+      ]),
+      ledger,
+      budgetMicros: 1_000_000n,
+      thresholdMicros: 0n,
+      defaultTierName: "free",
+      clock: () => NOW,
+      afterExclusive: () => {
+        throw new Error("status publish failed");
+      }
+    });
+    await expect(noisy.complete([{ role: "user", content: "hi" }])).resolves.toMatchObject({
+      text: "still-ok"
+    });
+  });
 });

@@ -32,6 +32,8 @@ describe("formatStatusReply", () => {
     expect(reply).toContain("epoch: 3");
     expect(reply).toContain("session: live");
     expect(reply).toContain("memories: witnessed by this Door's AI witness");
+    expect(reply).toContain("budget: not configured");
+    expect(reply).not.toContain("remaining_fraction");
     expect(reply).not.toMatch(/review|retention/i);
   });
 
@@ -48,6 +50,7 @@ describe("formatStatusReply", () => {
     expect(reply).toContain("epoch: none");
     expect(reply).toContain("session: not live");
     expect(reply).toContain("memories: not witnessed");
+    expect(reply).toContain("budget: not configured");
   });
 });
 
@@ -96,6 +99,8 @@ describe("startDiscordDoor status command", () => {
       }
 
       expect(reply.content).toContain("presence: absent");
+      expect(reply.content).toContain("budget: not configured");
+      expect(reply.content).not.toContain("remaining_fraction");
       expect(reply.content).toContain(`door_id: \`${doorIdForGuild(TEST_GUILD_ID)}\``);
       expect(handle.status().present).toBe(false);
 

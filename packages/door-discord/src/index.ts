@@ -6,6 +6,8 @@ export { DiscordDoorError, operatorNotice } from "./errors.js";
 export { loadDoorKeypairFromPath } from "./load-door-key.js";
 export { DualRateLimiter, TokenBucket } from "./rate-limit.js";
 export type { DualRateLimiterOptions, RateClock } from "./rate-limit.js";
+export { loadDoorBudgetStatus } from "./budget-status.js";
+export type { DoorBudgetStatus } from "./budget-status.js";
 export { formatStatusReply } from "./status.js";
 export type { DoorStatusSnapshot } from "./status.js";
 export { startDiscordDoor, ARRIVED_NOTICE, MOVED_ON_NOTICE } from "./start.js";

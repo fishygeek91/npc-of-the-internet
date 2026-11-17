@@ -63,10 +63,13 @@ services:
       # stale request never fires later); journals go to the shared `published` volume.
       NPC_CONTROL_DIR: /tmp/npc-control
       NPC_JOURNAL_DIR: /data/published/journals
+      # Fraction-only snapshot for Discord `/wanderer status`. Not a Door message.
+      NPC_BUDGET_STATUS_PATH: /data/budget-status/status.json
     volumes:
       - soulchain:/data/soulchain
       - soulchain-ipfs:/data/soulchain-ipfs
       - published:/data/published
+      - budget-status:/data/budget-status
       - ${SOUL_KEY_HOST_PATH}:/run/keys/soul.key:ro
     healthcheck:
       test: ["CMD", "test", "-f", "/tmp/npc-runtime.ready"]
@@ -129,8 +132,10 @@ services:
       DOOR_WITNESS_MODEL: ${DOOR_WITNESS_MODEL:-}
       DOOR_WITNESS_PROVIDER_ALLOWLIST: ${DOOR_WITNESS_PROVIDER_ALLOWLIST:-}
       DOOR_WITNESS_TIMEOUT_MS: ${DOOR_WITNESS_TIMEOUT_MS:-}
+      NPC_BUDGET_STATUS_PATH: /data/budget-status/status.json
     volumes:
       - ${DOOR_KEY_HOST_PATH}:/run/keys/door.key:ro
+      - budget-status:/data/budget-status:ro
     expose:
       - "9090"
     healthcheck:
@@ -376,5 +381,6 @@ volumes:
   soulchain:
   soulchain-ipfs:
   published:
+  budget-status:
   caddy-data:
   caddy-config:

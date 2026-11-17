@@ -56,6 +56,12 @@ export type BudgetedBrainOptions = {
   clock: IsoClock;
   /** Kind used by {@link BudgetedBrain.complete}. Default `chat`. */
   callKind?: CallKind;
+  /**
+   * Runs after the completion lock is released, including when the call threw.
+   * Must not throw and must not start another completion. The daemon publishes
+   * {@link publicStatus} from here so that read stays off the lock.
+   */
+  afterExclusive?: () => void;
 };
 
 /**
@@ -93,6 +99,7 @@ export class BudgetError extends BrainError {
  * {@link publicStatus} and {@link sleepDraft} do not take the completion lock,
  * so a Door status read is not stuck behind a provider call. The lock still
  * serializes completions, including distill. That is acceptable for v1.
+ * `afterExclusive` runs only after that lock is released.
  */
 export class BudgetedBrain implements Brain {
   private readonly tiers: readonly PricedTier[];
@@ -103,6 +110,7 @@ export class BudgetedBrain implements Brain {
   private readonly defaultTierName: string;
   private readonly clock: IsoClock;
   private readonly callKind: CallKind;
+  private readonly afterExclusive: (() => void) | undefined;
   /** Set when a ledger write failed and the miss could not be persisted. */
   private degraded = false;
   private gate: Promise<void> = Promise.resolve();
@@ -157,6 +165,7 @@ export class BudgetedBrain implements Brain {
     this.defaultTierName = options.defaultTierName;
     this.clock = options.clock;
     this.callKind = options.callKind ?? "chat";
+    this.afterExclusive = options.afterExclusive;
   }
 
   /**
@@ -382,7 +391,17 @@ export class BudgetedBrain implements Brain {
       () => undefined,
       () => undefined
     );
-    return run;
+    const notify = this.afterExclusive;
+    if (notify === undefined) {
+      return run;
+    }
+    return run.finally(() => {
+      try {
+        notify();
+      } catch {
+        // A status publish must not change the completion result.
+      }
+    });
   }
 }
 
