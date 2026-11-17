@@ -33,7 +33,7 @@ const webDoorConfigSchema = z.object({
   globalPerMinute: z.number().int().positive(),
   dailyMax: z.number().int().positive(),
   trustProxy: z.boolean(),
-  atlasApiUrl: z.string().url().optional()
+  atlasApiUrl: z.url().optional()
 });
 
 /** Validated website Door configuration. */

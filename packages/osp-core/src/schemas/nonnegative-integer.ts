@@ -15,13 +15,18 @@ const nonnegativeIntegerSchemas = new WeakSet<object>();
  * `z.toJSONSchema` then emits `maximum: 9007199254740991`. Seq and epoch
  * fields keep the previous check so record verification does not change.
  *
+ * A non-integer fails with the message "Expected integer". Accept and reject
+ * are the same as before that message was set.
+ *
  * @returns A number schema that accepts only integers greater than or equal to zero.
  */
 export function nonnegativeInteger(): z.ZodType<number> {
   const schema = z
     .number()
     .nonnegative()
-    .refine((value: number) => Number.isInteger(value));
+    .refine((value: number) => Number.isInteger(value), {
+      error: "Expected integer"
+    });
   nonnegativeIntegerSchemas.add(schema);
   return schema;
 }

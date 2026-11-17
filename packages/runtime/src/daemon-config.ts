@@ -13,7 +13,7 @@ const daemonConfigSchema = z.object({
   soulKeyPath: z.string().min(1),
   soulchainDir: z.string().min(1),
   soulchainIpfsDir: z.string().min(1).optional(),
-  doorUrls: z.array(z.string().url()).min(1),
+  doorUrls: z.array(z.url()).min(1),
   preferredDoorId: z.string().min(1).optional(),
   doorPublicKeys: z
     .record(z.string(), z.instanceof(Uint8Array))
