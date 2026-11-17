@@ -89,13 +89,13 @@ One script element plus one config object. Embedders do not install a framework.
 ></script>
 ```
 
-`data-atlas-url` is required (absolute `http:` or `https:` URL). `data-porch-url` is optional and is only a link, shown when the verified presence door is the web porch. `data-mount` defaults to `#wanderer-shrine`.
+`data-atlas-url` is required (absolute `http:` or `https:` URL). It may be an Atlas origin or a porch origin that serves `GET /chain/export` (the web porch proxies that path to its server-side Atlas). `data-porch-url` is optional and is only a link, shown when the verified presence door is the web porch. `data-mount` defaults to `#wanderer-shrine`.
 
 The same fields MAY be supplied as `globalThis.WANDERER_SHRINE` before the script runs. When both are set, the object wins. The object MAY also pin keys:
 
 | Field | Required | Meaning |
 |-------|----------|---------|
-| `atlasUrl` | yes | Atlas origin serving `GET /chain/export`. |
+| `atlasUrl` | yes | Origin serving `GET /chain/export` (an Atlas, or a porch that proxies it). |
 | `porchUrl` | no | Link only. |
 | `mount` | no | CSS selector. Default `#wanderer-shrine`. |
 | `soulPublicKey` | no | Base64url pin. If set, genesis `soul_pubkey` must equal it. |
@@ -164,7 +164,7 @@ The porch sends `If-None-Match` only while it still holds a verified export. A f
 
 A failed Wanderer line stays on screen (it is not dropped) with the visible label `verification failed`. It MUST NOT use the verified-speech treatment. Visitor lines and system notices have no session signature and MUST NOT use that treatment either.
 
-The porch page pins `soulPublicKey` and the door public keys needed to verify the chain, and points `atlasUrl` at the same export. It does not ask the visitor to trust the server's "this is the Wanderer" bit.
+The porch page pins `soulPublicKey` and the door public keys needed to verify the chain. `atlasUrl` is the porch's own origin when `ATLAS_API_URL` is set: the browser fetches `GET /chain/export` from the porch, and the porch forwards only `If-None-Match` to Atlas. The browser is never given the server-side Atlas URL. It does not ask the visitor to trust the server's "this is the Wanderer" bit.
 
 The porch loads those pins from its own origin (`GET /api/verify-pins`: soul public key, this door's public key, door id, and `atlasUrl`). It does not take the soul key or this door's key from the export. The export's entry for this door id must equal the pin; every other door id is taken from the export so a chain that has visited other Doors can still verify. A mismatch, a missing genesis, or a genesis `soul_pubkey` other than the pin fails every Wanderer line. The page refetches the export when the tab becomes visible and at least every 60 seconds, and SHOULD send `If-None-Match`, keeping the last verified snapshot on `304`.
 
