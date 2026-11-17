@@ -8,6 +8,7 @@ import { buildWitnessUserPrompt, WITNESS_SYSTEM_PROMPT } from "../src/prompts/wi
 import {
   createAiWitness,
   loadWitnessConfig,
+  MAX_WITNESS_RESPONSE_BYTES,
   MAX_WITNESS_TIMEOUT_MS,
   openAiCompatComplete,
   parseWitnessReply,
@@ -592,5 +593,36 @@ describe("openAiCompatComplete", () => {
         })
       ).rejects.toThrow();
     }
+  });
+
+  it("rejects an oversized model body and the witness throws rather than declining", async () => {
+    const fetchImpl = (async () =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new Uint8Array([1]));
+          }
+        }),
+        { status: 200, headers: { "content-length": String(MAX_WITNESS_RESPONSE_BYTES + 1) } }
+      )) as typeof fetch;
+    const complete = openAiCompatComplete({
+      baseUrl: "https://api.example/v1",
+      apiKey: "sk-test",
+      model: "m",
+      fetchImpl
+    });
+    const error = await createAiWitness({ complete, attempts: 1 })(INPUT).then(
+      () => {
+        throw new Error("expected a cap failure");
+      },
+      (caught: unknown) => caught
+    );
+    expect(error).toBeInstanceOf(Error);
+    if (!(error instanceof Error)) {
+      throw new Error("expected Error");
+    }
+    expect(error.message).toBe("witness model response exceeds cap");
+    expect(error.cause).toBeUndefined();
+    expect(error.message).not.toContain("sk-test");
   });
 });

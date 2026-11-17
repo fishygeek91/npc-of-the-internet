@@ -81,9 +81,20 @@ function readSecretFromFile(path: string, fileVarName: string): string {
 
 /**
  * Resolve a secret from either a direct env var or a companion `*_FILE` path.
- * Exactly one must be set (non-empty).
+ * Exactly one must be set (non-empty). Treasury-lite calls this with the env
+ * var named by a tier's `apiKeyEnv`, so the tier JSON never carries a key.
+ *
+ * @param env - Environment map. Callers pass `process.env` or a test object.
+ * @param name - Env var that holds the secret directly.
+ * @param fileName - Companion var naming a file that holds the secret.
+ * @throws {BrainError} When neither or both are set, or the file cannot be read.
+ *   The message names the env var and never includes the secret.
  */
-function resolveSecretFromEnv(env: NodeJS.ProcessEnv, name: string, fileName: string): string {
+export function resolveSecretFromEnv(
+  env: NodeJS.ProcessEnv,
+  name: string,
+  fileName: string
+): string {
   const direct = env[name];
   const filePath = env[fileName];
   const hasDirect = isEnvSet(direct);

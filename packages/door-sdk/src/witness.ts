@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 
 import { WITNESS_SYSTEM_PROMPT, buildWitnessUserPrompt } from "./prompts/witness.js";
+import { readBodyCapped, ResponseTooLargeError } from "./read-body.js";
 import type { ResidencyLine } from "./residency-record.js";
 import { WitnessReasonSchema, type WitnessReason } from "./schemas.js";
 
@@ -141,6 +142,18 @@ export type OpenAiCompatSettings = {
   fetchImpl?: typeof fetch;
 };
 
+/**
+ * Max OpenAI-compatible witness response body, in bytes.
+ *
+ * A verdict is a small JSON object (`max_tokens` defaults to 2048), but a
+ * reasoning model may preface it. 4 MiB is the same bound the Wanderer's
+ * OpenAI-compatible Brain uses for an operator-configured model response.
+ * Overflow throws `Error` ("witness model response exceeds cap") with no cause.
+ * {@link createAiWitness} retries that, then the Door reports `witness_unavailable`.
+ * It is never turned into a decline.
+ */
+export const MAX_WITNESS_RESPONSE_BYTES = 4 * 1024 * 1024;
+
 /** {@link CompleteFn} over any OpenAI chat-completions-compatible HTTP API. */
 export function openAiCompatComplete(settings: OpenAiCompatSettings): CompleteFn {
   const fetchImpl = settings.fetchImpl ?? fetch;
@@ -158,6 +171,7 @@ export function openAiCompatComplete(settings: OpenAiCompatSettings): CompleteFn
     if (settings.providerAllowlist !== undefined && settings.providerAllowlist.length > 0) {
       body.provider = { only: settings.providerAllowlist };
     }
+    const capAbort = new AbortController();
     const response = await fetchImpl(url, {
       method: "POST",
       headers: {
@@ -165,26 +179,52 @@ export function openAiCompatComplete(settings: OpenAiCompatSettings): CompleteFn
         authorization: `Bearer ${settings.apiKey}`
       },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(settings.timeoutMs ?? 60_000)
+      signal: AbortSignal.any([AbortSignal.timeout(settings.timeoutMs ?? 60_000), capAbort.signal])
     });
+    let bytes: Uint8Array;
+    try {
+      bytes = await readBodyCapped(response, MAX_WITNESS_RESPONSE_BYTES, capAbort);
+    } catch (error) {
+      if (error instanceof ResponseTooLargeError) {
+        // No cause: a socket error can mention the request URL or headers.
+        throw new Error("witness model response exceeds cap");
+      }
+      throw error;
+    }
     if (!response.ok) {
       // Never echo the response body: providers sometimes reflect request headers.
       throw new Error(`witness model HTTP ${String(response.status)}`);
     }
-    const json = (await response.json()) as {
-      choices?: Array<{ message?: { content?: unknown }; finish_reason?: unknown }>;
-    };
-    const choice = json.choices?.[0];
-    if (choice?.finish_reason === "length") {
-      // A cut-off reply may end inside the reasoning: never parse it for a verdict.
-      throw new Error("witness model reply was truncated (max_tokens)");
-    }
-    const content = choice?.message?.content;
-    if (typeof content !== "string") {
-      throw new Error("witness model returned no message content");
-    }
-    return content;
+    const parsed: unknown = JSON.parse(new TextDecoder().decode(bytes));
+    return witnessMessageContent(parsed);
   };
+}
+
+/** Pull assistant text out of a chat-completions JSON body. Throws when it is unusable. */
+function witnessMessageContent(json: unknown): string {
+  if (typeof json !== "object" || json === null || !("choices" in json)) {
+    throw new Error("witness model returned no message content");
+  }
+  const choices = json.choices;
+  if (!Array.isArray(choices)) {
+    throw new Error("witness model returned no message content");
+  }
+  const choice: unknown = choices[0];
+  if (typeof choice !== "object" || choice === null) {
+    throw new Error("witness model returned no message content");
+  }
+  if ("finish_reason" in choice && choice.finish_reason === "length") {
+    // A cut-off reply may end inside the reasoning: never parse it for a verdict.
+    throw new Error("witness model reply was truncated (max_tokens)");
+  }
+  if (!("message" in choice) || typeof choice.message !== "object" || choice.message === null) {
+    throw new Error("witness model returned no message content");
+  }
+  const message = choice.message;
+  if (!("content" in message) || typeof message.content !== "string") {
+    throw new Error("witness model returned no message content");
+  }
+  return message.content;
 }
 
 /** Error naming the env var at fault (never a secret value). */

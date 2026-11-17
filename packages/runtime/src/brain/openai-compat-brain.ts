@@ -1,3 +1,4 @@
+import { readBodyCapped, ResponseTooLargeError } from "@npc/door-sdk";
 import { z } from "zod";
 
 import type { BrainConfig, OpenAICompatBrainConfig } from "./config.js";
@@ -8,6 +9,16 @@ import { ZERO_BRAIN_USAGE } from "./types.js";
 
 const MAX_RETRIES = 2;
 const BACKOFF_BASE_MS = 200;
+
+/**
+ * Max OpenAI-compatible chat-completion response body, in bytes.
+ *
+ * Default output is 1024 tokens. 4 MiB still fits a long reasoning trace or a
+ * provider payload with extra JSON, and it is the limit read before `JSON.parse`.
+ * Overflow throws {@link BrainError} (`provider`) whose `cause` is a plain
+ * `Error` and carries no request headers or parameters.
+ */
+export const MAX_PROVIDER_RESPONSE_BYTES = 4 * 1024 * 1024;
 
 const chatCompletionResponseSchema = z.object({
   choices: z
@@ -193,6 +204,7 @@ export class OpenAICompatBrain implements Brain {
 
   private async once(body: ChatCompletionBody): Promise<BrainResult> {
     const url = chatCompletionsUrl(this.config.baseUrl);
+    const capAbort = new AbortController();
     let response: Response;
     try {
       response = await this.fetchImpl(url, {
@@ -202,7 +214,7 @@ export class OpenAICompatBrain implements Brain {
           "Content-Type": "application/json"
         },
         body: JSON.stringify(body),
-        signal: AbortSignal.timeout(this.config.timeoutMs)
+        signal: AbortSignal.any([AbortSignal.timeout(this.config.timeoutMs), capAbort.signal])
       });
     } catch (error) {
       if (isAbortError(error)) {
@@ -215,7 +227,27 @@ export class OpenAICompatBrain implements Brain {
       });
     }
 
-    const bodyText = await response.text();
+    let bodyText: string;
+    try {
+      const bytes = await readBodyCapped(response, MAX_PROVIDER_RESPONSE_BYTES, capAbort);
+      bodyText = new TextDecoder().decode(bytes);
+    } catch (error) {
+      if (error instanceof ResponseTooLargeError) {
+        throw new BrainError(
+          `OpenAI-compatible API response exceeds ${String(error.maxBytes)} bytes`,
+          "provider",
+          { cause: new Error("response body exceeds cap") }
+        );
+      }
+      if (isAbortError(error)) {
+        throw new BrainError("OpenAI-compatible API request timed out", "timeout", {
+          cause: error
+        });
+      }
+      throw new BrainError("OpenAI-compatible API request failed", "unavailable", {
+        cause: error
+      });
+    }
     if (!response.ok) {
       const reason = reasonFromHttpStatus(response.status, bodyText);
       const snippet = errorBodySnippet(bodyText);

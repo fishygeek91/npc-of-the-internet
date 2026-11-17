@@ -5,6 +5,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { Logger } from "pino";
 
 import type { WandererWhereabouts } from "./atlas.js";
+import { WebDoorError } from "./errors.js";
 import type { Room, RoomEvent, RoomMessage } from "./room.js";
 import { DailyBudget, VisitorRateLimiter, type MsClock } from "./rate-limit.js";
 import { clientIp, clientKey, isAddressed, parseSay, VisitorIds } from "./visitor.js";
@@ -246,7 +247,15 @@ export class VisitorSite {
       messages: this.options.room.recent(STATE_MESSAGES)
     };
     if (!present) {
-      const where = (await this.options.whereabouts?.()) ?? null;
+      let where: WandererWhereabouts | null = null;
+      try {
+        where = (await this.options.whereabouts?.()) ?? null;
+      } catch (error) {
+        // An oversized Atlas body is a failed lookup, not a broken porch.
+        if (!(error instanceof WebDoorError) || error.code !== "payload_too_large") {
+          throw error;
+        }
+      }
       body.wanderer = { last_seen_here: this.options.lastSeenHere(), ...(where ?? {}) };
     }
     this.json(res, 200, body);
