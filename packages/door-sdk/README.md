@@ -81,7 +81,7 @@ const policy: HostPolicy = {
 
 - **Schemas** — Zod validators for every request/response and WebSocket frame (`AttestRequestSchema` requires `text` for `memory` and forbids it otherwise, ≤ `MEMORY_ATTEST_TEXT_MAX` = 32 000 code points; `HelloResponseSchema.capabilities` accepts unknown strings for forward compatibility; `WitnessReasonSchema`). `DOOR_PROTOCOL_VERSION` = `door/0.2`.
 - **Signing** — canonical payload builders (`attestSigningPayload`, `heartbeatSigningPayload`, `outboundSigningPayload`, `sessionBindSigningPayload`, response payloads), `signDoorCosig` / `verifyDoorCosig` over raw `core` bytes. Attest `text` is not in the request signature: `core` binds it by hash.
-- **`DoorError`** — typed errors with stable `code`, `httpStatus` and optional `details`.
+- **`DoorError`** — typed errors with stable `code` (`DoorErrorCode`, the `DOOR_ERROR_CODES` list), `httpStatus` and optional `details`. `fromCode` takes that union; `defaultHttpStatusForDoorError` switches on every member. `doorErrorFromWire` keeps a known wire code and turns any other string into `door_unavailable` with `details.unrecognized_code` (message and HTTP status kept).
 - **`readBodyCapped` / `ResponseTooLargeError`** — stream a `Response` body up to a caller-supplied cap (`Content-Length` above the cap fails before the body is kept; a streamed body is aborted once the running total exceeds the cap; exactly the cap is returned). Callers map `ResponseTooLargeError` with `instanceof`.
 
 ### Transports

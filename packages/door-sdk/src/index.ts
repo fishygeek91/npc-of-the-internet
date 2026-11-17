@@ -96,7 +96,15 @@ export {
 
 export type { AttestSigningFields } from "./signing.js";
 
-export { DoorError, defaultHttpStatusForDoorError, doorErrorToBody } from "./errors.js";
+export {
+  DoorError,
+  DOOR_ERROR_CODES,
+  defaultHttpStatusForDoorError,
+  doorErrorFromWire,
+  doorErrorToBody,
+  isDoorErrorCode
+} from "./errors.js";
+export type { DoorErrorCode } from "./errors.js";
 export { readBodyCapped, ResponseTooLargeError } from "./read-body.js";
 
 export { InProcessDoorConnection } from "./transports/in-process.js";

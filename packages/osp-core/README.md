@@ -13,6 +13,7 @@ OSP soulchain primitives: Zod record schemas, canonical JSON, Ed25519 signing, C
 | CIDs | `computeCid`, `computeCidFromCanonicalBytes`, `asCid`, `parseCid`, `isValidCid` — dag-json codec + sha2-256 → CIDv1 base32 strings (typically `bagu…`, not `bafy…` which is dag-pb) |
 | Brands | `Cid`, `SoulPublicKey`, `Ed25519Signature`, `Base64Url`, `Residency` — see below |
 | Records | `createRecord`, `createRecordWithSigner`, `verifyRecord`, `signCore`, `corePayload`, `soulPayload` |
+| Shard text | `SHARD_TEXT_MAX_CODE_POINTS` (500), `countCodePoints` — one length for schema and side-blob encoding |
 | Door keys | `parseDoorPublicKeyBinding`, `parseDoorPublicKeyMap`, `hasDoorPublicKeys` — `doorId=base64url` bindings |
 | Chain verify | `verifyRecords`, `verifyChain`, `ChainRule`, `ChainFailure`, `VerifyChainResult`, `VerifyChainOptions` |
 | Pin manifest | `buildUnsignedPinManifest`, `signPinManifest`, `verifyPinManifest`, `encodePinManifest`, `decodePinManifest`, `computeManifestCid`, `listRecordCidsFromIpfsDir`, `buildAndSignPinManifestForIpfsDir` |
@@ -54,7 +55,7 @@ Parsed record CID fields, `soul_pubkey` / `session_pubkey`, `sig`, and `cosigner
 - After a mid-chain `schema_violation`, later `seq_gap` / `broken_prev_link` entries may appear as cascade noise; check rule presence rather than assuming a minimal `failures` list.
 | SoulStore | `SoulStore`, `FileSoulStore`, `IpfsSoulStore`, `DualSoulStore`, `HeadInfo`, `AppendResult`, open-option types |
 | Replication | `enqueueReplication`, `ackReplication`, `readReplicationJournal`, `recoverReplicationJournal`, `listPendingReplication`, `listUnackedForTarget`, enqueue/ack types |
-| Errors | `SchemaError`, `VerificationError`, `EncodingError`, `PrivateKeyParseError`, `StorageError`, `CorruptionError`, `ConcurrentAppendError`, `ChainMismatchError` |
+| Errors | `SchemaError`, `VerificationError` (`reason`: `VERIFICATION_REASONS`), `EncodingError`, `PrivateKeyParseError`, `StorageError`, `CorruptionError`, `ConcurrentAppendError`, `ChainMismatchError` |
 
 ## SoulStore
 
@@ -72,7 +73,9 @@ Parsed record CID fields, `soul_pubkey` / `session_pubkey`, `sig`, and `cosigner
 
 **Canonical bytes:** only canonical JSON (from `canonicalize`) is written to `chain.jsonl` and blob files; CIDs are computed from those bytes.
 
-**Append verification:** `append` runs the full chain rules (mixed spec, drift evidence, tombstone references, PoP continuity/conflicts, signatures, cosigners) for the candidate against the loaded chain **before** writing anything, so an append can never brick the next open. Structural rule failures throw `ChainMismatchError`; other chain-rule failures throw `VerificationError` (`append rejected: <rule> …`); per-record signature/schema errors keep their original types.
+**Append verification:** `append` runs the full chain rules (mixed spec, drift evidence, tombstone references, PoP continuity/conflicts, signatures, cosigners) for the candidate against the loaded chain **before** writing anything, so an append can never brick the next open. Structural rule failures throw `ChainMismatchError`; other chain-rule failures throw `VerificationError` with `reason: "append_rejected"` (`append rejected: <rule> …`); per-record signature/schema errors keep their original types.
+
+`VerificationError.reason` is `soul_sig`, `cosigner`, `missing_door_keys`, `cid_mismatch`, `pin_manifest_sig`, or `append_rejected`. Chain verification maps `soul_sig` to `bad_soul_sig` and `cosigner` / `missing_door_keys` to `missing_cosigner`. It rethrows `cid_mismatch` (that check compares a caller-supplied CID; it is not a chain rule). The human-readable `message` is unchanged and is what failure text copies.
 
 **Blob writes:** temp file → fsync → rename → directory fsync. A pre-existing blob whose bytes do not hash to its CID (torn by a crash) is replaced atomically; an existing identical blob is fsynced before returning.
 

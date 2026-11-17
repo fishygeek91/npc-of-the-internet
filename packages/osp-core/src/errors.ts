@@ -19,12 +19,40 @@ export class SchemaError extends OspCoreError {
   }
 }
 
+/**
+ * Why {@link VerificationError} was thrown.
+ *
+ * `soul_sig`, `cosigner`, `missing_door_keys`, and `cid_mismatch` come from
+ * {@link verifyRecord}. Chain verification maps the first three onto
+ * `ChainRule`s and rethrows `cid_mismatch` (it is not a chain rule).
+ * `pin_manifest_sig` is a pin-manifest soul signature. `append_rejected` is an
+ * append candidate that failed a non-structural chain rule.
+ */
+export const VERIFICATION_REASONS = [
+  "soul_sig",
+  "cosigner",
+  "missing_door_keys",
+  "cid_mismatch",
+  "pin_manifest_sig",
+  "append_rejected"
+] as const;
+
+/** Discriminant for {@link VerificationError}. */
+export type VerificationReason = (typeof VERIFICATION_REASONS)[number];
+
 /** Thrown when signature or chain verification fails. */
 export class VerificationError extends OspCoreError {
   readonly code = "VERIFICATION_ERROR";
+  readonly reason: VerificationReason;
 
-  constructor(message: string) {
+  /**
+   * @param message - Human-readable failure. Callers that surface it (chain
+   *   failure text, CLI) keep this string; classification uses `reason`.
+   * @param reason - Closed discriminant. See {@link VERIFICATION_REASONS}.
+   */
+  constructor(message: string, reason: VerificationReason) {
     super(message);
+    this.reason = reason;
   }
 }
 

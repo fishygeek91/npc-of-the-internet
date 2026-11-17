@@ -1,7 +1,7 @@
 import { decodePublicKey, decodeSignature, verify } from "@npc/osp-core";
 import type { z } from "zod";
 
-import { DoorError } from "../errors.js";
+import { doorErrorFromWire, DoorError } from "../errors.js";
 import {
   AttestResponseSchema,
   DoorErrorBodySchema,
@@ -206,7 +206,7 @@ export class HttpDoorConnection implements DoorConnection {
     const parsed = DoorErrorBodySchema.safeParse(json);
     if (parsed.success) {
       const { code, message, details } = parsed.data.error;
-      return new DoorError(code, message, httpStatus, details);
+      return doorErrorFromWire(code, message, httpStatus, details);
     }
     return new DoorError(
       "door_unavailable",

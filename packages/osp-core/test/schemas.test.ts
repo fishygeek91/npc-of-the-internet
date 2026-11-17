@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { encodePublicKey, encodeSignature } from "../src/encoding/base64url.js";
+import { SHARD_TEXT_MAX_CODE_POINTS } from "../src/shard-bounds.js";
 import { RecordSchema } from "../src/schemas/index.js";
 
 /** Deterministic 32-byte test public keys (distinct fill bytes). */
@@ -118,7 +119,12 @@ describe("RecordSchema", () => {
     expect(result.success).toBe(false);
     if (!result.success) {
       const messages = result.error.issues.map((issue) => issue.message);
-      expect(messages.some((message) => message.includes("500 Unicode code points"))).toBe(true);
+      expect(SHARD_TEXT_MAX_CODE_POINTS).toBe(500);
+      expect(
+        messages.some((message) =>
+          message.includes(`${String(SHARD_TEXT_MAX_CODE_POINTS)} Unicode code points`)
+        )
+      ).toBe(true);
     }
   });
 
