@@ -6,6 +6,7 @@ import { computeCidFromCanonicalBytes, CidSchema } from "../crypto/cid.js";
 import { sign, verify } from "../crypto/ed25519.js";
 import { decodeSignature, encodeSignature } from "../encoding/base64url.js";
 import { EncodingError, SchemaError, VerificationError } from "../errors.js";
+import { nonnegativeInteger } from "../schemas/nonnegative-integer.js";
 import { bytesEqual } from "../store/fsync.js";
 
 /** Pin manifest format version per spec/osp/ipfs-store.md §4.1. */
@@ -53,7 +54,7 @@ const UnsignedPinManifestSchema = z
   .object({
     osp_pin_manifest: z.literal(OSP_PIN_MANIFEST_VERSION),
     head: CidSchema,
-    seq: z.number().int().nonnegative(),
+    seq: nonnegativeInteger(),
     genesis: CidSchema,
     records: z.array(CidSchema),
     generated_at: z.string().min(1),

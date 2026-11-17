@@ -16,6 +16,7 @@ import {
   TransactionBodySchema
 } from "./body.js";
 import { validateDagJsonReservedForm } from "./dag-json-reserved.js";
+import { nonnegativeInteger } from "./nonnegative-integer.js";
 import { validateNoProtoKeys } from "./proto-key.js";
 
 /** Residency descriptor format: `door:<platform>:<door-id>/epoch:<n>`. */
@@ -73,7 +74,7 @@ export function parseResidency(residency: string): { doorId: string; epoch: numb
 export const EnvelopeFieldsSchema = z
   .object({
     spec: z.enum([OSP_SPEC_V01, OSP_SPEC_V02]),
-    seq: z.number().int().nonnegative(),
+    seq: nonnegativeInteger(),
     prev: CidSchema.nullable(),
     residency: z.string().nullable(),
     cosigners: z.array(z.string()),
