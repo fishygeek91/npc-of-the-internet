@@ -21,18 +21,6 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const CODE_EXT = new Set([".ts", ".mts", ".cts", ".js", ".mjs", ".cjs", ".tsx"]);
 const DEP_SECTIONS = ["dependencies", "devDependencies", "peerDependencies"];
-
-/**
- * @typedef {{
- *   rootRel: string,
- *   walkRels: readonly string[],
- *   allowedNpc: ReadonlySet<string>,
- *   checkManifest: boolean,
- *   escapeReason: string
- * }} Scope
- */
-
-/** @type {readonly Scope[]} */
 const SCOPES = [
   {
     rootRel: "packages/osp-core",
@@ -57,14 +45,6 @@ const SCOPES = [
   }
 ];
 
-/**
- * @typedef {{ source: string, i: number, line: number, n: number }} Cursor
- */
-
-/**
- * @param {Cursor} cursor
- * @param {number} count
- */
 function advance(cursor, count) {
   const end = Math.min(cursor.n, cursor.i + count);
   while (cursor.i < end) {
@@ -73,33 +53,21 @@ function advance(cursor, count) {
   }
 }
 
-/**
- * @param {string} char
- */
 function isIdentStart(char) {
   return (
     (char >= "A" && char <= "Z") || (char >= "a" && char <= "z") || char === "_" || char === "$"
   );
 }
 
-/**
- * @param {string} char
- */
 function isIdentPart(char) {
   return isIdentStart(char) || (char >= "0" && char <= "9");
 }
 
-/**
- * @param {Cursor} cursor
- */
 function skipLineComment(cursor) {
   advance(cursor, 2);
   while (cursor.i < cursor.n && cursor.source[cursor.i] !== "\n") advance(cursor, 1);
 }
 
-/**
- * @param {Cursor} cursor
- */
 function skipBlockComment(cursor) {
   advance(cursor, 2);
   while (
@@ -111,18 +79,11 @@ function skipBlockComment(cursor) {
   if (cursor.i < cursor.n) advance(cursor, 2);
 }
 
-/**
- * @param {Cursor} cursor
- */
 function skipWhitespaceAndComments(cursor) {
   while (cursor.i < cursor.n) {
     const char = cursor.source[cursor.i];
     const next = cursor.source[cursor.i + 1];
-    if (char === " " || char === "\t" || char === "\r" || char === "\f") {
-      advance(cursor, 1);
-      continue;
-    }
-    if (char === "\n") {
+    if (char === " " || char === "\t" || char === "\r" || char === "\f" || char === "\n") {
       advance(cursor, 1);
       continue;
     }
@@ -138,12 +99,6 @@ function skipWhitespaceAndComments(cursor) {
   }
 }
 
-/**
- * Read a static specifier quote after the cursor is on the opening quote.
- * Returns null (and rewinds) when the quote is not a static string.
- * @param {Cursor} cursor
- * @returns {string | null}
- */
 function readQuoted(cursor) {
   const quote = cursor.source[cursor.i];
   if (quote !== '"' && quote !== "'" && quote !== "`") return null;
@@ -156,8 +111,7 @@ function readQuoted(cursor) {
     if (char === "\\") {
       advance(cursor, 1);
       if (cursor.i >= cursor.n) break;
-      const escaped = cursor.source[cursor.i] ?? "";
-      value += escaped;
+      value += cursor.source[cursor.i] ?? "";
       advance(cursor, 1);
       continue;
     }
@@ -178,17 +132,25 @@ function readQuoted(cursor) {
   return null;
 }
 
-/**
- * @param {Cursor} cursor
- * @param {string} word
- * @param {{ line: number, specifier: string }[]} found
- */
+function takeCallSpecifier(cursor, found, savedI, savedLine) {
+  advance(cursor, 1);
+  skipWhitespaceAndComments(cursor);
+  const openLine = cursor.line;
+  const specifier = readQuoted(cursor);
+  if (specifier !== null) found.push({ line: openLine, specifier });
+  else {
+    cursor.i = savedI;
+    cursor.line = savedLine;
+  }
+}
+
 function takeSpecifier(cursor, word, found) {
   const savedI = cursor.i;
   const savedLine = cursor.line;
   skipWhitespaceAndComments(cursor);
   const specLine = cursor.line;
-  if (word === "from") {
+  const char = cursor.source[cursor.i];
+  if (word === "from" || (word === "import" && (char === '"' || char === "'" || char === "`"))) {
     const specifier = readQuoted(cursor);
     if (specifier !== null) found.push({ line: specLine, specifier });
     else {
@@ -197,50 +159,15 @@ function takeSpecifier(cursor, word, found) {
     }
     return;
   }
-  if (word === "import" && cursor.source[cursor.i] === "(") {
-    advance(cursor, 1);
-    skipWhitespaceAndComments(cursor);
-    const openLine = cursor.line;
-    const specifier = readQuoted(cursor);
-    if (specifier !== null) found.push({ line: openLine, specifier });
-    else {
-      cursor.i = savedI;
-      cursor.line = savedLine;
-    }
-    return;
-  }
-  if (
-    word === "import" &&
-    (cursor.source[cursor.i] === '"' ||
-      cursor.source[cursor.i] === "'" ||
-      cursor.source[cursor.i] === "`")
-  ) {
-    const specifier = readQuoted(cursor);
-    if (specifier !== null) found.push({ line: specLine, specifier });
-    return;
-  }
-  if (word === "require" && cursor.source[cursor.i] === "(") {
-    advance(cursor, 1);
-    skipWhitespaceAndComments(cursor);
-    const openLine = cursor.line;
-    const specifier = readQuoted(cursor);
-    if (specifier !== null) found.push({ line: openLine, specifier });
-    else {
-      cursor.i = savedI;
-      cursor.line = savedLine;
-    }
+  if ((word === "import" || word === "require") && char === "(") {
+    takeCallSpecifier(cursor, found, savedI, savedLine);
     return;
   }
   cursor.i = savedI;
   cursor.line = savedLine;
 }
 
-/**
- * Skip a string. Template `${...}` is scanned as code.
- * @param {Cursor} cursor
- * @param {string} quote
- * @param {{ line: number, specifier: string }[]} found
- */
+/** Skip a string. Template `${...}` is scanned as code. */
 function skipString(cursor, quote, found) {
   advance(cursor, 1);
   while (cursor.i < cursor.n) {
@@ -260,11 +187,6 @@ function skipString(cursor, quote, found) {
   }
 }
 
-/**
- * @param {Cursor} cursor
- * @param {{ line: number, specifier: string }[]} found
- * @param {boolean} stopOnBrace
- */
 function scanCode(cursor, found, stopOnBrace) {
   let depth = 0;
   while (cursor.i < cursor.n) {
@@ -319,15 +241,10 @@ function scanCode(cursor, found, stopOnBrace) {
 export function findStaticSpecifiers(source) {
   /** @type {{ line: number, specifier: string }[]} */
   const found = [];
-  const cursor = { source, i: 0, line: 1, n: source.length };
-  scanCode(cursor, found, false);
+  scanCode({ source, i: 0, line: 1, n: source.length }, found, false);
   return found;
 }
 
-/**
- * @param {string} specifier
- * @param {ReadonlySet<string>} allowed
- */
 function isAllowedNpc(specifier, allowed) {
   for (const name of allowed) {
     if (specifier === name || specifier.startsWith(`${name}/`)) return true;
@@ -335,9 +252,6 @@ function isAllowedNpc(specifier, allowed) {
   return false;
 }
 
-/**
- * @param {string} specifier
- */
 function isRelativeSpecifier(specifier) {
   return (
     specifier.startsWith("./") ||
@@ -347,31 +261,16 @@ function isRelativeSpecifier(specifier) {
   );
 }
 
-/**
- * @param {string} file
- * @param {string} specifier
- * @param {string} boundary
- */
 function escapesBoundary(file, specifier, boundary) {
   if (!isRelativeSpecifier(specifier)) return false;
-  const resolved = resolve(dirname(file), specifier);
-  const rel = relative(boundary, resolved);
+  const rel = relative(boundary, resolve(dirname(file), specifier));
   return rel.startsWith("..") || isAbsolute(rel);
 }
 
-/**
- * @param {string} root
- * @param {string} file
- */
 function displayPath(root, file) {
   return relative(root, file).split(sep).join("/");
 }
 
-/**
- * @param {string} text
- * @param {string} section
- * @param {string} dep
- */
 function lineOfDependency(text, section, dep) {
   const lines = text.split("\n");
   let inSection = false;
@@ -392,14 +291,7 @@ function lineOfDependency(text, section, dep) {
   return 1;
 }
 
-/**
- * @param {string} root
- * @param {string} boundary
- * @param {string} rootRel
- * @param {ReadonlySet<string>} allowed
- * @param {string[]} violations
- */
-function checkManifest(root, boundary, rootRel, allowed, violations) {
+function checkManifest(boundary, rootRel, allowed, violations) {
   const manifestPath = join(boundary, "package.json");
   const shown = `${rootRel}/package.json`;
   if (!existsSync(manifestPath)) {
@@ -427,36 +319,28 @@ function checkManifest(root, boundary, rootRel, allowed, violations) {
       continue;
     }
     for (const dep of Object.keys(value)) {
-      if (!dep.startsWith("@npc/")) continue;
-      if (isAllowedNpc(dep, allowed)) continue;
-      const line = lineOfDependency(text, section, dep);
-      violations.push(`${shown}:${String(line)} ${dep} disallowed package.json dependency`);
+      if (!dep.startsWith("@npc/") || isAllowedNpc(dep, allowed)) continue;
+      violations.push(
+        `${shown}:${String(lineOfDependency(text, section, dep))} ${dep} disallowed package.json dependency`
+      );
     }
   }
 }
 
-/**
- * @param {string} dir
- * @param {string[]} files
- */
 function walkCode(dir, files) {
   if (!existsSync(dir)) return;
-  const entries = readdirSync(dir, { withFileTypes: true });
-  for (const entry of entries) {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
     if (entry.name === "dist" || entry.name === "node_modules") continue;
     const full = join(dir, entry.name);
-    if (entry.isDirectory()) {
-      walkCode(full, files);
-      continue;
-    }
-    if (!entry.isFile()) continue;
-    if (CODE_EXT.has(extname(entry.name))) files.push(full);
+    if (entry.isDirectory()) walkCode(full, files);
+    else if (entry.isFile() && CODE_EXT.has(extname(entry.name))) files.push(full);
   }
 }
 
 /**
+ * Scan `repoRoot` for OpenSoul extraction-boundary violations.
  * @param {string} repoRoot
- * @returns {string[]} violation lines (`file:line specifier reason`)
+ * @returns {string[]} lines of `file:line specifier reason`
  */
 export function checkExtractability(repoRoot) {
   const root = resolve(repoRoot);
@@ -465,14 +349,13 @@ export function checkExtractability(repoRoot) {
   for (const scope of SCOPES) {
     const boundary = join(root, scope.rootRel);
     if (scope.checkManifest) {
-      checkManifest(root, boundary, scope.rootRel, scope.allowedNpc, violations);
+      checkManifest(boundary, scope.rootRel, scope.allowedNpc, violations);
     }
     /** @type {string[]} */
     const files = [];
     for (const rel of scope.walkRels) walkCode(join(boundary, rel), files);
     for (const file of files) {
-      const specs = findStaticSpecifiers(readFileSync(file, "utf8"));
-      for (const spec of specs) {
+      for (const spec of findStaticSpecifiers(readFileSync(file, "utf8"))) {
         let reason = null;
         if (spec.specifier.startsWith("@npc/") && !isAllowedNpc(spec.specifier, scope.allowedNpc)) {
           reason = "disallowed @npc import";
@@ -490,20 +373,16 @@ export function checkExtractability(repoRoot) {
   return violations;
 }
 
-/**
- * @returns {boolean}
- */
-function runningAsCli() {
-  const entry = process.argv[1];
-  if (entry === undefined || entry.length === 0) return false;
-  return import.meta.url === pathToFileURL(resolve(entry)).href;
-}
+const entry = process.argv[1];
+const runningAsCli =
+  entry !== undefined && entry.length > 0 && import.meta.url === pathToFileURL(resolve(entry)).href;
 
-if (runningAsCli()) {
-  const scriptDir = dirname(fileURLToPath(import.meta.url));
+if (runningAsCli) {
   const requested = process.argv[2];
   const root =
-    requested === undefined || requested.length === 0 ? resolve(scriptDir, "..") : requested;
+    requested === undefined || requested.length === 0
+      ? resolve(dirname(fileURLToPath(import.meta.url)), "..")
+      : requested;
   const violations = checkExtractability(root);
   for (const line of violations) process.stdout.write(`${line}\n`);
   process.exit(violations.length === 0 ? 0 : 1);
