@@ -8,7 +8,6 @@ import {
   FileSoulStore,
   createRecord,
   signCore,
-  generateKeypair,
   encodePublicKey,
   encodeSignature,
   decodeSignature,
@@ -23,7 +22,11 @@ import {
   type Ed25519Keypair
 } from "../src/index.js";
 
+import { DOOR, SOUL } from "./helpers/fixed-keys.js";
 import { withLiveChildPid } from "./helpers/live-child.js";
+
+/** Replayable soul key for this file's mini-chains. */
+const soul = SOUL;
 
 const RESIDENCY = "door:discord:g/epoch:1";
 const DOOR_ID = "discord:g";
@@ -119,11 +122,9 @@ async function appendGenesis(store: FileSoulStore, soul: Ed25519Keypair) {
 
 describe("FileSoulStore", () => {
   let dir: string;
-  let soul: Ed25519Keypair;
 
   beforeEach(async () => {
     dir = await makeTempDir();
-    soul = generateKeypair();
   });
 
   afterEach(async () => {
@@ -400,7 +401,7 @@ describe("FileSoulStore", () => {
   });
 
   it("re-opens a closed store with matching head and iterate order", async () => {
-    const door = generateKeypair();
+    const door = DOOR;
     let genesisCid = "";
     let shardCid = "";
     let shardBody: OspRecord["body"] | undefined;
@@ -933,11 +934,9 @@ describe("FileSoulStore", () => {
 
 describe("FileSoulStore.openReadOnly", () => {
   let dir: string;
-  let soul: Ed25519Keypair;
 
   beforeEach(async () => {
     dir = await makeTempDir();
-    soul = generateKeypair();
   });
 
   afterEach(async () => {
@@ -1099,7 +1098,7 @@ describe("FileSoulStore.openReadOnly", () => {
   });
 
   it("reports verification failure for cosigned records opened without door keys", async () => {
-    const door = generateKeypair();
+    const door = DOOR;
     const writer = await FileSoulStore.open(dir, {
       doorPublicKeys: { [DOOR_ID]: door.publicKey }
     });
