@@ -4,7 +4,7 @@ The website Door: a small public web page where anyone can talk with the Wandere
 
 It is an ordinary `door/0.2` Door (`@npc/door-sdk`): the runtime arrives with a soul-signed attest, binds its session WebSocket, and departs. If a memory witness is configured, the Door co-signs only memories its AI witness finds grounded in what was said on the porch.
 
-In-browser signature checks and the embeddable replica shrine are specified in `spec/door/web.md`. The porch verifies each Wanderer line with `@npc/osp-core/browser` (not the package root): `public/verify.js` is the minified bundle of `src/browser/porch-entry.ts`, built by `scripts/bundle-browser.mjs`. A failed line stays on screen with the label `verification failed` and does not use the verified-speech style. Visitor lines and system notices are not signed. The embeddable shrine and `MANUAL_TEST.md` are still the rest of T7.2b.
+In-browser signature checks and the embeddable replica shrine are specified in `spec/door/web.md`. The porch verifies each Wanderer line with `@npc/osp-core/browser` (not the package root): `public/verify.js` is the minified bundle of `src/browser/porch-entry.ts`, built by `scripts/bundle-browser.mjs`. A line verifies only for the open arrival at this Door. A bad proof returns `failed` and does not throw. A failed line stays on screen with the label `verification failed` and does not use the verified-speech style. A failed export fetch drops the ETag. Visitor lines and system notices are not signed. The embeddable shrine and `MANUAL_TEST.md` are still the rest of T7.2b.
 
 ## Two listeners
 
