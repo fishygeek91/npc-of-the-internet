@@ -8,6 +8,25 @@ import type { TranscriptLine, TranscriptSource } from "./types.js";
 
 const SAFE_BASENAME_PATTERN = /^[A-Za-z0-9._-]+$/;
 
+/** Which transcript IO step failed. */
+export type TranscriptIoEvent = "transcript_read_failed" | "transcript_delete_failed";
+
+/**
+ * Server-side log for transcript IO.
+ * Receives the filesystem path. {@link DistillError} messages stay path-free.
+ */
+export type TranscriptIoLog = (
+  event: TranscriptIoEvent,
+  fields: { path: string; detail: string }
+) => void;
+
+function defaultTranscriptIoLog(
+  event: TranscriptIoEvent,
+  fields: { path: string; detail: string }
+): void {
+  process.stderr.write(`runtime ${event}: ${fields.path}: ${fields.detail}\n`);
+}
+
 const TranscriptLineSchema = z
   .object({
     role: z.enum(["user", "assistant"]),
@@ -31,12 +50,21 @@ function assertSafeTranscriptPath(filePath: string): string {
   return resolved;
 }
 
-/** Reads newline-delimited JSON transcript lines from a file; deletes on destroy. */
+/**
+ * Reads newline-delimited JSON transcript lines from a file; deletes on destroy.
+ * IO failures throw a path-free {@link DistillError}. The path is logged, not returned.
+ */
 export class FileTranscriptSource implements TranscriptSource {
   readonly path: string;
+  private readonly log: TranscriptIoLog;
 
-  constructor(filePath: string) {
+  /**
+   * @param filePath - Transcript file. `..` segments and unsafe basenames are rejected.
+   * @param log - Server-side IO log. Defaults to stderr. Never included in the thrown error.
+   */
+  constructor(filePath: string, log?: TranscriptIoLog) {
     this.path = assertSafeTranscriptPath(filePath);
+    this.log = log ?? defaultTranscriptIoLog;
   }
 
   async read(): Promise<readonly TranscriptLine[]> {
@@ -45,10 +73,8 @@ export class FileTranscriptSource implements TranscriptSource {
       contents = await readFile(this.path, "utf8");
     } catch (error: unknown) {
       const detail = error instanceof Error ? error.message : "read failed";
-      throw new DistillError(
-        `cannot read transcript at ${this.path}: ${detail}`,
-        "invalid_transcript"
-      );
+      this.log("transcript_read_failed", { path: this.path, detail });
+      throw new DistillError("cannot read transcript", "invalid_transcript");
     }
 
     const lines: TranscriptLine[] = [];
@@ -102,10 +128,8 @@ export class FileTranscriptSource implements TranscriptSource {
         return;
       }
       const detail = error instanceof Error ? error.message : "unlink failed";
-      throw new DistillError(
-        `cannot delete transcript at ${this.path}: ${detail}`,
-        "invalid_transcript"
-      );
+      this.log("transcript_delete_failed", { path: this.path, detail });
+      throw new DistillError("cannot delete transcript", "invalid_transcript");
     }
   }
 }

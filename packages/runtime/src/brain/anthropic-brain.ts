@@ -22,7 +22,10 @@ function httpStatusFromUnknown(error: unknown): number | undefined {
     return undefined;
   }
   const status = error.status;
-  return typeof status === "number" ? status : undefined;
+  if (typeof status !== "number" || !Number.isFinite(status)) {
+    return undefined;
+  }
+  return status;
 }
 
 function reasonFromAnthropicStatus(status: number): BrainError["reason"] {
@@ -101,13 +104,16 @@ export class AnthropicBrain implements Brain {
               completionTokens: response.usage.output_tokens
             };
       return { text: textBlock.text, usage };
-    } catch (error) {
+    } catch (error: unknown) {
       if (error instanceof BrainError) {
         throw error;
       }
       const status = httpStatusFromUnknown(error);
       const reason = status === undefined ? "provider" : reasonFromAnthropicStatus(status);
-      throw new BrainError("Anthropic API request failed", reason, { cause: error });
+      // Keep status and the error's type name only. The SDK object can carry headers.
+      const type = error instanceof Error ? error.name : "Error";
+      const cause = status === undefined ? { type } : { status, type };
+      throw new BrainError("Anthropic API request failed", reason, { cause });
     }
   }
 }

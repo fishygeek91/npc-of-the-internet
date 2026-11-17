@@ -23,6 +23,7 @@ import { MessageRelay } from "./discord/relay.js";
 import { DiscordDoorError, operatorNotice } from "./errors.js";
 import { loadDoorKeypairFromPath } from "./load-door-key.js";
 import { DualRateLimiter, type RateClock } from "./rate-limit.js";
+import { stopAll } from "./shutdown.js";
 import { formatStatusReply, type DoorStatusSnapshot } from "./status.js";
 
 /** Posted in the residency channel when the Wanderer arrives here. */
@@ -150,7 +151,8 @@ export async function startDiscordDoor(
     httpServer = new HttpDoorServer({
       door,
       host: config.httpHost,
-      port: config.httpPort
+      port: config.httpPort,
+      log: (event, message) => logger.error({ err: message }, event)
     });
     const bound = await httpServer.start();
     logger.info(
@@ -270,13 +272,16 @@ export async function startDiscordDoor(
     stop: async () => {
       removeOutboundListener();
       removeLifecycleListener();
-      await gateway.stop();
+      const steps: Array<() => Promise<void>> = [() => gateway.stop()];
       if (wsServer !== null) {
-        await wsServer.stop();
+        const server = wsServer;
+        steps.push(() => server.stop());
       }
       if (httpServer !== null) {
-        await httpServer.stop();
+        const server = httpServer;
+        steps.push(() => server.stop());
       }
+      await stopAll(steps);
     }
   };
 }
