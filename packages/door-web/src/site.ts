@@ -23,15 +23,35 @@ export const SSE_MAX_BUFFERED_BYTES = 64 * 1024;
 /** Hard deadline for receiving a whole `POST /api/say` body (slow-body guard). */
 export const SAY_BODY_TIMEOUT_MS = 5_000;
 
-const SECURITY_HEADERS: Readonly<Record<string, string>> = {
-  "Content-Security-Policy":
-    "default-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self'; " +
-    "script-src 'self'; frame-ancestors 'none'; base-uri 'none'",
+const SECURITY_HEADER_BASE: Readonly<Record<string, string>> = {
   "X-Content-Type-Options": "nosniff",
   "Referrer-Policy": "no-referrer",
   "X-Frame-Options": "DENY",
   "Cross-Origin-Opener-Policy": "same-origin"
 };
+
+/**
+ * CSP for the porch. `connect-src` includes the Atlas origin when pinned so
+ * the page can fetch `/chain/export`. The origin is taken from a parsed URL.
+ */
+export function contentSecurityPolicy(atlasUrl: string | null): string {
+  const connect = ["'self'"];
+  if (atlasUrl !== null) {
+    let origin: string;
+    try {
+      origin = new URL(atlasUrl).origin;
+    } catch {
+      origin = "";
+    }
+    if (origin !== "" && origin !== "null") {
+      connect.push(origin);
+    }
+  }
+  return (
+    `default-src 'self'; connect-src ${connect.join(" ")}; img-src 'self' data:; style-src 'self'; ` +
+    "script-src 'self'; frame-ancestors 'none'; base-uri 'none'"
+  );
+}
 
 type StaticAsset = { body: Buffer; type: string };
 
@@ -42,6 +62,7 @@ function loadAssets(): Map<string, StaticAsset> {
   return new Map<string, StaticAsset>([
     ["/", { body: read("index.html"), type: "text/html; charset=utf-8" }],
     ["/app.js", { body: read("app.js"), type: "text/javascript; charset=utf-8" }],
+    ["/verify.js", { body: read("verify.js"), type: "text/javascript; charset=utf-8" }],
     ["/app.css", { body: read("app.css"), type: "text/css; charset=utf-8" }]
   ]);
 }
@@ -68,6 +89,15 @@ export type VisitorSiteOptions = {
   lastSeenHere: () => string | null;
   /** Where the Wanderer is now (atlas), when configured. */
   whereabouts?: () => Promise<WandererWhereabouts | null>;
+  /**
+   * Public verification pins. The page uses these instead of trusting the
+   * server's presence bit. `atlasUrl` null means the chain cannot be fetched.
+   */
+  verifyPins: {
+    soulPublicKey: string;
+    doorPublicKey: string;
+    atlasUrl: string | null;
+  };
   /** Deliver a visitor message to the Wanderer; return false when it is not here. */
   relay: (request: RelayRequest) => boolean;
   maxClients: number;
@@ -211,6 +241,15 @@ export class VisitorSite {
       this.send(res, 200, "text/plain; charset=utf-8", "ok", "no-store");
       return;
     }
+    if (path === "/api/verify-pins") {
+      this.json(res, 200, {
+        soulPublicKey: this.options.verifyPins.soulPublicKey,
+        doorId: this.options.door.id,
+        doorPublicKey: this.options.verifyPins.doorPublicKey,
+        atlasUrl: this.options.verifyPins.atlasUrl
+      });
+      return;
+    }
     if (path === "/api/state") {
       void this.handleState(res).catch(() => {
         this.fail(res, 500, "internal_error", "something went wrong");
@@ -279,7 +318,7 @@ export class VisitorSite {
     }
 
     res.writeHead(200, {
-      ...SECURITY_HEADERS,
+      ...this.securityHeaders(),
       "Content-Type": "text/event-stream; charset=utf-8",
       "Cache-Control": "no-store",
       Connection: "keep-alive",
@@ -405,7 +444,11 @@ export class VisitorSite {
     const payload =
       event.type === "message"
         ? sseFrame("message", event.message)
-        : sseFrame("reaction", { target: event.target, emoji: event.emoji });
+        : sseFrame("reaction", {
+            target: event.target,
+            emoji: event.emoji,
+            proof: event.proof
+          });
     for (const client of this.clients) {
       this.write(client, payload);
     }
@@ -446,11 +489,18 @@ export class VisitorSite {
       return;
     }
     res.writeHead(status, {
-      ...SECURITY_HEADERS,
+      ...this.securityHeaders(),
       "Content-Type": type,
       "Cache-Control": cache
     });
     res.end(body);
+  }
+
+  private securityHeaders(): Record<string, string> {
+    return {
+      ...SECURITY_HEADER_BASE,
+      "Content-Security-Policy": contentSecurityPolicy(this.options.verifyPins.atlasUrl)
+    };
   }
 }
 

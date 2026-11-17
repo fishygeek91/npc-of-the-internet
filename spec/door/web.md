@@ -157,6 +157,8 @@ A failed Wanderer line stays on screen (it is not dropped) with the visible labe
 
 The porch page pins `soulPublicKey` and the door public keys needed to verify the chain, and points `atlasUrl` at the same export. It does not ask the visitor to trust the server's "this is the Wanderer" bit.
 
+The porch loads those pins from its own origin (`GET /api/verify-pins`: soul public key, this door's public key, door id, and `atlasUrl`). It does not take the soul key or this door's key from the export. The export's entry for this door id must equal the pin; every other door id is taken from the export so a chain that has visited other Doors can still verify. A mismatch, a missing genesis, or a genesis `soul_pubkey` other than the pin fails every Wanderer line. The page refetches the export when the tab becomes visible and at least every 60 seconds, and SHOULD send `If-None-Match`, keeping the last verified snapshot on `304`.
+
 ---
 
 ## Out of scope

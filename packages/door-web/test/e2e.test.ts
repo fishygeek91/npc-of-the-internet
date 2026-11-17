@@ -1,5 +1,8 @@
+import { readFileSync } from "node:fs";
+
 import { WsDoorSessionClient, type InboundFrame } from "@npc/door-sdk";
-import { generateKeypair } from "@npc/osp-core";
+import { encodeBase64Url, encodePublicKey, generateKeypair } from "@npc/osp-core";
+import { canonicalize, decodeSignature, verify } from "@npc/osp-core/browser";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { startWebDoor, type WebDoorHandle } from "../src/start.js";
@@ -30,16 +33,18 @@ describe("website Door end to end (real Door, HTTP/WS servers, WS session client
   async function boot(): Promise<{
     handle: WebDoorHandle;
     soul: ReturnType<typeof generateKeypair>;
+    doorKeyPath: string;
   }> {
     const soul = generateKeypair();
+    const config = testConfig(soul);
     const handle = await startWebDoor({
-      config: testConfig(soul),
+      config,
       logger: silentLogger,
       env: {},
       presencePollMs: 25
     });
     cleanups.push(() => handle.stop());
-    return { handle, soul };
+    return { handle, soul, doorKeyPath: config.doorKeyPath };
   }
 
   async function connectWanderer(
@@ -58,7 +63,17 @@ describe("website Door end to end (real Door, HTTP/WS servers, WS session client
   }
 
   it("relays visitors to the Wanderer and the Wanderer's words to the page", async () => {
-    const { handle, soul } = await boot();
+    const { handle, soul, doorKeyPath } = await boot();
+    const pins = (await (await fetch(`${handle.publicUrl}/api/verify-pins`)).json()) as {
+      soulPublicKey: string;
+      doorId: string;
+      doorPublicKey: string;
+    };
+    expect(pins.soulPublicKey).toBe(encodePublicKey(soul.publicKey));
+    expect(pins.doorId).toBe(DOOR_ID);
+    const privateKey = encodeBase64Url(readFileSync(doorKeyPath));
+    expect(JSON.stringify(pins).includes(privateKey)).toBe(false);
+    expect(pins.doorPublicKey).not.toBe(privateKey);
     const events = await SseReader.open(`${handle.publicUrl}/api/events`);
     cleanups.push(() => events.close());
     expect(await events.next("presence")).toMatchObject({ present: false });
@@ -120,12 +135,18 @@ describe("website Door end to end (real Door, HTTP/WS servers, WS session client
         body: { text: "Hello, Ada. The porch light is on.", reply_to: visitorId }
       })
     );
-    expect(await events.next("message", (data) => isFrom(data, "wanderer"))).toMatchObject({
+    const spoken = await events.next("message", (data) => isFrom(data, "wanderer"));
+    expect(spoken).toMatchObject({
       id: "w1-out-1",
       name: "The Wanderer",
       text: "Hello, Ada. The porch light is on.",
       reply_to: visitorId
     });
+    const spokenProof = proofOf(spoken);
+    expect(spokenProof.signed.body.text).toBe("Hello, Ada. The porch light is on.");
+    expect(
+      verify(canonicalize(spokenProof.signed), decodeSignature(spokenProof.sig), session.publicKey)
+    ).toBe(true);
     client.sendOutbound(
       signedOutbound({
         session,
@@ -135,7 +156,12 @@ describe("website Door end to end (real Door, HTTP/WS servers, WS session client
         body: { reaction: { emoji: "👋", target_msg_id: visitorId } }
       })
     );
-    expect(await events.next("reaction")).toEqual({ target: visitorId, emoji: "👋" });
+    const reaction = await events.next("reaction");
+    expect(reaction).toMatchObject({
+      target: visitorId,
+      emoji: "👋",
+      proof: { signed: { body: { reaction: { emoji: "👋", target_msg_id: visitorId } } } }
+    });
 
     const state = (await (await fetch(`${handle.publicUrl}/api/state`)).json()) as {
       present: boolean;
@@ -145,7 +171,9 @@ describe("website Door end to end (real Door, HTTP/WS servers, WS session client
     expect(state.present).toBe(true);
     expect(state.door.id).toBe(DOOR_ID);
     expect(state.messages.map((message) => message.id)).toContain("w1-out-1");
-    expect(state.messages.find((message) => message.id === visitorId)?.reactions).toEqual(["👋"]);
+    expect(state.messages.find((message) => message.id === visitorId)?.reactions).toEqual([
+      expect.objectContaining({ emoji: "👋" })
+    ]);
 
     // Runtime socket drops → absent; reconnects → present again.
     await client.close();
@@ -189,6 +217,25 @@ describe("website Door end to end (real Door, HTTP/WS servers, WS session client
     expect(third.status).toBe(503);
   });
 });
+
+function proofOf(data: unknown): {
+  signed: Record<string, unknown> & { body: { text?: string } };
+  sig: string;
+} {
+  if (typeof data !== "object" || data === null || !("proof" in data)) {
+    throw new Error("wanderer line is missing proof");
+  }
+  const proof = data.proof;
+  if (typeof proof !== "object" || proof === null || !("signed" in proof) || !("sig" in proof)) {
+    throw new Error("wanderer proof is missing signed or sig");
+  }
+  const signed = proof.signed;
+  const sig = proof.sig;
+  if (typeof signed !== "object" || signed === null || typeof sig !== "string") {
+    throw new Error("wanderer proof is not a signed frame");
+  }
+  return { signed: signed as { body: { text?: string } }, sig };
+}
 
 function isFrom(data: unknown, from: string): boolean {
   return typeof data === "object" && data !== null && (data as { from?: unknown }).from === from;

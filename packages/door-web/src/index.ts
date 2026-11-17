@@ -7,10 +7,17 @@ export { loadDoorKeypairFromPath } from "./load-door-key.js";
 export { DailyBudget, VisitorRateLimiter, VISITOR_RULES } from "./rate-limit.js";
 export type { MsClock, RateDecision, RateRule } from "./rate-limit.js";
 export { Room, ROOM_CAPACITY } from "./room.js";
-export type { RoomEvent, RoomMessage, RoomAuthorKind } from "./room.js";
+export type {
+  RoomEvent,
+  RoomMessage,
+  RoomAuthorKind,
+  RoomReaction,
+  OutboundProof
+} from "./room.js";
 export { AtlasWhereabouts, ATLAS_STATE_MAX_BYTES } from "./atlas.js";
 export type { WandererWhereabouts } from "./atlas.js";
 export {
+  contentSecurityPolicy,
   VisitorSite,
   SAY_BODY_MAX_BYTES,
   SAY_BODY_TIMEOUT_MS,

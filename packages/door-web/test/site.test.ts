@@ -59,6 +59,11 @@ describe("VisitorSite", () => {
       trustProxy: false,
       clock: { nowMs: () => Date.now() },
       logger: silentLogger,
+      verifyPins: {
+        soulPublicKey: "test-soul",
+        doorPublicKey: "test-door",
+        atlasUrl: null
+      },
       ...overrides
     });
     sites.push(site);
@@ -71,6 +76,7 @@ describe("VisitorSite", () => {
     for (const [path, type] of [
       ["/", "text/html"],
       ["/app.js", "text/javascript"],
+      ["/verify.js", "text/javascript"],
       ["/app.css", "text/css"]
     ] as const) {
       const response = await fetch(`${url}${path}`);
@@ -243,8 +249,19 @@ describe("VisitorSite", () => {
 
     room.append({ id: "m1", at: "t", from: "wanderer", name: "The Wanderer", text: "<b>hi</b>" });
     expect(await first.next("message")).toMatchObject({ id: "m1", text: "<b>hi</b>" });
-    room.react("m1", "✨");
-    expect(await second.next("reaction")).toEqual({ target: "m1", emoji: "✨" });
+    const proof = {
+      signed: {
+        type: "outbound" as const,
+        door_id: "web:test",
+        epoch: 1,
+        msg_id: "r",
+        issued_at: "t",
+        body: { reaction: { emoji: "✨", target_msg_id: "m1" } }
+      },
+      sig: "sig"
+    };
+    room.react("m1", "✨", proof);
+    expect(await second.next("reaction")).toEqual({ target: "m1", emoji: "✨", proof });
     site.broadcastPresence(false);
     expect(
       await second.next("presence", (data) => (data as { present: boolean }).present === false)

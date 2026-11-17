@@ -11,9 +11,11 @@ import {
   type HostPolicy,
   type OutboundFrame
 } from "@npc/door-sdk";
+import { encodePublicKey } from "@npc/osp-core";
 import pino, { type Logger } from "pino";
 
 import { AtlasWhereabouts } from "./atlas.js";
+import { roomIdFor, type OutboundProof, type OutboundSigned } from "./browser/proof.js";
 import type { WebDoorConfig } from "./config.js";
 import { loadDoorKeypairFromPath } from "./load-door-key.js";
 import type { MsClock } from "./rate-limit.js";
@@ -62,9 +64,37 @@ export type WebDoorHandle = {
   stop: () => Promise<void>;
 };
 
-/** Room id for a Wanderer-side msg_id: visitor ids pass through, others are epoch-scoped. */
-function roomIdFor(epoch: number, msgId: string): string {
-  return msgId.startsWith("web-") ? msgId : `w${String(epoch)}-${msgId}`;
+/**
+ * Copy an outbound frame without `sig`. The copy is what the page verifies.
+ */
+function outboundProof(frame: OutboundFrame): OutboundProof {
+  const body: OutboundSigned["body"] = {};
+  if (frame.body.text !== undefined) {
+    body.text = frame.body.text;
+  }
+  if (frame.body.reply_to !== undefined) {
+    body.reply_to = frame.body.reply_to;
+  }
+  if (frame.body.channel_id !== undefined) {
+    body.channel_id = frame.body.channel_id;
+  }
+  if (frame.body.reaction !== undefined) {
+    body.reaction = {
+      emoji: frame.body.reaction.emoji,
+      target_msg_id: frame.body.reaction.target_msg_id
+    };
+  }
+  return {
+    signed: {
+      type: "outbound",
+      door_id: frame.door_id,
+      epoch: frame.epoch,
+      msg_id: frame.msg_id,
+      issued_at: frame.issued_at,
+      body
+    },
+    sig: frame.sig
+  };
 }
 
 /**
@@ -138,6 +168,11 @@ export async function startWebDoor(options: StartWebDoorOptions): Promise<WebDoo
     room,
     isPresent,
     lastSeenHere: () => lastSeenHere,
+    verifyPins: {
+      soulPublicKey: encodePublicKey(config.soulPublicKey),
+      doorPublicKey: encodePublicKey(doorKeypair.publicKey),
+      atlasUrl: config.atlasApiUrl ?? null
+    },
     // get() throws WebDoorError payload_too_large and does not cache it.
     // VisitorSite catches that code and still answers /api/state.
     ...(atlas === undefined ? {} : { whereabouts: () => atlas.get() }),
@@ -197,6 +232,7 @@ export async function startWebDoor(options: StartWebDoorOptions): Promise<WebDoo
 
   const offOutbound = door.addOutboundListener((frame: OutboundFrame) => {
     const { text, reply_to: replyTo, reaction } = frame.body;
+    const proof = outboundProof(frame);
     if (text !== undefined) {
       room.append({
         id: roomIdFor(frame.epoch, frame.msg_id),
@@ -204,11 +240,12 @@ export async function startWebDoor(options: StartWebDoorOptions): Promise<WebDoo
         from: "wanderer",
         name: "The Wanderer",
         text,
+        proof,
         ...(replyTo === undefined ? {} : { reply_to: roomIdFor(frame.epoch, replyTo) })
       });
     }
     if (reaction !== undefined) {
-      room.react(roomIdFor(frame.epoch, reaction.target_msg_id), reaction.emoji);
+      room.react(roomIdFor(frame.epoch, reaction.target_msg_id), reaction.emoji, proof);
     }
   });
 

@@ -4,7 +4,7 @@ The website Door: a small public web page where anyone can talk with the Wandere
 
 It is an ordinary `door/0.2` Door (`@npc/door-sdk`): the runtime arrives with a soul-signed attest, binds its session WebSocket, and departs. If a memory witness is configured, the Door co-signs only memories its AI witness finds grounded in what was said on the porch.
 
-In-browser signature checks and the embeddable replica shrine are specified in `spec/door/web.md`. Verification uses `@npc/osp-core/browser` (not the package root). The porch does not yet verify lines in the page, and this package does not yet serve `shrine.js` — that embed, the failed-verification state, and `MANUAL_TEST.md` are the rest of T7.2b.
+In-browser signature checks and the embeddable replica shrine are specified in `spec/door/web.md`. The porch verifies each Wanderer line with `@npc/osp-core/browser` (not the package root): `public/verify.js` is the minified bundle of `src/browser/porch-entry.ts`, built by `scripts/bundle-browser.mjs`. A failed line stays on screen with the label `verification failed` and does not use the verified-speech style. Visitor lines and system notices are not signed. The embeddable shrine and `MANUAL_TEST.md` are still the rest of T7.2b.
 
 ## Two listeners
 
@@ -15,9 +15,9 @@ In-browser signature checks and the embeddable replica shrine are specified in `
 
 ### Visitor site routes
 
-- `GET /` · `GET /app.js` · `GET /app.css` — the page (static files in `public/`, vanilla JS, no external hosts, no build step).
+- `GET /` · `GET /verify.js` · `GET /app.js` · `GET /app.css` — the page. `verify.js` is built (esbuild already in the lockfile); the rest of `public/` is hand-written. `GET /api/verify-pins` → `{ soulPublicKey, doorId, doorPublicKey, atlasUrl }` (public keys only).
 - `GET /api/state` → `{ present, door: {id, name, description}, wanderer?, messages }` — `messages` are the last ≤ 100 room lines; `wanderer` (only while absent) is `{ last_seen_here, status?, door_id?, since? }`.
-- `GET /api/events` — Server-Sent Events: `message` (a room line), `reaction` (`{target, emoji}`), `presence` (`{present, last_seen_here}`); `: ping` comment every 25 s. At most `DOOR_WEB_MAX_CLIENTS` streams (503 beyond) and 20 per client (429). GET only (`HEAD` → 405).
+- `GET /api/events` — Server-Sent Events: `message` (a room line; Wanderer lines include `proof: { signed, sig }`), `reaction` (`{target, emoji, proof}`), `presence` (`{present, last_seen_here}`); `: ping` comment every 25 s. At most `DOOR_WEB_MAX_CLIENTS` streams (503 beyond) and 20 per client (429). GET only (`HEAD` → 405).
 - `POST /api/say` — JSON `{name, text}`; `202 {id}` when relayed. `409 not_here` while absent, `400 invalid_name|invalid_text|invalid_json`, `413` over 4 KiB, `408` unless the whole body arrives within 5 s, `415` unless `Content-Type: application/json`, `403` for cross-site browser posts (`Sec-Fetch-Site`), `429 rate_limited` with `Retry-After`, `429 quiet_hours` (with `Retry-After` to UTC midnight) once `DOOR_WEB_DAILY_MAX` messages have been relayed today.
 - `GET /healthz` → `200 ok`.
 
@@ -28,10 +28,10 @@ In-browser signature checks and the embeddable replica shrine are specified in `
 - **Visitors:** name 1–32 characters, text 1–500 (control, invisible format and other default-ignorable characters — zero-width, bidi, tag characters, Hangul fillers — stripped; text keeps the zero-width joiner and variation selectors for emoji). "The Wanderer" is reserved in any spelling: names are compared NFKC-folded, lowercased, letters only. Rate limits: 1 message / 3 s and 20 / 10 min per client, plus `DOOR_WEB_GLOBAL_PER_MIN` for everyone together, plus `DOOR_WEB_DAILY_MAX` relayed per UTC day (bounds model cost).
 - **Client:** an IPv4 address, or an IPv6 **/64** (one subscriber owns a whole /64); IPv4-mapped IPv6 counts as its IPv4. Rate limits, SSE caps and `author_id` all use this key.
 - **Relay:** each accepted message becomes an inbound frame — `author_id` is `web-<12 hex>`, a keyed hash of the client key under a secret salt rotated every UTC day (the raw IP never leaves the process); `author_display` is the name; `addressed` is true when the text mentions "wanderer" or starts with `@`. A leading `@` on words is dropped in the relayed text only (the runtime's immune screen treats `@handle` as PII).
-- **The Wanderer:** verified outbound text appears as "The Wanderer" (a `reply_to` shows which message it answers); reactions decorate the target message.
+- **The Wanderer:** outbound text appears as "The Wanderer" (a `reply_to` shows which message it answers) together with the signed frame. The page marks it verified only after `@npc/osp-core/browser` accepts the chain and the session signature. Reactions decorate the target message and carry the same proof. The page refetches `GET {ATLAS_API_URL}/chain/export` on load, when the tab becomes visible, and every 60 s. `connect-src` includes that Atlas origin.
 - **Notices:** arrival → "The Wanderer has arrived."; departure → "The Wanderer has moved on.".
 - **Privacy:** the room is an in-memory ring of 200 lines; nothing is written to disk. No cookies, no analytics; the name is remembered in the visitor's own `localStorage`. Message text and IPs are never logged.
-- **Hardening:** strict CSP (`default-src 'self'`, no inline script/style, `frame-ancestors 'none'`), `nosniff`, `no-referrer`; all text rendered with `textContent`; 10 s header timeout, 5 s body deadline; SSE readers with more than 64 KiB unsent are dropped.
+- **Hardening:** strict CSP (`default-src 'self'`, `connect-src` is `'self'` plus the Atlas origin when `ATLAS_API_URL` is set, no inline script/style, `frame-ancestors 'none'`), `nosniff`, `no-referrer`; all text rendered with `textContent`; 10 s header timeout, 5 s body deadline; SSE readers with more than 64 KiB unsent are dropped.
 
 ## Config (env)
 

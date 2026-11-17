@@ -1,4 +1,5 @@
 import { createServer, type Server } from "node:http";
+import { readFileSync } from "node:fs";
 
 import type { OutboundFrame } from "@npc/door-sdk";
 import {
@@ -161,6 +162,14 @@ describe("porch line verification", () => {
     expect(first.etag).toBe('"chain"');
     const again = await fetchChain(pins(soul, door, served.url), first);
     expect(again.hold).toBe(first.hold);
+  });
+});
+
+describe("porch page source", () => {
+  it("labels failed lines and does not parse chain text as HTML", () => {
+    const source = readFileSync(new URL("../public/app.js", import.meta.url), "utf8");
+    expect(source).toContain("verification failed");
+    expect(source).not.toContain("innerHTML");
   });
 });
 
