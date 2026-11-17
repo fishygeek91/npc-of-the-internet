@@ -2,6 +2,14 @@
 
 Smallest workarounds when ENGINEERING.md or spec prose blocks implementation. One paragraph per entry; link the task if applicable.
 
+## `wanderer move` production CLI — **superseded**
+
+T2.5's operator command `wanderer move <door>` was a non-functional shell: `runMove` had to be injected or the CLI exited 2, while TASKS marked the deliverable done. That command is gone from `packages/runtime/src`. Production travel is the residency daemon — `wanderer depart` (control file), SIGUSR2, or the daily timer — which distills, witnesses, and arrives at the next Door. No separate wiring task.
+
+## `Anchor` interface was never stubbed
+
+ENGINEERING.md D2 says chain anchoring is v0.3 and to stub an `Anchor` interface until then. Nothing named `Anchor` exists under `packages/`. Ghost `osp verify` does not check anchors (`spec/osp/records.md` verification notes; `spec/osp/ipfs-store.md` lists anchoring as out of scope, T7.6). Smallest workaround: docs describe anchoring as future work, not as a stub already in the tree. The implementation remains T7.6. PoP's phrase "local file anchoring" means the hash-linked file (and its IPFS mirror), not this missing interface.
+
 ## T1.1 — CID base32 prefix (`bafy` vs `bagu`) — **resolved**
 
 **Resolved (T1.3):** `spec/osp/records.md` and TASKS.md now use `bagu…` examples consistent with dag-json + sha2-256. Implementation was already correct.

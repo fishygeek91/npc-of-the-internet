@@ -59,7 +59,7 @@ Test framework: **Vitest**. Rules:
 
 ## D4. CI/CD (GitHub Actions)
 
-- **`ci.yml`** on every PR: `pnpm install` → `pnpm -r build` → `pnpm -r lint` (ESLint + Prettier check) → `pnpm -r test` → `osp verify` on the committed example chain. All must pass to merge. Node 22, single OS (ubuntu-latest).
+- **`ci.yml`** `check` job on every PR: `pnpm install --frozen-lockfile` → `pnpm build` → `pnpm lint` (ESLint + Prettier check) → `pnpm test`. Those must pass to merge. Node 22, single OS (ubuntu-latest). The workflow does not run `osp verify` on a committed example chain. Chain rules are covered by `pnpm test` (the verifier and conformance vectors). The separate `launch-dry-run` job runs `osp verify` on the chain that dry-run has just created.
 - **`deploy-atlas.yml`** on main: build Atlas static site → deploy to GitHub Pages.
 - **`release.yml`** on main: maintain the Version Packages PR; after it merges, auto-tag `vX.Y.Z` and in the same run publish the GitHub Release + Trivy-gated Docker images to GHCR. A manual `v*` tag push runs the same release jobs (fallback).
 - Branch protection: PRs only, CI green, no force-push to main. AI agents commit via PRs like everyone else.
