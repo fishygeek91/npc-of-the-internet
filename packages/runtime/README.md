@@ -67,6 +67,49 @@ LIVE_TESTS=1 NPC_BRAIN_PROVIDER=openai-compat NPC_BRAIN_BASE_URL=https://openrou
 
 CI never sets `LIVE_TESTS`; only unit tests with `FakeBrain`, injected mock clients, and a stub HTTP server run in CI.
 
+### Treasury-lite (T7.12, not wired into the daemon)
+
+`BudgetedBrain` wraps one `Brain` per configured tier, picks a tier from the remaining operator budget, and appends each call to a local JSONL journal (`SpendLedger`). The daemon still uses `createBrain` / `loadBrainConfig` until a follow-up wires this in. Setting the variables below does nothing in production yet.
+
+The journal is off the soulchain: public `transaction` records are T7.7. Totals are replayed from the file. A missing file is not treated as zero spend unless `NPC_BUDGET_LEDGER_INIT=1` (first boot). A corrupt line or a torn tail is left untouched and the brain refuses further calls. Dollar amounts stay out of `publicStatus` (fraction only). `sleepDraft()` returns a `sleep` body only when the balance is known; nothing in this change appends that record.
+
+| Variable | Required | Default | Purpose |
+|----------|----------|---------|---------|
+| `NPC_BRAIN_TIERS` | no | unset (feature off) | JSON array, cheapest first. Secret: each tier embeds `apiKey`. See `ops/SECRETS.md`. |
+| `NPC_BUDGET_USD` | with tiers | — | Period allowance, decimal dollars (`"10"`, `"10.50"`). |
+| `NPC_BUDGET_THRESHOLD_USD` | no | `0` | Sleep when remaining is at or below this. Decimal dollars. |
+| `NPC_BUDGET_PERIOD` | no | `monthly` | UTC calendar month. Only `monthly` is accepted. |
+| `NPC_BUDGET_LEDGER_PATH` | with tiers | — | `spend.jsonl` path on the runtime volume. |
+| `NPC_BUDGET_LEDGER_INIT` | no | off | `1` creates the journal if it is missing. Leave unset after first boot. |
+| `NPC_BUDGET_DEFAULT_TIER` | no | cheapest paid tier | Tier name used above 50% remaining. Distill/journal step up one tier in that band. |
+
+Tier JSON (prices are dollars per million tokens, copied from the provider's price sheet — the numbers below are placeholders):
+
+```json
+[
+  {
+    "name": "free",
+    "baseUrl": "https://openrouter.ai/api/v1",
+    "apiKey": "replace-me",
+    "model": "google/gemini-2.0-flash-exp:free",
+    "inPricePerMTok": "0",
+    "outPricePerMTok": "0",
+    "providerAllowlist": ["deepinfra"]
+  },
+  {
+    "name": "cheap",
+    "baseUrl": "https://openrouter.ai/api/v1",
+    "apiKey": "replace-me",
+    "model": "deepseek/deepseek-v4-flash",
+    "inPricePerMTok": "1",
+    "outPricePerMTok": "1",
+    "providerAllowlist": ["deepinfra"]
+  }
+]
+```
+
+OpenRouter tiers require a non-empty `providerAllowlist` taken from that model's live endpoints list (`ops/TROUBLESHOOTING.md`); the slugs above only show the shape. Bands: above 50% remaining uses the default tier (distill/journal escalate one tier); 10–50% uses the cheapest paid tier; below 10% uses a zero-price tier only; at or below the threshold, or an unknown journal, no model is called.
+
 ## Self-Composer (T2.2)
 
 Deterministic projection of a verified soulchain into a `systemPrompt` and `memoryIndex` for the Wanderer's session brain.
