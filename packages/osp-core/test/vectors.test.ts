@@ -1,4 +1,5 @@
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { readdirSync, readFileSync } from "node:fs";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -25,6 +26,7 @@ import {
   type ChainRule,
   type OspRecord
 } from "../src/index.js";
+import { EXACT_FAILURE_RULES, exactFailureRules } from "./exact-failure-rules.js";
 
 const testDir = dirname(fileURLToPath(import.meta.url));
 const vectorsDir = resolve(testDir, "../../../spec/osp/vectors");
@@ -194,25 +196,40 @@ function parseVectorFile(raw: string, filename: string): VectorFile {
 }
 
 /** Load and parse one committed conformance vector JSON file. */
-async function loadVector(filename: string): Promise<VectorFile> {
-  const raw = await readFile(join(vectorsDir, filename), "utf8");
+function loadVector(filename: string): VectorFile {
+  const raw = readFileSync(join(vectorsDir, filename), "utf8");
   return parseVectorFile(raw, filename);
 }
 
 /** Discover all vector JSON files (excludes README). */
-async function listVectorFiles(): Promise<string[]> {
-  const entries = await readdir(vectorsDir);
+function listVectorFiles(): string[] {
+  const entries = readdirSync(vectorsDir);
   return entries.filter((name) => name.endsWith(".json")).sort();
 }
 
+const loadedVectors = listVectorFiles().map((filename) => ({
+  filename,
+  vector: loadVector(filename)
+}));
+
 describe("conformance vectors", () => {
-  it("runs every committed vector under spec/osp/vectors", async () => {
-    const files = await listVectorFiles();
-    expect(files.length).toBeGreaterThan(0);
+  it("pins a rule list for every negative vector and no other file", () => {
+    const negative = loadedVectors
+      .filter((entry) => entry.vector.expected !== "valid")
+      .map((entry) => entry.filename)
+      .sort();
+    expect(Object.keys(EXACT_FAILURE_RULES).sort()).toEqual(negative);
+    for (const entry of loadedVectors) {
+      if (entry.vector.expected === "valid") {
+        continue;
+      }
+      expect(exactFailureRules(entry.filename)[0], entry.filename).toBe(entry.vector.expected);
+    }
+  });
 
-    for (const filename of files) {
-      const vector = await loadVector(filename);
-
+  it.each(loadedVectors.map((entry) => [entry.filename, entry.vector] as const))(
+    "%s",
+    async (filename, vector) => {
       decodePublicKey(vector.soulPublicKey);
       const doorPublicKeys: Record<string, Uint8Array> = {};
       for (const [doorId, encoded] of Object.entries(vector.doorPublicKeys)) {
@@ -224,31 +241,30 @@ describe("conformance vectors", () => {
       }
 
       const result = await verifyRecords(vector.records, { doorPublicKeys });
+      const label = `${filename}: ${vector.description}`;
 
       if (vector.expected === "valid") {
-        expect(result.valid, `${filename}: ${vector.description}`).toBe(true);
-        continue;
+        expect(result.valid, label).toBe(true);
+        return;
       }
 
-      expect(result.valid, `${filename}: ${vector.description}`).toBe(false);
+      expect(result.valid, label).toBe(false);
       if (result.valid) {
-        continue;
+        return;
       }
 
-      const matched = result.failures.some((failure) => failure.rule === vector.expected);
-      expect(
-        matched,
-        `${filename}: expected rule ${vector.expected}, got ${result.failures.map((f) => f.rule).join(", ")}`
-      ).toBe(true);
+      const rules = result.failures.map((failure) => failure.rule);
+      expect(rules[0], label).toBe(vector.expected);
+      expect(rules, label).toEqual([...exactFailureRules(filename)]);
     }
-  });
+  );
 });
 
 describe("strict RFC 8032 vector (small-order soul key)", () => {
   const filename = "bad-soul-sig-small-order-key.json";
 
   it("fails every record with bad_soul_sig only, although ZIP-215 would accept each signature", async () => {
-    const vector = await loadVector(filename);
+    const vector = loadVector(filename);
     const doorPublicKeys: Record<string, Uint8Array> = {};
     for (const [doorId, encoded] of Object.entries(vector.doorPublicKeys)) {
       doorPublicKeys[doorId] = decodePublicKey(encoded);
@@ -274,7 +290,7 @@ describe("strict RFC 8032 vector (small-order soul key)", () => {
   });
 
   it("is refused by FileSoulStore when injected on disk and on append", async () => {
-    const vector = await loadVector(filename);
+    const vector = loadVector(filename);
     const records = vector.records as OspRecord[];
     const doorPublicKeys: Record<string, Uint8Array> = {};
     for (const [doorId, encoded] of Object.entries(vector.doorPublicKeys)) {
@@ -301,7 +317,9 @@ describe("strict RFC 8032 vector (small-order soul key)", () => {
         const verification = readOnly.verification();
         expect(verification.valid).toBe(false);
         if (!verification.valid) {
-          expect(verification.failures.some((f) => f.rule === "bad_soul_sig")).toBe(true);
+          expect(verification.failures.map((failure) => failure.rule)).toEqual([
+            ...exactFailureRules(filename)
+          ]);
         }
       } finally {
         await readOnly.close();

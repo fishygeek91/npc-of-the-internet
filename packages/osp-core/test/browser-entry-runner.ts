@@ -14,6 +14,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import ts from "typescript";
 
 import type { ChainRule, VerifyChainResult } from "../src/browser.js";
+import { exactFailureRules, sameChainRules } from "./exact-failure-rules.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const srcDir = path.resolve(here, "../src");
@@ -327,7 +328,24 @@ function bodyHashes(records: readonly unknown[]): Set<string> {
   return hashes;
 }
 
-async function runVectors(): Promise<{ positive: number; negative: number }> {
+type ReportedCase = {
+  file: string;
+  pairs: { rule: ChainRule; seq: number }[];
+};
+
+/** Rule/seq pairs from one verifyRecords result. Valid chains report none. */
+function failurePairs(result: VerifyChainResult): ReportedCase["pairs"] {
+  if (result.valid) {
+    return [];
+  }
+  return result.failures.map((failure) => ({ rule: failure.rule, seq: failure.seq }));
+}
+
+async function runVectors(): Promise<{
+  positive: number;
+  negative: number;
+  cases: ReportedCase[];
+}> {
   const browser = await import("../src/browser.js");
   const files = readdirSync(vectorsDir)
     .filter((name) => name.endsWith(".json"))
@@ -336,6 +354,7 @@ async function runVectors(): Promise<{ positive: number; negative: number }> {
     throw new Error(`no vectors in ${vectorsDir}`);
   }
   const seen = new Map<string, "valid" | ChainRule>();
+  const cases: ReportedCase[] = [];
   let positive = 0;
   let negative = 0;
   for (const filename of files) {
@@ -357,20 +376,23 @@ async function runVectors(): Promise<{ positive: number; negative: number }> {
     const result: VerifyChainResult = await browser.verifyRecords(vector.records, {
       doorPublicKeys
     });
+    const pairs = failurePairs(result);
+    cases.push({ file: filename, pairs });
     if (vector.expected === "valid") {
       if (!result.valid) {
         throw new Error(
-          `${filename}: expected valid, got ${result.failures.map((failure) => failure.rule).join(", ")}`
+          `${filename}: expected valid, got ${pairs.map((pair) => pair.rule).join(", ")}`
         );
       }
       positive += 1;
       continue;
     }
-    if (result.valid || !result.failures.some((failure) => failure.rule === vector.expected)) {
-      const got = result.valid
-        ? "valid"
-        : result.failures.map((failure) => failure.rule).join(", ");
-      throw new Error(`${filename}: expected ${vector.expected}, got ${got}`);
+    const pinned = exactFailureRules(filename);
+    const rules = pairs.map((pair) => pair.rule);
+    if (rules[0] !== vector.expected || !sameChainRules(rules, pinned)) {
+      throw new Error(
+        `${filename}: expected ${pinned.join(", ")}, got ${rules.join(", ") || "valid"}`
+      );
     }
     negative += 1;
   }
@@ -379,7 +401,7 @@ async function runVectors(): Promise<{ positive: number; negative: number }> {
       throw new Error(`${filename}: required outcome ${expected} was not tested`);
     }
   }
-  return { positive, negative };
+  return { positive, negative, cases };
 }
 
 async function main(): Promise<void> {
@@ -393,6 +415,7 @@ async function main(): Promise<void> {
   process.stdout.write(
     `BROWSER_OK files=${String(browserGraph.files.length)} positive=${String(counts.positive)} negative=${String(counts.negative)} rootBuiltins=${String(rootGraph.builtins.length)}\n`
   );
+  process.stdout.write(`BROWSER_CASES ${JSON.stringify(counts.cases)}\n`);
 }
 
 main().catch((error: unknown) => {
