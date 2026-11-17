@@ -261,7 +261,8 @@ These are sequenced but intentionally coarser; split them into T-numbered subtas
 - **T7.12 ⬜ Treasury-lite** (`BudgetedBrain`: spend ledger from Brain usage, model tier chosen by remaining budget, downshift then `sleep` record when broke, wake path) — Deps: T7.11 — Issue: #74 — Complements, does not replace, T7.7 (wallet/custody).
 - **T7.13 ⬜ AI-run operations** (runbooks → scripts + scheduled jobs: watchdog alerts to Discord, scheduled drills, deploy + provisioning scripts; human stays Gate 2 approver) — Deps: none (builds on Bug #72 hardening; complements T7.12) — Issue: #76
 - **T7.14 ⬜ Branded crypto vocabulary** (opaque `Cid` / `SoulPublicKey` / `Ed25519Signature` / `Base64Url` / `Residency` types across osp-core) — Deps: none — Issue: #77
-- **T7.15 ⬜ Single-source record sealing** (one sealing path; dedup crypto/key helpers; CI check enforcing the osp-core/osp-cli extraction boundary) — Deps: none — Issue: #78
+- **T7.15 ⏳ Single-source record sealing** (one sealing path; dedup crypto/key helpers; CI check enforcing the osp-core/osp-cli extraction boundary) — Deps: none — Issue: #78
+  - Notes: Agent: Cursor Grok 4.7, 2026-11-16. PR1 of 4: single sealer landed (`createRecordWithSigner`; runtime `sealRecord` delegates). Remaining: key-parse/noble facade, RECORD_TYPES export, CI extract check.
 - **T7.16 ✅ Decompose FileSoulStore primitives** (BlobDir/FileLock/fsync; Session/Door deferred) — Deps: Bug #67 — Issue: #79
   - Notes: Agent: Cursor Grok 4.5 Maestro, 2026-08-08. Extracted `store/blob-dir.ts`, `file-lock.ts`, `fsync.ts`, `node-fs-error.ts`; FileSoulStore composes them with no behavior change. #79 items 1 (Session) and 3 (Door) remain open — tracked in #170. G2 gate for T7.1/#55 store reuse now satisfied.
 - **T7.17 ⬜ Structured error discriminants** (exhaustive `VerificationError.reason` and `DoorError.code` unions instead of prose-string classification; shared shard bounds) — Deps: none — Issue: #80

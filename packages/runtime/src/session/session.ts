@@ -7,13 +7,13 @@ import {
 } from "@npc/door-sdk";
 import {
   OSP_SPEC_V02,
-  RecordSchema,
+  SchemaError,
   canonicalize,
   computeCid,
   corePayload,
+  createRecordWithSigner,
   encodePublicKey,
   encodeSignature,
-  soulPayload,
   type CreateRecordFields,
   type OspRecord,
   type SoulStore
@@ -1412,43 +1412,25 @@ function extractAttestationEpoch(record: OspRecord): number | null {
   return null;
 }
 
-/** Seal a signed record using the Keyring (never touches raw private keys in Session). */
+/**
+ * Seal a signed record using the Keyring (never touches raw private keys in Session).
+ *
+ * Sealing lives in `createRecordWithSigner`. This wrapper pins `spec` to
+ * {@link OSP_SPEC_V02} and turns a schema failure into {@link SessionError}
+ * (`invalid record: …`), which is the error callers already see.
+ */
 async function sealRecord(
   keyring: Keyring,
   fields: CreateRecordFields
 ): Promise<{ record: OspRecord; cid: string }> {
-  const sortedCosigners = [...fields.cosigners].sort();
-
-  const soulBytes = canonicalize(
-    soulPayload({
-      spec: OSP_SPEC_V02,
-      seq: fields.seq,
-      prev: fields.prev,
-      type: fields.type,
-      body: fields.body,
-      residency: fields.residency,
-      cosigners: sortedCosigners
-    })
-  );
-  const soulSignature = encodeSignature(keyring.signWithSoulKey(soulBytes));
-
-  const unsignedRecord = {
-    spec: OSP_SPEC_V02,
-    seq: fields.seq,
-    prev: fields.prev,
-    type: fields.type,
-    body: fields.body,
-    residency: fields.residency,
-    cosigners: sortedCosigners,
-    sig: soulSignature
-  };
-
-  const parsed = RecordSchema.safeParse(unsignedRecord);
-  if (!parsed.success) {
-    throw new SessionError(`invalid record: ${parsed.error.message}`);
+  try {
+    return await createRecordWithSigner({ ...fields, spec: OSP_SPEC_V02 }, (bytes: Uint8Array) =>
+      keyring.signWithSoulKey(bytes)
+    );
+  } catch (error) {
+    if (error instanceof SchemaError) {
+      throw new SessionError(`invalid record: ${error.message}`);
+    }
+    throw error;
   }
-
-  const record = parsed.data;
-  const cid = await computeCid(record);
-  return { record, cid };
 }
