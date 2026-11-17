@@ -1,11 +1,14 @@
+import type { z } from "zod";
+
 import { canonicalize } from "./canonical.js";
-import { computeCid } from "./crypto/cid.js";
+import { computeCid, type Cid } from "./crypto/cid.js";
 import { sign, verify } from "./crypto/ed25519.js";
-import { decodeSignature, encodeSignature } from "./encoding/base64url.js";
+import { decodeSignature, encodeSignature, type Ed25519Signature } from "./encoding/base64url.js";
 import { SchemaError, VerificationError } from "./errors.js";
 import {
   OSP_SPEC,
   RecordSchema,
+  RecordSchemaBase,
   parseResidency,
   type OspRecord,
   type OspSpecVersion
@@ -21,12 +24,18 @@ type EnvelopeCoreFields = {
   residency: string | null;
 };
 
-/** Input fields for record creation (unsigned envelope + cosigner signatures). */
+/**
+ * Input fields for record creation (unsigned envelope + cosigner signatures).
+ *
+ * `body` is the schema *input* (`string` fields). Parsed {@link OspRecord} bodies
+ * are branded outputs, and a brand is assignable here. `prev`, `residency`, and
+ * `cosigners` stay plain strings so callers are not forced to brand them.
+ */
 export type CreateRecordFields = {
   seq: number;
   prev: string | null;
   type: OspRecord["type"];
-  body: OspRecord["body"];
+  body: z.input<typeof RecordSchemaBase>["body"];
   residency: string | null;
   /** Door signatures over core bytes; sorted ascending lexicographically before soul signing. */
   cosigners: string[];
@@ -42,7 +51,7 @@ export type CreateRecordInput = CreateRecordFields & {
 /** Result of {@link createRecord} and {@link createRecordWithSigner}. */
 export type CreateRecordResult = {
   record: OspRecord;
-  cid: string;
+  cid: Cid;
 };
 
 /**
@@ -64,14 +73,17 @@ export type VerifyRecordOptions = {
    * for this record's residency (`parseResidency(residency).doorId`).
    */
   doorPublicKeys?: Readonly<Record<string, Uint8Array>>;
-  /** When provided, must equal the recomputed CID. */
+  /**
+   * When provided, must equal the recomputed CID.
+   * Stays `string` so a {@link Cid} or an unbranded candidate both type-check.
+   */
   expectedCid?: string;
 };
 
 /** Result of {@link verifyRecord}. */
 export type VerifyRecordResult = {
   record: OspRecord;
-  cid: string;
+  cid: Cid;
 };
 
 /**
@@ -125,7 +137,7 @@ export function soulPayload(fields: {
 export function signCore(
   fields: Omit<CreateRecordFields, "cosigners"> & { spec?: OspSpecVersion },
   doorPrivateKey: Uint8Array
-): string {
+): Ed25519Signature {
   const spec = fields.spec ?? OSP_SPEC;
   const payload = corePayload({
     spec,

@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 import { CidSchema } from "../crypto/cid.js";
-import { decodeBase64Url, decodePublicKey } from "../encoding/base64url.js";
+import { SoulPublicKeySchema, decodeBase64Url } from "../encoding/base64url.js";
 import { EncodingError } from "../errors.js";
 import { cidMatchesHash } from "../memory-blob.js";
 import { nonnegativeInteger } from "./nonnegative-integer.js";
@@ -40,32 +40,6 @@ const SHA256_DIGEST_LENGTH = 32;
 function countCodePoints(text: string): number {
   return [...text].length;
 }
-
-/** Validates that a string decodes to a 32-byte Ed25519 public key. */
-function validatePublicKeyString(
-  value: string,
-  ctx: z.RefinementCtx,
-  path: (string | number)[]
-): void {
-  try {
-    decodePublicKey(value);
-  } catch (error) {
-    if (error instanceof EncodingError) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: error.message,
-        path
-      });
-      return;
-    }
-    throw error;
-  }
-}
-
-/** Zod string schema for a base64url-encoded 32-byte Ed25519 public key. */
-const PublicKeyStringSchema = z.string().superRefine((value, ctx) => {
-  validatePublicKeyString(value, ctx, []);
-});
 
 /** Memory shard/candidate text: max 500 Unicode code points. */
 const MemoryTextSchema = z
@@ -110,7 +84,7 @@ export const TombstoneReasonSchema = z.enum([
 export const GenesisBodySchema = z
   .object({
     charter: z.string(),
-    soul_pubkey: PublicKeyStringSchema,
+    soul_pubkey: SoulPublicKeySchema,
     created_at: IsoUtcTimestampSchema,
     fork_point: CidSchema.optional(),
     fork_reason: z.string().optional()
@@ -323,7 +297,7 @@ export const ArrivalBodySchema = z
     pop_version: z.literal(POP_VERSION),
     door_id: z.string(),
     epoch: nonnegativeInteger(),
-    session_pubkey: PublicKeyStringSchema,
+    session_pubkey: SoulPublicKeySchema,
     at: IsoUtcTimestampSchema
   })
   .strict();
@@ -335,7 +309,7 @@ export const HeartbeatBodySchema = z
     pop_version: z.literal(POP_VERSION),
     door_id: z.string(),
     epoch: nonnegativeInteger(),
-    session_pubkey: PublicKeyStringSchema,
+    session_pubkey: SoulPublicKeySchema,
     at: IsoUtcTimestampSchema
   })
   .strict();
