@@ -2,6 +2,8 @@
 
 Environment variable names and purposes only. **Never commit values.**
 
+`NPC_BRAIN_TIERS` is public configuration, not a secret. It lists tier names, models, prices, and the *name* of each tier's key variable (`apiKeyEnv`). It must not contain a key value. Each referenced variable follows the same rule as the keys below: exactly one of `NAME` or `NAME_FILE` (for example `NPC_BRAIN_API_KEY` / `NPC_BRAIN_API_KEY_FILE`, including the compose file-mount overlay). Those named variables are secrets. Budget settings (`NPC_BUDGET_*`) are documented in `packages/runtime/README.md`. The daemon does not read `NPC_BRAIN_TIERS` until treasury-lite is wired.
+
 | Name | Purpose |
 |------|---------|
 | `ANTHROPIC_API_KEY` | Anthropic API key for `AnthropicBrain`. Required when `NPC_BRAIN_PROVIDER` is unset or `anthropic`. Exactly one of this or `ANTHROPIC_API_KEY_FILE`. |
