@@ -589,4 +589,21 @@ describe("ResidencyController cycle", () => {
       expect.arrayContaining(["residency_detach_failed", "residency_close_failed"])
     );
   });
+
+  it("does not depart or arrive again while travel is held for sleep", async () => {
+    const world = fakeWorld();
+    const { controller } = controllerWith(world, { holdTravel: () => true });
+    await controller.begin();
+    expect(await controller.requestCycle("operator")).toEqual({
+      kind: "asleep",
+      trigger: "operator"
+    });
+    expect(await controller.requestCycle("lost_session")).toEqual({
+      kind: "asleep",
+      trigger: "lost_session"
+    });
+    expect(world.events.filter((event) => event.startsWith("depart"))).toEqual([]);
+    expect(world.events.filter((event) => event.startsWith("arrive"))).toHaveLength(1);
+    await controller.shutdown();
+  });
 });

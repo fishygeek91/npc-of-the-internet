@@ -20,6 +20,14 @@ export type DaemonResidencyContext = {
   doorPublicKeys: Readonly<Record<string, Uint8Array>>;
   keyring: SingleKeyKeyring;
   brain: Brain;
+  /** Distill tier. Defaults to {@link brain}. */
+  distillBrain?: Brain;
+  /** Journal tier. Defaults to {@link brain}. */
+  journalBrain?: Brain;
+  /** Withhold heartbeats while the budget policy is asleep. */
+  suspendHeartbeats?: () => boolean;
+  /** Seal a `sleep` record in place of a heartbeat. */
+  onSuspendedTick?: (residency: string) => Promise<void>;
   clock: Clock;
   timer: Timer;
   logger: Logger;
@@ -126,6 +134,10 @@ export async function arriveDaemonResidency(
     doorId,
     keyring: ctx.keyring,
     brain: ctx.brain,
+    ...(ctx.distillBrain !== undefined ? { distillBrain: ctx.distillBrain } : {}),
+    ...(ctx.journalBrain !== undefined ? { journalBrain: ctx.journalBrain } : {}),
+    ...(ctx.suspendHeartbeats !== undefined ? { suspendHeartbeats: ctx.suspendHeartbeats } : {}),
+    ...(ctx.onSuspendedTick !== undefined ? { onSuspendedTick: ctx.onSuspendedTick } : {}),
     clock: ctx.clock,
     timer: ctx.timer,
     doorPublicKeys: ctx.doorPublicKeys,

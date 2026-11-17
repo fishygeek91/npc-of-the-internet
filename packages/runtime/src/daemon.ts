@@ -8,8 +8,11 @@ import { DoorError } from "@npc/door-sdk";
 import { DualSoulStore, FileSoulStore, type SoulStore } from "@npc/osp-core";
 import pino, { type Logger } from "pino";
 
+import type { BudgetTierConfig } from "./brain/budget-policy.js";
+import type { BudgetedBrain } from "./brain/budgeted-brain.js";
 import { createBrain } from "./brain/create-brain.js";
 import { BrainError, brainErrorLogFields } from "./brain/errors.js";
+import { openBudgetedBrain } from "./brain/open-budgeted-brain.js";
 import type { Brain } from "./brain/types.js";
 import { loadDaemonConfig, type DaemonConfig } from "./daemon-config.js";
 import { DaemonError } from "./daemon-errors.js";
@@ -22,6 +25,7 @@ import {
   type ReplicationDrainHandle
 } from "./replication/index.js";
 import { watchControlDir, type ControlDirWatcher } from "./residency/control-dir.js";
+import { appendSleepRecord } from "./residency/sleep-record.js";
 import {
   abortableSleep,
   ResidencyController,
@@ -45,6 +49,11 @@ export type ClosableSoulStore = SoulStore & {
 export type ResidencyDaemonDeps = {
   logger?: Logger;
   brain?: Brain;
+  /**
+   * Inner brain for each treasury-lite tier when {@link brain} is omitted and
+   * `NPC_BRAIN_TIERS` is set. Tests pass FakeBrain. Production omits this.
+   */
+  createTierBrain?: (tier: BudgetTierConfig) => Brain;
   loadSoulPrivateKey?: (path: string) => Uint8Array;
   openStore?: (
     dir: string,
@@ -237,9 +246,22 @@ async function bootResidency(ctx: {
   const { store } = resources;
   const endpoints = config.doorUrls.map(doorEndpoint);
 
-  const brain = deps.brain ?? createBrain(config.brain);
   const clock = deps.clock ?? createRealClock();
   const timer = deps.timer ?? createRealTimer();
+  const opened = await openDaemonBrain(config, deps, () => clock.now());
+  const brain = opened.chat;
+  const budgeted = opened.budgeted;
+  if (budgeted !== undefined) {
+    const status = budgeted.publicStatus();
+    logger.info(
+      {
+        sleeping: status.sleeping,
+        sleepReason: status.sleepReason,
+        tier: status.tier
+      },
+      "budget_enabled"
+    );
+  }
 
   /** Counts heartbeat Door/append failures for ops visibility. */
   let heartbeatErrorCount = 0;
@@ -326,6 +348,30 @@ async function bootResidency(ctx: {
     doorPublicKeys: config.doorPublicKeys,
     keyring,
     brain,
+    ...(opened.distill !== undefined ? { distillBrain: opened.distill } : {}),
+    ...(opened.journal !== undefined ? { journalBrain: opened.journal } : {}),
+    ...(budgeted !== undefined
+      ? {
+          suspendHeartbeats: (): boolean => budgeted.publicStatus().sleeping,
+          onSuspendedTick: async (residency: string): Promise<void> => {
+            const draft = budgeted.sleepDraft();
+            if (draft === null) {
+              // Unknown spend still withholds heartbeats. The balance is not published.
+              return;
+            }
+            const outcome = await appendSleepRecord({
+              store,
+              keyring,
+              draft,
+              residency
+            });
+            if (outcome === "appended") {
+              // Reason only. Balance is on the chain; logs stay free of amounts.
+              logger.info({ reason: draft.reason }, "budget_sleep_recorded");
+            }
+          }
+        }
+      : {}),
     clock,
     timer,
     logger,
@@ -394,6 +440,9 @@ async function bootResidency(ctx: {
     timer,
     sleep: deps.sleep ?? abortableSleep,
     logger,
+    ...(budgeted !== undefined
+      ? { holdTravel: (): boolean => budgeted.publicStatus().sleeping }
+      : {}),
     ...(deps.random !== undefined ? { random: deps.random } : {}),
     ...(deps.departRetryDelaysMs !== undefined
       ? { departRetryDelaysMs: deps.departRetryDelaysMs }
@@ -483,13 +532,32 @@ async function bootResidency(ctx: {
   try {
     await controller.begin();
 
-    if (residencyConfig.operatorTrigger) {
+    if (residencyConfig.operatorTrigger || budgeted !== undefined) {
       const watcher = await watchControlDir({
         controlDir: residencyConfig.controlDir,
         timer,
-        onDepartRequest: () => {
-          requestOperatorCycle("control_dir");
-        },
+        ...(residencyConfig.operatorTrigger
+          ? {
+              onDepartRequest: (): void => {
+                requestOperatorCycle("control_dir");
+              }
+            }
+          : {}),
+        ...(budgeted !== undefined
+          ? {
+              onWakeRequest: (): void => {
+                void budgeted.wake("operator").then(
+                  () => {
+                    logger.info("budget_wake");
+                  },
+                  (error: unknown) => {
+                    const message = error instanceof Error ? error.message : String(error);
+                    logger.warn({ err: message }, "budget_wake_failed");
+                  }
+                );
+              }
+            }
+          : {}),
         onError: (error) => {
           const message = error instanceof Error ? error.message : String(error);
           logger.warn({ err: message }, "control_dir_poll_failed");
@@ -521,6 +589,44 @@ async function bootResidency(ctx: {
   }
 
   return handle;
+}
+
+type OpenedDaemonBrain = {
+  chat: Brain;
+  budgeted?: BudgetedBrain;
+  distill?: Brain;
+  journal?: Brain;
+};
+
+/**
+ * Injected `deps.brain` wins (tests). Otherwise `NPC_BRAIN_TIERS` selects
+ * {@link BudgetedBrain}. With neither, the single-provider brain is used.
+ * The journal is never created here.
+ */
+async function openDaemonBrain(
+  config: DaemonConfig,
+  deps: ResidencyDaemonDeps,
+  clock: () => string
+): Promise<OpenedDaemonBrain> {
+  if (deps.brain !== undefined) {
+    return { chat: deps.brain };
+  }
+  if (config.budget !== undefined) {
+    const budgeted = await openBudgetedBrain({
+      budget: config.budget,
+      maxTokens: config.brain.maxTokens,
+      timeoutMs: config.brain.timeoutMs,
+      clock,
+      ...(deps.createTierBrain !== undefined ? { createTierBrain: deps.createTierBrain } : {})
+    });
+    return {
+      chat: budgeted,
+      budgeted,
+      distill: budgeted.forKind("distill"),
+      journal: budgeted.forKind("journal")
+    };
+  }
+  return { chat: createBrain(config.brain) };
 }
 
 /**

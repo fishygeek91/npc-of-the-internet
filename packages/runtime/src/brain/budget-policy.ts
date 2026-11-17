@@ -47,7 +47,12 @@ export const DECIMAL_MICROS = /^(0|[1-9][0-9]*)(\.[0-9]{1,6})?$/;
 export const CANONICAL_ISO_UTC_MS = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})\.(\d{3})Z$/;
 
 const TIER_NAME = /^[a-z0-9][a-z0-9_-]{0,31}$/;
-const API_KEY_ENV = /^[A-Z][A-Z0-9_]{0,63}$/;
+/**
+ * Tier keys are named, not embedded. The suffix keeps a public tier list from
+ * pointing at an unrelated secret (`DISCORD_BOT_TOKEN`, `STORACHA_TOKEN`).
+ * 1 + 55 + `_API_KEY` stays inside the previous 64-character cap.
+ */
+const API_KEY_ENV = /^[A-Z][A-Z0-9_]{0,55}_API_KEY$/;
 const PROVIDER_SLUG = /^[a-z0-9][a-z0-9_./-]*$/;
 
 const DECIMAL_MESSAGE = "must be a non-negative decimal with at most 6 fractional digits";
@@ -119,6 +124,10 @@ export type BudgetConfig = {
   period: "monthly";
   defaultTierName: string;
   ledgerPath: string;
+  /**
+   * Always false when loaded from the environment. The journal is created only
+   * by `wanderer budget-init`. The daemon refuses to boot if this is true.
+   */
   createLedgerIfMissing: boolean;
 };
 
@@ -128,7 +137,7 @@ const tierSchema = z
     baseUrl: z.url(),
     apiKeyEnv: z
       .string()
-      .regex(API_KEY_ENV, "apiKeyEnv must be an env var name matching ^[A-Z][A-Z0-9_]{0,63}$"),
+      .regex(API_KEY_ENV, "apiKeyEnv must be an uppercase env var name ending in _API_KEY"),
     model: z.string().min(1),
     inPricePerMTok: z.string().regex(DECIMAL_MICROS, `inPricePerMTok ${DECIMAL_MESSAGE}`),
     outPricePerMTok: z.string().regex(DECIMAL_MICROS, `outPricePerMTok ${DECIMAL_MESSAGE}`),
@@ -348,15 +357,15 @@ export function chooseTier(
  * `NPC_BRAIN_TIERS` is public config: a JSON array ordered cheapest to most
  * expensive. Each tier is `{name, baseUrl, apiKeyEnv, model, inPricePerMTok,
  * outPricePerMTok}` plus an optional `providerAllowlist` (required for OpenRouter).
- * `apiKeyEnv` is the name of an env var (`^[A-Z][A-Z0-9_]{0,63}$`). The key is
- * read from that var or from `${apiKeyEnv}_FILE`, never from the JSON. Prices
- * are decimal strings (dollars per million tokens), not JSON numbers.
+ * `apiKeyEnv` must end in `_API_KEY`. The key is read from that var or from
+ * `${apiKeyEnv}_FILE`, never from the JSON. Prices are decimal strings (dollars
+ * per million tokens), not JSON numbers.
  *
  * Also reads `NPC_BUDGET_USD`, `NPC_BUDGET_LEDGER_PATH` (absolute), and optionally
- * `NPC_BUDGET_THRESHOLD_USD` (default `0`), `NPC_BUDGET_PERIOD` (`monthly`),
- * `NPC_BUDGET_DEFAULT_TIER`, and `NPC_BUDGET_LEDGER_INIT=1` (one-shot: create a
- * missing absolute journal; do not leave it set). Error text names env vars and
- * never includes key material.
+ * `NPC_BUDGET_THRESHOLD_USD` (default `0`), `NPC_BUDGET_PERIOD` (`monthly`), and
+ * `NPC_BUDGET_DEFAULT_TIER`. Boot never creates the journal: `wanderer budget-init`
+ * does, once. A set `NPC_BUDGET_LEDGER_INIT` is a config error. Error text names
+ * env vars and never includes key material.
  *
  * @param env - Environment map. Tests pass a plain object; `process.env` is not mutated.
  */
@@ -430,6 +439,15 @@ export function loadBudgetConfig(env: NodeJS.ProcessEnv = process.env): BudgetCo
       envVar: "NPC_BUDGET_LEDGER_PATH"
     });
   }
+  // Creating the file is `wanderer budget-init`. A standing env flag would
+  // recreate a lost journal as zero spend on the next boot.
+  if (env.NPC_BUDGET_LEDGER_INIT !== undefined && env.NPC_BUDGET_LEDGER_INIT !== "") {
+    throw new BrainError(
+      "NPC_BUDGET_LEDGER_INIT is not a boot setting; run `wanderer budget-init` once",
+      "invalid_config",
+      { envVar: "NPC_BUDGET_LEDGER_INIT" }
+    );
+  }
 
   return {
     tiers,
@@ -440,7 +458,7 @@ export function loadBudgetConfig(env: NodeJS.ProcessEnv = process.env): BudgetCo
     period: "monthly",
     defaultTierName: resolveDefaultTierName(tiers, env.NPC_BUDGET_DEFAULT_TIER),
     ledgerPath,
-    createLedgerIfMissing: env.NPC_BUDGET_LEDGER_INIT === "1"
+    createLedgerIfMissing: false
   };
 }
 

@@ -69,11 +69,13 @@ LIVE_TESTS=1 NPC_BRAIN_PROVIDER=openai-compat NPC_BRAIN_BASE_URL=https://openrou
 
 CI never sets `LIVE_TESTS`; only unit tests with `FakeBrain`, injected mock clients, and a stub HTTP server run in CI.
 
-### Treasury-lite (T7.12, not wired into the daemon)
+### Treasury-lite (T7.12)
 
-`BudgetedBrain` wraps one `Brain` per configured tier, picks a tier from the remaining operator budget, and appends each call to a local JSONL journal (`SpendLedger`). The daemon still uses `createBrain` / `loadBrainConfig` until a follow-up wires this in. Setting the variables below does nothing in production yet.
+When `NPC_BRAIN_TIERS` is set, the residency daemon uses `BudgetedBrain` instead of the single-provider brain. It picks a tier from the remaining operator budget and appends each call to a local JSONL journal (`SpendLedger`). Chat, distill, and journal are separate call kinds on that one brain (distill and journal may step up one tier). The single-provider vars are not required in that mode; `NPC_BRAIN_MAX_TOKENS` and `NPC_BRAIN_TIMEOUT_MS` still apply.
 
-The journal is off the soulchain: public `transaction` records are T7.7. Totals are replayed from the file. A missing file is not treated as zero spend. `NPC_BUDGET_LEDGER_INIT=1` is a one-shot operator action that creates a missing journal at an absolute path; do not leave it set, and the wiring change will turn it into a command. A corrupt line or a torn tail is left untouched and the brain refuses further calls. Door status and the `sleep` record body are not part of this package surface; the wiring change adds them.
+The journal is off the soulchain: public `transaction` records are T7.7. Totals are replayed from the file. A missing file is not treated as zero spend. Create it once with `wanderer budget-init` (`NPC_BUDGET_LEDGER_PATH` must be absolute). The command refuses if the file already exists. `NPC_BUDGET_LEDGER_INIT` is rejected. A corrupt line or a torn tail is left untouched and the brain refuses further calls.
+
+A known balance at or below the threshold appends a soul-signed `sleep` record (`osp/0.2`). Unknown spend (missing journal, corrupt journal, or a paid tier that reported zero tokens) latches calls but does not publish a balance. While the policy is asleep the daemon appends no heartbeats and does not travel, so Atlas stays `sleeping` until the next attestation. `wanderer wake` appends a journal wake line. That clears a provider-exhausted or unknown-spend latch. It does not raise the balance. A new UTC month drops the period's spend on its own. `publicStatus()` is fraction, tier, and sleeping only (no dollar amounts) and does not wait on an in-flight completion. Door `/wanderer status` does not show it yet (T7.12b).
 
 | Variable | Required | Default | Purpose |
 |----------|----------|---------|---------|
@@ -84,7 +86,9 @@ The journal is off the soulchain: public `transaction` records are T7.7. Totals 
 | `NPC_BUDGET_LEDGER_PATH` | with tiers | — | Absolute `spend.jsonl` path on the runtime volume. |
 | `NPC_BUDGET_DEFAULT_TIER` | no | cheapest paid tier | Tier name used above 50% remaining. Distill/journal step up one tier in that band. |
 
-`apiKeyEnv` matches `^[A-Z][A-Z0-9_]{0,63}$`. The key is `NAME` or `NAME_FILE` (exactly one), the same rule as `NPC_BRAIN_API_KEY`. Several tiers may share one name. A missing name is a config error that names the variable and does not include a value. See `ops/SECRETS.md`.
+`apiKeyEnv` must be an uppercase name ending in `_API_KEY` (for example `NPC_BRAIN_API_KEY`, not `DISCORD_BOT_TOKEN`). The key is `NAME` or `NAME_FILE` (exactly one). Several tiers may share one name. A missing or rejected name is a config error that names the variable and does not include a value. See `ops/SECRETS.md`.
+
+The prepaid provider key (OpenRouter credits, or a LiteLLM proxy `max_budget` key in front of the tier URL) is the hard wall. The journal is the Wanderer's awareness of that spend. See `ops/RUNBOOK.ghost.md` §10b.
 
 Tier JSON (prices are dollars per million tokens, copied from the provider's price sheet — the numbers below are placeholders):
 

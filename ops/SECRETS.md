@@ -2,7 +2,7 @@
 
 Environment variable names and purposes only. **Never commit values.**
 
-`NPC_BRAIN_TIERS` is public configuration, not a secret. It lists tier names, models, prices, and the *name* of each tier's key variable (`apiKeyEnv`). It must not contain a key value. Each referenced variable follows the same rule as the keys below: exactly one of `NAME` or `NAME_FILE` (for example `NPC_BRAIN_API_KEY` / `NPC_BRAIN_API_KEY_FILE`, including the compose file-mount overlay). Those named variables are secrets. Budget settings (`NPC_BUDGET_*`) are documented in `packages/runtime/README.md`. The daemon does not read `NPC_BRAIN_TIERS` until treasury-lite is wired.
+`NPC_BRAIN_TIERS` is public configuration, not a secret. It lists tier names, models, prices, and the *name* of each tier's key variable (`apiKeyEnv`). `apiKeyEnv` must end in `_API_KEY`, so the public list cannot name `DISCORD_BOT_TOKEN` or `STORACHA_TOKEN`. It must not contain a key value. Each referenced variable follows the same rule as the keys below: exactly one of `NAME` or `NAME_FILE` (for example `NPC_BRAIN_API_KEY` / `NPC_BRAIN_API_KEY_FILE`, including the compose file-mount overlay). Those named variables are secrets. Budget settings (`NPC_BUDGET_*`) are documented in `packages/runtime/README.md`. When `NPC_BRAIN_TIERS` is set, the daemon uses it and does not require the single-provider key. Create the journal with `wanderer budget-init`; do not set `NPC_BUDGET_LEDGER_INIT`.
 
 | Name | Purpose |
 |------|---------|

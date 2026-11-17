@@ -187,7 +187,10 @@ export function parseResidency(residency: string): { door_id: string; epoch: num
 /**
  * Derive Wanderer presence state from chain records.
  * Scans newest to oldest: a `sleep` record before any attestation means sleeping
- * (do not fake presence after the soul has recorded sleep). When present, `since` is
+ * (do not fake presence after the soul has recorded sleep). A later attestation,
+ * including a heartbeat, clears that. The runtime withholds heartbeats and travel
+ * while the budget policy is asleep so this stays sleeping until the next
+ * attestation after wake. When present, `since` is
  * the start of the uninterrupted stay at the current Door (see {@link findStaySince});
  * otherwise it is the time of the deciding record.
  */

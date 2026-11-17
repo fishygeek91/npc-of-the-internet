@@ -98,6 +98,29 @@ describe("loadDaemonConfig", () => {
     }
   });
 
+  it("loads treasury-lite tiers without a single-provider key", () => {
+    const env: NodeJS.ProcessEnv = { ...VALID_ENV };
+    delete env.ANTHROPIC_API_KEY;
+    env.NPC_BRAIN_API_KEY = "tier-key";
+    env.NPC_BUDGET_USD = "10";
+    env.NPC_BUDGET_LEDGER_PATH = "/data/runtime/spend.jsonl";
+    env.NPC_BRAIN_TIERS = JSON.stringify([
+      {
+        name: "cheap",
+        baseUrl: "https://example.com/v1",
+        apiKeyEnv: "NPC_BRAIN_API_KEY",
+        model: "tier-cheap",
+        inPricePerMTok: "1",
+        outPricePerMTok: "1"
+      }
+    ]);
+    const config = loadDaemonConfig(env);
+    expect(config.budget?.ledgerPath).toBe("/data/runtime/spend.jsonl");
+    expect(config.budget?.defaultTierName).toBe("cheap");
+    expect(config.budget?.createLedgerIfMissing).toBe(false);
+    expect(config.brain).toMatchObject({ provider: "fake", model: "unused", maxTokens: 1024 });
+  });
+
   it("loads optional NPC_SOULCHAIN_IPFS_DIR", () => {
     const config = loadDaemonConfig({
       ...VALID_ENV,
