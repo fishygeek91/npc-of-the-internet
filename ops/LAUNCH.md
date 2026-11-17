@@ -216,7 +216,7 @@ Genesis CID: <cid>
      $(grep '^ATLAS_DOOR_PUBKEYS=' ops/.env | cut -d= -f2- | tr ',' '\n' | sed 's/^/--door-key=/')
    ```
 
-5. **Seed the Docker soulchain volume** with **only** `chain.jsonl` and `blobs/` (never `soul.key`). Ensure the stack is not writing to the volume yet:
+5. **Seed the Docker soulchain volume** with **only** `chain.jsonl` and `blobs/` (never `soul.key`). The `soulchain-ipfs` mirror volume needs **no seeding** — `DualSoulStore` backfills an empty (or lagging) mirror from the file store on first open. Ensure the stack is not writing to the volume yet:
 
    ```bash
    docker compose --env-file ops/.env -f ops/compose.ghost.yml down

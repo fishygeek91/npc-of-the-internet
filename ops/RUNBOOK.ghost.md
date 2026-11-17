@@ -280,8 +280,40 @@ is mandatory.)
 
 ### 5c. Copy the keys from your Mac
 
-On your **Mac** (assuming your local `soul.key` / `door.key` exist — generate
-them per the repo's ops/SECRETS.md if not):
+> **Where keys come from (there is no keygen script):**
+>
+> - **`soul.key` is created only by `osp init`** during the genesis ceremony —
+>   [`LAUNCH.md`](LAUNCH.md) §2. It generates `soul.key`, `chain.jsonl`, and
+>   `blobs/` together and prints the soul public key to set as `SOUL_PUBLIC_KEY`.
+>   Never create the production soul key with `openssl rand` / `/dev/urandom`
+>   (smoke tests only; [`RUNBOOK.md`](RUNBOOK.md) §1.2).
+> - **`door.key`** is an independent Ed25519 seed — 32 raw bytes is valid:
+>   `openssl rand -out door.key 32` ([`LAUNCH.md`](LAUNCH.md) §1 Option A), or
+>   the programmatic Option B. `node ops/scripts/preflight-keys.mjs door <path>`
+>   prints that key's public key (build `@npc/osp-core` first). Compose
+>   `ATLAS_DOOR_PUBKEYS` from it the way LAUNCH.md §1 does
+>   (`discord:<guild>=<pubkey>,web:home=<pubkey>`). The script does not print
+>   that full value.
+>
+> **VPS prerequisites for the commands in this runbook** (not just Docker):
+> Node ≥ 22 (root `package.json` `engines`; CI is Node 22) and `pnpm`. Build
+> the packages preflight and `osp init` import:
+> `pnpm install --frozen-lockfile && pnpm --filter @npc/osp-core --filter @npc/osp-cli build`.
+> `ghostc` runs preflight before every mutating command. Preflight dies without
+> `node` on `PATH` and without `packages/osp-core/dist/index.js` (it derives
+> pubkeys from the key files). `key-backup.sh` needs `age`
+> (`sudo apt install -y age`). After this section hands `keys/` to uid 10001
+> with mode 0700/0600, the login user can no longer read them. Preflight then
+> exits `SOUL_KEY_HOST_PATH not readable: <path>` and does not mention
+> ownership; `key-backup.sh` exits `SOUL_KEY_HOST_PATH missing/unreadable`.
+> After §5d, `rclone.conf` is unreadable for the same reason (`rclone.conf not
+> readable`). Run `ghostc` and the backup scripts via `sudo`, for example
+> `alias ghostc='sudo bash ~/npc/ops/scripts/ghostc.sh'`. The `chmod` lines in
+> this section need `sudo` too, once the directory is owned by 10001.
+
+On your **Mac** (if you ran the genesis ceremony locally; if you ran it on the
+server per [`LAUNCH.md`](LAUNCH.md), skip the `scp` and `install` the staged
+keys into place instead):
 
 ```bash
 scp /path/to/soul.key ghost:/var/lib/npc-ghost/keys/soul.key
@@ -292,8 +324,8 @@ Back on the server, hand ownership to the container user and restrict them:
 
 ```bash
 sudo chown -R 10001:10001 /var/lib/npc-ghost/keys
-chmod 700 /var/lib/npc-ghost/keys
-chmod 600 /var/lib/npc-ghost/keys/*
+sudo chmod 700 /var/lib/npc-ghost/keys
+sudo chmod 600 /var/lib/npc-ghost/keys/*
 ```
 
 **Encrypted offsite key backup (required):** configure `AGE_RECIPIENT` and a
@@ -301,11 +333,12 @@ chmod 600 /var/lib/npc-ghost/keys/*
 bucket from the chain remote), then on the host (never in the backup sidecar):
 
 ```bash
-bash ops/scripts/key-backup.sh
-# Offline fixture proof (CI / first setup):
+sudo bash ops/scripts/key-backup.sh
+# Offline fixture proof (CI / first setup) — throwaway keys, not the host files:
 bash ops/scripts/key-backup-drill.sh
-# Live verify against host keys + remote latest/ (needs AGE_IDENTITY_PATH):
-NPC_KEY_DRILL_LIVE=1 bash ops/scripts/key-backup-drill.sh
+# Live verify against host keys + remote latest/ (needs AGE_IDENTITY_PATH).
+# sudo so the drill can read the uid-10001 key files:
+sudo env NPC_KEY_DRILL_LIVE=1 bash ops/scripts/key-backup-drill.sh
 ```
 
 Keep the age identity (`AGE_IDENTITY_PATH`) offline (USB / password manager),
@@ -322,7 +355,7 @@ scp /path/to/new-soul.key ghost:~/soul.key.new
 # On server:
 sudo mv ~/soul.key.new /var/lib/npc-ghost/keys/soul.key
 sudo chown 10001:10001 /var/lib/npc-ghost/keys/soul.key
-chmod 600 /var/lib/npc-ghost/keys/soul.key
+sudo chmod 600 /var/lib/npc-ghost/keys/soul.key
 ```
 
 Same pattern for `door.key`. Restart affected services after rotation
@@ -346,16 +379,16 @@ Walk-through for B2: `n` (new remote) → name it `ghost-remote` → storage typ
 ```bash
 cp ~/.config/rclone/rclone.conf /var/lib/npc-ghost/rclone/rclone.conf
 sudo chown -R 10001:10001 /var/lib/npc-ghost/rclone
-chmod 700 /var/lib/npc-ghost/rclone
-chmod 600 /var/lib/npc-ghost/rclone/rclone.conf
+sudo chmod 700 /var/lib/npc-ghost/rclone
+sudo chmod 600 /var/lib/npc-ghost/rclone/rclone.conf
 ```
 
 Or, if you copied keys and rclone config in one session:
 
 ```bash
 sudo chown -R 10001:10001 /var/lib/npc-ghost/keys /var/lib/npc-ghost/rclone
-chmod 700 /var/lib/npc-ghost/keys /var/lib/npc-ghost/rclone
-chmod 600 /var/lib/npc-ghost/keys/* /var/lib/npc-ghost/rclone/rclone.conf
+sudo chmod 700 /var/lib/npc-ghost/keys /var/lib/npc-ghost/rclone
+sudo chmod 600 /var/lib/npc-ghost/keys/* /var/lib/npc-ghost/rclone/rclone.conf
 ```
 
 Test it:
