@@ -10,6 +10,12 @@ import Fastify, { type FastifyInstance, type FastifyReply } from "fastify";
 import { ChainView, type ChainSnapshot, type ChainViewOptions } from "./chain-view.js";
 import type { AtlasConfig } from "./config.js";
 import {
+  buildChainExport,
+  chainExportEtag,
+  headerSingle,
+  ifNoneMatchSatisfied
+} from "./export-chain.js";
+import {
   deriveHead,
   deriveJournals,
   deriveRecordsPage,
@@ -36,7 +42,9 @@ export async function createAtlasServer(config: AtlasConfig): Promise<FastifyIns
 
   await app.register(cors, {
     origin: true,
-    methods: ["GET"]
+    methods: ["GET"],
+    // Browsers on another origin must be able to read ETag for If-None-Match.
+    exposedHeaders: ["ETag"]
   });
 
   app.setErrorHandler((error, _request, reply) => {
@@ -62,6 +70,22 @@ export async function createAtlasServer(config: AtlasConfig): Promise<FastifyIns
       return;
     }
     void reply.send(deriveState(snap.records, snap.verified));
+  });
+
+  app.get("/chain/export", async (request, reply) => {
+    const snap = await chainView.snapshot();
+    if (replyIfUnreadable(snap, reply)) {
+      return;
+    }
+
+    const body = buildChainExport(snap, config.doorPublicKeys);
+    const etag = chainExportEtag(body);
+    void reply.header("ETag", etag).header("Cache-Control", "no-cache");
+    if (ifNoneMatchSatisfied(headerSingle(request.headers["if-none-match"]), etag)) {
+      void reply.code(304).send();
+      return;
+    }
+    void reply.send(body);
   });
 
   app.get("/chain/head", async (_request, reply) => {
