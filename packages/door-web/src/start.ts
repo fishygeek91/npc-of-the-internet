@@ -110,7 +110,8 @@ export async function startWebDoor(options: StartWebDoorOptions): Promise<WebDoo
   const httpServer = new HttpDoorServer({
     door,
     host: config.doorHttpHost,
-    port: config.doorHttpPort
+    port: config.doorHttpPort,
+    log: (event, message) => logger.error({ err: message }, event)
   });
   const bound = await httpServer.start();
   logger.info({ host: bound.host, port: bound.port }, "door_http_listening");

@@ -2,7 +2,7 @@
  * Await every teardown step.
  *
  * A rejection does not skip later steps. After all steps have settled, the first
- * rejection is rethrown so the caller still observes the failure.
+ * rejection is rethrown, including a rejection whose reason is `undefined`.
  *
  * @param steps - Resource stops, in the order they should be attempted.
  */
@@ -15,9 +15,8 @@ export async function stopAll(steps: readonly (() => Promise<void>)[]): Promise<
       errors.push(error);
     }
   }
-  const first = errors[0];
-  if (first !== undefined) {
-    throw first;
+  if (errors.length > 0) {
+    throw errors[0];
   }
 }
 

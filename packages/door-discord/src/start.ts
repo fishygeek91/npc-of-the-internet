@@ -151,7 +151,8 @@ export async function startDiscordDoor(
     httpServer = new HttpDoorServer({
       door,
       host: config.httpHost,
-      port: config.httpPort
+      port: config.httpPort,
+      log: (event, message) => logger.error({ err: message }, event)
     });
     const bound = await httpServer.start();
     logger.info(

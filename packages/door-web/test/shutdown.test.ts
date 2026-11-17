@@ -25,6 +25,24 @@ describe("stopAll", () => {
 
     expect(ran).toEqual(["site", "ws", "http"]);
   });
+
+  it("rethrows when a step rejects with undefined", async () => {
+    const ran: string[] = [];
+
+    await expect(
+      stopAll([
+        async () => {
+          ran.push("first");
+          throw undefined;
+        },
+        async () => {
+          ran.push("second");
+        }
+      ])
+    ).rejects.toBeUndefined();
+
+    expect(ran).toEqual(["first", "second"]);
+  });
 });
 
 describe("exitAfterStop", () => {
