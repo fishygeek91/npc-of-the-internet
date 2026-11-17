@@ -52,11 +52,15 @@ Each line is `OK`, `INFO`, or `ALERT`, then the check name, then `consult:`
 and a runbook anchor an agent can open. Alerts say what not to do (do not
 delete the remote, do not recreate volumes).
 
-`NPC_WATCHDOG_LIVE=1` is the only value that changes this. It runs `ghostc ps`,
-`df -Pk /`, and, on Linux, reads `/proc/meminfo`. If any check is `ALERT` and
-`DISCORD_OPERATOR_WEBHOOK` is `https://discord.com/api/webhooks/…` (or
-`discordapp.com`), it POSTs the alert lines. A healthy live run does not post.
-Any other URL is refused and not contacted. The URL is never printed.
+`NPC_WATCHDOG_LIVE=1` is the only value that changes this. It checks
+`DISCORD_OPERATOR_WEBHOOK` before any probe and exits 2 if the value is missing
+or not `https://discord.com/api/webhooks/…` (or `discordapp.com`), including
+when every check would be healthy. With a valid webhook it runs `ghostc ps`
+(which passes `--env-file` to docker compose; this script does not read
+`ops/.env` itself), `df -Pk /`, and, on Linux, reads `/proc/meminfo`. It POSTs
+only when a check is `ALERT`. A healthy live run with a valid webhook does not
+POST. The URL is passed to curl on stdin and is never printed. Do not run the
+script under `bash -x`; that trace would include the webhook.
 
 The backup marker in compose is `/tmp/backup.ok` **inside** the backup
 container. `backup healthy` from `ghostc ps` already means that marker is

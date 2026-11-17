@@ -5,11 +5,14 @@
 # contact Discord, rclone, or the VPS. Probe files still get evaluated, so CI
 # can prove alerts without a host.
 #
-# NPC_WATCHDOG_LIVE=1 is the only switch that pages Discord, and only when a
-# check is ALERT and DISCORD_OPERATOR_WEBHOOK is an https Discord webhook URL
-# (ops/SECRETS.md). Live mode may run `ghostc ps`, `df -Pk /`, and read
-# /proc/meminfo on this machine. It never reads ops/.env, never calls rclone,
-# and never copies a soulchain.
+# NPC_WATCHDOG_LIVE=1 is the only switch that pages Discord. That mode checks
+# DISCORD_OPERATOR_WEBHOOK before any probe and exits 2 if it is missing or not
+# an https Discord webhook URL (ops/SECRETS.md), even when every check would
+# have been healthy. Live mode may run `ghostc ps`, `df -Pk /`, and read
+# /proc/meminfo on this machine. It does not read ops/.env itself (live
+# `ghostc ps` passes --env-file to docker compose), never calls rclone, and
+# never copies a soulchain. Do not run under `bash -x`; the trace would show
+# the webhook.
 #
 # Exit 0: no alerts. Exit 1: one or more alerts (or the Discord POST failed).
 # Exit 2: bad arguments, or live paging was asked for but the webhook is missing
@@ -57,9 +60,33 @@ else
   echo "[watchdog] mode=dry-run"
 fi
 
+# Decimal without leading zeros. "08" is rejected so bash does not treat it as
+# octal and abort the script before the check can emit an ALERT.
+is_decimal() {
+  [[ "$1" =~ ^(0|[1-9][0-9]*)$ ]]
+}
+
+# https Discord webhook only. Shared by the live-mode gate and the POST.
+webhook_is_valid() {
+  local url="${DISCORD_OPERATOR_WEBHOOK:-}"
+  [[ "$url" =~ ^https://(discord\.com|discordapp\.com)/api/webhooks/[0-9]+/[^[:space:]]+$ ]]
+}
+
+# Step 1b: a bad live webhook must fail before probes, including a healthy run.
+if [[ "$live" -eq 1 ]] && ! webhook_is_valid; then
+  echo "[watchdog] ERROR: NPC_WATCHDOG_LIVE=1 but DISCORD_OPERATOR_WEBHOOK is unset or is not an https Discord webhook URL. Not posting." >&2
+  exit 2
+fi
+
 alerts=0
 alert_file="$(mktemp "${TMPDIR:-/tmp}/npc-watchdog.XXXXXX")"
-trap 'rm -f "$alert_file"' EXIT
+# Newline-separated list so paths with spaces survive. The trap expands this
+# when the shell exits, including ps_tmp created later.
+temp_files="$alert_file"
+# `|| true` keeps a cleanup failure from replacing the script's exit status.
+# tmp_path is assigned by `read` when the trap runs; shellcheck does not see it.
+# shellcheck disable=SC2154
+trap 'printf "%s\n" "$temp_files" | while IFS= read -r tmp_path; do if [ -n "$tmp_path" ]; then rm -f "$tmp_path"; fi; done || true' EXIT
 
 # Print a single operator line. ALERT lines are also queued for Discord.
 report() {
@@ -110,6 +137,8 @@ check_containers() {
   # A file, not an unquoted heredoc: probe text must not be evaluated as shell.
   local ps_tmp
   ps_tmp="$(mktemp "${TMPDIR:-/tmp}/npc-watchdog-ps.XXXXXX")"
+  temp_files="${temp_files}
+${ps_tmp}"
   printf '%s\n' "$ps_body" >"$ps_tmp"
   local -a required
   required=(runtime door-discord door-web atlas-api backup)
@@ -151,7 +180,7 @@ check_backup() {
   if [[ -z "$now" ]]; then
     now="$(date +%s)"
   fi
-  if [[ ! "$max" =~ ^[0-9]+$ || ! "$now" =~ ^[0-9]+$ ]]; then
+  if ! is_decimal "$max" || ! is_decimal "$now"; then
     report ALERT backup_marker "$consult" "backup age settings are not integers. Do not delete the remote."
     return 0
   fi
@@ -167,7 +196,7 @@ check_backup() {
     fi
     mtime="$(file_mtime "$path" || true)"
   fi
-  if [[ ! "$mtime" =~ ^[0-9]+$ ]]; then
+  if ! is_decimal "$mtime"; then
     report ALERT backup_marker "$consult" "could not read the marker mtime. Do not delete the remote."
     return 0
   fi
@@ -193,7 +222,7 @@ check_chain() {
     report INFO chain_mtime "$consult" "skipped. Set NPC_WATCHDOG_LOCAL_CHAIN and NPC_WATCHDOG_REMOTE_CHAIN_EPOCH. This script does not call rclone or copy the chain."
     return 0
   fi
-  if [[ ! "$remote_epoch" =~ ^[0-9]+$ || ! "$skew" =~ ^[0-9]+$ ]]; then
+  if ! is_decimal "$remote_epoch" || ! is_decimal "$skew"; then
     report ALERT chain_mtime "$consult" "remote epoch or skew is not an integer. Do not copy over either chain."
     return 0
   fi
@@ -205,7 +234,7 @@ check_chain() {
   if [[ -z "$local_mtime" ]]; then
     local_mtime="$(file_mtime "$local_path" || true)"
   fi
-  if [[ ! "$local_mtime" =~ ^[0-9]+$ ]]; then
+  if ! is_decimal "$local_mtime"; then
     report ALERT chain_mtime "$consult" "could not read the local chain mtime. Do not copy over either chain."
     return 0
   fi
@@ -241,13 +270,13 @@ check_disk() {
     report INFO disk "$consult" "skipped (dry-run). Set NPC_WATCHDOG_DF_FILE, or NPC_WATCHDOG_LIVE=1 to run df -Pk /."
     return 0
   fi
-  if [[ ! "$min_mb" =~ ^[0-9]+$ ]]; then
+  if ! is_decimal "$min_mb"; then
     report ALERT disk "$consult" "disk floor is not an integer. Do not delete volumes."
     return 0
   fi
   local avail_kb
   avail_kb="$(printf '%s\n' "$df_body" | awk 'NR==2 { print $4 }')"
-  if [[ ! "$avail_kb" =~ ^[0-9]+$ ]]; then
+  if ! is_decimal "$avail_kb"; then
     report ALERT disk "$consult" "could not parse the df available-blocks column. Do not delete volumes."
     return 0
   fi
@@ -277,13 +306,13 @@ check_memory() {
     report INFO memory "$consult" "skipped. On the VPS, NPC_WATCHDOG_LIVE=1 reads /proc/meminfo. Elsewhere set NPC_WATCHDOG_MEMINFO_FILE."
     return 0
   fi
-  if [[ ! "$min_mb" =~ ^[0-9]+$ ]]; then
+  if ! is_decimal "$min_mb"; then
     report ALERT memory "$consult" "memory floor is not an integer."
     return 0
   fi
   local avail_kb
   avail_kb="$(printf '%s\n' "$mem_body" | awk '/^MemAvailable:/ { print $2; found = 1 } END { if (!found) exit 1 }')" || avail_kb=""
-  if [[ ! "$avail_kb" =~ ^[0-9]+$ ]]; then
+  if ! is_decimal "$avail_kb"; then
     report ALERT memory "$consult" "MemAvailable is missing from meminfo. Do not raise mem_limit blindly."
     return 0
   fi
@@ -304,8 +333,11 @@ json_content() {
   fi
   local escaped="${text//\\/\\\\}"
   escaped="${escaped//\"/\\\"}"
+  escaped="${escaped//$'\t'/\\t}"
   escaped="${escaped//$'\r'/}"
   escaped="${escaped//$'\n'/\\n}"
+  # Drop leftover ASCII controls so a probe path cannot break the JSON string.
+  escaped="$(printf '%s' "$escaped" | tr -d '\000-\010\013\014\016-\037')"
   printf '{"content":"%s"}' "$escaped"
 }
 
@@ -321,21 +353,27 @@ post_discord() {
     return 0
   fi
   local url="${DISCORD_OPERATOR_WEBHOOK:-}"
-  if [[ ! "$url" =~ ^https://(discord\.com|discordapp\.com)/api/webhooks/[0-9]+/[^[:space:]]+$ ]]; then
+  if ! webhook_is_valid; then
     echo "[watchdog] ERROR: NPC_WATCHDOG_LIVE=1 but DISCORD_OPERATOR_WEBHOOK is unset or is not an https Discord webhook URL. Not posting." >&2
     return 2
   fi
   local body
   body="$(json_content "$(cat "$alert_file")")"
-  local err_file curl_rc
+  local err_file curl_rc url_cfg
   err_file="$(mktemp "${TMPDIR:-/tmp}/npc-watchdog-curl.XXXXXX")"
+  temp_files="${temp_files}
+${err_file}"
+  # Keep the token out of argv. Quote/backslash in the URL are escaped so they
+  # cannot break out of the curl config string.
+  url_cfg="${url//\\/\\\\}"
+  url_cfg="${url_cfg//\"/\\\"}"
   curl_rc=0
   # --proto rejects non-https. Stderr is discarded so a failed POST cannot echo the webhook.
-  curl --proto "=https" --fail --silent --show-error --max-time 10 \
+  printf 'url = "%s"\n' "$url_cfg" | curl --proto "=https" --fail --silent --show-error --max-time 10 \
     -H "Content-Type: application/json" \
     -X POST \
     --data "$body" \
-    "$url" >/dev/null 2>"$err_file" || curl_rc=$?
+    -K - >/dev/null 2>"$err_file" || curl_rc=$?
   rm -f "$err_file"
   if [[ "$curl_rc" -ne 0 ]]; then
     echo "[watchdog] ERROR: Discord POST failed. The webhook URL was not logged." >&2

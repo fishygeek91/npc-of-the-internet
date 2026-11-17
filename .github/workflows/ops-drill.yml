@@ -45,10 +45,11 @@ jobs:
       - name: Open or update a drill-failure issue
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           title="[ops] offline restore drill failed"
-          run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           body=$(cat <<EOF
           The offline restore drill failed.
 
@@ -59,7 +60,7 @@ jobs:
           A human still approves every Gate 2 action.
           EOF
           )
-          number="$(gh issue list --state open --limit 50 --json number,title --jq '[.[] | select(.title == "[ops] offline restore drill failed") | .number] | first // empty')"
+          number="$(gh issue list --state open --search "in:title \"${title}\"" --json number,title --jq "[.[] | select(.title == \"${title}\") | .number] | first // empty")"
           if [[ -z "${number}" ]]; then
             gh issue create --title "${title}" --body "${body}"
           else

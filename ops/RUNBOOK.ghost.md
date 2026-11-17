@@ -658,10 +658,10 @@ wait a minute, `ssh ghost`, `ghostc ps`.
 `/var/run/reboot-required` exists.
 
 **Monitoring:** `bash ops/scripts/watchdog.sh` prints checks and does not page
-Discord. `NPC_WATCHDOG_LIVE=1` plus `DISCORD_OPERATOR_WEBHOOK` is the paging
-switch — names in [`SECRETS.md`](SECRETS.md), rules in
-[`AI-OPERATOR.md`](AI-OPERATOR.md). Do not install a timer until a human
-approves operator alerting. Fallback: `ghostc ps`.
+Discord. `NPC_WATCHDOG_LIVE=1` pages Discord only when `DISCORD_OPERATOR_WEBHOOK`
+is an https Discord webhook; otherwise the run exits 2 before probes. Names in
+[`SECRETS.md`](SECRETS.md), rules in [`AI-OPERATOR.md`](AI-OPERATOR.md). Do not
+install a timer until a human approves operator alerting. Fallback: `ghostc ps`.
 
 **Residency cycles** run on their own: about once a day the Wanderer distills its
 stay, the Door's AI witness checks each memory (no human review), and it travels to a

@@ -9,6 +9,7 @@ WATCH="${SCRIPT_DIR}/watchdog.sh"
 ORIG_PATH="${PATH}"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/npc-watchdog-test.XXXXXX")"
 PROBE_LOG="${TMP}/probe.log"
+PROBE_STDIN="${TMP}/probe.stdin"
 SHIM="${TMP}/bin"
 CASE_OUT=""
 CASE_ERR=""
@@ -25,10 +26,20 @@ fail() {
 
 mkdir -p "$SHIM"
 : >"$PROBE_LOG"
+: >"$PROBE_STDIN"
 
 cat >"${SHIM}/curl" <<'EOF'
 #!/bin/sh
+# Argv goes to the probe log. The webhook arrives on stdin (curl -K -).
 printf '%s\n' "$*" >> "${PROBE_LOG:?}"
+if [ -n "${PROBE_STDIN:-}" ]; then
+  cat >> "${PROBE_STDIN}"
+else
+  cat >/dev/null
+fi
+if [ "${CURL_FAIL:-}" = "1" ]; then
+  exit 1
+fi
 exit 0
 EOF
 cat >"${SHIM}/docker" <<'EOF'
@@ -49,6 +60,7 @@ run_case() {
   local expect_rc="$2"
   shift 2
   : >"$PROBE_LOG"
+  : >"$PROBE_STDIN"
   local out="${TMP}/${name}.out"
   local err="${TMP}/${name}.err"
   set +e
@@ -57,6 +69,7 @@ run_case() {
     HOME="${HOME}" \
     TMPDIR="${TMPDIR:-/tmp}" \
     PROBE_LOG="${PROBE_LOG}" \
+    PROBE_STDIN="${PROBE_STDIN}" \
     "$@" >"$out" 2>"$err"
   local rc=$?
   set -e
@@ -113,6 +126,8 @@ MEM_BAD="${TMP}/mem-bad.txt"
 CHAIN="${TMP}/chain.jsonl"
 MARKER="${TMP}/backup.ok"
 WEBHOOK="https://discord.com/api/webhooks/1234567890/fixturetoken"
+APP_WEBHOOK="https://discordapp.com/api/webhooks/1234567890/fixturetoken"
+HTTP_WEBHOOK="http://discord.com/api/webhooks/1234567890/fixturetoken"
 cat >"$PS_OK" <<'EOF'
 runtime healthy
 door-discord healthy
@@ -218,7 +233,10 @@ run_case live_post 1 \
   bash "$WATCH"
 assert_grep "$CASE_OUT" "^\[watchdog\] mode=live$" "live mode"
 assert_grep "$CASE_OUT" "live: posted .* alert" "live did not report a post"
-assert_grep "$PROBE_LOG" "fixturetoken" "live curl shim was not called"
+assert_grep "$PROBE_STDIN" "fixturetoken" "live curl did not receive the url on stdin"
+assert_grep "$PROBE_LOG" "\-\-proto" "live curl dropped --proto"
+assert_grep "$PROBE_LOG" "\-K" "live curl did not read a config file"
+assert_no_grep "$PROBE_LOG" "fixturetoken" "live curl argv contained the webhook"
 assert_grep "$PROBE_LOG" "consult: ops/RUNBOOK.md#3-logs-and-health" "live payload missed the runbook"
 assert_no_grep "$CASE_OUT" "fixturetoken" "live stdout leaked the webhook"
 assert_no_grep "$CASE_ERR" "fixturetoken" "live stderr leaked the webhook"
@@ -295,8 +313,9 @@ assert_grep "$CASE_OUT" "^\[watchdog\] mode=dry-run$" "true was treated as live"
 assert_quiet_probes "LIVE=true invoked curl"
 
 echo "[watchdog-fixture-test] live ghostc ps failure does not escape the shim"
-run_case live_ps 2 \
+run_case live_ps 1 \
   NPC_WATCHDOG_LIVE=1 \
+  DISCORD_OPERATOR_WEBHOOK="$WEBHOOK" \
   BACKUP_OK_PATH="$MARKER" \
   NPC_WATCHDOG_BACKUP_MTIME=10000 \
   NPC_WATCHDOG_NOW_EPOCH=10100 \
@@ -309,7 +328,10 @@ run_case live_ps 2 \
 assert_grep "$CASE_OUT" "^ALERT containers " "ghostc failure did not alert"
 assert_grep "$PROBE_LOG" "docker invoked" "ghostc did not call docker"
 assert_no_grep "$PROBE_LOG" "rclone invoked" "ghostc failure called rclone"
-assert_no_grep "$PROBE_LOG" "fixturetoken" "ghostc failure called curl"
+assert_grep "$PROBE_STDIN" "fixturetoken" "ghostc failure did not page via stdin"
+assert_no_grep "$PROBE_LOG" "fixturetoken" "ghostc failure put the webhook in argv"
+assert_no_grep "$CASE_OUT" "fixturetoken" "ghostc failure stdout leaked the webhook"
+assert_no_grep "$CASE_ERR" "fixturetoken" "ghostc failure stderr leaked the webhook"
 
 echo "[watchdog-fixture-test] marker mtime comes from stat"
 run_case real_mtime 0 \
@@ -342,6 +364,102 @@ run_case inject 1 \
 [[ ! -e "${TMP}/pwned" ]] || fail "probe text was evaluated as shell"
 assert_grep "$CASE_OUT" "^ALERT containers " "inject did not alert"
 assert_quiet_probes "inject case invoked a probe command"
+
+echo "[watchdog-fixture-test] curl failure stays local and hides the webhook"
+run_case live_curl_fail 1 \
+  NPC_WATCHDOG_LIVE=1 \
+  CURL_FAIL=1 \
+  DISCORD_OPERATOR_WEBHOOK="$WEBHOOK" \
+  NPC_WATCHDOG_PS_FILE="$PS_BAD" \
+  BACKUP_OK_PATH="$MARKER" \
+  NPC_WATCHDOG_BACKUP_MTIME=10000 \
+  NPC_WATCHDOG_NOW_EPOCH=10100 \
+  NPC_WATCHDOG_LOCAL_CHAIN="$CHAIN" \
+  NPC_WATCHDOG_LOCAL_CHAIN_EPOCH=10000 \
+  NPC_WATCHDOG_REMOTE_CHAIN_EPOCH=10050 \
+  NPC_WATCHDOG_DF_FILE="$DF_OK" \
+  NPC_WATCHDOG_MEMINFO_FILE="$MEM_OK" \
+  bash "$WATCH"
+assert_grep "$CASE_ERR" "Discord POST failed" "curl failure stderr"
+assert_no_grep "$CASE_OUT" "fixturetoken" "curl failure stdout leaked the webhook"
+assert_no_grep "$CASE_ERR" "fixturetoken" "curl failure stderr leaked the webhook"
+assert_no_grep "$PROBE_LOG" "fixturetoken" "curl failure argv contained the webhook"
+assert_grep "$PROBE_STDIN" "fixturetoken" "curl failure did not pass the url on stdin"
+
+echo "[watchdog-fixture-test] http webhook is refused before curl"
+run_case live_http 2 \
+  NPC_WATCHDOG_LIVE=1 \
+  DISCORD_OPERATOR_WEBHOOK="$HTTP_WEBHOOK" \
+  NPC_WATCHDOG_PS_FILE="$PS_BAD" \
+  BACKUP_OK_PATH="$MARKER" \
+  NPC_WATCHDOG_BACKUP_MTIME=10000 \
+  NPC_WATCHDOG_NOW_EPOCH=10100 \
+  NPC_WATCHDOG_LOCAL_CHAIN="$CHAIN" \
+  NPC_WATCHDOG_LOCAL_CHAIN_EPOCH=10000 \
+  NPC_WATCHDOG_REMOTE_CHAIN_EPOCH=10050 \
+  NPC_WATCHDOG_DF_FILE="$DF_OK" \
+  NPC_WATCHDOG_MEMINFO_FILE="$MEM_OK" \
+  bash "$WATCH"
+assert_grep "$CASE_ERR" "Not posting" "http webhook stderr"
+assert_no_grep "$CASE_OUT" "fixturetoken" "http webhook stdout leaked the token"
+assert_no_grep "$CASE_ERR" "fixturetoken" "http webhook stderr leaked the token"
+assert_quiet_probes "http webhook invoked curl"
+
+echo "[watchdog-fixture-test] discordapp.com webhook is accepted"
+run_case live_discordapp 1 \
+  NPC_WATCHDOG_LIVE=1 \
+  DISCORD_OPERATOR_WEBHOOK="$APP_WEBHOOK" \
+  NPC_WATCHDOG_PS_FILE="$PS_BAD" \
+  BACKUP_OK_PATH="$MARKER" \
+  NPC_WATCHDOG_BACKUP_MTIME=10000 \
+  NPC_WATCHDOG_NOW_EPOCH=10100 \
+  NPC_WATCHDOG_LOCAL_CHAIN="$CHAIN" \
+  NPC_WATCHDOG_LOCAL_CHAIN_EPOCH=10000 \
+  NPC_WATCHDOG_REMOTE_CHAIN_EPOCH=10050 \
+  NPC_WATCHDOG_DF_FILE="$DF_OK" \
+  NPC_WATCHDOG_MEMINFO_FILE="$MEM_OK" \
+  bash "$WATCH"
+assert_grep "$CASE_OUT" "live: posted .* alert" "discordapp.com was not accepted"
+assert_grep "$PROBE_STDIN" "discordapp.com" "discordapp.com url was not on stdin"
+assert_no_grep "$PROBE_LOG" "fixturetoken" "discordapp.com url leaked into argv"
+assert_no_grep "$CASE_OUT" "fixturetoken" "discordapp.com stdout leaked the token"
+assert_no_grep "$CASE_ERR" "fixturetoken" "discordapp.com stderr leaked the token"
+
+echo "[watchdog-fixture-test] leading zero is an alert, not an octal crash"
+run_case leading_zero 1 \
+  NPC_WATCHDOG_PS_FILE="$PS_OK" \
+  BACKUP_OK_PATH="$MARKER" \
+  NPC_WATCHDOG_BACKUP_MTIME=10000 \
+  NPC_WATCHDOG_NOW_EPOCH=10100 \
+  NPC_WATCHDOG_LOCAL_CHAIN="$CHAIN" \
+  NPC_WATCHDOG_LOCAL_CHAIN_EPOCH=10000 \
+  NPC_WATCHDOG_REMOTE_CHAIN_EPOCH=10050 \
+  NPC_WATCHDOG_DF_FILE="$DF_OK" \
+  NPC_WATCHDOG_DISK_MIN_FREE_MB=08 \
+  NPC_WATCHDOG_MEMINFO_FILE="$MEM_OK" \
+  bash "$WATCH"
+assert_grep "$CASE_OUT" "^ALERT disk " "leading zero did not alert"
+assert_grep "$CASE_OUT" "^OK memory " "leading zero aborted later checks"
+assert_no_grep "$CASE_ERR" "value too great for base" "leading zero was parsed as octal"
+assert_quiet_probes "leading zero invoked a probe command"
+
+echo "[watchdog-fixture-test] healthy live run without a webhook exits 2"
+run_case live_healthy_nowebhook 2 \
+  NPC_WATCHDOG_LIVE=1 \
+  NPC_WATCHDOG_PS_FILE="$PS_OK" \
+  BACKUP_OK_PATH="$MARKER" \
+  NPC_WATCHDOG_BACKUP_MTIME=10000 \
+  NPC_WATCHDOG_NOW_EPOCH=10100 \
+  NPC_WATCHDOG_LOCAL_CHAIN="$CHAIN" \
+  NPC_WATCHDOG_LOCAL_CHAIN_EPOCH=10000 \
+  NPC_WATCHDOG_REMOTE_CHAIN_EPOCH=10050 \
+  NPC_WATCHDOG_DF_FILE="$DF_OK" \
+  NPC_WATCHDOG_MEMINFO_FILE="$MEM_OK" \
+  bash "$WATCH"
+assert_grep "$CASE_ERR" "Not posting" "healthy live missing webhook stderr"
+assert_no_grep "$CASE_OUT" "^OK " "healthy live missing webhook still ran checks"
+assert_no_grep "$CASE_OUT" "^ALERT " "healthy live missing webhook alerted"
+assert_quiet_probes "healthy live missing webhook invoked curl"
 
 echo "[watchdog-fixture-test] arguments are refused"
 run_case args 2 bash "$WATCH" --i-have-gate-2-approval
