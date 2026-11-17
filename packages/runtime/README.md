@@ -71,17 +71,18 @@ CI never sets `LIVE_TESTS`; only unit tests with `FakeBrain`, injected mock clie
 
 `BudgetedBrain` wraps one `Brain` per configured tier, picks a tier from the remaining operator budget, and appends each call to a local JSONL journal (`SpendLedger`). The daemon still uses `createBrain` / `loadBrainConfig` until a follow-up wires this in. Setting the variables below does nothing in production yet.
 
-The journal is off the soulchain: public `transaction` records are T7.7. Totals are replayed from the file. A missing file is not treated as zero spend unless `NPC_BUDGET_LEDGER_INIT=1` (first boot). A corrupt line or a torn tail is left untouched and the brain refuses further calls. Dollar amounts stay out of `publicStatus` (fraction only). `sleepDraft()` returns a `sleep` body only when the balance is known; nothing in this change appends that record.
+The journal is off the soulchain: public `transaction` records are T7.7. Totals are replayed from the file. A missing file is not treated as zero spend. `NPC_BUDGET_LEDGER_INIT=1` is a one-shot operator action that creates a missing journal at an absolute path; do not leave it set, and the wiring change will turn it into a command. A corrupt line or a torn tail is left untouched and the brain refuses further calls. Door status and the `sleep` record body are not part of this package surface; the wiring change adds them.
 
 | Variable | Required | Default | Purpose |
 |----------|----------|---------|---------|
-| `NPC_BRAIN_TIERS` | no | unset (feature off) | JSON array, cheapest first. Secret: each tier embeds `apiKey`. See `ops/SECRETS.md`. |
+| `NPC_BRAIN_TIERS` | no | unset (feature off) | Public JSON array, cheapest first. Each tier names its key env var (`apiKeyEnv`); the JSON must not contain a key. |
 | `NPC_BUDGET_USD` | with tiers | — | Period allowance, decimal dollars (`"10"`, `"10.50"`). |
 | `NPC_BUDGET_THRESHOLD_USD` | no | `0` | Sleep when remaining is at or below this. Decimal dollars. |
 | `NPC_BUDGET_PERIOD` | no | `monthly` | UTC calendar month. Only `monthly` is accepted. |
-| `NPC_BUDGET_LEDGER_PATH` | with tiers | — | `spend.jsonl` path on the runtime volume. |
-| `NPC_BUDGET_LEDGER_INIT` | no | off | `1` creates the journal if it is missing. Leave unset after first boot. |
+| `NPC_BUDGET_LEDGER_PATH` | with tiers | — | Absolute `spend.jsonl` path on the runtime volume. |
 | `NPC_BUDGET_DEFAULT_TIER` | no | cheapest paid tier | Tier name used above 50% remaining. Distill/journal step up one tier in that band. |
+
+`apiKeyEnv` matches `^[A-Z][A-Z0-9_]{0,63}$`. The key is `NAME` or `NAME_FILE` (exactly one), the same rule as `NPC_BRAIN_API_KEY`. Several tiers may share one name. A missing name is a config error that names the variable and does not include a value. See `ops/SECRETS.md`.
 
 Tier JSON (prices are dollars per million tokens, copied from the provider's price sheet — the numbers below are placeholders):
 
@@ -90,7 +91,7 @@ Tier JSON (prices are dollars per million tokens, copied from the provider's pri
   {
     "name": "free",
     "baseUrl": "https://openrouter.ai/api/v1",
-    "apiKey": "replace-me",
+    "apiKeyEnv": "NPC_BRAIN_API_KEY",
     "model": "google/gemini-2.0-flash-exp:free",
     "inPricePerMTok": "0",
     "outPricePerMTok": "0",
@@ -99,7 +100,7 @@ Tier JSON (prices are dollars per million tokens, copied from the provider's pri
   {
     "name": "cheap",
     "baseUrl": "https://openrouter.ai/api/v1",
-    "apiKey": "replace-me",
+    "apiKeyEnv": "NPC_BRAIN_API_KEY",
     "model": "deepseek/deepseek-v4-flash",
     "inPricePerMTok": "1",
     "outPricePerMTok": "1",
@@ -108,7 +109,7 @@ Tier JSON (prices are dollars per million tokens, copied from the provider's pri
 ]
 ```
 
-OpenRouter tiers require a non-empty `providerAllowlist` taken from that model's live endpoints list (`ops/TROUBLESHOOTING.md`); the slugs above only show the shape. Bands: above 50% remaining uses the default tier (distill/journal escalate one tier); 10–50% uses the cheapest paid tier; below 10% uses a zero-price tier only; at or below the threshold, or an unknown journal, no model is called.
+OpenRouter tiers require a non-empty `providerAllowlist` taken from that model's live endpoints list (`ops/TROUBLESHOOTING.md`); the slugs above only show the shape. Bands: above 50% remaining uses the default tier (distill/journal escalate one tier); 10–50% uses the cheaper of the default tier and the cheapest paid tier, so a zero-price default is never replaced by a paid tier as the budget falls; below 10% uses a zero-price tier only; at or below the threshold, or an unknown journal, no model is called. A paid tier that reports zero tokens is treated as unknown spend and latches sleep. A zero-price tier may record a zero cost.
 
 ## Self-Composer (T2.2)
 

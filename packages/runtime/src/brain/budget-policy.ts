@@ -1,6 +1,12 @@
+import { isAbsolute } from "node:path";
+
 import { z } from "zod";
 
-import { isOpenRouterBaseUrl, type OpenAICompatBrainConfig } from "./config.js";
+import {
+  isOpenRouterBaseUrl,
+  resolveSecretFromEnv,
+  type OpenAICompatBrainConfig
+} from "./config.js";
 import { BrainError } from "./errors.js";
 
 /**
@@ -18,14 +24,30 @@ const PERCENT = 100n;
 export const HEALTHY_REMAINING_PERCENT = 50n;
 
 /**
- * Remaining budget at or above this percent, and not healthy, uses the cheapest
- * paid tier. Below it, only a zero-price tier is eligible.
+ * Remaining budget at or above this percent, and not healthy, uses the cheaper
+ * of the default tier and the cheapest paid tier. A zero-price default therefore
+ * stays in use as the budget falls. Below this percent, only a zero-price tier
+ * is eligible.
  */
 export const CONSERVE_REMAINING_PERCENT = 10n;
 
-const DECIMAL_MICROS = /^(0|[1-9][0-9]*)(\.[0-9]{1,6})?$/;
-const ISO_UTC_MS = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})\.(\d{3})Z$/;
+/**
+ * Non-negative decimal with at most six fractional digits (one micro-dollar).
+ * Shared by config parsing and the spend journal so the two cannot drift.
+ */
+export const DECIMAL_MICROS = /^(0|[1-9][0-9]*)(\.[0-9]{1,6})?$/;
+
+/**
+ * Fixed-width millisecond UTC (`YYYY-MM-DDTHH:mm:ss.sssZ`).
+ *
+ * osp-core `IsoUtcTimestampSchema` allows an optional fraction of 1–9 digits.
+ * Ledger month bounds compare these strings directly, so the width has to be
+ * fixed or two timestamps in the same second would not sort.
+ */
+export const CANONICAL_ISO_UTC_MS = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})\.(\d{3})Z$/;
+
 const TIER_NAME = /^[a-z0-9][a-z0-9_-]{0,31}$/;
+const API_KEY_ENV = /^[A-Z][A-Z0-9_]{0,63}$/;
 const PROVIDER_SLUG = /^[a-z0-9][a-z0-9_./-]*$/;
 
 const DECIMAL_MESSAGE = "must be a non-negative decimal with at most 6 fractional digits";
@@ -75,7 +97,10 @@ export type TierChoice =
   | { action: "call"; tier: PricedTier; band: TierBand }
   | { action: "sleep"; reason: BudgetSleepReason };
 
-/** Operator tier as loaded from `NPC_BRAIN_TIERS` (includes the API key). */
+/**
+ * Operator tier as loaded from `NPC_BRAIN_TIERS`.
+ * `apiKey` is resolved from the env var named by `apiKeyEnv` and is not part of the JSON.
+ */
 export type BudgetTierConfig = PricedTier & {
   baseUrl: string;
   apiKey: string;
@@ -101,7 +126,9 @@ const tierSchema = z
   .object({
     name: z.string().regex(TIER_NAME, "tier name must be a lowercase slug"),
     baseUrl: z.url(),
-    apiKey: z.string().min(1),
+    apiKeyEnv: z
+      .string()
+      .regex(API_KEY_ENV, "apiKeyEnv must be an env var name matching ^[A-Z][A-Z0-9_]{0,63}$"),
     model: z.string().min(1),
     inPricePerMTok: z.string().regex(DECIMAL_MICROS, `inPricePerMTok ${DECIMAL_MESSAGE}`),
     outPricePerMTok: z.string().regex(DECIMAL_MICROS, `outPricePerMTok ${DECIMAL_MESSAGE}`),
@@ -182,7 +209,7 @@ export function estimateCostMicros(
  * @throws {BrainError} When `value` is not that canonical form, or not a real instant.
  */
 export function assertCanonicalIsoUtc(value: string): string {
-  const match = ISO_UTC_MS.exec(value);
+  const match = CANONICAL_ISO_UTC_MS.exec(value);
   const year = match?.[1];
   const month = match?.[2];
   const day = match?.[3];
@@ -252,7 +279,9 @@ export function nextMonthlyPeriodStart(isoUtc: string): string {
  *
  * Bands use the remaining fraction of the period allowance (threshold wins first):
  * above 50% the default tier, and distill/journal step up one tier; from 10%
- * through 50% the cheapest paid tier; below 10% a zero-price tier only.
+ * through 50% the cheaper of the default tier and the cheapest paid tier (a
+ * zero-price default is never replaced by a paid tier as the budget falls);
+ * below 10% a zero-price tier only.
  * Exhausted, unknown, or provider-exhausted budgets sleep. `contextSignals`
  * is validated and ignored (v1 has no per-message weight).
  *
@@ -298,11 +327,11 @@ export function chooseTier(
       CONSERVE_REMAINING_PERCENT
     )
   ) {
-    const paid = cheapestPaid(tiers) ?? firstFree(tiers);
-    if (paid === undefined) {
+    const tier = conserveTier(tiers, budgetState.defaultTierName);
+    if (tier === undefined) {
       return { action: "sleep", reason: "no_affordable_tier" };
     }
-    return { action: "call", tier: paid, band: "conserve" };
+    return { action: "call", tier, band: "conserve" };
   }
 
   const free = firstFree(tiers);
@@ -316,15 +345,18 @@ export function chooseTier(
  * Load treasury-lite config. Returns `undefined` when `NPC_BRAIN_TIERS` is unset
  * or empty so the single-provider Brain keeps working until a daemon wires this in.
  *
- * `NPC_BRAIN_TIERS` is a JSON array ordered cheapest to most expensive. Each tier
- * is `{name, baseUrl, apiKey, model, inPricePerMTok, outPricePerMTok}` plus an
- * optional `providerAllowlist` (required for OpenRouter). Prices are decimal
- * strings (dollars per million tokens), not JSON numbers.
+ * `NPC_BRAIN_TIERS` is public config: a JSON array ordered cheapest to most
+ * expensive. Each tier is `{name, baseUrl, apiKeyEnv, model, inPricePerMTok,
+ * outPricePerMTok}` plus an optional `providerAllowlist` (required for OpenRouter).
+ * `apiKeyEnv` is the name of an env var (`^[A-Z][A-Z0-9_]{0,63}$`). The key is
+ * read from that var or from `${apiKeyEnv}_FILE`, never from the JSON. Prices
+ * are decimal strings (dollars per million tokens), not JSON numbers.
  *
- * Also reads `NPC_BUDGET_USD`, `NPC_BUDGET_LEDGER_PATH`, and optionally
+ * Also reads `NPC_BUDGET_USD`, `NPC_BUDGET_LEDGER_PATH` (absolute), and optionally
  * `NPC_BUDGET_THRESHOLD_USD` (default `0`), `NPC_BUDGET_PERIOD` (`monthly`),
- * `NPC_BUDGET_DEFAULT_TIER`, and `NPC_BUDGET_LEDGER_INIT=1` (create a missing ledger).
- * Error text names env vars and never includes key material.
+ * `NPC_BUDGET_DEFAULT_TIER`, and `NPC_BUDGET_LEDGER_INIT=1` (one-shot: create a
+ * missing absolute journal; do not leave it set). Error text names env vars and
+ * never includes key material.
  *
  * @param env - Environment map. Tests pass a plain object; `process.env` is not mutated.
  */
@@ -361,7 +393,7 @@ export function loadBudgetConfig(env: NodeJS.ProcessEnv = process.env): BudgetCo
       });
     }
     names.add(tier.name);
-    tiers.push(toTierConfig(tier));
+    tiers.push(toTierConfig(tier, env));
   }
   assertPriceOrder(tiers);
   assertOpenRouterAllowlist(tiers);
@@ -390,6 +422,11 @@ export function loadBudgetConfig(env: NodeJS.ProcessEnv = process.env): BudgetCo
   const ledgerPath = env.NPC_BUDGET_LEDGER_PATH?.trim() ?? "";
   if (ledgerPath === "" || ledgerPath.includes("\0")) {
     throw new BrainError("NPC_BUDGET_LEDGER_PATH is required but not set", "invalid_config", {
+      envVar: "NPC_BUDGET_LEDGER_PATH"
+    });
+  }
+  if (!isAbsolute(ledgerPath)) {
+    throw new BrainError("NPC_BUDGET_LEDGER_PATH must be an absolute path", "invalid_config", {
       envVar: "NPC_BUDGET_LEDGER_PATH"
     });
   }
@@ -472,6 +509,22 @@ function firstFree(tiers: readonly PricedTier[]): PricedTier | undefined {
   return tiers.find((tier) => tierPrice(tier) === 0n);
 }
 
+/**
+ * Conserve band. Never more expensive than the tier chat already uses when healthy,
+ * so a free default does not jump to a paid model as the allowance shrinks.
+ */
+function conserveTier(
+  tiers: readonly PricedTier[],
+  defaultTierName: string
+): PricedTier | undefined {
+  const fallback = namedTier(tiers, defaultTierName);
+  const paid = cheapestPaid(tiers);
+  if (paid === undefined) {
+    return tierPrice(fallback) === 0n ? fallback : firstFree(tiers);
+  }
+  return tierPrice(fallback) <= tierPrice(paid) ? fallback : paid;
+}
+
 function namedTier(tiers: readonly PricedTier[], name: string): PricedTier {
   const tier = tiers.find((item) => item.name === name);
   if (tier === undefined) {
@@ -500,13 +553,14 @@ function formatZodIssues(issues: readonly { path: PropertyKey[]; message: string
     .join("; ");
 }
 
-function toTierConfig(tier: z.infer<typeof tierSchema>): BudgetTierConfig {
+function toTierConfig(tier: z.infer<typeof tierSchema>, env: NodeJS.ProcessEnv): BudgetTierConfig {
   const baseUrl = tier.baseUrl.replace(/\/+$/, "");
+  const apiKey = resolveSecretFromEnv(env, tier.apiKeyEnv, `${tier.apiKeyEnv}_FILE`);
   const config: BudgetTierConfig = {
     name: tier.name,
     model: tier.model,
     baseUrl,
-    apiKey: tier.apiKey,
+    apiKey,
     inPricePerMTok: tier.inPricePerMTok,
     outPricePerMTok: tier.outPricePerMTok,
     inPricePerMTokMicros: parseDecimalMicros(tier.inPricePerMTok),

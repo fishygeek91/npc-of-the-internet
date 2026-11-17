@@ -2,7 +2,6 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { SleepBodySchema } from "@npc/osp-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -149,6 +148,24 @@ describe("chooseTier", () => {
       /default tier missing/
     );
   });
+
+  it("does not move chat onto a paid tier when the default tier is free", () => {
+    expect(
+      tierName(chooseTier(state({ remainingMicros: 51n, defaultTierName: "free" }), "chat"))
+    ).toBe("free");
+    expect(
+      tierName(chooseTier(state({ remainingMicros: 40n, defaultTierName: "free" }), "chat"))
+    ).toBe("free");
+    expect(
+      tierName(chooseTier(state({ remainingMicros: 10n, defaultTierName: "free" }), "chat"))
+    ).toBe("free");
+    expect(
+      tierName(chooseTier(state({ remainingMicros: 51n, defaultTierName: "free" }), "distill"))
+    ).toBe("cheap");
+    expect(
+      tierName(chooseTier(state({ remainingMicros: 40n, defaultTierName: "free" }), "distill"))
+    ).toBe("free");
+  });
 });
 
 describe("loadBudgetConfig", () => {
@@ -158,7 +175,7 @@ describe("loadBudgetConfig", () => {
         {
           name: "free",
           baseUrl: "https://example.com/v1",
-          apiKey: "sk-test-free",
+          apiKeyEnv: "NPC_BRAIN_API_KEY",
           model: "tier-free",
           inPricePerMTok: "0",
           outPricePerMTok: "0"
@@ -166,13 +183,14 @@ describe("loadBudgetConfig", () => {
         {
           name: "cheap",
           baseUrl: "https://openrouter.ai/api/v1/",
-          apiKey: "sk-test-cheap",
+          apiKeyEnv: "NPC_BRAIN_API_KEY",
           model: "tier-cheap",
           inPricePerMTok: "0.14",
           outPricePerMTok: "0.28",
           providerAllowlist: ["deepinfra"]
         }
       ]),
+      NPC_BRAIN_API_KEY: "from-env",
       NPC_BUDGET_USD: "10",
       NPC_BUDGET_LEDGER_PATH: "/data/runtime/spend.jsonl",
       ...extra
@@ -202,13 +220,70 @@ describe("loadBudgetConfig", () => {
     expect(config?.createLedgerIfMissing).toBe(true);
   });
 
-  it("does not echo API keys in config errors", () => {
-    const broken = env();
-    broken.NPC_BRAIN_TIERS = JSON.stringify([
+  it("resolves a tier key from the named env var and from its _FILE companion", async () => {
+    const direct = loadBudgetConfig(env());
+    expect(direct?.tiers[0]?.apiKey).toBe("from-env");
+    expect(direct?.tiers[1]?.apiKey).toBe("from-env");
+
+    const keyDir = await mkdtemp(join(tmpdir(), "npc-budget-key-"));
+    try {
+      const file = join(keyDir, "key");
+      await writeFile(file, "from-file\n", "utf8");
+      const fromFile = env();
+      delete fromFile.NPC_BRAIN_API_KEY;
+      fromFile.NPC_BRAIN_API_KEY_FILE = file;
+      expect(loadBudgetConfig(fromFile)?.tiers[0]?.apiKey).toBe("from-file");
+    } finally {
+      await rm(keyDir, { recursive: true, force: true });
+    }
+
+    const both = env();
+    both.NPC_BRAIN_API_KEY_FILE = "/tmp/unused-tier-key";
+    expect(() => loadBudgetConfig(both)).toThrow(
+      /set only one of NPC_BRAIN_API_KEY or NPC_BRAIN_API_KEY_FILE/
+    );
+  });
+
+  it("names a missing or invalid key var and does not echo a secret value", () => {
+    const missing = env();
+    delete missing.NPC_BRAIN_API_KEY;
+    missing.NPC_DECOY = SECRET;
+    expect(() => loadBudgetConfig(missing)).toThrow(BrainError);
+    try {
+      loadBudgetConfig(missing);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : "";
+      expect(message).toContain("NPC_BRAIN_API_KEY");
+      expect(message).not.toContain(SECRET);
+    }
+
+    const invalid = env();
+    invalid.NPC_DECOY = SECRET;
+    invalid.NPC_BRAIN_TIERS = JSON.stringify([
       {
         name: "cheap",
         baseUrl: "https://example.com/v1",
-        apiKey: SECRET,
+        apiKeyEnv: "not-a-name",
+        model: "tier-cheap",
+        inPricePerMTok: "1",
+        outPricePerMTok: "1"
+      }
+    ]);
+    expect(() => loadBudgetConfig(invalid)).toThrow(BrainError);
+    try {
+      loadBudgetConfig(invalid);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : "";
+      expect(message).toMatch(/apiKeyEnv/);
+      expect(message).not.toContain(SECRET);
+    }
+
+    const unordered = env({ NPC_BRAIN_API_KEY: SECRET });
+    unordered.NPC_BRAIN_TIERS = JSON.stringify([
+      {
+        name: "cheap",
+        baseUrl: "https://example.com/v1",
+        apiKeyEnv: "NPC_BRAIN_API_KEY",
         model: "tier-cheap",
         inPricePerMTok: "1",
         outPricePerMTok: "1"
@@ -216,15 +291,15 @@ describe("loadBudgetConfig", () => {
       {
         name: "free",
         baseUrl: "https://example.com/v1",
-        apiKey: SECRET,
+        apiKeyEnv: "NPC_BRAIN_API_KEY",
         model: "tier-free",
         inPricePerMTok: "0",
         outPricePerMTok: "0"
       }
     ]);
-    expect(() => loadBudgetConfig(broken)).toThrow(BrainError);
+    expect(() => loadBudgetConfig(unordered)).toThrow(BrainError);
     try {
-      loadBudgetConfig(broken);
+      loadBudgetConfig(unordered);
     } catch (error: unknown) {
       expect(error).toBeInstanceOf(BrainError);
       expect(error instanceof Error ? error.message : "").not.toContain(SECRET);
@@ -237,7 +312,7 @@ describe("loadBudgetConfig", () => {
       {
         name: "cheap",
         baseUrl: "https://openrouter.ai/api/v1",
-        apiKey: "sk-test",
+        apiKeyEnv: "NPC_BRAIN_API_KEY",
         model: "tier-cheap",
         inPricePerMTok: "0.1",
         outPricePerMTok: "0.1"
@@ -246,6 +321,12 @@ describe("loadBudgetConfig", () => {
     expect(() => loadBudgetConfig(noList)).toThrow(/providerAllowlist/);
     expect(() => loadBudgetConfig(env({ NPC_BUDGET_PERIOD: "weekly" }))).toThrow(/monthly/);
     expect(() => loadBudgetConfig(env({ NPC_BUDGET_THRESHOLD_USD: "11" }))).toThrow(/THRESHOLD/);
+    expect(() => loadBudgetConfig(env({ NPC_BUDGET_LEDGER_PATH: "spend.jsonl" }))).toThrow(
+      /absolute/
+    );
+    expect(() =>
+      loadBudgetConfig(env({ NPC_BUDGET_LEDGER_PATH: "spend.jsonl", NPC_BUDGET_LEDGER_INIT: "1" }))
+    ).toThrow(/absolute/);
     expect(() => loadBudgetConfig({ NPC_BRAIN_TIERS: "[]" })).toThrow(BrainError);
   });
 
@@ -258,6 +339,7 @@ describe("loadBudgetConfig", () => {
     const config = tierToOpenAICompatConfig(cheap, { maxTokens: 128, timeoutMs: 1000 });
     expect(config).toMatchObject({
       provider: "openai-compat",
+      apiKey: "from-env",
       model: "tier-cheap",
       baseUrl: "https://openrouter.ai/api/v1",
       maxTokens: 128,
@@ -397,10 +479,11 @@ describe("BudgetedBrain", () => {
       path,
       createIfMissing: options?.createIfMissing ?? true
     });
+    const usage = { promptTokens: 0, completionTokens: 1 };
     const brains = new Map<string, FakeBrain>([
-      ["free", new FakeBrain(["free"])],
-      ["cheap", new FakeBrain(["cheap"])],
-      ["quality", new FakeBrain(["quality"])]
+      ["free", new FakeBrain([{ text: "free", usage }])],
+      ["cheap", new FakeBrain([{ text: "cheap", usage }])],
+      ["quality", new FakeBrain([{ text: "quality", usage }])]
     ]);
     const clock = { now: options?.now ?? NOW };
     const brain = new BudgetedBrain({
@@ -430,7 +513,7 @@ describe("BudgetedBrain", () => {
     const lines = (await readFile(path, "utf8")).trim().split("\n");
     expect(lines).toHaveLength(2);
     expect(lines[0]).toContain('"tier":"cheap"');
-    expect(lines[0]).toContain('"est_cost":"0"');
+    expect(lines[0]).toContain('"est_cost":"0.00001"');
   });
 
   it("sleeps after the call that spends the allowance, without another model call", async () => {
@@ -463,28 +546,60 @@ describe("BudgetedBrain", () => {
     );
     expect(cheap.calls).toHaveLength(1);
     expect(free.calls).toHaveLength(0);
-    const draft = await brain.sleepDraft();
-    expect(draft).toMatchObject({
-      reason: "balance_below_threshold",
-      balance: "0",
-      threshold: "0",
-      as_of: NOW
+  });
+
+  it("latches when a paid tier returns zero usage and does not call again", async () => {
+    dir = await mkdtemp(join(tmpdir(), "npc-budget-"));
+    const ledger = await SpendLedger.open({
+      path: join(dir, "zero.jsonl"),
+      createIfMissing: true
     });
-    expect(SleepBodySchema.safeParse(draft).success).toBe(true);
-    const status = await brain.publicStatus();
-    expect(Object.keys(status).sort()).toEqual([
-      "periodStart",
-      "remainingFraction",
-      "sleepReason",
-      "sleeping",
-      "tier"
-    ]);
-    expect(status).toMatchObject({
-      sleeping: true,
-      tier: null,
-      remainingFraction: "0",
-      sleepReason: "balance_below_threshold"
+    const cheap = new FakeBrain(["ok", "should-not-run"]);
+    const brain = new BudgetedBrain({
+      tiers: sampleTiers().filter((tier) => tier.name === "cheap"),
+      brains: new Map<string, Brain>([["cheap", cheap]]),
+      ledger,
+      budgetMicros: 1n,
+      thresholdMicros: 0n,
+      defaultTierName: "cheap",
+      clock: () => NOW
     });
+    await expect(brain.complete([{ role: "user", content: "hi" }])).resolves.toMatchObject({
+      text: "ok"
+    });
+    await expect(brain.complete([{ role: "user", content: "again" }])).rejects.toMatchObject({
+      budgetReason: "ledger_unknown"
+    });
+    expect(cheap.calls).toHaveLength(1);
+    const text = await readFile(join(dir, "zero.jsonl"), "utf8");
+    expect(text).toContain('"kind":"unknown_spend"');
+    expect(text).not.toContain('"est_cost"');
+  });
+
+  it("records a zero cost when a free tier reports zero usage", async () => {
+    dir = await mkdtemp(join(tmpdir(), "npc-budget-"));
+    const path = join(dir, "free.jsonl");
+    const ledger = await SpendLedger.open({ path, createIfMissing: true });
+    const free = new FakeBrain(["a", "b"]);
+    const freeTier = sampleTiers().find((tier) => tier.name === "free");
+    if (freeTier === undefined) {
+      throw new Error("expected free tier");
+    }
+    const brain = new BudgetedBrain({
+      tiers: [freeTier],
+      brains: new Map<string, Brain>([["free", free]]),
+      ledger,
+      budgetMicros: 1n,
+      thresholdMicros: 0n,
+      defaultTierName: "free",
+      clock: () => NOW
+    });
+    await brain.complete([{ role: "user", content: "hi" }]);
+    await brain.complete([{ role: "user", content: "again" }]);
+    expect(free.calls).toHaveLength(2);
+    const text = await readFile(path, "utf8");
+    expect(text).toContain('"est_cost":"0"');
+    expect(text).not.toContain("unknown_spend");
   });
 
   it("records a provider 402 and resumes after an operator wake", async () => {
@@ -592,12 +707,6 @@ describe("BudgetedBrain", () => {
       budgetReason: "ledger_unknown"
     });
     expect(brains.get("cheap")?.calls).toHaveLength(0);
-    expect(await brain.sleepDraft()).toBeNull();
-    expect(await brain.publicStatus()).toMatchObject({
-      sleeping: true,
-      remainingFraction: null,
-      sleepReason: "ledger_unknown"
-    });
   });
 
   it("serializes calls so the second sees the first call's spend", async () => {

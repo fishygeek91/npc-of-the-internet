@@ -1,9 +1,12 @@
-import { open, readFile } from "node:fs/promises";
+import { open, readFile, unlink } from "node:fs/promises";
+import { dirname } from "node:path";
 
 import { z } from "zod";
 
 import {
   assertCanonicalIsoUtc,
+  CANONICAL_ISO_UTC_MS,
+  DECIMAL_MICROS,
   monthlyPeriodStart,
   nextMonthlyPeriodStart,
   parseDecimalMicros
@@ -17,20 +20,18 @@ import { BrainError } from "./errors.js";
  * and treasury-lite only needs the brain to know what it has already spent.
  * The file is the state. Totals are replayed; nothing mutable is stored beside it.
  * A missing file is not zero spend unless `createIfMissing` is set
- * (`NPC_BUDGET_LEDGER_INIT=1`). A corrupt line or a torn tail is untrusted and
- * is left untouched — the caller fails closed (no further model calls) until an
+ * (`NPC_BUDGET_LEDGER_INIT=1`, a one-shot against an absolute path). A corrupt
+ * line or a torn tail is untrusted and is left untouched — the caller fails
+ * closed (no further model calls) until an
  * operator removes the bad tail. A crash after a provider response and before
  * the matching line is fsynced can under-count that one call; the prepaid key
  * (ops, follow-up) is the hard wall for that window.
  */
 
-const ISO_UTC_MS = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
-const DECIMAL_MICROS = /^(0|[1-9][0-9]*)(\.[0-9]{1,6})?$/;
-
 const spendLineSchema = z
   .object({
     kind: z.literal("spend"),
-    ts: z.string().regex(ISO_UTC_MS),
+    ts: z.string().regex(CANONICAL_ISO_UTC_MS),
     tier: z.string().min(1),
     model: z.string().min(1),
     tokens_in: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
@@ -42,7 +43,7 @@ const spendLineSchema = z
 const providerExhaustedLineSchema = z
   .object({
     kind: z.literal("provider_exhausted"),
-    ts: z.string().regex(ISO_UTC_MS),
+    ts: z.string().regex(CANONICAL_ISO_UTC_MS),
     tier: z.string().min(1),
     model: z.string().min(1)
   })
@@ -51,7 +52,7 @@ const providerExhaustedLineSchema = z
 const unknownSpendLineSchema = z
   .object({
     kind: z.literal("unknown_spend"),
-    ts: z.string().regex(ISO_UTC_MS),
+    ts: z.string().regex(CANONICAL_ISO_UTC_MS),
     tier: z.string().min(1),
     model: z.string().min(1)
   })
@@ -60,7 +61,7 @@ const unknownSpendLineSchema = z
 const wakeLineSchema = z
   .object({
     kind: z.literal("wake"),
-    ts: z.string().regex(ISO_UTC_MS),
+    ts: z.string().regex(CANONICAL_ISO_UTC_MS),
     reason: z.enum(["operator", "budget_raised", "period_reset"])
   })
   .strict();
@@ -130,7 +131,8 @@ export class SpendLedger {
 
   /**
    * Sum `spend` lines in the UTC month containing `periodAnchor`, and fold
-   * provider-exhausted / unknown-spend / wake flags in timestamp order.
+   * provider-exhausted / unknown-spend / wake flags in file order.
+   * File order is the order lines were appended; a skewed clock does not reorder them.
    * Events outside that month do not count (a new month clears the latch).
    *
    * @param periodAnchor - Canonical timestamp; the month is derived from it.
@@ -370,15 +372,39 @@ async function readLedgerBytes(
 }
 
 async function createEmpty(path: string): Promise<"created" | "exists" | "failed"> {
+  let handle: Awaited<ReturnType<typeof open>>;
   try {
-    const handle = await open(path, "wx");
-    await handle.close();
-    return "created";
+    handle = await open(path, "wx");
   } catch (error: unknown) {
     if (nodeCode(error) === "EEXIST") {
       return "exists";
     }
     return "failed";
+  }
+  try {
+    await handle.close();
+    await fsyncParentDirectory(path);
+    return "created";
+  } catch {
+    try {
+      await unlink(path);
+    } catch {
+      // The empty file may remain. This open still fails closed.
+    }
+    return "failed";
+  }
+}
+
+/**
+ * Make the new directory entry durable. A platform that refuses to fsync a
+ * directory throws; the caller then treats the journal as unreadable.
+ */
+async function fsyncParentDirectory(filePath: string): Promise<void> {
+  const handle = await open(dirname(filePath), "r");
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
   }
 }
 

@@ -91,13 +91,7 @@ export type {
   SpendView
 } from "./brain/spend-ledger.js";
 export { SpendLedger } from "./brain/spend-ledger.js";
-export type {
-  BudgetedBrainOptions,
-  BudgetPublicStatus,
-  IsoClock,
-  SleepRecordDraft,
-  WakeReason
-} from "./brain/budgeted-brain.js";
+export type { BudgetedBrainOptions, IsoClock, WakeReason } from "./brain/budgeted-brain.js";
 export { BudgetedBrain, BudgetError } from "./brain/budgeted-brain.js";
 export { ComposeError } from "./compose/errors.js";
 export { composeSelf } from "./compose/compose-self.js";

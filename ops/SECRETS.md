@@ -2,6 +2,8 @@
 
 Environment variable names and purposes only. **Never commit values.**
 
+`NPC_BRAIN_TIERS` is public configuration, not a secret. It lists tier names, models, prices, and the *name* of each tier's key variable (`apiKeyEnv`). It must not contain a key value. Each referenced variable follows the same rule as the keys below: exactly one of `NAME` or `NAME_FILE` (for example `NPC_BRAIN_API_KEY` / `NPC_BRAIN_API_KEY_FILE`, including the compose file-mount overlay). Those named variables are secrets. Budget settings (`NPC_BUDGET_*`) are documented in `packages/runtime/README.md`. The daemon does not read `NPC_BRAIN_TIERS` until treasury-lite is wired.
+
 | Name | Purpose |
 |------|---------|
 | `ANTHROPIC_API_KEY` | Anthropic API key for `AnthropicBrain`. Required when `NPC_BRAIN_PROVIDER` is unset or `anthropic`. Exactly one of this or `ANTHROPIC_API_KEY_FILE`. |
@@ -16,7 +18,6 @@ Environment variable names and purposes only. **Never commit values.**
 | `NPC_BRAIN_MAX_TOKENS` | Default max output tokens per Brain completion (default: `1024`). |
 | `NPC_BRAIN_TIMEOUT_MS` | HTTP timeout in milliseconds for Brain API requests (default: `60000`). |
 | `NPC_BRAIN_PROVIDER_ALLOWLIST` | Comma-separated OpenRouter provider slugs. **Required and non-empty** when `NPC_BRAIN_BASE_URL` host is `openrouter.ai`. Documented Ghost example: `fireworks,together,deepinfra`. |
-| `NPC_BRAIN_TIERS` | Treasury-lite tier list (T7.12). JSON array of `{name, baseUrl, apiKey, model, inPricePerMTok, outPricePerMTok, providerAllowlist?}`. **Secret** — each object embeds an API key. Not read by the daemon until treasury-lite is wired. Non-secret budget settings (`NPC_BUDGET_*`) are documented in `packages/runtime/README.md`. |
 | `NPC_DOOR_URLS` | Comma-separated base URLs of every Door the Wanderer may travel between (public config). Ghost compose default: `http://door-discord:9090,http://door-web:9091`. Door ids come from each Door's verified `hello` and must be bound in `ATLAS_DOOR_PUBKEYS`. Unset = the single Door at `DOOR_HTTP_HOST:DOOR_HTTP_PORT` (legacy). |
 | `NPC_RESIDENCY_OPERATOR_TRIGGER` | `1`/`true` (default) lets an operator start a residency cycle with `wanderer depart` (control-dir request) or `SIGUSR2` to the daemon; `0` turns it off. Public config, not secret. |
 | `NPC_RESIDENCY_MAX_MS` | Travel once the live residency is older than this (checked every minute). Default `86400000` (daily); `0` = only on operator request; otherwise `≥ 3600000`. |

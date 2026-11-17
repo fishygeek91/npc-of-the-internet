@@ -3,7 +3,6 @@ import {
   chooseTier,
   estimateCostMicros,
   formatDecimalMicros,
-  monthlyPeriodStart,
   type BudgetSleepReason,
   type BudgetState,
   type CallKind,
@@ -18,32 +17,6 @@ export type IsoClock = () => string;
 
 /** Operator acknowledgement that clears a provider-exhausted or unknown-spend latch. */
 export type WakeReason = "operator" | "budget_raised" | "period_reset";
-
-/**
- * Fraction of the period allowance still unused, for Door status.
- * Dollar amounts are intentionally absent.
- */
-export type BudgetPublicStatus = {
-  sleeping: boolean;
-  /** Tier `chat` would use, or null while sleeping. */
-  tier: string | null;
-  /** Remaining / budget in `[0, 1]`, or null when the ledger is unknown or the budget is 0. */
-  remainingFraction: string | null;
-  periodStart: string;
-  sleepReason: BudgetSleepReason | null;
-};
-
-/**
- * Body for a future `sleep` record (`spec/osp/records.md`). Returned only when
- * the balance is known. A missing or corrupt ledger yields null so a caller
- * does not publish a fabricated balance.
- */
-export type SleepRecordDraft = {
-  reason: string;
-  balance: string;
-  threshold: string;
-  as_of: string;
-};
 
 export type BudgetedBrainOptions = {
   tiers: readonly PricedTier[];
@@ -80,10 +53,15 @@ export class BudgetError extends BrainError {
 /**
  * `Brain` that chooses a configured tier from remaining budget and records spend.
  *
- * Completions are serialized so two callers cannot both pass the budget check.
- * The inner call runs while the lock is held. When the journal cannot record a
- * successful call, the text is still returned (finish the exchange) and later
- * calls sleep. Not wired into the daemon in this change.
+ * Completions share one lock, including distill and journal, so a long distill
+ * holds chat. That is acceptable for v1. The inner call runs while the lock is
+ * held. When the journal cannot record a successful call, the text is still
+ * returned (finish the exchange) and later calls sleep.
+ *
+ * A paid tier that reports zero tokens (or omits usage, which inner brains turn
+ * into zeros) is journaled as `unknown_spend` and latches sleep. A zero-price
+ * tier may record a zero cost. Provider timeouts and 5xx are not journaled;
+ * only `credit_exhausted` latches the provider. Not wired into the daemon.
  */
 export class BudgetedBrain implements Brain {
   private readonly tiers: readonly PricedTier[];
@@ -187,58 +165,6 @@ export class BudgetedBrain implements Brain {
     });
   }
 
-  /**
-   * Door-facing status. Fraction only — no allowance, spend, or balance.
-   *
-   * @param kind - Call kind used to name the tier that would run. Default `chat`.
-   */
-  async publicStatus(kind: CallKind = "chat"): Promise<BudgetPublicStatus> {
-    return this.exclusive(async () => {
-      const now = this.clock();
-      const viewed = this.view(now);
-      const choice = chooseTier(viewed.state, kind);
-      const base = {
-        remainingFraction: remainingFraction(viewed.state),
-        periodStart: viewed.periodStart
-      };
-      if (choice.action === "sleep") {
-        return {
-          ...base,
-          sleeping: true,
-          tier: null,
-          sleepReason: choice.reason
-        };
-      }
-      return {
-        ...base,
-        sleeping: false,
-        tier: choice.tier.name,
-        sleepReason: null
-      };
-    });
-  }
-
-  /**
-   * Sleep-record body when the policy is sleeping and the balance is known.
-   * Null when the brain would still answer, or when the ledger is unknown.
-   */
-  async sleepDraft(): Promise<SleepRecordDraft | null> {
-    return this.exclusive(async () => {
-      const now = this.clock();
-      const viewed = this.view(now);
-      const choice = chooseTier(viewed.state, this.callKind);
-      if (choice.action !== "sleep" || !viewed.state.known) {
-        return null;
-      }
-      return {
-        reason: choice.reason,
-        balance: formatDecimalMicros(viewed.state.remainingMicros),
-        threshold: formatDecimalMicros(this.thresholdMicros),
-        as_of: now
-      };
-    });
-  }
-
   private completeKind(
     kind: CallKind,
     messages: BrainMessage[],
@@ -253,8 +179,8 @@ export class BudgetedBrain implements Brain {
     opts?: CompleteOptions
   ): Promise<BrainResult> {
     const now = this.clock();
-    const viewed = this.view(now);
-    const choice = chooseTier(viewed.state, kind);
+    const state = this.view(now);
+    const choice = chooseTier(state, kind);
     if (choice.action === "sleep") {
       throw new BudgetError(choice.reason);
     }
@@ -272,10 +198,8 @@ export class BudgetedBrain implements Brain {
     return result;
   }
 
-  private view(now: string): { periodStart: string; state: BudgetState } {
-    const periodStart = monthlyPeriodStart(now);
-    const replay = this.ledger.replay(now);
-    return { periodStart, state: this.toState(replay) };
+  private view(now: string): BudgetState {
+    return this.toState(this.ledger.replay(now));
   }
 
   private toState(view: SpendView): BudgetState {
@@ -303,7 +227,13 @@ export class BudgetedBrain implements Brain {
   private async recordSpend(ts: string, tier: PricedTier, result: BrainResult): Promise<void> {
     const promptTokens = result.usage.promptTokens;
     const completionTokens = result.usage.completionTokens;
-    if (!isRecordableCount(promptTokens) || !isRecordableCount(completionTokens)) {
+    const paid = tier.inPricePerMTokMicros + tier.outPricePerMTokMicros > 0n;
+    const omittedOnPaidTier = paid && promptTokens + completionTokens === 0;
+    if (
+      !isRecordableCount(promptTokens) ||
+      !isRecordableCount(completionTokens) ||
+      omittedOnPaidTier
+    ) {
       await this.recordLatch(ts, tier, "unknown_spend");
       return;
     }
@@ -366,19 +296,6 @@ export class BudgetedBrain implements Brain {
     );
     return run;
   }
-}
-
-function remainingFraction(state: BudgetState): string | null {
-  if (!state.known || state.budgetMicros <= 0n) {
-    return null;
-  }
-  if (state.remainingMicros <= 0n) {
-    return "0";
-  }
-  if (state.remainingMicros >= state.budgetMicros) {
-    return "1";
-  }
-  return formatDecimalMicros((state.remainingMicros * 1_000_000n) / state.budgetMicros);
 }
 
 function isRecordableCount(value: number): boolean {
