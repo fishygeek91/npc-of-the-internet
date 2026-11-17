@@ -13,13 +13,11 @@
       "fast-uri": ">=4.2.3",
       "undici@6": "^6.29.1",
       "undici@8": "^8.12.2",
-      "astro>zod": "^4.6.6",
       "source-map-js": ">=1.2.2"
     },
     "auditConfig": {
       "ignoreGhsas": [
-        "GHSA-vfj7-8cjw-p6xm",
-        "GHSA-mrhx-c7xc-m3w5"
+        "GHSA-vfj7-8cjw-p6xm"
       ]
     }
   },
