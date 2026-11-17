@@ -16,7 +16,16 @@ import {
   SHRINE_REFRESH_MS,
   type ShrineElement
 } from "../src/browser/shrine.js";
-import { DOOR_ID, LEAK, pins, PROSE, serveExport, stay, witnessed } from "./shrine-fixture.js";
+import {
+  DOOR_ID,
+  LEAK,
+  pins,
+  PROSE,
+  serveExport,
+  stay,
+  witnessed,
+  type ServedExport
+} from "./shrine-fixture.js";
 
 describe("shrine embed", () => {
   const closers: Array<() => Promise<void>> = [];
@@ -27,18 +36,27 @@ describe("shrine embed", () => {
     }
   });
 
-  it("lets WANDERER_SHRINE win over data attributes and rejects a non-http atlas", () => {
-    const config = readShrineConfig(
-      { dataset: { atlasUrl: "https://data.example", mount: "#data" } },
+  it("merges each WANDERER_SHRINE field over data attributes and rejects a non-http atlas", () => {
+    const partial = readShrineConfig(
       {
-        atlasUrl: "https://object.example/atlas",
-        porchUrl: "https://porch.example/room",
-        mount: "#object"
-      }
+        dataset: {
+          atlasUrl: "https://data.example",
+          porchUrl: "https://data.example/porch",
+          mount: "#data"
+        }
+      },
+      { soulPublicKey: "pin" }
     );
-    expect(config.atlasUrl).toBe("https://object.example");
-    expect(config.mount).toBe("#object");
-    expect(config.porchUrl).toBe("https://porch.example/room");
+    expect(partial.atlasUrl).toBe("https://data.example");
+    expect(partial.porchUrl).toBe("https://data.example/porch");
+    expect(partial.mount).toBe("#data");
+    expect(partial.soulPublicKey).toBe("pin");
+    const replaced = readShrineConfig(
+      { dataset: { atlasUrl: "https://data.example", mount: "#data" } },
+      { atlasUrl: "https://object.example/atlas", mount: "#object" }
+    );
+    expect(replaced.atlasUrl).toBe("https://object.example");
+    expect(replaced.mount).toBe("#object");
     expect(
       readShrineConfig({ dataset: { atlasUrl: "ftp://atlas.example" } }, undefined).atlasUrl
     ).toBe(null);
@@ -116,12 +134,14 @@ describe("shrine embed", () => {
     closers.push(served.close);
     const page = fakePage();
     const intervals: number[] = [];
+    let onInterval = (): void => undefined;
     mountShrine({
       document: page.document,
       config: pins(served.url, soul),
       fetchImpl: fetch,
-      setInterval: (_fn, ms) => {
+      setInterval: (fn, ms) => {
         intervals.push(ms);
+        onInterval = fn;
         return 1;
       }
     });
@@ -133,15 +153,102 @@ describe("shrine embed", () => {
     await waitFor(() => shadow?.children[0]?.textContent, "PRESENT");
     expect(JSON.stringify(shadow?.children.map((child) => child.textContent))).not.toContain(LEAK);
     expect(intervals).toEqual([SHRINE_REFRESH_MS]);
+    page.document.visibilityState = "hidden";
+    onInterval();
+    expect(shadow?.children[0]?.textContent).toBe("PRESENT");
     page.document.visibilityState = "visible";
     page.onVisible();
+    expect(shadow?.children[0]?.textContent).toBe("PRESENT");
     for (const name of ["shrine.ts", "shrine-chain.ts", "shrine-entry.ts"]) {
       const source = readFileSync(new URL(`../src/browser/${name}`, import.meta.url), "utf8");
       expect(source).not.toContain("innerHTML");
       expect(source).not.toContain("/api/say");
     }
+    const shrineSource = readFileSync(new URL("../src/browser/shrine.ts", import.meta.url), "utf8");
+    expect(shrineSource).toContain('visibilityState === "hidden"');
+    expect(shrineSource).toContain("adoptedStyleSheets");
+  });
+
+  it("follows a mounted shrine from PRESENT to ELSEWHERE and back", async () => {
+    const soul = generateKeypair();
+    const door = generateKeypair();
+    const awake = await stay(soul, door);
+    const left = await witnessed(soul, door, awake.records.length, awake.headCid, "attestation", {
+      kind: "departure",
+      pop_version: POP_VERSION,
+      door_id: DOOR_ID,
+      epoch: 1,
+      at: "2026-01-04T00:00:00.000Z"
+    });
+    const present = {
+      records: awake.records,
+      doorPublicKeys: { [DOOR_ID]: encodePublicKey(door.publicKey) },
+      blobs: awake.blobs
+    };
+    const live: ServedExport = { body: present, etag: '"here"', status: 200 };
+    const served = await serveExport(present, { live });
+    closers.push(served.close);
+    const page = fakePage();
+    let onInterval = (): void => undefined;
+    mountShrine({
+      document: page.document,
+      config: pins(served.url, soul),
+      fetchImpl: fetch,
+      setInterval: (fn) => {
+        onInterval = fn;
+        return 1;
+      }
+    });
+    const shadow = page.host.shadow;
+    await waitFor(() => shadow?.children[0]?.textContent, "PRESENT");
+    page.document.visibilityState = "visible";
+    page.onVisible();
+    await pause();
+    expect(shadow?.children[0]?.textContent).toBe("PRESENT");
+
+    live.body = {
+      records: [...awake.records, left.record],
+      doorPublicKeys: present.doorPublicKeys,
+      blobs: awake.blobs
+    };
+    live.etag = '"gone"';
+    page.document.visibilityState = "hidden";
+    onInterval();
+    await pause();
+    expect(shadow?.children[0]?.textContent).toBe("PRESENT");
+    page.document.visibilityState = "visible";
+    page.onVisible();
+    await waitFor(() => shadow?.children[0]?.textContent, "ELSEWHERE");
+    expect(shadow?.children[1]?.textContent).toBe("traveling");
+    expect(allText(shadow)).toContain(PROSE);
+
+    live.body = present;
+    live.etag = '"back"';
+    page.onVisible();
+    await waitFor(() => shadow?.children[0]?.textContent, "PRESENT");
+
+    live.status = 500;
+    live.etag = '"down"';
+    page.onVisible();
+    await waitFor(() => shadow?.children[1]?.textContent, "verification failed");
+    expect(shadow?.children[0]?.textContent).toBe("ELSEWHERE");
+    expect(allText(shadow)).not.toContain(PROSE);
   });
 });
+
+function allText(node: FakeNode | null): string {
+  if (node === null) {
+    return "";
+  }
+  const nested = node.children.map((child) => allText(child)).join("\n");
+  return `${node.textContent}\n${nested}`;
+}
+
+function pause(): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, 50);
+  });
+}
 
 async function waitFor(read: () => string | undefined, expected: string): Promise<void> {
   const started = Date.now();
@@ -157,7 +264,7 @@ async function waitFor(read: () => string | undefined, expected: string): Promis
 }
 
 class FakeNode implements ShrineElement {
-  children: ShrineElement[] = [];
+  children: FakeNode[] = [];
   shadow: FakeNode | null = null;
   shadowMode: string | null = null;
   private text = "";
@@ -172,7 +279,9 @@ class FakeNode implements ShrineElement {
     return;
   }
   appendChild(child: ShrineElement): void {
-    this.children.push(child);
+    if (child instanceof FakeNode) {
+      this.children.push(child);
+    }
   }
   attachShadow(init: { mode: "closed" }): FakeNode {
     this.shadowMode = init.mode;

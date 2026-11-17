@@ -1,4 +1,4 @@
-/* global document, window, fetch, EventSource, localStorage, setTimeout, setInterval */
+/* global document, window, fetch, location, EventSource, localStorage, setTimeout, setInterval */
 // The Wanderer's web Door — vanilla browser client. All visitor and Wanderer text is
 // rendered with textContent only, never parsed as HTML.
 "use strict";
@@ -103,6 +103,15 @@
     return window.innerHeight + window.scrollY >= doc.scrollHeight - 160;
   }
 
+  function holdVerdict(hold) {
+    return hold.phase === "checking" ? "checking" : "failed";
+  }
+
+  function failChain() {
+    state.cache = { etag: null, hold: { phase: "failed" } };
+    state.hold = state.cache.hold;
+  }
+
   function lineLabel(node) {
     for (const child of node.children) {
       if (child.classList.contains("verify-label")) {
@@ -116,7 +125,7 @@
     const api = globalThis.WandererVerify;
     let verdict = "plain";
     if (message.from === "wanderer") {
-      verdict = api ? api.verifyText(state.hold, message) : "checking";
+      verdict = api ? api.verifyText(state.hold, message) : holdVerdict(state.hold);
     }
     node.classList.toggle("msg-wanderer", verdict === "verified");
     node.classList.toggle("msg-unverified", verdict === "failed");
@@ -149,8 +158,10 @@
       const emoji = typeof reaction === "string" ? reaction : String(reaction.emoji || "");
       const chip = el("span", "reaction");
       chip.appendChild(document.createTextNode(emoji));
-      if (reaction && typeof reaction === "object" && reaction.proof && api) {
-        const verdict = api.verifyReaction(state.hold, targetId, reaction);
+      if (reaction && typeof reaction === "object" && reaction.proof) {
+        const verdict = api
+          ? api.verifyReaction(state.hold, targetId, reaction)
+          : holdVerdict(state.hold);
         if (verdict === "failed") {
           chip.classList.add("reaction-failed");
           chip.appendChild(el("span", "verify-label", "verification failed"));
@@ -430,19 +441,23 @@
     try {
       const api = globalThis.WandererVerify;
       if (!api) {
-        state.hold = { phase: "failed" };
+        failChain();
         return;
       }
       const response = await fetch("/api/verify-pins", { cache: "no-store" });
       if (!response.ok) {
-        state.hold = { phase: "failed" };
+        failChain();
         return;
       }
-      const next = await api.fetchChain(await response.json(), state.cache);
+      const pins = await response.json();
+      if (pins && typeof pins.atlasUrl === "string") {
+        pins.atlasUrl = location.origin;
+      }
+      const next = await api.fetchChain(pins, state.cache);
       state.cache = next;
       state.hold = next.hold;
     } catch {
-      state.hold = { phase: "failed" };
+      failChain();
     } finally {
       state.refreshing = false;
       repaint();
@@ -451,6 +466,9 @@
 
   setInterval(renderStatus, 60000);
   setInterval(() => {
+    if (document.visibilityState === "hidden") {
+      return;
+    }
     void refreshChain();
   }, 60000);
   document.addEventListener("visibilitychange", () => {

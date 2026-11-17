@@ -34,6 +34,7 @@ export type ShrineElement = {
 export type ShrineRoot = {
   textContent: string;
   appendChild(child: ShrineElement): void;
+  adoptedStyleSheets?: readonly unknown[];
 };
 
 /** The slice of `document` the embed needs. */
@@ -51,8 +52,9 @@ type ScriptDataset = {
 };
 
 /**
- * Read embed settings. A plain `globalThis.WANDERER_SHRINE` object wins over
- * `data-*` on the script. `atlasUrl` must be an absolute `http:` or `https:` URL.
+ * Read embed settings. For each field, `globalThis.WANDERER_SHRINE` wins when
+ * that field is present; a field it omits still comes from `data-*`.
+ * `atlasUrl` must be an absolute `http:` or `https:` URL.
  */
 export function readShrineConfig(
   script: { dataset: ScriptDataset } | null,
@@ -60,16 +62,13 @@ export function readShrineConfig(
 ): ShrineConfig {
   const source = plainObject(globalConfig);
   const dataset = script === null ? {} : script.dataset;
-  const fromObject = source !== null;
-  const atlas = fromObject ? stringField(source, "atlasUrl") : dataset.atlasUrl;
-  const porch = fromObject ? stringField(source, "porchUrl") : dataset.porchUrl;
-  const mount = fromObject ? stringField(source, "mount") : dataset.mount;
+  const mount = picked(source, "mount", dataset.mount);
   return {
-    atlasUrl: httpOrigin(atlas),
-    porchUrl: httpHref(porch),
+    atlasUrl: httpOrigin(picked(source, "atlasUrl", dataset.atlasUrl)),
+    porchUrl: httpHref(picked(source, "porchUrl", dataset.porchUrl)),
     mount: mount !== undefined && mount !== "" ? mount : DEFAULT_SHRINE_MOUNT,
-    soulPublicKey: fromObject ? soulPin(source) : null,
-    doorPublicKeys: fromObject ? doorKeyPin(source) : null
+    soulPublicKey: owns(source, "soulPublicKey") ? soulPin(source) : null,
+    doorPublicKeys: owns(source, "doorPublicKeys") ? doorKeyPin(source) : null
   };
 }
 
@@ -83,6 +82,7 @@ export function renderShrine(
   snapshot: ShrineSnapshot
 ): void {
   root.textContent = "";
+  styleBadge(root);
   const badge = document.createElement("p");
   badge.textContent = snapshot.badge;
   root.appendChild(badge);
@@ -155,12 +155,62 @@ export function mountShrine(options: {
       });
   };
   tick();
-  options.setInterval(tick, SHRINE_REFRESH_MS);
+  options.setInterval(() => {
+    if (options.document.visibilityState === "hidden") {
+      return;
+    }
+    tick();
+  }, SHRINE_REFRESH_MS);
   options.document.addEventListener("visibilitychange", () => {
     if (options.document.visibilityState === "visible") {
       tick();
     }
   });
+}
+
+function picked(
+  source: Record<string, unknown> | null,
+  key: string,
+  fallback: string | undefined
+): string | undefined {
+  if (!owns(source, key)) {
+    return fallback;
+  }
+  return stringField(source, key);
+}
+
+function owns(
+  source: Record<string, unknown> | null,
+  key: string
+): source is Record<string, unknown> {
+  return source !== null && Object.prototype.hasOwnProperty.call(source, key);
+}
+
+/** Bold the badge inside the shadow, without a style element the host CSP would block. */
+function styleBadge(root: ShrineRoot): void {
+  const sheet = badgeSheet();
+  if (sheet === null) {
+    return;
+  }
+  root.adoptedStyleSheets = [sheet];
+}
+
+function badgeSheet(): { replaceSync(css: string): void } | null {
+  const host: unknown = globalThis;
+  if (typeof host !== "object" || host === null || !("CSSStyleSheet" in host)) {
+    return null;
+  }
+  const ctor: unknown = host.CSSStyleSheet;
+  if (!isSheetCtor(ctor)) {
+    return null;
+  }
+  const sheet = new ctor();
+  sheet.replaceSync("p:first-child{font-weight:700;font-size:1.25rem;letter-spacing:.04em}");
+  return sheet;
+}
+
+function isSheetCtor(value: unknown): value is new () => { replaceSync(css: string): void } {
+  return typeof value === "function";
 }
 
 function plainObject(value: unknown): Record<string, unknown> | null {

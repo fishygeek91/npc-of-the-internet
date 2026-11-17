@@ -1,3 +1,4 @@
+import "./jitless.js";
 import { mountShrine, readShrineConfig, type ShrineDocument } from "./shrine.js";
 
 /**

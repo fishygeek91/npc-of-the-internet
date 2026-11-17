@@ -1,10 +1,11 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 
 import type { Logger } from "pino";
 
 import type { WandererWhereabouts } from "./atlas.js";
+import { proxyChainExport, requestOrigin } from "./chain-export-proxy.js";
 import { WebDoorError } from "./errors.js";
 import type { Room, RoomEvent, RoomMessage } from "./room.js";
 import { DailyBudget, VisitorRateLimiter, type MsClock } from "./rate-limit.js";
@@ -31,40 +32,33 @@ const SECURITY_HEADER_BASE: Readonly<Record<string, string>> = {
 };
 
 /**
- * CSP for the porch. `connect-src` includes the Atlas origin when pinned so
- * the page can fetch `/chain/export`. The origin is taken from a parsed URL.
+ * CSP for the porch. The chain export is served from this origin, so
+ * `connect-src` stays `'self'` and never names the server-side Atlas URL.
  */
-export function contentSecurityPolicy(atlasUrl: string | null): string {
-  const connect = ["'self'"];
-  if (atlasUrl !== null) {
-    let origin: string;
-    try {
-      origin = new URL(atlasUrl).origin;
-    } catch {
-      origin = "";
-    }
-    if (origin !== "" && origin !== "null") {
-      connect.push(origin);
-    }
-  }
+export function contentSecurityPolicy(): string {
   return (
-    `default-src 'self'; connect-src ${connect.join(" ")}; img-src 'self' data:; style-src 'self'; ` +
+    "default-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self'; " +
     "script-src 'self'; frame-ancestors 'none'; base-uri 'none'"
   );
 }
 
-type StaticAsset = { body: Buffer; type: string };
+type StaticAsset = { body: Buffer; type: string; etag: string; corp?: string };
 
 /** Load the browser assets shipped in `public/` (read once at startup). */
 function loadAssets(): Map<string, StaticAsset> {
-  const read = (name: string): Buffer =>
-    readFileSync(new URL(`../public/${name}`, import.meta.url));
+  const read = (name: string, type: string): StaticAsset => {
+    const body = readFileSync(new URL(`../public/${name}`, import.meta.url));
+    const digest = createHash("sha256").update(body).digest("base64url");
+    return { body, type, etag: `"${digest}"` };
+  };
+  const shrine = read("shrine.js", "text/javascript; charset=utf-8");
+  shrine.corp = "cross-origin";
   return new Map<string, StaticAsset>([
-    ["/", { body: read("index.html"), type: "text/html; charset=utf-8" }],
-    ["/app.js", { body: read("app.js"), type: "text/javascript; charset=utf-8" }],
-    ["/verify.js", { body: read("verify.js"), type: "text/javascript; charset=utf-8" }],
-    ["/shrine.js", { body: read("shrine.js"), type: "text/javascript; charset=utf-8" }],
-    ["/app.css", { body: read("app.css"), type: "text/css; charset=utf-8" }]
+    ["/", read("index.html", "text/html; charset=utf-8")],
+    ["/app.js", read("app.js", "text/javascript; charset=utf-8")],
+    ["/verify.js", read("verify.js", "text/javascript; charset=utf-8")],
+    ["/shrine.js", shrine],
+    ["/app.css", read("app.css", "text/css; charset=utf-8")]
   ]);
 }
 
@@ -92,13 +86,25 @@ export type VisitorSiteOptions = {
   whereabouts?: () => Promise<WandererWhereabouts | null>;
   /**
    * Public verification pins. The page uses these instead of trusting the
-   * server's presence bit. `atlasUrl` null means the chain cannot be fetched.
+   * server's presence bit. The response `atlasUrl` is this porch's origin
+   * when `atlasUpstream` is set, and never that upstream URL.
    */
   verifyPins: {
     soulPublicKey: string;
     doorPublicKey: string;
     atlasUrl: string | null;
   };
+  /**
+   * Server-side Atlas base URL (`ATLAS_API_URL`). When set, `GET /chain/export`
+   * on this site forwards to it. Browsers are not given this value.
+   */
+  atlasUpstream?: string;
+  /** Test override for the export fetch. */
+  atlasFetch?: typeof fetch;
+  /** Test override for {@link proxyChainExport}'s timeout. */
+  exportTimeoutMs?: number;
+  /** Test override for the export body cap. */
+  exportMaxBytes?: number;
   /** Deliver a visitor message to the Wanderer; return false when it is not here. */
   relay: (request: RelayRequest) => boolean;
   maxClients: number;
@@ -224,6 +230,16 @@ export class VisitorSite {
     const method = req.method ?? "GET";
     const isRead = method === "GET" || method === "HEAD";
 
+    if (path === "/chain/export") {
+      if (method !== "GET") {
+        this.methodNotAllowed(res, "GET");
+        return;
+      }
+      void this.handleChainExport(req, res).catch(() => {
+        this.fail(res, 500, "internal_error", "something went wrong");
+      });
+      return;
+    }
     if (path === "/api/say") {
       if (method !== "POST") {
         this.methodNotAllowed(res, "POST");
@@ -247,7 +263,7 @@ export class VisitorSite {
         soulPublicKey: this.options.verifyPins.soulPublicKey,
         doorId: this.options.door.id,
         doorPublicKey: this.options.verifyPins.doorPublicKey,
-        atlasUrl: this.options.verifyPins.atlasUrl
+        atlasUrl: this.publicAtlasUrl(req)
       });
       return;
     }
@@ -268,7 +284,7 @@ export class VisitorSite {
     }
     const asset = this.assets.get(path);
     if (asset !== undefined) {
-      this.send(res, 200, asset.type, method === "HEAD" ? "" : asset.body, "no-cache");
+      this.sendAsset(req, res, asset, method);
       return;
     }
     this.fail(res, 404, "not_found", "not found");
@@ -465,6 +481,80 @@ export class VisitorSite {
     client.res.write(payload);
   }
 
+  /** Porch origin when Atlas is configured server-side; never the upstream URL. */
+  private publicAtlasUrl(req: IncomingMessage): string | null {
+    if (this.options.atlasUpstream === undefined) {
+      return null;
+    }
+    const forwarded = req.headers["x-forwarded-proto"];
+    const proto = Array.isArray(forwarded) ? forwarded[0] : forwarded;
+    return requestOrigin(req.headers.host, proto, this.options.trustProxy);
+  }
+
+  private async handleChainExport(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const upstream = this.options.atlasUpstream;
+    if (upstream === undefined) {
+      this.fail(res, 503, "atlas_unconfigured", "chain export is not configured");
+      return;
+    }
+    const match = req.headers["if-none-match"];
+    const ifNoneMatch = Array.isArray(match) ? match.join(", ") : match;
+    const result = await proxyChainExport({
+      upstream,
+      ...(ifNoneMatch === undefined ? {} : { ifNoneMatch }),
+      ...(this.options.atlasFetch === undefined ? {} : { fetchImpl: this.options.atlasFetch }),
+      ...(this.options.exportTimeoutMs === undefined
+        ? {}
+        : { timeoutMs: this.options.exportTimeoutMs }),
+      ...(this.options.exportMaxBytes === undefined
+        ? {}
+        : { maxBytes: this.options.exportMaxBytes })
+    });
+    if (result.kind === "error") {
+      this.fail(res, result.status, result.code, result.message);
+      return;
+    }
+    const headers: Record<string, string> = {
+      ...this.securityHeaders(),
+      "Cache-Control": result.cacheControl ?? "no-cache"
+    };
+    if (result.etag !== null) {
+      headers["ETag"] = result.etag;
+    }
+    if (result.status === 304) {
+      res.writeHead(304, headers);
+      res.end();
+      return;
+    }
+    headers["Content-Type"] = "application/json; charset=utf-8";
+    res.writeHead(200, headers);
+    res.end(result.body);
+  }
+
+  private sendAsset(
+    req: IncomingMessage,
+    res: ServerResponse,
+    asset: StaticAsset,
+    method: string
+  ): void {
+    const headers: Record<string, string> = {
+      ...this.securityHeaders(),
+      "Content-Type": asset.type,
+      "Cache-Control": "no-cache",
+      ETag: asset.etag
+    };
+    if (asset.corp !== undefined) {
+      headers["Cross-Origin-Resource-Policy"] = asset.corp;
+    }
+    if (ifNoneMatch(req.headers["if-none-match"], asset.etag)) {
+      res.writeHead(304, headers);
+      res.end();
+      return;
+    }
+    res.writeHead(200, headers);
+    res.end(method === "HEAD" ? "" : asset.body);
+  }
+
   private methodNotAllowed(res: ServerResponse, allow: string): void {
     res.setHeader("Allow", allow);
     this.fail(res, 405, "method_not_allowed", "method not allowed");
@@ -500,9 +590,24 @@ export class VisitorSite {
   private securityHeaders(): Record<string, string> {
     return {
       ...SECURITY_HEADER_BASE,
-      "Content-Security-Policy": contentSecurityPolicy(this.options.verifyPins.atlasUrl)
+      "Content-Security-Policy": contentSecurityPolicy()
     };
   }
+}
+
+function ifNoneMatch(header: string | string[] | undefined, etag: string): boolean {
+  const value = Array.isArray(header) ? header.join(", ") : header;
+  if (value === undefined) {
+    return false;
+  }
+  for (const part of value.split(",")) {
+    const token = part.trim();
+    const bare = token.startsWith("W/") || token.startsWith("w/") ? token.slice(2).trim() : token;
+    if (bare === etag) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /** Serialize one SSE event (JSON keeps `data` on a single line). */

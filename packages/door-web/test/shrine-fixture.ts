@@ -116,12 +116,15 @@ export async function stay(
   };
 }
 
+/** A body the test can swap after the shrine has mounted. */
+export type ServedExport = { body: unknown; etag: string; status: number };
+
 /** Serve one export body, including a 304 when `If-None-Match` repeats the tag. */
 export function serveExport(
   body: unknown,
-  options: { etag?: string } = {}
+  options: { etag?: string; live?: ServedExport } = {}
 ): Promise<{ url: string; close: () => Promise<void> }> {
-  const etag = options.etag ?? '"export"';
+  const live = options.live ?? { body, etag: options.etag ?? '"export"', status: 200 };
   const server: Server = createServer((request, response) => {
     const path = (request.url ?? "/").split("?")[0];
     if (path !== "/chain/export") {
@@ -129,13 +132,18 @@ export function serveExport(
       response.end();
       return;
     }
-    if (request.headers["if-none-match"] === etag) {
-      response.writeHead(304, { ETag: etag });
+    if (live.status !== 200) {
+      response.writeHead(live.status, { ETag: live.etag });
       response.end();
       return;
     }
-    response.writeHead(200, { "Content-Type": "application/json", ETag: etag });
-    response.end(JSON.stringify(body));
+    if (request.headers["if-none-match"] === live.etag) {
+      response.writeHead(304, { ETag: live.etag });
+      response.end();
+      return;
+    }
+    response.writeHead(200, { "Content-Type": "application/json", ETag: live.etag });
+    response.end(JSON.stringify(live.body));
   });
   return new Promise((resolve, reject) => {
     server.once("error", reject);

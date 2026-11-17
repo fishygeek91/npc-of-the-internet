@@ -65,7 +65,14 @@ describe("atlas API read-only guarantees", () => {
     const before = await snapshotDirectory(MULTI_RESIDENCY_FIXTURE_DIR);
     const app = await openServer(MULTI_RESIDENCY_FIXTURE_DIR);
     try {
-      const endpoints = ["/state", "/chain/head", "/records", "/journals", "/residencies"];
+      const endpoints = [
+        "/state",
+        "/chain/head",
+        "/chain/export",
+        "/records",
+        "/journals",
+        "/residencies"
+      ];
       for (const url of endpoints) {
         const response = await app.inject({ method: "GET", url });
         expect(response.statusCode).toBe(200);

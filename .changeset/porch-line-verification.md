@@ -2,4 +2,4 @@
 "@npc/door-web": minor
 ---
 
-The web porch verifies each Wanderer line in the browser. A line that fails the session signature stays visible and is labeled verification failed.
+The web porch verifies each Wanderer line in the browser. A line that fails the session signature stays visible and is labeled verification failed. The porch also serves GET /chain/export from its own origin, so a browser never receives the server-side Atlas URL.
