@@ -113,16 +113,19 @@ The badge text is exactly `PRESENT` or `ELSEWHERE` (uppercase, real text, not on
 
 Presence uses the verified records only, with the same scan as Atlas `GET /state`: newest `sleep` before any later attestation means sleeping; otherwise the newest `arrival` or `heartbeat` means present at that `door_id` and epoch; `departure`, `travel`, or `handover` means traveling. An invalid chain is not scanned for presence.
 
-The widget renders inside a closed shadow root so page CSS cannot hide the badge while leaving journals visible. Hiding the host element hides the whole shrine (it cannot show journals alone). The shrine refetches `GET /chain/export` when the document becomes visible and at least every 60 seconds while it is open, so a departure does not stay `PRESENT` after the Atlas is reachable.
+The widget renders inside a closed shadow root so page CSS cannot hide the badge while leaving journals visible. Hiding the host element hides the whole shrine (it cannot show journals alone). The shrine refetches `GET /chain/export` when the document becomes visible and at least every 60 seconds while it is open, so a departure does not stay `PRESENT` after the Atlas is reachable. Those refetches SHOULD send `If-None-Match` and keep the last verified snapshot on `304`.
 
 ### Journals
 
 Shown only from a valid chain, after the badge, in the same shadow tree:
 
 - **osp/0.2 `memory` / `journal`:** prose from blob bytes whose `sha256` is `journal_hash` and whose CID matches. Otherwise the journal is not verified prose.
+- **osp/0.2 shard `journal_cid`:** a verified shard that carries both `journal_cid` and `journal_hash` (legacy embedded journal; both or neither) uses the same blob rules as an `osp/0.2` `journal` record. Shard `text` is never shown.
 - **Verified tombstone** of that blob: `[journal erased]`.
 - **osp/0.1 inline `journal`** on a verified shard: the inline string may be shown. Shard `text` is never shown.
 - Unavailable blob, hash mismatch, or failed chain: do not show the prose as a journal.
+
+The same `journal_hash`, or the same inline journal string, is shown once: the earliest in chain order. Later copies are omitted.
 
 Journals are the published markdown only. No usernames, shard text, or other residency transcript.
 
