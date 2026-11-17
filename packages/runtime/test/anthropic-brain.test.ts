@@ -141,16 +141,26 @@ describe("AnthropicBrain", () => {
   });
 
   it("maps HTTP 401 from the SDK to BrainError reason auth", async () => {
-    const create = vi
-      .fn()
-      .mockRejectedValue(Object.assign(new Error("unauthorized"), { status: 401 }));
+    const sdkError = Object.assign(new Error("unauthorized"), {
+      status: 401,
+      headers: { authorization: "Bearer secret" },
+      request: { body: "do not keep" }
+    });
+    const create = vi.fn().mockRejectedValue(sdkError);
     const config = loadBrainConfig({ ANTHROPIC_API_KEY: "sk-test" });
     const brain = new AnthropicBrain({ config, client: { create } });
 
-    await expect(brain.complete([{ role: "user", content: "hi" }])).rejects.toMatchObject({
-      name: "BrainError",
-      reason: "auth"
-    });
+    const caught = await brain.complete([{ role: "user", content: "hi" }]).then(
+      () => undefined,
+      (error: unknown) => error
+    );
+    expect(caught).toBeInstanceOf(BrainError);
+    if (caught instanceof BrainError) {
+      expect(caught.reason).toBe("auth");
+      expect(caught.cause).toEqual({ status: 401, type: "Error" });
+      expect(JSON.stringify(caught.cause).includes("Bearer")).toBe(false);
+      expect(JSON.stringify(caught.cause).includes("do not keep")).toBe(false);
+    }
   });
 
   it("rejects multiple system messages", async () => {

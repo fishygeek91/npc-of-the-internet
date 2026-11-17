@@ -6,6 +6,7 @@ import pino from "pino";
 
 import { loadDiscordDoorConfig } from "./config.js";
 import { DiscordDoorError } from "./errors.js";
+import { exitAfterStop } from "./shutdown.js";
 import { startDiscordDoor } from "./start.js";
 
 /**
@@ -19,9 +20,16 @@ export async function main(): Promise<void> {
     logger.info({ doorId: handle.doorId }, "discord_door_started");
 
     const shutdown = (): void => {
-      void handle.stop().then(() => {
-        process.exit(0);
-      });
+      exitAfterStop(
+        () => handle.stop(),
+        (code) => {
+          process.exit(code);
+        },
+        (error: unknown) => {
+          const message = error instanceof Error ? error.message : String(error);
+          logger.error({ err: message }, "shutdown_error");
+        }
+      );
     };
     process.on("SIGINT", shutdown);
     process.on("SIGTERM", shutdown);
