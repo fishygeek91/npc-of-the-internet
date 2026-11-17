@@ -1,31 +1,34 @@
-import type { HeadResponse, JournalEntry, RecordsPageResponse, StateResponse } from "@npc/atlas";
+import type {
+  DeriveJournalsOptions,
+  HeadResponse,
+  JournalEntry,
+  RecordsPageResponse,
+  ResidencyEntry,
+  StateResponse
+} from "@npc/atlas";
 import {
   ChainView,
   deriveHead,
   deriveJournals,
   deriveRecordsPage,
+  deriveResidencies,
   deriveState,
   extractRecordTimestamp,
   formatRecordKind,
   type ChainSnapshot
 } from "@npc/atlas";
-import { computeCid, verifyRecords, type OspRecord, type VerifyChainResult } from "@npc/osp-core";
+import {
+  computeCid,
+  RECORD_TYPES,
+  verifyRecords,
+  type OspRecord,
+  type VerifyChainResult
+} from "@npc/osp-core";
 import { loadAtlasSiteConfig } from "./config.js";
 import { RECORDS_PER_PAGE } from "./constants.js";
 import { prettyPrintBody, toDisplayBody } from "./display-body.js";
-import { deriveJourney, type JourneyEntry } from "./journey.js";
 import { renderJournalHtml } from "./markdown.js";
 import { recordVerified } from "./verification.js";
-
-const RECORD_TYPES = [
-  "genesis",
-  "memory",
-  "drift",
-  "decision",
-  "transaction",
-  "attestation",
-  "sleep"
-] as const;
 
 /** Explorer detail for one soulchain record. */
 export type RecordDetail = {
@@ -54,7 +57,8 @@ export type AtlasSiteData = {
   chainVerified: boolean;
   state: StateResponse;
   head: HeadResponse | null;
-  journey: JourneyEntry[];
+  /** Residencies, newest first (Door, times, witnessed/declined counts, journal, travel). */
+  residencies: ResidencyEntry[];
   journals: JournalWithHtml[];
   recordTypes: string[];
   totalRecords: number;
@@ -63,7 +67,9 @@ export type AtlasSiteData = {
 };
 
 /**
- * Collect distinct top-level record types present in the chain.
+ * Types present on the chain, in `RECORD_TYPES` order.
+ * Tombstone is included: those records are already on the all-records list and
+ * have detail pages. The filter chip appears only when a tombstone is present.
  */
 function collectRecordTypes(records: readonly OspRecord[]): string[] {
   const present = new Set<string>();
@@ -229,12 +235,11 @@ async function loadSiteDataUncached(env: NodeJS.ProcessEnv): Promise<AtlasSiteDa
 
   const state = deriveState(snapshot.records, chainVerified);
   const head = await deriveHead(snapshot.records, chainVerified);
-  const journey = await deriveJourney(snapshot.records);
   const sideBlobs = snapshot.sideBlobs;
-  const journalsResponse =
+  const blobOptions: DeriveJournalsOptions =
     sideBlobs === undefined
-      ? await deriveJournals(snapshot.records, chainVerified)
-      : await deriveJournals(snapshot.records, chainVerified, undefined, {
+      ? {}
+      : {
           getSideBlob: async (cid: string): Promise<Uint8Array> => {
             const bytes = sideBlobs.get(cid);
             if (bytes === undefined) {
@@ -242,7 +247,16 @@ async function loadSiteDataUncached(env: NodeJS.ProcessEnv): Promise<AtlasSiteDa
             }
             return bytes;
           }
-        });
+        };
+  const journalsResponse = await deriveJournals(
+    snapshot.records,
+    chainVerified,
+    undefined,
+    blobOptions
+  );
+  const residencies = (
+    await deriveResidencies(snapshot.records, chainVerified, undefined, blobOptions)
+  ).residencies;
 
   const journals: JournalWithHtml[] = journalsResponse.journals.map((entry) => ({
     ...entry,
@@ -259,7 +273,7 @@ async function loadSiteDataUncached(env: NodeJS.ProcessEnv): Promise<AtlasSiteDa
     chainVerified,
     state,
     head,
-    journey,
+    residencies,
     journals,
     recordTypes,
     totalRecords: snapshot.records.length,

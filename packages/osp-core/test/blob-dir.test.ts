@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -114,5 +114,41 @@ describe("BlobDir", () => {
     await blobs.delete(cid);
     await expect(blobs.readVerified(cid)).rejects.toThrow(StorageError);
     await blobs.delete(cid);
+  });
+
+  it("replaces a torn blob (crash mid-write) atomically instead of wedging retries", async () => {
+    // Review F4: a torn file used to make every retry fail with "different bytes".
+    const bytes = canonicalize(SAMPLE_RECORD);
+    const cid = await computeCidFromCanonicalBytes(bytes);
+    await writeFile(path.join(dir, cid), bytes.subarray(0, 3));
+
+    await blobs.putIdempotent(cid, bytes);
+    expect(await blobs.readVerified(cid)).toEqual(bytes);
+    // No temp files are left behind.
+    expect(await readdir(dir)).toEqual([cid]);
+  });
+
+  it("replaces a zero-length blob left by a crash right after create", async () => {
+    const bytes = canonicalize(SAMPLE_RECORD);
+    const cid = await computeCidFromCanonicalBytes(bytes);
+    await writeFile(path.join(dir, cid), new Uint8Array());
+
+    await blobs.putIdempotent(cid, bytes);
+    expect(await blobs.readVerified(cid)).toEqual(bytes);
+  });
+
+  it("refuses to write bytes that do not hash to the CID", async () => {
+    const bytes = canonicalize(SAMPLE_RECORD);
+    const cid = await computeCidFromCanonicalBytes(bytes);
+    await expect(blobs.putIdempotent(cid, new Uint8Array([1, 2, 3]))).rejects.toThrow(StorageError);
+    expect(await readdir(dir)).toEqual([]);
+  });
+
+  it("refuses to replace a torn blob with bytes that do not hash to the CID", async () => {
+    const bytes = canonicalize(SAMPLE_RECORD);
+    const cid = await computeCidFromCanonicalBytes(bytes);
+    await writeFile(path.join(dir, cid), bytes.subarray(0, 3));
+    await expect(blobs.putIdempotent(cid, new Uint8Array([9]))).rejects.toThrow(StorageError);
+    expect(new Uint8Array(await readFile(path.join(dir, cid)))).toEqual(bytes.subarray(0, 3));
   });
 });

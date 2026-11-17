@@ -14,6 +14,11 @@ const statusLabel =
       ? "Traveling"
       : "Sleeping";
 
+// Where the Wanderer went: the newest residency's travel record (traveling only).
+const latest = data.residencies[0];
+const leftFor =
+  data.state.status === "traveling" && latest !== undefined ? latest.traveled_to : null;
+
 const statusClass =
   data.state.status === "present"
     ? "status-present"
@@ -31,8 +36,8 @@ const statusClass =
   <p class="page-subtitle">NPC of the Internet</p>
 
   <p class="lead">
-    A public window onto a wandering presence — location, residencies, journals, and every signed
-    record on the soulchain, verified at build time.
+    A public window onto a wandering presence — one Door at a time, the memories each Door
+    witnessed, its journals, and every signed record on the soulchain, verified at build time.
   </p>
 
   <section class="status-banner" aria-label="Current status">
@@ -43,6 +48,18 @@ const statusClass =
     <div class="status-banner__row">
       <span class="status-banner__label">Door</span>
       <span class="status-banner__value">{data.state.door_id ?? "—"}</span>
+    </div>
+    {
+      leftFor !== null && (
+        <div class="status-banner__row">
+          <span class="status-banner__label">Left for</span>
+          <span class="status-banner__value">{leftFor}</span>
+        </div>
+      )
+    }
+    <div class="status-banner__row">
+      <span class="status-banner__label">Since</span>
+      <span class="status-banner__value">{data.state.since ?? "—"}</span>
     </div>
     <div class="status-banner__row">
       <span class="status-banner__label">Head</span>

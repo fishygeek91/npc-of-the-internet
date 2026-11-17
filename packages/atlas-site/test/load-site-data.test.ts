@@ -44,28 +44,37 @@ describe("loadSiteData", () => {
     const data = await loadSiteData(fixtureEnv(MULTI_RESIDENCY_FIXTURE_DIR));
 
     expect(data.state).toMatchObject({
-      status: "present",
-      door_id: "irc:libera-wanderer",
-      epoch: 2,
+      status: "traveling",
+      door_id: null,
+      epoch: 3,
+      since: "2026-01-04T05:03:00.000Z",
       verified: true
     });
     expect(data.chainVerified).toBe(true);
-    expect(data.journey).toHaveLength(2);
-    expect(data.journey[0]).toMatchObject({
-      door_id: "discord:g",
-      epoch: 1
+    expect(
+      data.residencies.map((entry) => [entry.door_id, entry.epoch, entry.traveled_to])
+    ).toEqual([
+      ["web:home", 3, "discord:g"],
+      ["irc:libera-wanderer", 2, "web:home"],
+      ["discord:g", 1, "irc:libera-wanderer"]
+    ]);
+    expect(data.residencies[0]).toMatchObject({
+      counts: { witnessed: 1, declined: 1, screened: 1 },
+      declined_reasons: ["private"],
+      journal: { journal: "JOURNAL_EPOCH_3" }
     });
-    expect(data.journey[1]).toMatchObject({
-      door_id: "irc:libera-wanderer",
-      epoch: 2
-    });
-    expect(data.journals).toHaveLength(2);
-    expect(data.totalRecords).toBe(9);
-    expect(data.recordsPages).toHaveLength(2);
+    expect(data.journals.map((entry) => entry.journal)).toEqual([
+      "JOURNAL_EPOCH_3",
+      "JOURNAL_EPOCH_2",
+      "JOURNAL_EPOCH_1"
+    ]);
+    expect(data.journals[0]?.cid).toBe(data.residencies[0]?.journal?.cid);
+    expect(data.totalRecords).toBe(19);
+    expect(data.recordsPages).toHaveLength(4);
     expect(data.recordsPages[0]?.per_page).toBe(5);
     expect(data.recordsPages[0]?.records).toHaveLength(5);
-    expect(data.recordsPages[1]?.records).toHaveLength(4);
-    expect(data.records).toHaveLength(9);
+    expect(data.recordsPages[3]?.records).toHaveLength(4);
+    expect(data.records).toHaveLength(19);
     expect(data.records.every((record) => record.verified)).toBe(true);
     expect(data.recordTypes).toContain("genesis");
     expect(data.recordTypes).toContain("attestation");

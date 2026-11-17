@@ -238,7 +238,7 @@ describe("Session", () => {
     const brain = new FakeBrain(() => {
       callCount += 1;
       if (callCount === 1) {
-        throw new BrainError("simulated brain failure");
+        throw new BrainError("simulated brain failure", "unavailable");
       }
       return "Recovery reply.";
     });

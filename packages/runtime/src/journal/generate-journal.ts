@@ -55,7 +55,7 @@ async function completeWithRetry(
       { role: "user", content: JOURNAL_RETRY }
     ];
 
-    const retryRaw = await brain.complete(retryMessages);
+    const retryRaw = (await brain.complete(retryMessages)).text;
     try {
       return validateMarkdown(retryRaw);
     } catch (retryError: unknown) {
@@ -76,6 +76,6 @@ export async function generateJournal(
 ): Promise<string> {
   const userContent = buildUserContent(input);
   const messages = buildMessages(userContent);
-  const raw = await brain.complete(messages);
+  const raw = (await brain.complete(messages)).text;
   return completeWithRetry(brain, userContent, raw);
 }

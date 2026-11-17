@@ -6,6 +6,8 @@ import { computeCidFromCanonicalBytes, CidSchema } from "../crypto/cid.js";
 import { sign, verify } from "../crypto/ed25519.js";
 import { decodeSignature, encodeSignature } from "../encoding/base64url.js";
 import { EncodingError, SchemaError, VerificationError } from "../errors.js";
+import { nonnegativeInteger } from "../schemas/nonnegative-integer.js";
+import { bytesEqual } from "../store/fsync.js";
 
 /** Pin manifest format version per spec/osp/ipfs-store.md §4.1. */
 export const OSP_PIN_MANIFEST_VERSION = "osp-ipfs/0.1";
@@ -52,7 +54,7 @@ const UnsignedPinManifestSchema = z
   .object({
     osp_pin_manifest: z.literal(OSP_PIN_MANIFEST_VERSION),
     head: CidSchema,
-    seq: z.number().int().nonnegative(),
+    seq: nonnegativeInteger(),
     genesis: CidSchema,
     records: z.array(CidSchema),
     generated_at: z.string().min(1),
@@ -185,6 +187,8 @@ export function encodePinManifest(manifest: PinManifest): Uint8Array {
 
 /**
  * Decode dag-json manifest bytes and validate structure with Zod.
+ *
+ * Rejects bytes that do not re-encode byte-identically (unknown keys, non-canonical form).
  */
 export function decodePinManifest(bytes: Uint8Array): PinManifest {
   let decoded: unknown;
@@ -261,6 +265,15 @@ export function decodePinManifest(bytes: Uint8Array): PinManifest {
       : { ...validatedRest, prev_manifest: validatedPrev };
 
   assertManifestInvariants(result);
+
+  // Manifests are canonical dag-json blocks: bytes must be exactly what encodePinManifest
+  // emits. Unknown keys or non-canonical encodings would otherwise decode, verify (verify
+  // re-encodes), and yet carry a different CID than the signed manifest.
+  if (!bytesEqual(encodePinManifest(result), bytes)) {
+    throw new SchemaError(
+      "pin manifest bytes are not canonical (unknown keys or non-canonical dag-json encoding)"
+    );
+  }
 
   return result;
 }

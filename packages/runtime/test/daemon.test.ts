@@ -2,7 +2,14 @@ import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { Door, HttpDoorServer, type HostPolicy, WsDoorSessionServer } from "@npc/door-sdk";
+import {
+  Door,
+  HttpDoorServer,
+  OutboundFrameSchema,
+  type HostPolicy,
+  type OutboundFrame,
+  WsDoorSessionServer
+} from "@npc/door-sdk";
 import {
   OSP_SPEC_V02,
   createRecord,
@@ -17,7 +24,8 @@ import type WebSocket from "ws";
 import { FakeBrain } from "../src/brain/fake-brain.js";
 import type { DaemonConfig } from "../src/daemon-config.js";
 import { loadReplicationConfig } from "../src/replication/config.js";
-import { startResidencyDaemon } from "../src/daemon.js";
+import { loadResidencyConfig } from "../src/residency/config.js";
+import { startResidencyDaemon, type ResidencyDaemonDeps } from "../src/daemon.js";
 import { DOOR, SOUL } from "./helpers/fixed-keys.js";
 
 const DOOR_ID = "discord:daemon-test";
@@ -30,7 +38,7 @@ const defaultPolicy: HostPolicy = {
     platform: "discord",
     invitation_required: false
   },
-  capabilities: ["session.text", "heartbeat", "attest", "cosign.manual"]
+  capabilities: ["session.text", "session.reactions", "heartbeat", "attest"]
 };
 
 type DaemonTestEnv = {
@@ -41,6 +49,7 @@ type DaemonTestEnv = {
   wsServer: WsDoorSessionServer;
   httpHost: string;
   httpPort: number;
+  door: Door;
   config: DaemonConfig;
 };
 
@@ -92,9 +101,8 @@ async function createDaemonTestEnv(): Promise<DaemonTestEnv> {
   const config: DaemonConfig = {
     soulKeyPath,
     soulchainDir: chainDir,
-    doorHttpHost: httpHost,
-    doorHttpPort: httpPort,
-    doorId: DOOR_ID,
+    doorUrls: [httpInfo.baseUrl],
+    preferredDoorId: DOOR_ID,
     doorPublicKeys: { [DOOR_ID]: DOOR.publicKey },
     brain: {
       apiKey: "test-api-key",
@@ -103,7 +111,14 @@ async function createDaemonTestEnv(): Promise<DaemonTestEnv> {
       timeoutMs: 60_000
     },
     readyFilePath,
-    replication: loadReplicationConfig({})
+    replication: loadReplicationConfig({}),
+    // Legacy door/0.1 behaviour for the existing echo tests; selective mode has its own test.
+    attentionMode: "always",
+    // No automatic travel in these tests.
+    residency: {
+      ...loadResidencyConfig({ NPC_RESIDENCY_MAX_MS: "0", NPC_RESIDENCY_OPERATOR_TRIGGER: "0" }),
+      controlDir: join(chainDir, "control")
+    }
   };
 
   return {
@@ -114,6 +129,7 @@ async function createDaemonTestEnv(): Promise<DaemonTestEnv> {
     wsServer,
     httpHost,
     httpPort,
+    door,
     config
   };
 }
@@ -134,6 +150,24 @@ function waitForReadyFile(path: string, timeoutMs = 5000): Promise<void> {
     };
     check();
   });
+}
+
+/** File-store opener that counts `close()` calls (boot-failure leak checks). */
+function countingOpenStore(closed: {
+  count: number;
+}): NonNullable<ResidencyDaemonDeps["openStore"]> {
+  return async (dir, options) => {
+    const opened = await FileSoulStore.openWithRecovery(dir, {
+      doorPublicKeys: options.doorPublicKeys
+    });
+    const store = opened.store;
+    const originalClose = store.close.bind(store);
+    store.close = async (): Promise<void> => {
+      closed.count += 1;
+      await originalClose();
+    };
+    return opened;
+  };
 }
 
 describe("startResidencyDaemon", () => {
@@ -274,5 +308,108 @@ describe("startResidencyDaemon", () => {
     expect(secondCallUsers).toEqual(["msg-a", "msg-b"]);
 
     await handle.shutdown();
+  });
+  it("selective attention: silence, a reaction-only frame, then threaded speech — all Door-verified", async () => {
+    const brain = new FakeBrain([
+      '{"say": null, "reply_to": null, "react": null}',
+      '{"say": null, "reply_to": null, "react": {"emoji": "🔥", "to": "#2"}}',
+      '{"say": "I heard my name.", "reply_to": "#3", "react": null}'
+    ]);
+    const handle = await startResidencyDaemon(
+      { ...env.config, attentionMode: "selective" },
+      { brain, logger: pino({ level: "silent" }), skipSignals: true }
+    );
+    await waitForReadyFile(env.readyFilePath);
+
+    const serverSocket = [...env.wsServer.getActiveClients()][0];
+    if (serverSocket === undefined) {
+      throw new Error("expected one active server socket");
+    }
+    const outbounds: OutboundFrame[] = [];
+    serverSocket.on("message", (data: WebSocket.RawData) => {
+      const text = typeof data === "string" ? data : data.toString("utf8");
+      outbounds.push(OutboundFrameSchema.parse(JSON.parse(text)));
+    });
+
+    const waitFor = async (predicate: () => boolean): Promise<void> => {
+      const started = Date.now();
+      while (!predicate()) {
+        if (Date.now() - started > 5000) {
+          throw new Error("timed out waiting for daemon");
+        }
+        await new Promise<void>((resolve) => {
+          setTimeout(resolve, 10);
+        });
+      }
+    };
+
+    env.wsServer.broadcastInbound({ text: "just us talking", author_id: "u1" }, "in-sel-1");
+    await waitFor(() => brain.calls.length === 1);
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 50);
+    });
+    expect(outbounds).toHaveLength(0);
+
+    env.wsServer.broadcastInbound({ text: "that was great", author_id: "u2" }, "in-sel-2");
+    await waitFor(() => outbounds.length === 1);
+
+    env.wsServer.broadcastInbound(
+      { text: "what do you think?", author_id: "u1", addressed: true },
+      "in-sel-3"
+    );
+    await waitFor(() => outbounds.length === 2);
+
+    expect(outbounds[0]?.body).toEqual({
+      reaction: { emoji: "🔥", target_msg_id: "in-sel-2" }
+    });
+    expect(outbounds[1]?.body).toEqual({ text: "I heard my name.", reply_to: "in-sel-3" });
+    for (const frame of outbounds) {
+      expect(env.door.verifyOutbound(frame)).toBe(true);
+    }
+
+    await handle.shutdown();
+  });
+  it("closes the store when boot fails on a local (fatal) error", async () => {
+    const closed = { count: 0 };
+    const opener = countingOpenStore(closed);
+    await expect(
+      startResidencyDaemon(env.config, {
+        brain: new FakeBrain([]),
+        logger: pino({ level: "silent" }),
+        skipSignals: true,
+        openStore: async (dir, options) => {
+          const opened = await opener(dir, options);
+          opened.store.append = async () => {
+            throw new Error("disk full");
+          };
+          return opened;
+        }
+      })
+    ).rejects.toThrow(/disk full/);
+    expect(closed.count).toBe(1);
+    await expect(readFile(env.readyFilePath, "utf8")).rejects.toThrow();
+  });
+
+  it("retries boot while the session WebSocket cannot connect (Door trouble is not fatal)", async () => {
+    await env.wsServer.stop();
+    const sleeps: number[] = [];
+    let wsServer: WsDoorSessionServer | null = null;
+    const handle = await startResidencyDaemon(env.config, {
+      brain: new FakeBrain([]),
+      logger: pino({ level: "silent" }),
+      skipSignals: true,
+      sleep: async (ms) => {
+        sleeps.push(ms);
+        wsServer = new WsDoorSessionServer({ door: env.door, server: env.httpServer.nodeServer });
+        await wsServer.start();
+      }
+    });
+    expect(sleeps).toEqual([5_000]);
+    // Retry arrived at the next epoch (the failed bind's arrival was superseded).
+    expect(handle.currentEpoch()).toBe(2);
+    expect(handle.currentDoorId()).toBe(DOOR_ID);
+    await waitForReadyFile(env.readyFilePath);
+    await handle.shutdown();
+    await (wsServer as WsDoorSessionServer | null)?.stop();
   });
 });

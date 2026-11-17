@@ -1,0 +1,20 @@
+Door: discord:lantern, stay #41.
+
+<<<RECORD 0123456789ab
+{"role":"community","author":"Wren","text":"Listen:\nthe nightjar,  the owl,\tthe whip-poor-will."}
+{"role":"community","author":"someone","text":"(no author)"}
+{"role":"wanderer","text":"I will remember those birds."}
+RECORD 0123456789ab>>>
+
+<<<MEMORIES 0123456789ab
+"Someone here taught me the names of three night birds."
+MEMORIES 0123456789ab>>>
+
+Proposed JOURNAL:
+<<<PROPOSAL 0123456789ab
+# Lantern
+
+I learned three night birds here.
+PROPOSAL 0123456789ab>>>
+
+Is this journal witnessed? Reply with the JSON object only.

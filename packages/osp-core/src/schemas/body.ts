@@ -4,6 +4,7 @@ import { CidSchema } from "../crypto/cid.js";
 import { decodeBase64Url, decodePublicKey } from "../encoding/base64url.js";
 import { EncodingError } from "../errors.js";
 import { cidMatchesHash } from "../memory-blob.js";
+import { nonnegativeInteger } from "./nonnegative-integer.js";
 
 /** Historical OSP spec version (inline memory text). */
 export const OSP_SPEC_V01 = "osp/0.1" as const;
@@ -218,6 +219,28 @@ export const CandidateBodyV02Schema = z
  */
 export const CandidateBodySchema = z.union([CandidateBodyV01Schema, CandidateBodyV02Schema]);
 
+/**
+ * Witnessed residency journal (`memory.body.kind: "journal"`, `osp/0.2` only): the
+ * Wanderer's account of a residency, written from its witnessed shards, as a side blob.
+ */
+export const JournalBodySchema = z
+  .object({
+    kind: z.literal("journal"),
+    journal_cid: CidSchema,
+    journal_hash: BlobContentHashSchema,
+    written_at: IsoUtcTimestampSchema
+  })
+  .strict()
+  .superRefine((body, ctx) => {
+    if (!cidMatchesHash(body.journal_cid, body.journal_hash)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "journal_cid digest must match journal_hash",
+        path: ["journal_hash"]
+      });
+    }
+  });
+
 /** Rejected candidate memory body (`memory.body.kind: "rejected"`). */
 export const RejectedBodySchema = z
   .object({
@@ -228,10 +251,14 @@ export const RejectedBodySchema = z
   })
   .strict();
 
-/** Memory record body — union of versioned shard/candidate shapes plus rejected. */
+/**
+ * Memory record body — witnessed shard / journal, rejected, plus legacy candidate shapes
+ * (records.md §Legacy memory forms).
+ */
 export const MemoryBodySchema = z.union([
   ShardBodyV01Schema,
   ShardBodyV02Schema,
+  JournalBodySchema,
   CandidateBodyV01Schema,
   CandidateBodyV02Schema,
   RejectedBodySchema
@@ -295,7 +322,7 @@ export const ArrivalBodySchema = z
     kind: z.literal("arrival"),
     pop_version: z.literal(POP_VERSION),
     door_id: z.string(),
-    epoch: z.number().int().nonnegative(),
+    epoch: nonnegativeInteger(),
     session_pubkey: PublicKeyStringSchema,
     at: IsoUtcTimestampSchema
   })
@@ -307,7 +334,7 @@ export const HeartbeatBodySchema = z
     kind: z.literal("heartbeat"),
     pop_version: z.literal(POP_VERSION),
     door_id: z.string(),
-    epoch: z.number().int().nonnegative(),
+    epoch: nonnegativeInteger(),
     session_pubkey: PublicKeyStringSchema,
     at: IsoUtcTimestampSchema
   })
@@ -319,7 +346,7 @@ export const DepartureBodySchema = z
     kind: z.literal("departure"),
     pop_version: z.literal(POP_VERSION),
     door_id: z.string(),
-    epoch: z.number().int().nonnegative(),
+    epoch: nonnegativeInteger(),
     at: IsoUtcTimestampSchema
   })
   .strict();
@@ -330,7 +357,7 @@ export const TravelBodySchema = z
     kind: z.literal("travel"),
     pop_version: z.literal(POP_VERSION),
     from_door_id: z.string(),
-    from_epoch: z.number().int().nonnegative(),
+    from_epoch: nonnegativeInteger(),
     to_door_id: z.string().optional(),
     at: IsoUtcTimestampSchema
   })
@@ -343,8 +370,8 @@ export const HandoverBodySchema = z
     pop_version: z.literal(POP_VERSION),
     depart_door_id: z.string(),
     arrive_door_id: z.string(),
-    depart_epoch: z.number().int().nonnegative(),
-    arrive_epoch: z.number().int().nonnegative(),
+    depart_epoch: nonnegativeInteger(),
+    arrive_epoch: nonnegativeInteger(),
     depart_attestation: z.string().optional(),
     rotate_attestation: z.string().optional(),
     arrive_attestation: z.string().optional(),

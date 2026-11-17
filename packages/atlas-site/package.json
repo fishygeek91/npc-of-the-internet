@@ -1,7 +1,8 @@
 {
   "name": "@npc/atlas-site",
-  "version": "0.2.2",
+  "version": "0.6.0",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "dev": "astro dev",
@@ -12,9 +13,9 @@
   "dependencies": {
     "@npc/atlas": "workspace:*",
     "@npc/osp-core": "workspace:*",
-    "astro": "^5.7.10",
+    "astro": "^7.4.7",
     "marked": "^18.0.9",
-    "zod": "^3.24.2"
+    "zod": "^4.6.6"
   },
   "devDependencies": {
     "@types/node": "^22",

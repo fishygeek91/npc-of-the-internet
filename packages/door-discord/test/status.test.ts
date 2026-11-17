@@ -19,19 +19,20 @@ afterEach(async () => {
 });
 
 describe("formatStatusReply", () => {
-  it("formats a present door with epoch and pending review count", () => {
+  it("formats a present door with epoch and witnessed memories", () => {
     const reply = formatStatusReply({
       present: true,
       doorId: "discord:10001",
       epoch: 3,
       sessionLive: true,
-      pendingReviewCount: 2
+      witnessesMemories: true
     });
 
     expect(reply).toContain("presence: present");
     expect(reply).toContain("epoch: 3");
     expect(reply).toContain("session: live");
-    expect(reply).toContain("pending review shards: 2");
+    expect(reply).toContain("memories: witnessed by this Door's AI witness");
+    expect(reply).not.toMatch(/review|retention/i);
   });
 
   it("formats an absent door before arrival", () => {
@@ -40,13 +41,13 @@ describe("formatStatusReply", () => {
       doorId: "discord:10001",
       epoch: null,
       sessionLive: false,
-      pendingReviewCount: 0
+      witnessesMemories: false
     });
 
     expect(reply).toContain("presence: absent");
     expect(reply).toContain("epoch: none");
     expect(reply).toContain("session: not live");
-    expect(reply).toContain("pending review shards: 0");
+    expect(reply).toContain("memories: not witnessed");
   });
 });
 
@@ -66,19 +67,17 @@ describe("startDiscordDoor status command", () => {
         soulPublicKey: SOUL.publicKey,
         httpHost: "127.0.0.1",
         httpPort: 9090,
-        reviewTimeoutMs: 300_000,
         userRatePerMinute: 20,
         userBurst: 5,
         channelRatePerMinute: 60,
         channelBurst: 15,
         communityName: "Discord Door",
-        communityDescription: "A Discord channel hosting the Wanderer."
+        communityDescription: "A Discord channel hosting the Wanderer.",
+        presenceNotices: true,
+        witness: null
       },
       gateway,
       clock,
-      sleep: async () => {
-        await Promise.resolve();
-      },
       disableServers: true
     });
 

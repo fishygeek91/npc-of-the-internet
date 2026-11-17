@@ -1,4 +1,4 @@
-/** Chain verification failure rule identifiers (T1.3 + Bug #68). */
+/** Chain verification failure rule identifiers (T1.3 + Bug #68; `bad_tombstone` per records.md rule 12). */
 export type ChainRule =
   | "bad_soul_sig"
   | "broken_prev_link"
@@ -8,6 +8,7 @@ export type ChainRule =
   | "forked_head"
   | "bad_genesis"
   | "bad_drift_evidence"
+  | "bad_tombstone"
   | "bad_session_continuity"
   | "presence_conflict";
 

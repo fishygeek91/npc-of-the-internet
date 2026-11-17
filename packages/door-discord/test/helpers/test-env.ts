@@ -10,7 +10,6 @@ import { SOUL } from "./fixed-keys.js";
 export const TEST_GUILD_ID = "10001";
 export const TEST_CHANNEL_ID = "10002";
 export const TEST_OPERATOR_ID = "10004";
-export const TEST_REVIEW_CHANNEL_ID = "10006";
 
 const tempDirs: string[] = [];
 
