@@ -5,8 +5,8 @@ import { z } from "zod";
 import { computeCidFromCanonicalBytes, CidSchema, type Cid } from "../crypto/cid.js";
 import { sign, verify } from "../crypto/ed25519.js";
 import {
-  Ed25519SignatureSchema,
   decodeSignature,
+  ed25519SignatureBrandSchema,
   encodeSignature,
   type Ed25519Signature
 } from "../encoding/base64url.js";
@@ -68,7 +68,9 @@ const UnsignedPinManifestSchema = z
   .strict();
 
 const PinManifestSchema = UnsignedPinManifestSchema.extend({
-  sig: Ed25519SignatureSchema
+  // Type-only brand. decodePinManifest's decodeSignature is the only check,
+  // and it still throws SchemaError with the decoder message.
+  sig: ed25519SignatureBrandSchema
 }).strict();
 
 /**

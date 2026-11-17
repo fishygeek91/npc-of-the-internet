@@ -280,6 +280,46 @@ describe("RecordSchema", () => {
     }
   });
 
+  it("reports a bad signature once, and residency issues stay ahead of it", () => {
+    const sigOnly = RecordSchema.safeParse({
+      ...VALID_GENESIS,
+      sig: "AAAA"
+    });
+    expect(sigOnly.success).toBe(false);
+    if (!sigOnly.success) {
+      const sigIssues = sigOnly.error.issues.filter((issue) => issue.path[0] === "sig");
+      expect(sigIssues).toHaveLength(1);
+      expect(sigIssues[0]?.path).toEqual(["sig"]);
+      expect(sigIssues[0]?.message).toBe("signature must decode to exactly 64 bytes, got 3");
+    }
+
+    const both = RecordSchema.safeParse({
+      ...VALID_GENESIS,
+      sig: "AAAA",
+      residency: "door:nope"
+    });
+    expect(both.success).toBe(false);
+    if (!both.success) {
+      expect(both.error.issues.map((issue) => [issue.path, issue.message])).toEqual([
+        [["residency"], "residency must be null when seq is 0"],
+        [["sig"], "signature must decode to exactly 64 bytes, got 3"]
+      ]);
+    }
+  });
+
+  it("reports one bad cosigner once", () => {
+    const result = RecordSchema.safeParse({
+      ...VALID_CANDIDATE,
+      cosigners: ["AAAA"]
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues.map((issue) => [issue.path, issue.message])).toEqual([
+        [["cosigners", 0], "signature must decode to exactly 64 bytes, got 3"]
+      ]);
+    }
+  });
+
   it("rejects invalid sig length", () => {
     const result = RecordSchema.safeParse({
       ...VALID_GENESIS,

@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 import { CidSchema } from "../crypto/cid.js";
-import { Ed25519SignatureSchema, decodeSignature } from "../encoding/base64url.js";
+import { decodeSignature, ed25519SignatureBrandSchema } from "../encoding/base64url.js";
 import { EncodingError } from "../errors.js";
 import {
   AttestationBodySchema,
@@ -60,22 +60,23 @@ export function asResidency(value: string): Residency {
 }
 
 /**
- * Build a residency from its three parts.
+ * Build a residency from the Door id and epoch {@link parseResidency} returns.
  *
- * `platform` is the lowercase segment (`discord`). `doorId` is the door's own id
- * (`guild123`), not `platform:id`. The result is `door:<platform>:<doorId>/epoch:<n>`.
+ * `doorId` is `platform:id` (for example `discord:guild123`), the same string
+ * `parseResidency` returns and `body.door_id` uses. The result is
+ * `door:<doorId>/epoch:<n>`. `makeResidency(parseResidency(value))` round-trips
+ * when `parseResidency` succeeds.
  *
  * @throws {EncodingError} when the parts do not match {@link RESIDENCY_RE}.
  */
 export function makeResidency(parts: {
-  readonly platform: string;
   readonly doorId: string;
   readonly epoch: number;
 }): Residency {
   if (!Number.isInteger(parts.epoch) || parts.epoch < 0) {
     throw new EncodingError("residency epoch must be a non-negative integer");
   }
-  return asResidency(`door:${parts.platform}:${parts.doorId}/epoch:${String(parts.epoch)}`);
+  return asResidency(`door:${parts.doorId}/epoch:${String(parts.epoch)}`);
 }
 
 /** Validates that a string decodes to a 64-byte Ed25519 signature. */
@@ -133,8 +134,10 @@ export const EnvelopeFieldsSchema = z
     seq: nonnegativeInteger(),
     prev: CidSchema.nullable(),
     residency: z.string().nullable(),
-    cosigners: z.array(Ed25519SignatureSchema),
-    sig: Ed25519SignatureSchema
+    // Type-only brand. {@link validateSignatureFields} is the only signature check,
+    // so a bad sig still yields one issue in the same order as an unbranded string.
+    cosigners: z.array(ed25519SignatureBrandSchema),
+    sig: ed25519SignatureBrandSchema
   })
   .strict();
 

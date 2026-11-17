@@ -50,10 +50,8 @@ export function isBase64Url(value: string): value is Base64Url {
  */
 export function asBase64Url(value: string): Base64Url {
   if (value.length !== 0) {
+    // One decode. {@link isBase64Url} is the predicate; calling it here would decode again.
     decodeBase64Url(value);
-  }
-  if (!isBase64Url(value)) {
-    throw new EncodingError("base64url: invalid encoding");
   }
   return base64UrlBrandSchema.parse(value);
 }
@@ -83,7 +81,8 @@ export function encodeBase64Url(bytes: Uint8Array): Base64Url {
     result += BASE64URL_CHARS.charAt(index);
   }
 
-  return asBase64Url(result);
+  // Valid by construction, including the empty encoding of zero bytes. Do not decode again.
+  return base64UrlBrandSchema.parse(result);
 }
 
 /**
@@ -129,6 +128,12 @@ export function decodeBase64Url(encoded: string): Uint8Array {
 }
 
 /**
+ * Type-only brand carrier for a public-key wire string. Does not check length.
+ * {@link encodePublicKey} uses it; {@link SoulPublicKeySchema} validates.
+ */
+const soulPublicKeyBrandSchema = z.string().brand<"SoulPublicKey">();
+
+/**
  * Wire encoding of a 32-byte Ed25519 public key (soul, session, or Door).
  *
  * Same brand for every 32-byte key: the type distinguishes keys from CIDs and
@@ -136,7 +141,7 @@ export function decodeBase64Url(encoded: string): Uint8Array {
  * ({@link decodePublicKey}, `verify`). Zod brand direction is `"out"`, so
  * schema input is still `string`.
  */
-export type SoulPublicKey = z.output<typeof SoulPublicKeySchema>;
+export type SoulPublicKey = z.output<typeof soulPublicKeyBrandSchema>;
 
 /**
  * Zod schema for a base64url-encoded 32-byte Ed25519 public key.
@@ -193,7 +198,8 @@ export function encodePublicKey(publicKey: Uint8Array): SoulPublicKey {
       `public key must be exactly ${PUBLIC_KEY_LENGTH} bytes, got ${publicKey.length}`
     );
   }
-  return asSoulPublicKey(encodeBase64Url(publicKey));
+  // 32 raw bytes encode to a valid key string. Brand without decoding again.
+  return soulPublicKeyBrandSchema.parse(encodeBase64Url(publicKey));
 }
 
 /**
@@ -211,10 +217,20 @@ export function decodePublicKey(encoded: string): Uint8Array {
 }
 
 /**
+ * Type-only brand for a signature wire string. Does not check length.
+ *
+ * Record envelopes and pin manifests use this on the field so the existing
+ * record-level check ({@link decodeSignature} in the schema module) stays the
+ * only check. {@link Ed25519SignatureSchema} is the validator. Not re-exported
+ * from the package barrel.
+ */
+export const ed25519SignatureBrandSchema = z.string().brand<"Ed25519Signature">();
+
+/**
  * Wire encoding of a 64-byte Ed25519 signature.
  * Zod output brand. Raw signature bytes stay `Uint8Array` ({@link decodeSignature}, `verify`).
  */
-export type Ed25519Signature = z.output<typeof Ed25519SignatureSchema>;
+export type Ed25519Signature = z.output<typeof ed25519SignatureBrandSchema>;
 
 /**
  * Zod schema for a base64url-encoded 64-byte Ed25519 signature.
@@ -271,7 +287,8 @@ export function encodeSignature(signature: Uint8Array): Ed25519Signature {
       `signature must be exactly ${SIGNATURE_LENGTH} bytes, got ${signature.length}`
     );
   }
-  return asEd25519Signature(encodeBase64Url(signature));
+  // 64 raw bytes encode to a valid signature string. Brand without decoding again.
+  return ed25519SignatureBrandSchema.parse(encodeBase64Url(signature));
 }
 
 /**

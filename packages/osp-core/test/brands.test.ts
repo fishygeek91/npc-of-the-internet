@@ -13,7 +13,12 @@ import {
   type SoulPublicKey
 } from "../src/encoding/base64url.js";
 import { EncodingError } from "../src/errors.js";
-import { asResidency, makeResidency, type Residency } from "../src/schemas/envelope.js";
+import {
+  asResidency,
+  makeResidency,
+  parseResidency,
+  type Residency
+} from "../src/schemas/envelope.js";
 
 /**
  * Compiled by `tsc -p tsconfig.types.json`. The assignment is rejected by the
@@ -94,23 +99,21 @@ describe("branded crypto vocabulary", () => {
     expect(() => asBase64Url("A")).toThrow(EncodingError);
   });
 
-  it("builds a residency from parts and rejects a missing platform segment", () => {
-    expect(makeResidency({ platform: "discord", doorId: "guild123", epoch: 7 })).toBe(
-      "door:discord:guild123/epoch:7"
-    );
-    expect(makeResidency({ platform: "web", doorId: "home", epoch: 0 })).toBe(
-      "door:web:home/epoch:0"
-    );
+  it("round-trips makeResidency with parseResidency", () => {
+    const residency = makeResidency({ doorId: "discord:guild123", epoch: 7 });
+    expect(residency).toBe("door:discord:guild123/epoch:7");
+    const parsed = parseResidency(residency);
+    expect(parsed).toEqual({ doorId: "discord:guild123", epoch: 7 });
+    if (parsed === null) {
+      throw new Error("parseResidency returned null");
+    }
+    expect(makeResidency(parsed)).toBe(residency);
+
+    expect(makeResidency({ doorId: "web:home", epoch: 0 })).toBe("door:web:home/epoch:0");
     expect(asResidency("door:discord:g/epoch:1")).toBe("door:discord:g/epoch:1");
     expect(() => asResidency("door:guild/epoch:1")).toThrow(EncodingError);
-    expect(() => makeResidency({ platform: "Discord", doorId: "g", epoch: 1 })).toThrow(
-      EncodingError
-    );
-    expect(() => makeResidency({ platform: "discord", doorId: "g", epoch: 1.5 })).toThrow(
-      EncodingError
-    );
-    expect(() => makeResidency({ platform: "discord", doorId: "has:colon", epoch: 1 })).toThrow(
-      EncodingError
-    );
+    expect(() => makeResidency({ doorId: "Discord:g", epoch: 1 })).toThrow(EncodingError);
+    expect(() => makeResidency({ doorId: "discord:g", epoch: 1.5 })).toThrow(EncodingError);
+    expect(() => makeResidency({ doorId: "guild123", epoch: 1 })).toThrow(EncodingError);
   });
 });
