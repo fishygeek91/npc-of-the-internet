@@ -112,6 +112,7 @@ describe("wanderer depart", () => {
     expect(code).toBe(0);
     expect(seen).toEqual({ controlDir: "/tmp/ctl-from-env", timeoutMs: 15_000 });
     expect(out.join("\n")).toMatch(/accepted/);
+    expect(out.join("\n")).toMatch(/does not travel now/);
   });
 
   it("exits 1 when no daemon picks the request up", async () => {
@@ -167,6 +168,14 @@ describe("wanderer wake and budget-init", () => {
     expect(code).toBe(0);
     expect(out.join("\n")).toContain(ledgerPath);
     expect(await readFile(ledgerPath, "utf8")).toBe("");
+    expect((await stat(join(dir, "nested"))).mode & 0o777).toBe(0o700);
+    const dotted = await runWandererCli(["node", "wanderer", "budget-init"], {
+      env: { NPC_BUDGET_LEDGER_PATH: `${dir}/nested/../spend.jsonl` },
+      writeStdout: () => undefined,
+      writeStderr: (line) => err.push(line)
+    });
+    expect(dotted).toBe(EXIT_USAGE);
+    expect(err.join("\n")).toMatch(/\.\./);
     const again = await runWandererCli(["node", "wanderer", "budget-init"], {
       env: { NPC_BUDGET_LEDGER_PATH: ledgerPath },
       writeStdout: () => undefined,

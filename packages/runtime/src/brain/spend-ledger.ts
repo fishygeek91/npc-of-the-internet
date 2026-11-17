@@ -1,5 +1,5 @@
 import { mkdir, open, readFile, unlink } from "node:fs/promises";
-import { dirname, isAbsolute } from "node:path";
+import path, { isAbsolute } from "node:path";
 
 import { z } from "zod";
 
@@ -96,15 +96,11 @@ export type SpendView =
  * exists so a second run cannot reset spend to zero. Does not read the soulchain.
  *
  * @param ledgerPath - Absolute `spend.jsonl` path (`NPC_BUDGET_LEDGER_PATH`).
- * @throws {BrainError} When the path is not absolute, the file exists, or the create fails.
+ * @throws {BrainError} When the path is not absolute, contains `..`, the file exists, or the create fails.
  */
 export async function initSpendLedgerFile(ledgerPath: string): Promise<void> {
-  if (ledgerPath.trim() === "" || ledgerPath.includes("\0") || !isAbsolute(ledgerPath)) {
-    throw new BrainError("NPC_BUDGET_LEDGER_PATH must be an absolute path", "invalid_config", {
-      envVar: "NPC_BUDGET_LEDGER_PATH"
-    });
-  }
-  await mkdir(dirname(ledgerPath), { recursive: true });
+  assertLedgerPath(ledgerPath);
+  await mkdir(path.dirname(ledgerPath), { recursive: true, mode: 0o700 });
   const created = await createEmpty(ledgerPath);
   if (created === "exists") {
     throw new BrainError("spend ledger already exists; refusing to reset spend", "invalid_config", {
@@ -115,6 +111,27 @@ export async function initSpendLedgerFile(ledgerPath: string): Promise<void> {
     throw new BrainError("failed to create spend ledger", "invalid_config", {
       envVar: "NPC_BUDGET_LEDGER_PATH"
     });
+  }
+}
+
+/**
+ * Operator path for the journal. Absolute, no NUL, no `..` segment, and already
+ * normalized so a path cannot climb out of the directory the operator named.
+ */
+function assertLedgerPath(ledgerPath: string): void {
+  const segments = ledgerPath.split(/[/\\]/u);
+  if (
+    ledgerPath.trim() === "" ||
+    ledgerPath.includes("\0") ||
+    !isAbsolute(ledgerPath) ||
+    segments.includes("..") ||
+    path.normalize(ledgerPath) !== ledgerPath
+  ) {
+    throw new BrainError(
+      "NPC_BUDGET_LEDGER_PATH must be an absolute path with no .. segment",
+      "invalid_config",
+      { envVar: "NPC_BUDGET_LEDGER_PATH" }
+    );
   }
 }
 
@@ -428,7 +445,7 @@ async function createEmpty(path: string): Promise<"created" | "exists" | "failed
  * directory throws; the caller then treats the journal as unreadable.
  */
 async function fsyncParentDirectory(filePath: string): Promise<void> {
-  const handle = await open(dirname(filePath), "r");
+  const handle = await open(path.dirname(filePath), "r");
   try {
     await handle.sync();
   } finally {

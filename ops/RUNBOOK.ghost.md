@@ -704,10 +704,11 @@ The in-process journal is how the Wanderer knows it is spending. The prepaid key
 2. Pick tier prices from that provider's price sheet. The numbers in the runtime README are placeholders.
 3. On the runtime host, once: `wanderer budget-init` with `NPC_BUDGET_LEDGER_PATH` absolute (compose: a path on the runtime volume, for example `/data/runtime/spend.jsonl`). The command refuses if the file exists. Do not set `NPC_BUDGET_LEDGER_INIT`.
 4. Set `NPC_BRAIN_TIERS`, `NPC_BUDGET_USD`, and the ledger path. `apiKeyEnv` must end in `_API_KEY` and should be the prepaid key already mounted for the Brain (`NPC_BRAIN_API_KEY` or `NPC_BRAIN_API_KEY_FILE`).
-5. Restart runtime. Logs show `budget_enabled`. A known balance at or below the threshold appends `sleep` and stops heartbeats and travel. Atlas then reports `sleeping`.
+5. Restart runtime. If the journal file is missing, boot fails and names `wanderer budget-init`. Logs otherwise show `budget_enabled`. A known balance at or below the threshold appends `sleep` and stops heartbeats and travel. Atlas then reports `sleeping`. A process restart while asleep appends a new arrival and then seals `sleep` again.
 6. To wake a provider-exhausted or unknown-spend latch: `wanderer wake`. That does not add money. Raise `NPC_BUDGET_USD` and restart, or wait for the next UTC month, when the balance itself is the reason. The next heartbeat after the policy is awake is the public wake.
+7. `wanderer depart` while asleep does not travel immediately. The daemon holds that one cycle and runs it when the policy wakes. A Door that restarts during sleep is held the same way, then the residency moves on after wake.
 
-Unknown spend (missing journal, corrupt line, or a paid call that reported zero tokens) refuses further model calls and does not publish a dollar balance.
+A corrupt line, or a paid call that reported zero tokens, refuses further model calls and does not publish a dollar balance. The daemon still boots in the corrupt case.
 
 ---
 

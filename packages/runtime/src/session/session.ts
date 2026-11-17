@@ -103,6 +103,12 @@ export type SessionOptions = {
    * once at session start if already suspended. Used to seal a `sleep` record.
    */
   onSuspendedTick?: (residency: string) => Promise<void>;
+  /**
+   * Called on a tick that finds the policy awake, before any heartbeat.
+   * Return true to skip the heartbeat (a residency cycle that was held while
+   * asleep is starting and must not attest on a dead session).
+   */
+  onAwakeTick?: () => boolean;
   door: DoorConnection;
   keyring: Keyring;
   doorId: string;
@@ -279,6 +285,7 @@ export class Session {
   private readonly journalBrain: Brain;
   private readonly suspendHeartbeats?: () => boolean;
   private readonly onSuspendedTick?: (residency: string) => Promise<void>;
+  private readonly onAwakeTick?: () => boolean;
   private readonly door: DoorConnection;
   private readonly keyring: Keyring;
   private readonly doorId: string;
@@ -330,6 +337,9 @@ export class Session {
     }
     if (options.onSuspendedTick !== undefined) {
       this.onSuspendedTick = options.onSuspendedTick;
+    }
+    if (options.onAwakeTick !== undefined) {
+      this.onAwakeTick = options.onAwakeTick;
     }
     this.door = options.door;
     this.keyring = options.keyring;
@@ -1250,6 +1260,11 @@ export class Session {
         // heartbeats, and a sleep that landed first cannot be cleared by this tick.
         if (this.suspendHeartbeats?.() === true) {
           await this.sealSleepIfSuspended();
+          return;
+        }
+        // Stay here, ahead of runHeartbeat. A later heartbeat pump that only
+        // sees `phase` cannot decide whether a held cycle should run instead.
+        if (this.onAwakeTick?.() === true) {
           return;
         }
         await this.runHeartbeat();

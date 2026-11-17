@@ -20,6 +20,7 @@ import {
 import { BudgetedBrain, BudgetError } from "../src/brain/budgeted-brain.js";
 import { BrainError } from "../src/brain/errors.js";
 import { FakeBrain } from "../src/brain/fake-brain.js";
+import { openBudgetedBrain } from "../src/brain/open-budgeted-brain.js";
 import { SpendLedger } from "../src/brain/spend-ledger.js";
 import type { Brain } from "../src/brain/types.js";
 
@@ -238,6 +239,42 @@ describe("loadBudgetConfig", () => {
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : "";
       expect(message).not.toContain(SECRET);
+    }
+  });
+
+  it("fails open when the spend journal was never created, and still opens a corrupt one", async () => {
+    const loaded = loadBudgetConfig(env());
+    expect(loaded).toBeDefined();
+    if (loaded === undefined) {
+      return;
+    }
+    const dir = await mkdtemp(join(tmpdir(), "npc-budget-missing-"));
+    try {
+      const missing = join(dir, "spend.jsonl");
+      const options = {
+        budget: { ...loaded, ledgerPath: missing },
+        maxTokens: 16,
+        timeoutMs: 1_000,
+        clock: (): string => NOW,
+        createTierBrain: (): FakeBrain => new FakeBrain(["unused"])
+      };
+      await expect(openBudgetedBrain(options)).rejects.toThrow(/wanderer budget-init/);
+      try {
+        await openBudgetedBrain(options);
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : "";
+        expect(message).not.toContain(SECRET);
+        expect(message).not.toContain("from-env");
+      }
+      await writeFile(missing, "not-json\n", "utf8");
+      const corrupt = await openBudgetedBrain({
+        ...options,
+        budget: { ...loaded, ledgerPath: missing }
+      });
+      expect(corrupt.publicStatus().sleepReason).toBe("ledger_unknown");
+      expect(corrupt.sleepDraft()).toBeNull();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
     }
   });
 

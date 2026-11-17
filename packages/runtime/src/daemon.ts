@@ -353,6 +353,7 @@ async function bootResidency(ctx: {
     ...(budgeted !== undefined
       ? {
           suspendHeartbeats: (): boolean => budgeted.publicStatus().sleeping,
+          onAwakeTick: (): boolean => controller.releaseHeldCycle(),
           onSuspendedTick: async (residency: string): Promise<void> => {
             const draft = budgeted.sleepDraft();
             if (draft === null) {
@@ -612,10 +613,26 @@ async function openDaemonBrain(
     return { chat: deps.brain };
   }
   if (config.budget !== undefined) {
+    if (config.brain?.provider === "fake") {
+      throw new DaemonError(
+        "NPC_BRAIN_TIERS does not call the single-provider brain",
+        "invalid_config",
+        "NPC_BRAIN_PROVIDER"
+      );
+    }
+    const maxTokens = config.brainLimits?.maxTokens ?? config.brain?.maxTokens;
+    const timeoutMs = config.brainLimits?.timeoutMs ?? config.brain?.timeoutMs;
+    if (maxTokens === undefined || timeoutMs === undefined) {
+      throw new DaemonError(
+        "NPC_BRAIN_MAX_TOKENS is required with NPC_BRAIN_TIERS",
+        "invalid_config",
+        "NPC_BRAIN_MAX_TOKENS"
+      );
+    }
     const budgeted = await openBudgetedBrain({
       budget: config.budget,
-      maxTokens: config.brain.maxTokens,
-      timeoutMs: config.brain.timeoutMs,
+      maxTokens,
+      timeoutMs,
       clock,
       ...(deps.createTierBrain !== undefined ? { createTierBrain: deps.createTierBrain } : {})
     });
@@ -625,6 +642,13 @@ async function openDaemonBrain(
       distill: budgeted.forKind("distill"),
       journal: budgeted.forKind("journal")
     };
+  }
+  if (config.brain === undefined) {
+    throw new DaemonError(
+      "NPC_BRAIN_PROVIDER is required when NPC_BRAIN_TIERS is unset",
+      "invalid_config",
+      "NPC_BRAIN_PROVIDER"
+    );
   }
   return { chat: createBrain(config.brain) };
 }

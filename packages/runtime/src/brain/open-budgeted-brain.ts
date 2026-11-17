@@ -25,10 +25,12 @@ export type OpenBudgetedBrainOptions = {
 
 /**
  * Open the spend journal without creating it, and one inner brain per tier.
- * A missing journal stays untrusted, so calls sleep instead of being priced at zero.
+ * A missing journal is a config error: boot must not arrive and then go mute.
+ * A corrupt or torn journal still opens untrusted, so calls sleep instead of
+ * being priced at zero.
  *
  * @param options - Loaded budget, shared token limits, and clock.
- * @throws {BrainError} When the config asks boot to create the journal.
+ * @throws {BrainError} When boot was asked to create the journal, or the file is missing.
  */
 export async function openBudgetedBrain(options: OpenBudgetedBrainOptions): Promise<BudgetedBrain> {
   if (options.budget.createLedgerIfMissing) {
@@ -42,6 +44,14 @@ export async function openBudgetedBrain(options: OpenBudgetedBrainOptions): Prom
     path: options.budget.ledgerPath,
     createIfMissing: false
   });
+  const opened = ledger.replay(options.clock());
+  if (!opened.trusted && opened.reason === "missing") {
+    throw new BrainError(
+      "spend journal is missing; run `wanderer budget-init` once before starting the daemon",
+      "invalid_config",
+      { envVar: "NPC_BUDGET_LEDGER_PATH" }
+    );
+  }
   const createTierBrain =
     options.createTierBrain ??
     ((tier: BudgetTierConfig): Brain =>

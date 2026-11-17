@@ -347,7 +347,9 @@ Public dormancy when funds fall below survival threshold. Emitted by Treasury.
 
 Treasury-lite (no wallet) emits `sleep` when the budget policy is sleeping and the remaining balance is known. `reason` is that policy reason, for example `balance_below_threshold` or `provider_exhausted`. The body schema is unchanged. Unknown spend does not emit `sleep`: `balance` would be a guess.
 
-Atlas reports `sleeping` while this record is newer than every attestation. A later attestation, including a heartbeat, is the existing public wake. There is no wake record type. While the policy is asleep the runtime appends no heartbeat and does not start a residency cycle, so it does not depart or arrive at another Door. The arrival that opened the current residency is already on the chain; `sleep` is appended after it and stays newest until the policy is awake again.
+Atlas reports `sleeping` while this record is newer than every attestation. A later attestation, including a heartbeat, is the existing public wake. There is no wake record type. While the policy is asleep the runtime appends no heartbeat and does not start a residency cycle, so it does not depart or travel to another Door. A cycle requested in that window (a lost Door session, or an operator depart) is remembered in process memory and runs once when the policy wakes. A restart does not need that memory.
+
+A boot while asleep still appends its `arrival` and then re-seals `sleep`. A session cannot start without an arrival, and that arrival would otherwise clear public sleep. Atlas can report `present` for the moment between those two appends. Once the new `sleep` is newest, Atlas reports `sleeping` again.
 
 ---
 

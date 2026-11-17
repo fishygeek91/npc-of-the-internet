@@ -118,7 +118,8 @@ describe("loadDaemonConfig", () => {
     expect(config.budget?.ledgerPath).toBe("/data/runtime/spend.jsonl");
     expect(config.budget?.defaultTierName).toBe("cheap");
     expect(config.budget?.createLedgerIfMissing).toBe(false);
-    expect(config.brain).toMatchObject({ provider: "fake", model: "unused", maxTokens: 1024 });
+    expect(config.brain).toBeUndefined();
+    expect(config.brainLimits).toEqual({ maxTokens: 1024, timeoutMs: 60_000 });
   });
 
   it("loads optional NPC_SOULCHAIN_IPFS_DIR", () => {

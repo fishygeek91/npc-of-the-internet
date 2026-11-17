@@ -115,7 +115,10 @@ export type ResidencyControllerOptions = {
   /**
    * When true, the Wanderer is publicly asleep. Timer, operator, and lost-session
    * cycles do not run, because a departure or arrival is an attestation and Atlas
-   * would leave `sleeping`.
+   * would leave `sleeping`. A held `lost_session` or operator request is remembered
+   * and run once from {@link ResidencyController.releaseHeldCycle} after this
+   * returns false. That memory is process-local: a restart arrives again in
+   * {@link ResidencyController.begin}.
    */
   holdTravel?: () => boolean;
   nowMs: () => number;
@@ -184,6 +187,12 @@ export class ResidencyController {
   private live: LiveResidency | null = null;
   private arrivedAtMs = 0;
   private inFlight: Promise<CycleOutcome> | null = null;
+  /**
+   * Cycle requested while asleep. `lost_session` wins over `operator` because the
+   * Door will refuse another heartbeat. Timer requests are not stored: the age
+   * check asks again. Process memory only — a restart re-arrives in `begin`.
+   */
+  private deferredTrigger: "lost_session" | "operator" | null = null;
   private shuttingDown = false;
   private readonly abort = new AbortController();
   private ageTimerId: unknown = null;
@@ -262,6 +271,7 @@ export class ResidencyController {
       return Promise.resolve({ kind: "shutting_down", trigger });
     }
     if (this.options.holdTravel?.() === true) {
+      this.rememberHeld(trigger);
       const outcome: CycleOutcome = { kind: "asleep", trigger };
       this.options.logger.info(outcome, "residency_cycle_held_asleep");
       return Promise.resolve(outcome);
@@ -281,6 +291,37 @@ export class ResidencyController {
       });
     this.inFlight = run;
     return run;
+  }
+
+  /**
+   * Run one cycle that was requested while asleep, once the budget policy is awake.
+   * Returns true when that cycle was started, so the caller skips a heartbeat on
+   * the dead session. Returns false while still asleep, while a cycle is already
+   * running, or when nothing was held. The flag is in memory only: a process
+   * restart arrives again and does not need it.
+   */
+  releaseHeldCycle(): boolean {
+    if (this.shuttingDown || this.options.holdTravel?.() === true) {
+      return false;
+    }
+    if (this.deferredTrigger === null || this.inFlight !== null) {
+      return false;
+    }
+    const trigger = this.deferredTrigger;
+    this.deferredTrigger = null;
+    void this.requestCycle(trigger);
+    return true;
+  }
+
+  /**
+   * Remember a cycle that cannot run yet. `lost_session` is not replaced by a
+   * later operator request. A timer request is dropped; the age check repeats.
+   */
+  private rememberHeld(trigger: CycleTrigger): void {
+    if (trigger === "timer" || this.deferredTrigger === "lost_session") {
+      return;
+    }
+    this.deferredTrigger = trigger;
   }
 
   /**

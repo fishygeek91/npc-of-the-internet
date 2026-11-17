@@ -21,12 +21,13 @@ Usage:
   wanderer budget-init
 
 depart: ask the running residency daemon (same container / host) to end this residency
-  now and travel — witnessed memories → journal → departure + travel → arrival at the
+  and travel — witnessed memories → journal → departure + travel → arrival at the
   next Door. The operator trigger is on by default (NPC_RESIDENCY_OPERATOR_TRIGGER=0 turns
   it off). Writes a request into the control dir (NPC_CONTROL_DIR, default
   /tmp/npc-control) and waits for the daemon to pick it up (exit 0) or times out (exit 1,
-  request withdrawn). The cycle itself runs in the daemon: follow its logs for
-  residency_cycle_outcome.
+  request withdrawn). If the Wanderer is asleep, the request does not travel now:
+  the daemon holds it and runs that one cycle when the budget policy wakes.
+  Follow the runtime logs for residency_cycle_outcome.
 
 wake: ask the daemon to append a spend-journal wake line. That clears a provider-exhausted
   or unknown-spend latch. It does not raise the balance: if remaining is still at or
@@ -129,6 +130,9 @@ export async function runWandererCli(
           return EXIT_NOT_ACCEPTED;
         }
         writeStdout("Depart requested: the daemon accepted the request.");
+        writeStdout(
+          "If the Wanderer is asleep, it does not travel now. The held cycle runs once when the budget policy wakes."
+        );
         writeStdout("Watch the runtime logs for residency_cycle_outcome.");
         return 0;
       }

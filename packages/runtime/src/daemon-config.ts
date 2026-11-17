@@ -21,7 +21,21 @@ const daemonConfigSchema = z.object({
     .refine((map) => Object.keys(map).length >= 1, {
       message: "doorPublicKeys must contain at least one entry"
     }),
-  brain: z.custom<BrainConfig>(),
+  /**
+   * Single-provider brain. Absent when `NPC_BRAIN_TIERS` is set: that path must
+   * not carry a fake provider a later caller could construct.
+   */
+  brain: z.custom<BrainConfig>().optional(),
+  /**
+   * Shared token cap and timeout. With tiers this is the only limit object;
+   * it is not a model and it is never passed to a provider.
+   */
+  brainLimits: z
+    .object({
+      maxTokens: z.number().int().positive(),
+      timeoutMs: z.number().int().positive()
+    })
+    .optional(),
   /** Set when `NPC_BRAIN_TIERS` is configured. Absent leaves the single-provider brain. */
   budget: z.custom<BudgetConfig>().optional(),
   readyFilePath: z.string().min(1),
@@ -148,20 +162,12 @@ export function loadDaemonConfig(env: NodeJS.ProcessEnv = process.env): DaemonCo
   const doorPublicKeys = parseDoorPublicKeys(doorPublicKeysRaw);
 
   let budget: BudgetConfig | undefined;
-  let brain: BrainConfig;
+  let brain: BrainConfig | undefined;
+  let brainLimits: { maxTokens: number; timeoutMs: number } | undefined;
   try {
+    brainLimits = loadBrainLimits(env);
     budget = loadBudgetConfig(env);
-    if (budget !== undefined) {
-      // Tier models come from NPC_BRAIN_TIERS. This object only carries the
-      // shared token limit and timeout; no provider is called with `unused`.
-      const limits = loadBrainLimits(env);
-      brain = {
-        provider: "fake",
-        model: "unused",
-        maxTokens: limits.maxTokens,
-        timeoutMs: limits.timeoutMs
-      };
-    } else {
+    if (budget === undefined) {
       brain = loadBrainConfig(env);
     }
   } catch (error) {
@@ -201,7 +207,8 @@ export function loadDaemonConfig(env: NodeJS.ProcessEnv = process.env): DaemonCo
     doorUrls,
     preferredDoorId,
     doorPublicKeys,
-    brain,
+    ...(brain !== undefined ? { brain } : {}),
+    ...(brainLimits !== undefined ? { brainLimits } : {}),
     ...(budget !== undefined ? { budget } : {}),
     readyFilePath,
     replication,

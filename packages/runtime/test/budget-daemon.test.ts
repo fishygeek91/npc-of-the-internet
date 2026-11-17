@@ -111,27 +111,56 @@ describe("treasury-lite daemon wiring", () => {
     const stamped = ledgerLine.replaceAll("__TS__", clock.now());
     await writeFile(ledgerPath, `${stamped}\n`, "utf8");
     const inner = new FakeBrain(["should-not-be-called"]);
-    handle = await startResidencyDaemon(
-      {
-        ...multiDoorConfig({
-          dirs,
-          doors: [door],
-          doorPublicKeys: KEYS,
-          preferredDoorId: DOOR_ID,
-          residency: { maxResidencyMs: 0 }
-        }),
-        budget: { ...budget, ledgerPath }
-      },
-      {
-        createTierBrain: () => inner,
-        timer,
-        clock,
-        logger,
-        skipSignals: true,
-        heartbeatIntervalMs: 60_000
+    const config = {
+      ...multiDoorConfig({
+        dirs,
+        doors: [door],
+        doorPublicKeys: KEYS,
+        preferredDoorId: DOOR_ID,
+        residency: { maxResidencyMs: 0 }
+      }),
+      budget: { ...budget, ledgerPath }
+    };
+    const deps = {
+      createTierBrain: (): FakeBrain => inner,
+      timer,
+      clock,
+      logger,
+      skipSignals: true,
+      heartbeatIntervalMs: 60_000
+    };
+    handle = await startResidencyDaemon(config, deps);
+    return {
+      clock,
+      timer,
+      lines,
+      dirs,
+      inner,
+      restart: async (): Promise<void> => {
+        await handle?.shutdown();
+        handle = await startResidencyDaemon(config, deps);
       }
-    );
-    return { clock, timer, lines, dirs, inner };
+    };
+  }
+
+  /**
+   * Atlas's rule, without importing atlas: sleeping when `sleep` is newer than
+   * every attestation.
+   */
+  function publicPresence(records: readonly OspRecord[]): "sleeping" | "awake" {
+    for (let index = records.length - 1; index >= 0; index -= 1) {
+      const record = records[index];
+      if (record === undefined) {
+        continue;
+      }
+      if (record.type === "sleep") {
+        return "sleeping";
+      }
+      if (record.type === "attestation") {
+        return "awake";
+      }
+    }
+    return "awake";
   }
 
   it("seals sleep when the balance is spent and withholds heartbeats until the next month", async () => {
@@ -149,15 +178,17 @@ describe("treasury-lite daemon wiring", () => {
     expect(chainShape(slept)).toEqual([`arrival:${DOOR_ID}:1`, "sleep"]);
     const sleep = slept[2];
     expect(sleep?.spec).toBe(OSP_SPEC_V02);
-    if (sleep?.type === "sleep") {
-      expect(sleep.body).toMatchObject({
-        reason: "balance_below_threshold",
-        balance: "0",
-        threshold: "0"
-      });
-      expect(sleep.residency).toBe(`door:${DOOR_ID}/epoch:1`);
-      expect(sleep.cosigners).toEqual([]);
+    expect(sleep?.type).toBe("sleep");
+    if (sleep === undefined || sleep.type !== "sleep") {
+      throw new Error("expected a sleep record");
     }
+    expect(sleep.body).toMatchObject({
+      reason: "balance_below_threshold",
+      balance: "0",
+      threshold: "0"
+    });
+    expect(sleep.residency).toBe(`door:${DOOR_ID}/epoch:1`);
+    expect(sleep.cosigners).toEqual([]);
     expect(lines.some((line) => line.msg === "budget_sleep_recorded")).toBe(true);
 
     timer.tick();
@@ -200,6 +231,60 @@ describe("treasury-lite daemon wiring", () => {
     await waitFor(() => lines.some((line) => line.msg === "budget_wake"), "journal wake");
     timer.tick();
     await awaitChainShape(dirs.chainDir, [`arrival:${DOOR_ID}:1`, "heartbeat"]);
+    expect(inner.calls).toHaveLength(0);
+  });
+
+  it("re-seals sleep after a reboot while the balance is spent", async () => {
+    const spent = JSON.stringify({
+      kind: "spend",
+      ts: "__TS__",
+      tier: "cheap",
+      model: "tier-cheap",
+      tokens_in: 0,
+      tokens_out: 1,
+      est_cost: "0.00001"
+    });
+    const { dirs, restart } = await boot(spent, budgetConfig(10n, "0.00001"));
+    await awaitChainShape(dirs.chainDir, [`arrival:${DOOR_ID}:1`, "sleep"]);
+    await restart();
+    const shape = [`arrival:${DOOR_ID}:1`, "sleep", `arrival:${DOOR_ID}:2`, "sleep"];
+    await awaitChainShape(dirs.chainDir, shape);
+    const records = await readVerifiedChain(dirs.chainDir, KEYS);
+    expect(chainShape(records)).toEqual(shape);
+    expect(publicPresence(records)).toBe("sleeping");
+  });
+
+  it("runs a lost Door session once after wake, then heartbeats on the new residency", async () => {
+    const unknown = JSON.stringify({
+      kind: "unknown_spend",
+      ts: "__TS__",
+      tier: "cheap",
+      model: "tier-cheap"
+    });
+    const { clock, timer, lines, dirs, inner } = await boot(
+      unknown,
+      budgetConfig(10_000_000n, "10")
+    );
+    if (handle === null) {
+      throw new Error("daemon did not start");
+    }
+    expect(await handle.requestCycle("lost_session")).toEqual({
+      kind: "asleep",
+      trigger: "lost_session"
+    });
+    await writeWakeRequest(dirs.controlDir, clock.now());
+    timer.tick();
+    await waitFor(() => lines.some((line) => line.msg === "budget_wake"), "journal wake");
+    timer.tick();
+    const moved = [
+      `arrival:${DOOR_ID}:1`,
+      `departure:${DOOR_ID}:1`,
+      `travel:${DOOR_ID}->${DOOR_ID}`,
+      `arrival:${DOOR_ID}:2`
+    ];
+    await awaitChainShape(dirs.chainDir, moved);
+    timer.tick();
+    await awaitChainShape(dirs.chainDir, [...moved, "heartbeat"]);
     expect(inner.calls).toHaveLength(0);
   });
 });

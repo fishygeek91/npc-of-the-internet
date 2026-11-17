@@ -28,6 +28,11 @@ export type DaemonResidencyContext = {
   suspendHeartbeats?: () => boolean;
   /** Seal a `sleep` record in place of a heartbeat. */
   onSuspendedTick?: (residency: string) => Promise<void>;
+  /**
+   * Before a heartbeat, once the policy is awake. Return true to skip the
+   * heartbeat because a cycle held while asleep is starting.
+   */
+  onAwakeTick?: () => boolean;
   clock: Clock;
   timer: Timer;
   logger: Logger;
@@ -41,8 +46,8 @@ export type DaemonResidencyContext = {
   /**
    * The Door no longer knows this attached residency (a heartbeat failed with
    * `session_invalid` or `epoch_closed`, or it refused a socket re-bind — e.g. the Door
-   * restarted). Called at most once per
-   * residency; the daemon moves on instead of staying mute.
+   * restarted). Called at most once per residency. If the budget policy is asleep
+   * the controller keeps the request and runs it when the policy wakes.
    */
   onSessionLost?: (epoch: number) => void;
 };
@@ -70,7 +75,9 @@ function isLostSessionError(error: unknown): boolean {
  * stopped (no departure — the next arrival supersedes it, as after a crash) and the error
  * propagates. A heartbeat the Door refuses as `session_invalid` / `epoch_closed`, or a
  * session socket reconnect whose bind the Door refuses, while attached calls
- * {@link DaemonResidencyContext.onSessionLost}.
+ * {@link DaemonResidencyContext.onSessionLost}. That callback runs at most once
+ * per residency. If the budget policy is asleep, the controller remembers the
+ * `lost_session` and runs it when the policy wakes.
  */
 export async function arriveDaemonResidency(
   ctx: DaemonResidencyContext,
@@ -138,6 +145,7 @@ export async function arriveDaemonResidency(
     ...(ctx.journalBrain !== undefined ? { journalBrain: ctx.journalBrain } : {}),
     ...(ctx.suspendHeartbeats !== undefined ? { suspendHeartbeats: ctx.suspendHeartbeats } : {}),
     ...(ctx.onSuspendedTick !== undefined ? { onSuspendedTick: ctx.onSuspendedTick } : {}),
+    ...(ctx.onAwakeTick !== undefined ? { onAwakeTick: ctx.onAwakeTick } : {}),
     clock: ctx.clock,
     timer: ctx.timer,
     doorPublicKeys: ctx.doorPublicKeys,
