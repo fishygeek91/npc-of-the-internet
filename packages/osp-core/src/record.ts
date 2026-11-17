@@ -39,11 +39,22 @@ export type CreateRecordInput = CreateRecordFields & {
   spec?: OspSpecVersion;
 };
 
-/** Result of {@link createRecord}. */
+/** Result of {@link createRecord} and {@link createRecordWithSigner}. */
 export type CreateRecordResult = {
   record: OspRecord;
   cid: string;
 };
+
+/**
+ * Signs canonical soul-payload bytes and returns a raw Ed25519 signature.
+ *
+ * Synchronous on purpose: `Keyring.signWithSoulKey` and `sign` both return
+ * `Uint8Array`, not a Promise. {@link createRecordWithSigner} is still async
+ * because CID computation is async — the signer itself is not awaited.
+ * Pass a closure for a method signer (`(bytes) => keyring.signWithSoulKey(bytes)`);
+ * an unbound method would drop `this`.
+ */
+export type SoulSigner = (bytes: Uint8Array) => Uint8Array;
 
 /** Options for {@link verifyRecord}. */
 export type VerifyRecordOptions = {
@@ -133,31 +144,36 @@ export function signCore(
  * Create a signed OSP soulchain record and compute its CID.
  *
  * Normative append order: build unsigned envelope → sort cosigners → soul-sign → validate → CID.
+ * `signSoul` receives those canonical soul-payload bytes and returns a raw signature.
+ * `spec` defaults to {@link OSP_SPEC} (`osp/0.1`). A schema failure throws {@link SchemaError}.
  */
-export async function createRecord(input: CreateRecordInput): Promise<CreateRecordResult> {
-  const spec = input.spec ?? OSP_SPEC;
-  const sortedCosigners = [...input.cosigners].sort();
+export async function createRecordWithSigner(
+  fields: CreateRecordFields & { spec?: OspSpecVersion },
+  signSoul: SoulSigner
+): Promise<CreateRecordResult> {
+  const spec = fields.spec ?? OSP_SPEC;
+  const sortedCosigners = [...fields.cosigners].sort();
 
   const soulBytes = canonicalize(
     soulPayload({
       spec,
-      seq: input.seq,
-      prev: input.prev,
-      type: input.type,
-      body: input.body,
-      residency: input.residency,
+      seq: fields.seq,
+      prev: fields.prev,
+      type: fields.type,
+      body: fields.body,
+      residency: fields.residency,
       cosigners: sortedCosigners
     })
   );
-  const soulSignature = encodeSignature(sign(soulBytes, input.soulPrivateKey));
+  const soulSignature = encodeSignature(signSoul(soulBytes));
 
   const unsignedRecord = {
     spec,
-    seq: input.seq,
-    prev: input.prev,
-    type: input.type,
-    body: input.body,
-    residency: input.residency,
+    seq: fields.seq,
+    prev: fields.prev,
+    type: fields.type,
+    body: fields.body,
+    residency: fields.residency,
     cosigners: sortedCosigners,
     sig: soulSignature
   };
@@ -170,6 +186,18 @@ export async function createRecord(input: CreateRecordInput): Promise<CreateReco
   const record = parsed.data;
   const cid = await computeCid(record);
   return { record, cid };
+}
+
+/**
+ * Create a signed OSP soulchain record and compute its CID.
+ *
+ * Thin wrapper over {@link createRecordWithSigner}: the signer is
+ * `(bytes) => sign(bytes, soulPrivateKey)`. Default spec, {@link SchemaError}s,
+ * and record bytes match that call.
+ */
+export async function createRecord(input: CreateRecordInput): Promise<CreateRecordResult> {
+  const { soulPrivateKey, ...fields } = input;
+  return createRecordWithSigner(fields, (bytes) => sign(bytes, soulPrivateKey));
 }
 
 /**

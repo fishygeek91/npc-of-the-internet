@@ -11,11 +11,13 @@ OSP soulchain primitives: Zod record schemas, canonical JSON, Ed25519 signing, C
 | Encoding | `encodeBase64Url`, `decodeBase64Url`, `encodePublicKey`, `decodePublicKey`, `encodeSignature`, `decodeSignature` |
 | Ed25519 | `generateKeypair`, `sign`, `verify` |
 | CIDs | `computeCid`, `computeCidFromCanonicalBytes` — dag-json codec + sha2-256 → CIDv1 base32 strings (typically `bagu…`, not `bafy…` which is dag-pb) |
-| Records | `createRecord`, `verifyRecord`, `signCore`, `corePayload`, `soulPayload` |
+| Records | `createRecord`, `createRecordWithSigner`, `verifyRecord`, `signCore`, `corePayload`, `soulPayload` |
 | Door keys | `parseDoorPublicKeyBinding`, `parseDoorPublicKeyMap`, `hasDoorPublicKeys` — `doorId=base64url` bindings |
 | Chain verify | `verifyRecords`, `verifyChain`, `ChainRule`, `ChainFailure`, `VerifyChainResult`, `VerifyChainOptions` |
 | Pin manifest | `buildUnsignedPinManifest`, `signPinManifest`, `verifyPinManifest`, `encodePinManifest`, `decodePinManifest`, `computeManifestCid`, `listRecordCidsFromIpfsDir`, `buildAndSignPinManifestForIpfsDir` |
 | CAR | `exportSoulchainCar`, `importSoulchainCar` |
+
+`createRecord` signs with a soul private key. `createRecordWithSigner(fields, signSoul)` is the same sealer with a synchronous soul signer (`(bytes: Uint8Array) => Uint8Array`). Both default `spec` to `OSP_SPEC` (`osp/0.1`).
 
 ## Chain verification
 

@@ -57,11 +57,19 @@ export {
   computeCid,
   isValidCid
 } from "./crypto/cid.js";
-export { corePayload, soulPayload, signCore, createRecord, verifyRecord } from "./record.js";
+export {
+  corePayload,
+  soulPayload,
+  signCore,
+  createRecord,
+  createRecordWithSigner,
+  verifyRecord
+} from "./record.js";
 export type {
   CreateRecordFields,
   CreateRecordInput,
   CreateRecordResult,
+  SoulSigner,
   VerifyRecordOptions,
   VerifyRecordResult
 } from "./record.js";
