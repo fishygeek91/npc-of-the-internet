@@ -11,8 +11,34 @@ export {
   ConcurrentAppendError,
   ChainMismatchError
 } from "./errors.js";
-export type { HeadInfo, AppendResult, FileSoulStoreOpenOptions, SoulStore } from "./store/index.js";
-export { FileSoulStore } from "./store/index.js";
+export type {
+  HeadInfo,
+  AppendResult,
+  PutSideBlobResult,
+  FileSoulStoreOpenOptions,
+  IpfsSoulStoreOpenOptions,
+  DualSoulStoreOpenOptions,
+  SoulStore
+} from "./store/index.js";
+export { FileSoulStore, IpfsSoulStore, DualSoulStore } from "./store/index.js";
+export {
+  enqueueReplication,
+  ackReplication,
+  readReplicationJournal,
+  recoverReplicationJournal,
+  listPendingReplication,
+  listUnackedForTarget,
+  replicationJournalPath,
+  ReplicationKindSchema,
+  ReplicationEnqueueEntrySchema,
+  ReplicationAckEntrySchema,
+  type ReplicationKind,
+  type ReplicationEnqueueEntry,
+  type ReplicationAckEntry,
+  type ReplicationJournalEnqueueLine,
+  type ReplicationJournalAckLine,
+  type ReplicationJournalEntry
+} from "./replication/index.js";
 export { canonicalize } from "./canonical.js";
 export {
   encodeBase64Url,
@@ -22,7 +48,7 @@ export {
   encodeSignature,
   decodeSignature
 } from "./encoding/base64url.js";
-export { generateKeypair, sign, verify } from "./crypto/ed25519.js";
+export { generateKeypair, publicKeyFromPrivate, sign, verify } from "./crypto/ed25519.js";
 export type { Ed25519Keypair } from "./crypto/ed25519.js";
 export {
   CID_RE,
@@ -40,8 +66,30 @@ export type {
   VerifyRecordResult
 } from "./record.js";
 export {
+  encodeMemoryTextBlob,
+  decodeMemoryTextBlob,
+  encodeShardTextBlob,
+  decodeShardTextBlob,
+  encodeJournalBlob,
+  decodeJournalBlob,
+  hashBlobBytes,
+  cidMatchesHash,
+  assertCidMatchesHash,
+  contentAddressSideBlob
+} from "./memory-blob.js";
+export { eraseSideBlob } from "./erase-side-blob.js";
+export type {
+  TombstoneReason,
+  EraseSideBlobOptions,
+  EraseSideBlobResult
+} from "./erase-side-blob.js";
+export { migrateChainToV02 } from "./migrate-to-v02.js";
+export type { MigrateChainToV02Options, MigrateChainToV02Result } from "./migrate-to-v02.js";
+export {
   parseDoorPublicKeyBinding,
   parseDoorPublicKeyMap,
+  parseDoorPrivateKeyBinding,
+  parseDoorPrivateKeyMap,
   hasDoorPublicKeys
 } from "./door-keys.js";
 export { verifyRecords, verifyChain } from "./verify-chain.js";
@@ -51,3 +99,27 @@ export type {
   VerifyChainResult,
   VerifyChainOptions
 } from "./verify-chain.js";
+export {
+  OSP_PIN_MANIFEST_VERSION,
+  buildUnsignedPinManifest,
+  encodeUnsignedPinManifest,
+  encodePinManifest,
+  decodePinManifest,
+  signPinManifest,
+  verifyPinManifest,
+  computeManifestCid,
+  computeManifestCidFromBytes,
+  listRecordCidsFromIpfsDir,
+  buildAndSignPinManifestForIpfsDir,
+  type UnsignedPinManifest,
+  type PinManifest,
+  type BuildUnsignedPinManifestInput,
+  type BuildPinManifestForIpfsDirOptions
+} from "./manifest/index.js";
+export {
+  exportSoulchainCar,
+  importSoulchainCar,
+  type ExportSoulchainCarInput,
+  type ImportSoulchainCarInput,
+  type ImportSoulchainCarResult
+} from "./car/index.js";

@@ -1,5 +1,10 @@
 # Ghost Deployment Runbook — Hetzner VPS
 
+**What this document is:** Hetzner-from-zero provisioning, host hardening, `ghostc`,
+tag-based deploy (§10), optional IPFS replication (§10a), and osp/0.2 cutover (§9).
+**What this is not:** day-two Compose stack ops (start/stop, logs/health, upgrade-with-verify,
+restore, crash recovery) — that lives in [`RUNBOOK.md`](RUNBOOK.md) (referenced by [`LAUNCH.md`](LAUNCH.md)).
+
 This is the complete, start-from-zero guide for deploying the npc-ghost Compose
 stack (`ops/compose.ghost.yml`) to a Hetzner Cloud VPS. It assumes you have
 never set up a server before. Follow it top to bottom; each step tells you
@@ -9,7 +14,8 @@ where you're typing (your Mac, or the server) and what you should see.
 Atlas (`:8787`) is NOT open to the internet. You reach it via SSH tunnel from
 your Mac. When Atlas goes public (Gate 2), we add a Cloudflare Tunnel —
 outbound-only, no ports opened. Everything else the Ghost does (Discord,
-Anthropic, rclone backups) is outbound and needs no open ports.
+LLM providers, rclone backups) is outbound and needs no open ports. The one
+exception is opt-in: the public web Door (§8a) opens 80/443 for Caddy.
 
 ---
 
@@ -18,7 +24,8 @@ Anthropic, rclone backups) is outbound and needs no open ports.
 - A Hetzner **CX22** VPS (2 vCPU, 4 GB RAM, ~€4/mo) running Ubuntu 24.04
 - A non-root user `ghost` that you log into with an SSH key (no passwords)
 - A firewall (Hetzner Cloud Firewall + ufw) allowing only SSH
-- Docker + Compose running the four Ghost containers from GHCR images
+- Docker + Compose running the five Ghost containers from GHCR images (runtime,
+  door-discord, door-web, atlas-api, backup; Caddy only with the `public` profile, §8a)
 - Keys at `/var/lib/npc-ghost/keys/`, rclone config at `/var/lib/npc-ghost/rclone/`
 - Automatic security updates, automatic container restarts on reboot
 - Offsite soulchain backups via the backup sidecar (rclone → B2/R2)
@@ -82,7 +89,7 @@ Still in the Hetzner console: **Firewalls → Create Firewall**.
 - Name: `wanderer-fw`
 - Inbound rules: **delete everything except** one rule:
   - TCP, port **22**, source `0.0.0.0/0` and `::/0` (SSH from anywhere).
-- Outbound: leave unrestricted (Ghost needs outbound Discord/Anthropic/rclone).
+- Outbound: leave unrestricted (Ghost needs outbound Discord/LLM providers/rclone).
 - Apply to → select `wanderer-1`.
 
 This filters traffic before it even reaches the server. We'll add ufw on the
@@ -386,10 +393,15 @@ Replace every placeholder. The important ones:
 | `SOUL_KEY_HOST_PATH` | `/var/lib/npc-ghost/keys/soul.key` |
 | `DOOR_KEY_HOST_PATH` | `/var/lib/npc-ghost/keys/door.key` |
 | `RCLONE_CONFIG_HOST_PATH` | `/var/lib/npc-ghost/rclone` |
-| `ANTHROPIC_API_KEY` | your real key — and set a **monthly spend limit** in the Anthropic console first |
+| `NPC_BRAIN_PROVIDER` | `openai-compat` (recommended) or `anthropic` |
+| `NPC_BRAIN_BASE_URL` | `https://openrouter.ai/api/v1` when using OpenRouter |
+| `NPC_BRAIN_API_KEY` | your OpenRouter (or other openai-compat) key — set a **credit cap** in the provider console |
+| `NPC_BRAIN_MODEL` | dated example `deepseek/deepseek-v4-flash` (2026-07-28) — confirm the live catalog slug |
+| `NPC_BRAIN_PROVIDER_ALLOWLIST` | `fireworks,together,deepinfra` (required for OpenRouter) |
+| `ANTHROPIC_API_KEY` | only if `NPC_BRAIN_PROVIDER=anthropic` — and set a **monthly spend limit** in the Anthropic console first |
 | `DISCORD_BOT_TOKEN` / guild / channel / operator IDs | your real Discord values |
 | `SOUL_PUBLIC_KEY` | the REAL soul public key — the .env.example value is a test fixture |
-| `ATLAS_DOOR_PUBKEYS` | the REAL door public key(s) — same warning |
+| `ATLAS_DOOR_PUBKEYS` | the REAL door public key, once per Door: `discord:<DISCORD_GUILD_ID>=<door pubkey>,web:home=<same door pubkey>` (both Doors use `door.key`) — same warning |
 | `BACKUP_RCLONE_REMOTE` | `ghost-remote:npc/soulchain` |
 | `AGE_RECIPIENT` / `KEY_BACKUP_RCLONE_REMOTE` | age pubkey + **separate** key-backup remote (never the chain remote) |
 
@@ -444,10 +456,10 @@ From now on: `ghostc up -d`, `ghostc ps`, `ghostc logs -f runtime`, etc.
 ghostc ps
 ```
 
-All four services should show `Up` (runtime waits for door-discord
+All five services should show `Up` (runtime waits for door-discord
 `service_healthy` on `:9090`, then becomes `healthy` once its ready-file
-exists; backup becomes `healthy` after the first successful sync touches
-`/tmp/backup.ok`).
+exists — at whichever Door it arrives; backup becomes `healthy` after the
+first successful sync touches `/tmp/backup.ok`).
 
 Confirm bind-mounted secrets are readable inside the containers (exit 0 =
 readable; permission denied means host ownership is wrong — fix with
@@ -456,16 +468,20 @@ readable; permission denied means host ownership is wrong — fix with
 ```bash
 ghostc exec runtime sh -c 'cat /run/keys/soul.key > /dev/null'
 ghostc exec door-discord sh -c 'cat /run/keys/door.key > /dev/null'
+ghostc exec door-web sh -c 'cat /run/keys/door.key > /dev/null'
 ghostc exec backup sh -c 'test -r /config/rclone/rclone.conf'
 ```
 
 ```bash
 ghostc logs -f runtime        # Ctrl+C to stop following
 ghostc logs door-discord | tail -50
+ghostc logs door-discord door-web 2>&1 | grep door_witness_config   # enabled:true on both
 curl http://127.0.0.1:8787/   # atlas answers locally
+curl -s http://127.0.0.1:8080/api/state   # web Door: present here, or where it is
 ```
 
-Then the real test: talk to the Wanderer in your Discord channel.
+Then the real test: talk to the Wanderer at the Door it is in — your Discord
+channel, or the web Door (`http://localhost:8080` over an SSH tunnel, below).
 
 ### 7b. Verify from your Mac that nothing is exposed
 
@@ -474,6 +490,7 @@ On your **Mac**:
 ```bash
 nc -zv -w 3 YOUR_SERVER_IP 22     # should succeed
 nc -zv -w 3 YOUR_SERVER_IP 8787   # should TIME OUT / refuse — this is correct
+nc -zv -w 3 YOUR_SERVER_IP 8080   # same (web Door is localhost-only until §8a)
 ```
 
 To use Atlas from your Mac, open an SSH tunnel:
@@ -483,7 +500,8 @@ ssh -N -L 8787:127.0.0.1:8787 ghost
 ```
 
 Leave that running; `http://localhost:8787` in your Mac's browser is now the
-server's Atlas. Ctrl+C to close the tunnel.
+server's Atlas. Ctrl+C to close the tunnel. Same for the web Door:
+`ssh -N -L 8080:127.0.0.1:8080 ghost`.
 
 ### 7c. Verify backups actually run
 
@@ -514,11 +532,69 @@ NOT open 8787. Instead:
 The tunnel is an **outbound** connection from the server to Cloudflare — the
 firewall stays exactly as it is, the server's IP stays hidden, Cloudflare
 gives you HTTPS, caching, and rate limiting in front of Atlas. This can also
-be added to compose as a fifth service later.
+be added to compose as another service later.
+
+### 8a. Public web Door (optional): Caddy on 80/443
+
+The web Door (door-web) serves visitors on `127.0.0.1:8080`. To put it on the
+internet with HTTPS, the compose profile `public` adds Caddy, which gets and
+renews the certificate itself (`ops/Caddyfile`: `$WEB_DOMAIN` → `door-web:8080`).
+
+1. DNS: an A (and AAAA) record for your hostname → the server's IP.
+2. `ops/.env`: `WEB_DOMAIN=porch.yourdomain.com`. Optional:
+   `COMPOSE_PROFILES=public`, so plain `ghostc pull` / `ghostc up -d` include Caddy.
+3. Open the ports on **both** walls:
+   - Hetzner console → Firewalls → your firewall → inbound TCP 80 and 443, UDP 443.
+   - On the server:
+
+     ```bash
+     sudo ufw allow 80,443/tcp
+     sudo ufw allow 443/udp
+     ```
+
+4. Start and check:
+
+   ```bash
+   ghostc --profile public up -d
+   ghostc logs caddy | grep -i certificate
+   curl -sI https://porch.yourdomain.com/healthz   # from your Mac: HTTP/2 200
+   ```
+
+Only port 8080 (visitor site) is proxied; the Door protocol port 9091 stays on
+the internal network. Undo: `ghostc --profile public stop caddy`, then close
+80/443 again.
 
 ---
 
-## 9. Routine operations
+## 9. osp/0.2 cutover (required before Ghost runtime after #119)
+
+Ghost runtime **only appends** `osp/0.2` records. Homogeneous `osp/0.1` chains
+still verify and compose for read-only tools, but `Session.start`
+**refuses to start** with `SpecCutoverError` so the first new append cannot
+poison the chain into a mixed-spec state.
+
+If the VPS soulchain was initialized under `osp/0.1`, migrate **before** deploying
+a runtime that writes `osp/0.2`:
+
+```bash
+# On the host (or a Mac with the chain dir + keys), with Door private keys for
+# every Door that co-signed records on the chain:
+pnpm --filter @npc/osp-cli exec node dist/cli.js migrate --to osp/0.2 /var/lib/npc-ghost/soulchain \
+  --door-private-key "discord:YOUR_GUILD=<door-private-key-base64url>"
+```
+
+- The command rewrites the whole chain (extracts inline `text`/`journal` to side
+  blobs, re-signs under the soul key + Door keys, rebuilds `prev` / evidence CIDs).
+- Original directory is moved to `*.pre-osp-0.2-<timestamp>` beside the new chain.
+- Record CIDs change — any bookmarks or published CIDs from the pre-migration
+  chain do not survive (see `spec/osp/records.md` §Spec migration).
+- Then `osp verify <dir> --door-key …` and restart the stack.
+
+Fresh `osp init` already writes `osp/0.2` genesis — no migrate needed.
+
+---
+
+## 10. Routine operations
 
 **Deploy a new release** (after CI pushes new images for tag `vX.Y.Z`):
 
@@ -541,27 +617,63 @@ wait a minute, `ssh ghost`, `ghostc ps`.
 behavior, or (post-Gate 2) at the tunnel URL. Until then,
 `ghostc ps` when you think of it.
 
+**Residency cycles** run on their own: about once a day the Wanderer distills its
+stay, the Door's AI witness checks each memory (no human review), and it travels to a
+random other online Door (Discord ↔ web). To move it now:
+
+```bash
+ghostc exec runtime node dist/cli.js depart
+ghostc logs -f runtime 2>&1 | grep -E 'residency_|door_'
+```
+
+Timers, witness, adding a Door, chain verification and the v0.6 upgrade:
+[RUNBOOK §7](RUNBOOK.md#7-residency-lifecycle).
+
 ---
 
-## 10. If something goes wrong
+## 10a. IPFS replication (optional, Gate 2 for live push)
+
+Ghost compose ships with **dual-write paths and Atlas CAR hooks disabled by default** — no outbound push until you explicitly enable replication.
+
+**Safe local dual-write (no public push):** compose already mounts `/data/soulchain-ipfs` and `/data/published`. Runtime uses `DualSoulStore` when `NPC_SOULCHAIN_IPFS_DIR` is set. Leave `NPC_REPLICATION_ENABLED` unset.
+
+**Enabling outbound replication (Gate 2):**
+
+1. Obtain pinning-service tokens (Storacha, Filebase, or similar CAR-upload endpoint).
+2. Add tokens to `ops/.env` per `ops/SECRETS.md` (`STORACHA_TOKEN`, `FILEBASE_TOKEN`, etc.).
+3. Set `NPC_REPLICATION_ENABLED=1` and `NPC_REPLICATION_TARGETS` JSON array with at least two independent targets.
+4. Run a **live dry-run** against each real endpoint before leaving replication enabled — the injectable adapter's `X-Manifest-Cid` / POST shape is a placeholder until that dry-run confirms the service's upload protocol.
+5. `ghostc up -d` and watch `ghostc logs runtime` for `replication_upload_ok` / `replication_upload_failed`.
+6. Verify Atlas serves the CAR: `curl -s http://127.0.0.1:8787/soulchain/manifest` and download `/soulchain-latest.car` via SSH tunnel.
+
+An **empty target list with `NPC_REPLICATION_ENABLED=1`** is valid — the drain runs as a no-op (useful for staging manifest/CAR publishing without push).
+
+---
+
+## 11. If something goes wrong
 
 | Symptom | Likely cause / fix |
 |---|---|
 | Locked out of SSH | Hetzner console → server → "Console" button (web keyboard) |
+| `runtime` restart-looping with `SpecCutoverError` / `soulchain is osp/0.1` | Chain still on `osp/0.1` — run §9 migrate before starting runtime |
 | `runtime` restart-looping forever | `ghostc logs runtime` — usually bad key path, bad `SOUL_PUBLIC_KEY`, or door-discord failing first |
+| `runtime` `unhealthy`, logs `residency_no_door_available` / `door_rejected` | no trusted Door answered: a Door is down, or its id is missing from `ATLAS_DOOR_PUBKEYS` (web Door: `web:home=<door pubkey>`) — [TROUBLESHOOTING](TROUBLESHOOTING.md#doors-and-memories) |
 | `door-discord` up but bot offline in Discord | bad token, or bot not invited to the guild with the right intents |
 | `backup` erroring | `rclone lsd ghost-remote:` on the host — if that fails, fix rclone.conf and `ghostc restart backup` |
-| Anthropic errors in runtime logs | check API key, and check you haven't hit the spend cap you set (good problem: the cap worked) |
+| Brain / LLM errors in runtime logs | check API key, provider allowlist (OpenRouter), and that you haven't hit the credit/spend cap |
 | `permission denied` on docker | you skipped the re-login after `usermod -aG docker` |
+| `runtime` `unhealthy` for a minute or two after `depart` | expected travel gap (Brain + witness calls); watch `ghostc logs runtime \| grep residency_` for `residency_cycle_outcome` |
+| `depart` says no daemon picked up the request | `NPC_RESIDENCY_OPERATOR_TRIGGER=0` in `ops/.env`, or runtime not running — `ghostc up -d runtime` |
+| Discord silent, everything healthy | the Wanderer is at the web Door — `curl -s http://127.0.0.1:8080/api/state` |
 
 ---
 
 ## Security summary (what you built)
 
-- Inbound: SSH only, key-only auth, no root login, fail2ban, two firewalls
+- Inbound: SSH only (plus 80/443 to Caddy if you enabled §8a), key-only auth, no root login, fail2ban, two firewalls
 - Atlas bound to localhost; public exposure only ever via Cloudflare Tunnel
 - Keys: `0600`, root-owned dir `0700`, age-encrypted remote key backup + offline age identity
 - Secrets in `ops/.env` (`0600`), never committed
 - OS patches itself; containers restart themselves
 - Soulchain backed up offsite continuously by the backup sidecar
-- Anthropic spend capped at the account level
+- LLM spend capped at the provider account (OpenRouter credits / Anthropic monthly limit)

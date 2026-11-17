@@ -1,10 +1,17 @@
 import {
+  OSP_SPEC_V02,
+  contentAddressSideBlob,
   createRecord,
+  decodeJournalBlob,
+  decodeShardTextBlob,
+  encodeJournalBlob,
   encodePublicKey,
+  encodeShardTextBlob,
   signCore,
   type CreateRecordResult,
   type Ed25519Keypair,
-  type OspRecord
+  type OspRecord,
+  type SoulStore
 } from "@npc/osp-core";
 
 import { DOOR, OTHER_DOOR, SESSION, SOUL } from "./fixed-keys.js";
@@ -47,9 +54,72 @@ export function doorPublicKeyFor(
   return { [doorId]: publicKey };
 }
 
-/** Build a signed genesis record. */
+/** Store shard text as a side blob; return CID+hash. */
+async function putShardText(
+  store: SoulStore,
+  text: string
+): Promise<{ text_cid: string; text_hash: string }> {
+  const bytes = encodeShardTextBlob(text);
+  const addr = await contentAddressSideBlob(bytes);
+  await store.putSideBlob(bytes);
+  return { text_cid: addr.cid, text_hash: addr.hash };
+}
+
+/** Store journal markdown as a side blob; return CID+hash. */
+async function putJournal(
+  store: SoulStore,
+  markdown: string
+): Promise<{ journal_cid: string; journal_hash: string }> {
+  const bytes = encodeJournalBlob(markdown);
+  const addr = await contentAddressSideBlob(bytes);
+  await store.putSideBlob(bytes);
+  return { journal_cid: addr.cid, journal_hash: addr.hash };
+}
+
+/**
+ * Resolve osp/0.2 shard/candidate prose from its side blob.
+ *
+ * @param store - SoulStore holding the side blob bytes
+ * @param record - memory record with `kind` shard or candidate
+ */
+export async function resolveMemoryText(store: SoulStore, record: OspRecord): Promise<string> {
+  if (record.type !== "memory") {
+    throw new Error(`expected memory record, got ${record.type}`);
+  }
+  if (record.body.kind !== "shard" && record.body.kind !== "candidate") {
+    throw new Error(`expected shard or candidate, got ${record.body.kind}`);
+  }
+  if (!("text_cid" in record.body) || record.body.text_cid === undefined) {
+    throw new Error("memory record missing text_cid");
+  }
+  const bytes = await store.getSideBlob(record.body.text_cid);
+  return decodeShardTextBlob(bytes);
+}
+
+/**
+ * Resolve osp/0.2 journal markdown from its side blob when present.
+ *
+ * @param store - SoulStore holding the side blob bytes
+ * @param record - memory shard that may carry journal_cid
+ */
+export async function resolveJournalMarkdown(
+  store: SoulStore,
+  record: OspRecord
+): Promise<string | undefined> {
+  if (record.type !== "memory" || record.body.kind !== "shard") {
+    return undefined;
+  }
+  if (!("journal_cid" in record.body) || record.body.journal_cid === undefined) {
+    return undefined;
+  }
+  const bytes = await store.getSideBlob(record.body.journal_cid);
+  return decodeJournalBlob(bytes);
+}
+
+/** Build a signed genesis record (osp/0.2). */
 export async function createGenesisRecord(soul: Ed25519Keypair): Promise<CreateRecordResult> {
   return createRecord({
+    spec: OSP_SPEC_V02,
     seq: 0,
     prev: null,
     type: "genesis",
@@ -64,7 +134,7 @@ export async function createGenesisRecord(soul: Ed25519Keypair): Promise<CreateR
   });
 }
 
-/** Build a signed arrival attestation with door cosignature. */
+/** Build a signed arrival attestation with door cosignature (osp/0.2). */
 export async function createArrivalRecord(
   soul: Ed25519Keypair,
   door: Ed25519Keypair,
@@ -73,6 +143,7 @@ export async function createArrivalRecord(
   prev: string
 ): Promise<CreateRecordResult> {
   const fields = {
+    spec: OSP_SPEC_V02,
     seq,
     prev,
     type: "attestation" as const,
@@ -94,34 +165,41 @@ export async function createArrivalRecord(
   });
 }
 
-/** Build a signed memory shard with door cosignature. */
+/** Build a signed memory shard with door cosignature (osp/0.2 side blobs). */
 export async function createShardRecord(
   soul: Ed25519Keypair,
   door: Ed25519Keypair,
   seq: number,
   prev: string,
   text: string,
-  opts?: { journal?: string; candidateCid?: string }
+  opts: { store: SoulStore; journal?: string; candidateCid?: string }
 ): Promise<CreateRecordResult> {
+  const textRefs = await putShardText(opts.store, text);
   const body: {
     kind: "shard";
-    text: string;
+    text_cid: string;
+    text_hash: string;
     distilled_at: string;
-    journal?: string;
+    journal_cid?: string;
+    journal_hash?: string;
     candidate_cid?: string;
   } = {
     kind: "shard",
-    text,
+    text_cid: textRefs.text_cid,
+    text_hash: textRefs.text_hash,
     distilled_at: "2026-01-02T01:00:00.000Z"
   };
-  if (opts?.journal !== undefined) {
-    body.journal = opts.journal;
+  if (opts.journal !== undefined) {
+    const journalRefs = await putJournal(opts.store, opts.journal);
+    body.journal_cid = journalRefs.journal_cid;
+    body.journal_hash = journalRefs.journal_hash;
   }
-  if (opts?.candidateCid !== undefined) {
+  if (opts.candidateCid !== undefined) {
     body.candidate_cid = opts.candidateCid;
   }
 
   const fields = {
+    spec: OSP_SPEC_V02,
     seq,
     prev,
     type: "memory" as const,
@@ -136,20 +214,24 @@ export async function createShardRecord(
   });
 }
 
-/** Build a signed quarantine candidate memory (no door cosignature). */
+/** Build a signed quarantine candidate memory (osp/0.2 side blob). */
 export async function createCandidateRecord(
   soul: Ed25519Keypair,
   seq: number,
   prev: string,
-  text: string
+  text: string,
+  opts: { store: SoulStore }
 ): Promise<CreateRecordResult> {
+  const textRefs = await putShardText(opts.store, text);
   return createRecord({
+    spec: OSP_SPEC_V02,
     seq,
     prev,
     type: "memory",
     body: {
       kind: "candidate",
-      text,
+      text_cid: textRefs.text_cid,
+      text_hash: textRefs.text_hash,
       proposed_at: "2026-01-02T01:30:00.000Z"
     },
     residency: RESIDENCY,
@@ -181,6 +263,7 @@ export async function createRejectedRecord(
   }
 
   return createRecord({
+    spec: OSP_SPEC_V02,
     seq,
     prev,
     type: "memory",
@@ -200,6 +283,7 @@ export async function createDriftRecord(
   evidence: string[]
 ): Promise<CreateRecordResult> {
   return createRecord({
+    spec: OSP_SPEC_V02,
     seq,
     prev,
     type: "drift",
@@ -239,15 +323,16 @@ export async function buildFixtureB(): Promise<FixtureBResult> {
   const arrival = await createArrivalRecord(SOUL, DOOR, SESSION, 1, genesis.cid);
   await store.append(arrival.record);
 
-  const shardA = await createShardRecord(SOUL, DOOR, 2, arrival.cid, SHARD_A_TEXT);
+  const shardA = await createShardRecord(SOUL, DOOR, 2, arrival.cid, SHARD_A_TEXT, { store });
   await store.append(shardA.record);
 
   const shardB = await createShardRecord(SOUL, DOOR, 3, shardA.cid, SHARD_B_TEXT, {
+    store,
     journal: JOURNAL_TEXT
   });
   await store.append(shardB.record);
 
-  const candidate = await createCandidateRecord(SOUL, 4, shardB.cid, CANDIDATE_TEXT);
+  const candidate = await createCandidateRecord(SOUL, 4, shardB.cid, CANDIDATE_TEXT, { store });
   await store.append(candidate.record);
 
   const rejected = await createRejectedRecord(SOUL, 5, candidate.cid, REJECTED_CATEGORY);

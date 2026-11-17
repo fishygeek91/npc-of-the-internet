@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
 
 import {
+  OSP_SPEC_V02,
   createRecord,
   encodeBase64Url,
   encodePublicKey,
@@ -70,6 +71,7 @@ export async function runInit(options: InitOptions): Promise<InitResult> {
 
   const publicKey = encodePublicKey(keypair.publicKey);
   const { record, cid } = await createRecord({
+    spec: OSP_SPEC_V02,
     seq: 0,
     prev: null,
     type: "genesis",

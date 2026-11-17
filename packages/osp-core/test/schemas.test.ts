@@ -74,6 +74,21 @@ const VALID_ARRIVAL = {
   sig: TEST_SOUL_SIG
 };
 
+const VALID_DECISION = {
+  spec: "osp/0.1",
+  seq: 1,
+  prev: PREV_CID,
+  type: "decision" as const,
+  body: {
+    decision: "proceed",
+    reasoning: "the path is clear",
+    decided_at: "2026-01-02T00:00:00.000Z"
+  },
+  residency: RESIDENCY,
+  cosigners: [] as string[],
+  sig: TEST_SOUL_SIG
+};
+
 describe("RecordSchema", () => {
   it("accepts genesis at seq 0 with null prev and residency", () => {
     const result = RecordSchema.safeParse(VALID_GENESIS);
@@ -330,5 +345,191 @@ describe("RecordSchema", () => {
       }
     });
     expect(result.success).toBe(true);
+  });
+
+  it("rejects decision with dag-json reserved link object in body.inputs", () => {
+    const result = RecordSchema.safeParse({
+      ...VALID_DECISION,
+      body: {
+        ...VALID_DECISION.body,
+        inputs: {
+          link: {
+            "/": PREV_CID
+          }
+        }
+      }
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      const paths = result.error.issues.map((issue) => issue.path.join("."));
+      expect(paths).toContain("body.inputs.link");
+      const messages = result.error.issues.map((issue) => issue.message);
+      expect(messages.some((message) => message.includes('sole key "/"'))).toBe(true);
+    }
+  });
+
+  it("accepts decision with slash key when not the sole key", () => {
+    const withPathKey = RecordSchema.safeParse({
+      ...VALID_DECISION,
+      body: {
+        ...VALID_DECISION.body,
+        inputs: {
+          path: "/",
+          other: 1
+        }
+      }
+    });
+    expect(withPathKey.success).toBe(true);
+
+    const withSlashAndExtra = RecordSchema.safeParse({
+      ...VALID_DECISION,
+      body: {
+        ...VALID_DECISION.body,
+        inputs: {
+          "/": "x",
+          extra: 1
+        }
+      }
+    });
+    expect(withSlashAndExtra.success).toBe(true);
+  });
+
+  it("accepts all baseline valid fixtures", () => {
+    for (const fixture of [
+      VALID_GENESIS,
+      VALID_CANDIDATE,
+      VALID_SHARD,
+      VALID_ARRIVAL,
+      VALID_DECISION
+    ]) {
+      const result = RecordSchema.safeParse(fixture);
+      expect(result.success).toBe(true);
+    }
+  });
+
+  it("accepts osp/0.2 shard with matching text_cid and text_hash", () => {
+    const result = RecordSchema.safeParse({
+      spec: "osp/0.2",
+      seq: 2,
+      prev: PREV_CID,
+      type: "memory",
+      body: {
+        kind: "shard",
+        text_cid: "baguqeeralktwflryh65xe6xty6rw2skauw4micuysrjnemcpzfmp6pzvjz5a",
+        text_hash: "Wqdirjg_u3J688ejbUlApbjECpiUUtIwT8lY_z81Tno",
+        distilled_at: "2026-01-03T00:00:00.000Z"
+      },
+      residency: RESIDENCY,
+      cosigners: [TEST_DOOR_COSIG],
+      sig: TEST_SOUL_SIG
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects osp/0.2 shard with mismatched text_hash", () => {
+    const result = RecordSchema.safeParse({
+      spec: "osp/0.2",
+      seq: 2,
+      prev: PREV_CID,
+      type: "memory",
+      body: {
+        kind: "shard",
+        text_cid: "baguqeeralktwflryh65xe6xty6rw2skauw4micuysrjnemcpzfmp6pzvjz5a",
+        text_hash: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        distilled_at: "2026-01-03T00:00:00.000Z"
+      },
+      residency: RESIDENCY,
+      cosigners: [TEST_DOOR_COSIG],
+      sig: TEST_SOUL_SIG
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects osp/0.1 shard that uses text_cid", () => {
+    const result = RecordSchema.safeParse({
+      ...VALID_SHARD,
+      body: {
+        kind: "shard",
+        text_cid: "baguqeeralktwflryh65xe6xty6rw2skauw4micuysrjnemcpzfmp6pzvjz5a",
+        text_hash: "Wqdirjg_u3J688ejbUlApbjECpiUUtIwT8lY_z81Tno",
+        distilled_at: "2026-01-03T00:00:00.000Z"
+      }
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts tombstone with closed reason enum and residency null", () => {
+    const result = RecordSchema.safeParse({
+      spec: "osp/0.2",
+      seq: 3,
+      prev: PREV_CID,
+      type: "tombstone",
+      body: {
+        target_cid: PREV_CID,
+        blob_cid: "baguqeeralktwflryh65xe6xty6rw2skauw4micuysrjnemcpzfmp6pzvjz5a",
+        reason: "erasure_request",
+        erased_at: "2026-01-04T00:00:00.000Z"
+      },
+      residency: null,
+      cosigners: [],
+      sig: TEST_SOUL_SIG
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects tombstone under osp/0.1", () => {
+    const result = RecordSchema.safeParse({
+      spec: "osp/0.1",
+      seq: 3,
+      prev: PREV_CID,
+      type: "tombstone",
+      body: {
+        target_cid: PREV_CID,
+        blob_cid: "baguqeeralktwflryh65xe6xty6rw2skauw4micuysrjnemcpzfmp6pzvjz5a",
+        reason: "erasure_request",
+        erased_at: "2026-01-04T00:00:00.000Z"
+      },
+      residency: null,
+      cosigners: [],
+      sig: TEST_SOUL_SIG
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects tombstone with free-text reason or erased prose", () => {
+    const badReason = RecordSchema.safeParse({
+      spec: "osp/0.2",
+      seq: 3,
+      prev: PREV_CID,
+      type: "tombstone",
+      body: {
+        target_cid: PREV_CID,
+        blob_cid: "baguqeeralktwflryh65xe6xty6rw2skauw4micuysrjnemcpzfmp6pzvjz5a",
+        reason: "please delete this",
+        erased_at: "2026-01-04T00:00:00.000Z"
+      },
+      residency: null,
+      cosigners: [],
+      sig: TEST_SOUL_SIG
+    });
+    expect(badReason.success).toBe(false);
+
+    const withProse = RecordSchema.safeParse({
+      spec: "osp/0.2",
+      seq: 3,
+      prev: PREV_CID,
+      type: "tombstone",
+      body: {
+        target_cid: PREV_CID,
+        blob_cid: "baguqeeralktwflryh65xe6xty6rw2skauw4micuysrjnemcpzfmp6pzvjz5a",
+        reason: "dmca",
+        erased_at: "2026-01-04T00:00:00.000Z",
+        erased_text: "leaked"
+      },
+      residency: null,
+      cosigners: [],
+      sig: TEST_SOUL_SIG
+    });
+    expect(withProse.success).toBe(false);
   });
 });

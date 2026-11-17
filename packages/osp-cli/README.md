@@ -14,20 +14,27 @@ The `osp` command-line tool for initializing and inspecting a local soulchain.
 | --- | --- |
 | `osp init <dir>` | Generate a soul key, write genesis from the charter, append to a new chain |
 | `osp verify <dir>` | Verify signatures, links, and schema for the full chain (read-only) |
-| `osp log <dir>` | Stream a human-readable listing of chain records |
-| `osp show <cid> --dir <dir>` | Pretty-print one record by CID |
+| `osp verify --from-ipfs <head-cid> [--gateway <url>]` | Fetch head→genesis via trustless gateway raw blocks, then verify (no CI network) |
+| `osp manifest <dir>` | Build/sign a pin manifest for an `IpfsSoulStore` directory; print manifest CID |
+| `osp export-car <dir> --out <path>` | Build/sign manifest and write a CARv1 rooted at the manifest CID |
+| `osp log <dir> [--door-key …]` | Human-readable listing of chain records, one line each: `seq type/kind cid… timestamp`, plus a note for memory outcomes — `journal for web:home epoch 3`, `declined by the witness (private)`, `screened out (pii.email)`, `legacy candidate` (read-only; warns on stderr if verification fails) |
+| `osp show <cid> --dir <dir> [--door-key …]` | Pretty-print one verified record by CID (read-only) |
+
+### Pin manifest / CAR (`IpfsSoulStore` layout)
+
+`osp manifest` and `osp export-car` require an on-disk `IpfsSoulStore` (`blocks/`, `HEAD`, `seq-index.jsonl`) plus `soul.key` (default `<dir>/soul.key`, override with `--soul-key`). Use `--generated-at <iso>` for deterministic timestamps in tests.
 
 ### Charter resolution
 
 `osp init` loads the Wanderer's charter from `spec/osp/genesis.md` when run inside this repository. Override with `--charter <path>`. Init fails clearly if the charter file is missing or empty.
 
-### Verify is read-only
+### Verify, log and show are read-only
 
-`osp verify` opens the store with `FileSoulStore.openReadOnly`. It never creates `blobs/` or `chain.jsonl`, so it works on read-only mounts and restored backups. An empty or uninitialized directory exits `2` instead of silently laying out a store.
+`osp verify`, `osp log` and `osp show` open the store with `FileSoulStore.openReadOnly`. They never create `blobs/`, `chain.jsonl` or a lock file, so they work on read-only mounts and restored backups. A missing (e.g. typo'd), empty or uninitialized directory exits `2` instead of silently laying out a store.
 
-### Door keys for verify
+### Door keys
 
-Pass repeatable `--door-key <doorId=base64url>` flags to supply Door public keys for cosignature verification.
+Pass repeatable `--door-key <doorId=base64url>` (or `--door-key=<doorId=base64url>`) flags to `verify`, `log` and `show` to supply Door public keys for cosignature verification (presence attestations and witnessed memories — `shard` and `journal` — are co-signed by the residency's Door). Without the binding, `log` still lists a cosigned chain but warns that verification failed; `show` of a cosigned record exits `2`.
 
 ## Walkthrough
 

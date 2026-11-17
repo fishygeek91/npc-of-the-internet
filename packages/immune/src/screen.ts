@@ -23,7 +23,8 @@ function orderCategories(found: readonly ScreenCategory[]): ScreenCategory[] {
  */
 export function screenText(text: string, opts?: ScreenOptions): ScreenResult {
   const normalized = normalizeScreenText(text);
-  const allowlist = opts?.allowlist;
+  // Entries go through the same matching view so a raw (un-normalized) span still matches.
+  const allowlist = opts?.allowlist?.map((entry) => normalizeScreenText(entry));
   const piiCategories = collectPiiCategories(normalized, allowlist);
   const injectionCategories = collectInjectionCategories(normalized);
   const categories = orderCategories([...piiCategories, ...injectionCategories]);

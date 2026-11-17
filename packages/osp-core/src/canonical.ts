@@ -52,8 +52,16 @@ function toJsonValue(value: unknown): JsonValue {
   }
 
   if (isPlainObject(value)) {
-    const result: { [key: string]: JsonValue } = {};
+    // Null-prototype target: no key can hit an inherited setter during the copy.
+    const result: { [key: string]: JsonValue } = Object.create(null) as {
+      [key: string]: JsonValue;
+    };
     for (const key of Object.keys(value)) {
+      if (key === "__proto__") {
+        // JSON.parse yields `__proto__` as an own key; assignment-based copies drop it, so
+        // accepting it would let two different byte strings share one canonical form.
+        throw new EncodingError('canonicalize: own "__proto__" key is not permitted');
+      }
       result[key] = toJsonValue(value[key]);
     }
     return result;

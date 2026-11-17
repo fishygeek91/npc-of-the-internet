@@ -8,7 +8,9 @@ const DEFAULT_PORT = 8787;
 const atlasConfigSchema = z.object({
   chainDir: z.string().min(1),
   port: z.number().int().positive(),
-  doorPublicKeys: z.record(z.string(), z.instanceof(Uint8Array)).optional()
+  doorPublicKeys: z.record(z.string(), z.instanceof(Uint8Array)).optional(),
+  publishedCarPath: z.string().min(1).optional(),
+  manifestCidPath: z.string().min(1).optional()
 });
 
 /** Validated Atlas API configuration loaded from environment variables. */
@@ -66,10 +68,22 @@ export function loadAtlasConfig(env: NodeJS.ProcessEnv = process.env): AtlasConf
   const port = parsePositiveInt(env.ATLAS_PORT, DEFAULT_PORT, "ATLAS_PORT");
   const doorPublicKeys = parseDoorPublicKeys(env.ATLAS_DOOR_PUBKEYS);
 
+  const publishedCarPath =
+    env.NPC_PUBLISHED_CAR_PATH === undefined || env.NPC_PUBLISHED_CAR_PATH === ""
+      ? undefined
+      : env.NPC_PUBLISHED_CAR_PATH;
+
+  const manifestCidPath =
+    env.NPC_MANIFEST_CID_PATH === undefined || env.NPC_MANIFEST_CID_PATH === ""
+      ? undefined
+      : env.NPC_MANIFEST_CID_PATH;
+
   const result = atlasConfigSchema.safeParse({
     chainDir,
     port,
-    doorPublicKeys
+    doorPublicKeys,
+    publishedCarPath,
+    manifestCidPath
   });
 
   if (!result.success) {

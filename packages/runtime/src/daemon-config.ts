@@ -4,23 +4,46 @@ import { z } from "zod";
 import { loadBrainConfig, type BrainConfig } from "./brain/config.js";
 import { BrainError } from "./brain/errors.js";
 import { DaemonError } from "./daemon-errors.js";
+import { loadReplicationConfig, type ReplicationConfig } from "./replication/config.js";
+import { loadResidencyConfig, type ResidencyConfig } from "./residency/config.js";
 
 const DEFAULT_READY_FILE = "/tmp/npc-runtime.ready";
 
 const daemonConfigSchema = z.object({
   soulKeyPath: z.string().min(1),
   soulchainDir: z.string().min(1),
-  doorHttpHost: z.string().min(1),
-  doorHttpPort: z.number().int().positive(),
-  doorId: z.string().min(1),
+  soulchainIpfsDir: z.string().min(1).optional(),
+  doorUrls: z.array(z.string().url()).min(1),
+  preferredDoorId: z.string().min(1).optional(),
   doorPublicKeys: z
     .record(z.string(), z.instanceof(Uint8Array))
     .refine((map) => Object.keys(map).length >= 1, {
       message: "doorPublicKeys must contain at least one entry"
     }),
   brain: z.custom<BrainConfig>(),
-  readyFilePath: z.string().min(1)
+  readyFilePath: z.string().min(1),
+  replication: z.custom<ReplicationConfig>(),
+  attentionMode: z.enum(["selective", "always"]),
+  residency: z.custom<ResidencyConfig>()
 });
+
+/** `NPC_ATTENTION_MODE`: `selective` (default) reads the room; `always` answers every message. */
+export type AttentionMode = "selective" | "always";
+
+function parseAttentionMode(value: string | undefined): AttentionMode {
+  const trimmed = value?.trim() ?? "";
+  if (trimmed === "") {
+    return "selective";
+  }
+  if (trimmed === "selective" || trimmed === "always") {
+    return trimmed;
+  }
+  throw new DaemonError(
+    `NPC_ATTENTION_MODE must be "selective" or "always" (got ${trimmed})`,
+    "invalid_config",
+    "NPC_ATTENTION_MODE"
+  );
+}
 
 /** Validated residency daemon configuration loaded from environment variables. */
 export type DaemonConfig = z.infer<typeof daemonConfigSchema>;
@@ -43,6 +66,38 @@ function parsePositiveInt(value: string, name: string): number {
     );
   }
   return parsed;
+}
+
+/**
+ * Door base URLs from `NPC_DOOR_URLS` (comma-separated, deduped), else the single legacy
+ * `http://${DOOR_HTTP_HOST}:${DOOR_HTTP_PORT}`. Each must be an `http(s)` URL.
+ */
+function parseDoorUrls(env: NodeJS.ProcessEnv): string[] {
+  const listed = (env.NPC_DOOR_URLS ?? "")
+    .split(",")
+    .map((entry) => entry.trim().replace(/\/+$/u, ""))
+    .filter((entry) => entry !== "");
+  if (listed.length === 0) {
+    const host = requireEnv(env, "DOOR_HTTP_HOST");
+    const port = parsePositiveInt(requireEnv(env, "DOOR_HTTP_PORT"), "DOOR_HTTP_PORT");
+    return [`http://${host}:${String(port)}`];
+  }
+  for (const url of listed) {
+    let protocol: string;
+    try {
+      protocol = new URL(url).protocol;
+    } catch {
+      protocol = "";
+    }
+    if (protocol !== "http:" && protocol !== "https:") {
+      throw new DaemonError(
+        `NPC_DOOR_URLS entries must be http(s) URLs (got ${url})`,
+        "invalid_config",
+        "NPC_DOOR_URLS"
+      );
+    }
+  }
+  return [...new Set(listed)];
 }
 
 function parseDoorPublicKeys(value: string): Readonly<Record<string, Uint8Array>> {
@@ -71,16 +126,21 @@ function parseDoorPublicKeys(value: string): Readonly<Record<string, Uint8Array>
 /**
  * Load and validate residency daemon configuration from environment variables.
  *
- * Required: `SOUL_KEY_PATH`, `SOULCHAIN_DIR`, `DOOR_HTTP_HOST`, `DOOR_HTTP_PORT`,
- * `CURRENT_DOOR_ID`, `ATLAS_DOOR_PUBKEYS`, and Brain vars via {@link loadBrainConfig}.
- * Optional: `NPC_RUNTIME_READY_FILE` (defaults to `/tmp/npc-runtime.ready`).
+ * Required: `SOUL_KEY_PATH`, `SOULCHAIN_DIR`, `ATLAS_DOOR_PUBKEYS` (the Doors the
+ * Wanderer trusts: `doorId=pubkey,…`), the Doors to reach — `NPC_DOOR_URLS`
+ * (comma-separated base URLs) or, for one Door, `DOOR_HTTP_HOST` + `DOOR_HTTP_PORT` — and
+ * Brain vars via {@link loadBrainConfig}.
+ * Optional: `CURRENT_DOOR_ID` (boot preference when the chain names no last Door),
+ * `NPC_RUNTIME_READY_FILE` (defaults to `/tmp/npc-runtime.ready`), `NPC_ATTENTION_MODE`
+ * (`selective` default | `always`), and the residency lifecycle vars of
+ * {@link loadResidencyConfig}.
  */
 export function loadDaemonConfig(env: NodeJS.ProcessEnv = process.env): DaemonConfig {
   const soulKeyPath = requireEnv(env, "SOUL_KEY_PATH");
   const soulchainDir = requireEnv(env, "SOULCHAIN_DIR");
-  const doorHttpHost = requireEnv(env, "DOOR_HTTP_HOST");
-  const doorHttpPort = parsePositiveInt(requireEnv(env, "DOOR_HTTP_PORT"), "DOOR_HTTP_PORT");
-  const doorId = requireEnv(env, "CURRENT_DOOR_ID");
+  const doorUrls = parseDoorUrls(env);
+  const preferredRaw = env.CURRENT_DOOR_ID?.trim() ?? "";
+  const preferredDoorId = preferredRaw === "" ? undefined : preferredRaw;
   const doorPublicKeysRaw = requireEnv(env, "ATLAS_DOOR_PUBKEYS");
   const doorPublicKeys = parseDoorPublicKeys(doorPublicKeysRaw);
 
@@ -89,12 +149,7 @@ export function loadDaemonConfig(env: NodeJS.ProcessEnv = process.env): DaemonCo
     brain = loadBrainConfig(env);
   } catch (error) {
     if (error instanceof BrainError) {
-      const envVar = error.message.includes("ANTHROPIC_API_KEY_FILE")
-        ? "ANTHROPIC_API_KEY_FILE"
-        : error.message.includes("ANTHROPIC_API_KEY")
-          ? "ANTHROPIC_API_KEY"
-          : undefined;
-      throw new DaemonError(error.message, "invalid_config", envVar);
+      throw new DaemonError(error.message, "invalid_config", error.envVar);
     }
     throw error;
   }
@@ -104,15 +159,36 @@ export function loadDaemonConfig(env: NodeJS.ProcessEnv = process.env): DaemonCo
       ? DEFAULT_READY_FILE
       : env.NPC_RUNTIME_READY_FILE;
 
+  const soulchainIpfsRaw = env.NPC_SOULCHAIN_IPFS_DIR;
+  const soulchainIpfsDir =
+    soulchainIpfsRaw === undefined || soulchainIpfsRaw.trim() === ""
+      ? undefined
+      : soulchainIpfsRaw.trim();
+
+  const replication = loadReplicationConfig(env);
+  const attentionMode = parseAttentionMode(env.NPC_ATTENTION_MODE);
+  const residency = loadResidencyConfig(env);
+
+  if (replication.enabled && soulchainIpfsDir === undefined) {
+    throw new DaemonError(
+      "NPC_SOULCHAIN_IPFS_DIR is required when NPC_REPLICATION_ENABLED is set",
+      "invalid_config",
+      "NPC_SOULCHAIN_IPFS_DIR"
+    );
+  }
+
   const result = daemonConfigSchema.safeParse({
     soulKeyPath,
     soulchainDir,
-    doorHttpHost,
-    doorHttpPort,
-    doorId,
+    soulchainIpfsDir,
+    doorUrls,
+    preferredDoorId,
     doorPublicKeys,
     brain,
-    readyFilePath
+    readyFilePath,
+    replication,
+    attentionMode,
+    residency
   });
 
   if (!result.success) {

@@ -1,4 +1,5 @@
-import { mkdtemp, rm, readFile, writeFile, open as fsOpen, access } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdtemp, rm, readFile, writeFile, open as fsOpen, access, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
@@ -21,6 +22,8 @@ import {
   type OspRecord,
   type Ed25519Keypair
 } from "../src/index.js";
+
+import { withLiveChildPid } from "./helpers/live-child.js";
 
 const RESIDENCY = "door:discord:g/epoch:1";
 const DOOR_ID = "discord:g";
@@ -125,6 +128,40 @@ describe("FileSoulStore", () => {
 
   afterEach(async () => {
     await rm(dir, { recursive: true, force: true });
+  });
+
+  it("garbage-collects orphaned .tmp-* blob files older than an hour on writable open only", async () => {
+    const store = await FileSoulStore.open(dir);
+    try {
+      await store.append((await createGenesisRecord(soul)).record);
+    } finally {
+      await store.close();
+    }
+    const blobsDir = path.join(dir, "blobs");
+    const staleTemp = path.join(blobsDir, ".tmp-bagustale-1-aaaaaaaaaaaa");
+    const freshTemp = path.join(blobsDir, ".tmp-bagufresh-1-bbbbbbbbbbbb");
+    const otherDotFile = path.join(blobsDir, ".keep");
+    await writeFile(staleTemp, "torn");
+    await writeFile(freshTemp, "in flight");
+    await writeFile(otherDotFile, "");
+    const twoHoursAgo = new Date(Date.now() - 2 * 3_600_000);
+    await utimes(staleTemp, twoHoursAgo, twoHoursAgo);
+    await utimes(otherDotFile, twoHoursAgo, twoHoursAgo);
+
+    const readOnly = await FileSoulStore.openReadOnly(dir);
+    await readOnly.close();
+    expect(existsSync(staleTemp)).toBe(true);
+
+    const reopened = await FileSoulStore.open(dir);
+    await reopened.close();
+    expect(existsSync(staleTemp)).toBe(false);
+    expect(existsSync(freshTemp)).toBe(true);
+    expect(existsSync(otherDotFile)).toBe(true);
+
+    await utimes(freshTemp, twoHoursAgo, twoHoursAgo);
+    const { store: recovered } = await FileSoulStore.openWithRecovery(dir);
+    await recovered.close();
+    expect(existsSync(freshTemp)).toBe(false);
   });
 
   it("opens an empty store with null head, then genesis append sets head seq 0", async () => {
@@ -678,14 +715,17 @@ describe("FileSoulStore", () => {
     }
 
     const lockPath = path.join(dir, LOCK_FILE);
-    const meta = JSON.stringify({
-      pid: process.pid,
-      acquiredAt: new Date().toISOString()
-    });
-    await writeFile(lockPath, `${meta}\n`, { flag: "wx" });
+    await withLiveChildPid(async (pid) => {
+      const meta = JSON.stringify({
+        pid,
+        acquiredAt: new Date().toISOString(),
+        nonce: "0123456789abcdef"
+      });
+      await writeFile(lockPath, `${meta}\n`, { flag: "wx" });
 
-    await expect(FileSoulStore.openWithRecovery(dir)).rejects.toThrow(ConcurrentAppendError);
-    await expect(FileSoulStore.openWithRecovery(dir)).rejects.toThrow(/live \.append\.lock/);
+      await expect(FileSoulStore.openWithRecovery(dir)).rejects.toThrow(ConcurrentAppendError);
+      await expect(FileSoulStore.openWithRecovery(dir)).rejects.toThrow(/live \.append\.lock/);
+    });
 
     await rm(lockPath, { force: true });
     const { store: recovered } = await FileSoulStore.openWithRecovery(dir);
@@ -724,6 +764,94 @@ describe("FileSoulStore", () => {
       expect((await recoveredLegacy.head())?.seq).toBe(0);
     } finally {
       await recoveredLegacy.close();
+    }
+  });
+
+  it("openWithRecovery clears a lock left by a previous incarnation with OUR pid (container PID 1)", async () => {
+    // Review F1: node is PID 1 on every container boot; a SIGKILLed PID-1 appender leaves a
+    // lock whose pid equals ours after restart. It must not look live (crash-loop).
+    const store = await FileSoulStore.open(dir);
+    try {
+      await appendGenesis(store, soul);
+    } finally {
+      await store.close();
+    }
+
+    const lockPath = path.join(dir, LOCK_FILE);
+    // Each iteration appends seq 1 then truncates back to genesis (record blob stays, harmless).
+    for (const meta of [
+      { pid: process.pid, acquiredAt: new Date().toISOString() },
+      { pid: process.pid, acquiredAt: new Date().toISOString(), nonce: "deadbeefdeadbeef" }
+    ]) {
+      await writeFile(lockPath, `${JSON.stringify(meta)}\n`, { flag: "wx" });
+      const { store: recovered } = await FileSoulStore.openWithRecovery(dir);
+      try {
+        const head = await recovered.head();
+        expect(head?.seq).toBe(0);
+        const next = await createMemoryCandidateRecord(soul, 1, head?.cid ?? "", "after restart");
+        await expect(recovered.append(next.record)).resolves.toEqual({ cid: next.cid });
+      } finally {
+        await recovered.close();
+      }
+      // Reset to a single-record chain for the next iteration.
+      const lines = (await readFile(path.join(dir, CHAIN_FILE), "utf8")).split("\n");
+      await writeFile(path.join(dir, CHAIN_FILE), `${lines[0]}\n`);
+    }
+  });
+
+  it("openWithRecovery still refuses while this process holds the store's append lock", async () => {
+    const store = await FileSoulStore.open(dir);
+    try {
+      await appendGenesis(store, soul);
+    } finally {
+      await store.close();
+    }
+    const { FileLock } = await import("../src/store/file-lock.js");
+    const holder = new FileLock(path.join(dir, LOCK_FILE));
+    holder.acquire();
+    try {
+      await expect(FileSoulStore.openWithRecovery(dir)).rejects.toThrow(ConcurrentAppendError);
+    } finally {
+      holder.release();
+    }
+  });
+
+  it("putSideBlob replaces a torn blob left by a crash mid-write (review F4)", async () => {
+    const store = await FileSoulStore.open(dir);
+    try {
+      await appendGenesis(store, soul);
+      const bytes = new TextEncoder().encode(JSON.stringify("hello world"));
+      const cid = await computeCidFromCanonicalBytes(bytes);
+      await writeFile(path.join(dir, "blobs", cid), bytes.subarray(0, 3));
+
+      await expect(store.putSideBlob(bytes)).resolves.toEqual({ cid });
+      expect(await store.getSideBlob(cid)).toEqual(bytes);
+      // Identical retry is still idempotent.
+      await expect(store.putSideBlob(bytes)).resolves.toEqual({ cid });
+    } finally {
+      await store.close();
+    }
+  });
+
+  it("append retries succeed after a torn record blob (crash after blob create, before chain line)", async () => {
+    const store = await FileSoulStore.open(dir);
+    try {
+      const genesis = await appendGenesis(store, soul);
+      const memory = await createMemoryCandidateRecord(soul, 1, genesis.cid, "torn blob retry");
+      await writeFile(
+        path.join(dir, "blobs", memory.cid),
+        canonicalize(memory.record).subarray(0, 5)
+      );
+
+      await expect(store.append(memory.record)).resolves.toEqual({ cid: memory.cid });
+    } finally {
+      await store.close();
+    }
+    const reopened = await FileSoulStore.open(dir);
+    try {
+      expect((await reopened.head())?.seq).toBe(1);
+    } finally {
+      await reopened.close();
     }
   });
 

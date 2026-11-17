@@ -1,0 +1,77 @@
+{
+  "description": "Deterministic osp/0.1→osp/0.2 migration of the valid mini-chain (text extracted to side blobs)",
+  "expected": "valid",
+  "soulPublicKey": "6kpsY-KcUgq-9VB7Ey7F-ZVHdq6-vnuSQh7qaRRG0iw",
+  "doorPublicKeys": {
+    "discord:g": "E5j2LG0aRXxRumpLXz29L2n8qTIWIY3ImX5Ba9F9k8o"
+  },
+  "records": [
+    {
+      "spec": "osp/0.2",
+      "seq": 0,
+      "prev": null,
+      "residency": null,
+      "cosigners": [],
+      "sig": "bo_ph2why0FA6kg-_7IGGajBcavdsgqo424PeEhr9PmZhaFEw6Da4ayMyQHylm57R3zmp3EvA6PbUK_2IER-Aw",
+      "type": "genesis",
+      "body": {
+        "charter": "# Wanderer",
+        "soul_pubkey": "6kpsY-KcUgq-9VB7Ey7F-ZVHdq6-vnuSQh7qaRRG0iw",
+        "created_at": "2026-01-01T00:00:00.000Z"
+      }
+    },
+    {
+      "spec": "osp/0.2",
+      "seq": 1,
+      "prev": "baguqeeraorlylhabxcqvnlzuradxp33csrxdoldfzlnvbanbeyhw4gqf3n2q",
+      "residency": "door:discord:g/epoch:1",
+      "cosigners": [
+        "AVKPxarWA9bEFw6rz95HsI-8uEeKrKUYEBflk614bJ26iiONsdP86LNnU3m7omkVplUb8QulHdFqJ48NHacmCw"
+      ],
+      "sig": "xex38Et8sHAHF1_utA0tb0OFXB5e5qzeHymVkZv7PZZ5YofVuF3v79IRtmcu5tDdZ10RlP-ceDa9VCH_00uJCA",
+      "type": "attestation",
+      "body": {
+        "kind": "arrival",
+        "pop_version": "pop/0.1",
+        "door_id": "discord:g",
+        "epoch": 1,
+        "session_pubkey": "_RckOFqgx1tk-3jNYC-h2ZH96_drE8WO1wLqyDXp9hg",
+        "at": "2026-01-02T00:00:00.000Z"
+      }
+    },
+    {
+      "spec": "osp/0.2",
+      "seq": 2,
+      "prev": "baguqeeralc7wmaqduj2uxsjgwf4xw2lliyksw6hlgxuhxzbszxdd5cur4fxa",
+      "residency": "door:discord:g/epoch:1",
+      "cosigners": [
+        "jAwzUm7lXHkjNa3Yeol6ffE0xWSqxigFEEnatrYMd_wm6JukxMFb4QWMk-dUUw0d4YCBSAqTLrecwujxHBjCBA"
+      ],
+      "sig": "rVCgCL4L8OKjhe87fVR_0gYrDdaK0yRTYkXzTzZeDJf6ipaP9uoQkmnfd9HOcY8IqhHmQpriz1IAKK8BOVhLBA",
+      "type": "memory",
+      "body": {
+        "kind": "shard",
+        "text_cid": "baguqeerawlkq4pgh4hplsb36j7dadhufksa6dcxu7ljrk3t3pzxqm4326sxa",
+        "text_hash": "stUOPMfh3rkHfk_GAZ6FVIHhivT60xVue35vBnN69K4",
+        "distilled_at": "2026-01-02T01:00:00.000Z"
+      }
+    },
+    {
+      "spec": "osp/0.2",
+      "seq": 3,
+      "prev": "baguqeera2u3rppthyqy7uozx37xfco2yhllo4mf5ebk5psczlhasooiworsa",
+      "residency": "door:discord:g/epoch:1",
+      "cosigners": [],
+      "sig": "jM5r80TkdmMVbsXXrYJFbk1V-Qa6tYkqunzjdryfKU5pxpxVnzAdegg1JIcTls5gePrs1qs1FizsHoPAVhf8Cw",
+      "type": "drift",
+      "body": {
+        "summary": "I feel more patient after the long stay.",
+        "evidence": ["baguqeera2u3rppthyqy7uozx37xfco2yhllo4mf5ebk5psczlhasooiworsa"],
+        "effective_at": "2026-01-03T00:00:00.000Z"
+      }
+    }
+  ],
+  "blobs": {
+    "baguqeerawlkq4pgh4hplsb36j7dadhufksa6dcxu7ljrk3t3pzxqm4326sxa": "IkEgY29tbWl0dGVkIHNoYXJkIG1lbW9yeS4i"
+  }
+}

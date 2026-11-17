@@ -6,7 +6,7 @@
       "properties": {
         "spec": {
           "type": "string",
-          "const": "osp/0.1"
+          "enum": ["osp/0.1", "osp/0.2"]
         },
         "seq": {
           "type": "integer",

@@ -15,20 +15,17 @@ import { Door } from "../src/door.js";
 import { DoorError } from "../src/errors.js";
 import type { HostPolicy } from "../src/policy.js";
 import { DOOR_PROTOCOL_VERSION } from "../src/schemas.js";
-import type {
-  AttestRequest,
-  CosignCandidateShard,
-  CosignRequest,
-  HeartbeatRequest,
-  OutboundFrame
-} from "../src/schemas.js";
+import type { AttestRequest, HeartbeatRequest, OutboundFrame } from "../src/schemas.js";
 import {
   attestSigningPayload,
-  cosignReviewSigningPayload,
   outboundSigningPayload,
   sessionBindSigningPayload
 } from "../src/signing.js";
-import { HttpDoorConnection } from "../src/transports/http-client.js";
+import {
+  DEFAULT_HTTP_TIMEOUT_MS,
+  DEFAULT_MEMORY_ATTEST_TIMEOUT_MS,
+  HttpDoorConnection
+} from "../src/transports/http-client.js";
 import { HttpDoorServer } from "../src/transports/http.js";
 import { InProcessDoorConnection } from "../src/transports/in-process.js";
 import { WsDoorSessionServer } from "../src/transports/ws.js";
@@ -38,7 +35,19 @@ const DOOR_ID = "discord:client";
 const EPOCH = 50;
 const ISSUED_AT = "2026-07-20T15:09:00.000Z";
 const RECEIVED_AT = "2026-07-20T15:10:00.000Z";
-const CORE = '{"type":"attestation","kind":"arrival"}';
+/** Canonical OSP attestation core bound to `(door_id, epoch, kind)` — the Door rejects unbound cores. */
+function attestCore(kind: AttestRequest["kind"], epoch: number, doorId = DOOR_ID): string {
+  return new TextDecoder().decode(
+    canonicalize({
+      spec: "osp/0.2",
+      seq: 1,
+      prev: "bafyprev",
+      type: "attestation",
+      body: { kind, door_id: doorId, epoch },
+      residency: `door:${doorId}/epoch:${String(epoch)}`
+    })
+  );
+}
 
 class FakeClock {
   constructor(private readonly fixed: string) {}
@@ -55,7 +64,7 @@ const defaultPolicy: HostPolicy = {
     platform: "discord",
     invitation_required: false
   },
-  capabilities: ["session.text", "heartbeat", "attest", "cosign.manual"]
+  capabilities: ["session.text", "heartbeat", "attest"]
 };
 
 function signAttestRequest(
@@ -83,21 +92,6 @@ function signOutboundFrame(
 ): OutboundFrame {
   const payload = outboundSigningPayload(frame);
   return { ...frame, sig: encodeSignature(sign(payload, session.privateKey)) };
-}
-
-function sampleShards(count: number): CosignCandidateShard[] {
-  return Array.from({ length: count }, (_, index) => ({
-    shard_id: `shard_${String(index + 1).padStart(2, "0")}`,
-    text: `Memory shard ${String(index + 1)} from the residency.`
-  }));
-}
-
-function signCosignReviewRequest(
-  session: Ed25519Keypair,
-  fields: Omit<Extract<CosignRequest, { phase: "review" }>, "sig">
-): Extract<CosignRequest, { phase: "review" }> {
-  const payload = cosignReviewSigningPayload(fields);
-  return { ...fields, sig: encodeSignature(sign(payload, session.privateKey)) };
 }
 
 function sessionBindParams(
@@ -204,7 +198,7 @@ describe("HttpDoorConnection", () => {
         door_id: DOOR_ID,
         epoch: EPOCH,
         kind: "arrival",
-        core: CORE,
+        core: attestCore("arrival", EPOCH),
         session_pubkey: encodePublicKey(env.session.publicKey),
         issued_at: ISSUED_AT
       },
@@ -233,7 +227,7 @@ describe("HttpDoorConnection", () => {
         door_id: DOOR_ID,
         epoch,
         kind: "arrival",
-        core: CORE,
+        core: attestCore("arrival", epoch),
         session_pubkey: encodePublicKey(env.session.publicKey),
         issued_at: ISSUED_AT
       },
@@ -256,46 +250,6 @@ describe("HttpDoorConnection", () => {
     expect(httpResponse).toEqual(inProcessResponse);
   });
 
-  it("cosign review matches InProcessDoorConnection", async () => {
-    const helloRequest = {
-      protocol_version: DOOR_PROTOCOL_VERSION,
-      soul_pubkey: encodePublicKey(env.soul.publicKey)
-    };
-    await env.httpClient.hello(helloRequest);
-
-    const epoch = EPOCH + 2;
-    const arrival = signAttestRequest(
-      env.soul,
-      env.session,
-      {
-        protocol_version: DOOR_PROTOCOL_VERSION,
-        door_id: DOOR_ID,
-        epoch,
-        kind: "arrival",
-        core: CORE,
-        session_pubkey: encodePublicKey(env.session.publicKey),
-        issued_at: ISSUED_AT
-      },
-      true
-    );
-    await env.inProcess.attest(arrival);
-    await env.httpClient.attest(arrival);
-
-    const reviewRequest = signCosignReviewRequest(env.session, {
-      protocol_version: DOOR_PROTOCOL_VERSION,
-      phase: "review",
-      door_id: DOOR_ID,
-      epoch,
-      session_pubkey: encodePublicKey(env.session.publicKey),
-      shards: sampleShards(5),
-      issued_at: ISSUED_AT
-    });
-
-    const inProcessResponse = await env.inProcess.cosign(reviewRequest);
-    const httpResponse = await env.httpClient.cosign(reviewRequest);
-    expect(httpResponse).toEqual(inProcessResponse);
-  });
-
   it("throws DoorError on server DoorError responses", async () => {
     const helloRequest = {
       protocol_version: DOOR_PROTOCOL_VERSION,
@@ -311,7 +265,7 @@ describe("HttpDoorConnection", () => {
         door_id: DOOR_ID,
         epoch: EPOCH + 3,
         kind: "arrival",
-        core: CORE,
+        core: attestCore("arrival", EPOCH + 3),
         session_pubkey: encodePublicKey(env.session.publicKey),
         issued_at: ISSUED_AT
       },
@@ -327,7 +281,7 @@ describe("HttpDoorConnection", () => {
         door_id: DOOR_ID,
         epoch: EPOCH + 4,
         kind: "departure",
-        core: '{"type":"attestation","kind":"departure"}',
+        core: attestCore("departure", EPOCH + 4),
         session_pubkey: encodePublicKey(env.session.publicKey),
         issued_at: ISSUED_AT
       },
@@ -382,7 +336,7 @@ describe("HttpDoorConnection", () => {
     }
   });
 
-  it("requires hello before attest, heartbeat, and cosign", async () => {
+  it("requires hello before attest and heartbeat", async () => {
     const arrival = signAttestRequest(
       env.soul,
       env.session,
@@ -391,7 +345,7 @@ describe("HttpDoorConnection", () => {
         door_id: DOOR_ID,
         epoch: EPOCH + 5,
         kind: "arrival",
-        core: CORE,
+        core: attestCore("arrival", EPOCH + 5),
         session_pubkey: encodePublicKey(env.session.publicKey),
         issued_at: ISSUED_AT
       },
@@ -410,19 +364,6 @@ describe("HttpDoorConnection", () => {
       issued_at: ISSUED_AT
     });
     await expect(env.httpClient.heartbeat(heartbeat)).rejects.toMatchObject({
-      code: "session_invalid"
-    });
-
-    const reviewRequest = signCosignReviewRequest(env.session, {
-      protocol_version: DOOR_PROTOCOL_VERSION,
-      phase: "review",
-      door_id: DOOR_ID,
-      epoch: EPOCH + 5,
-      session_pubkey: encodePublicKey(env.session.publicKey),
-      shards: sampleShards(5),
-      issued_at: ISSUED_AT
-    });
-    await expect(env.httpClient.cosign(reviewRequest)).rejects.toMatchObject({
       code: "session_invalid"
     });
   });
@@ -464,7 +405,7 @@ describe("HttpDoorConnection", () => {
           door_id: DOOR_ID,
           epoch: EPOCH + 6,
           kind: "arrival",
-          core: CORE,
+          core: attestCore("arrival", EPOCH + 6),
           session_pubkey: encodePublicKey(env.session.publicKey),
           issued_at: ISSUED_AT
         },
@@ -478,79 +419,7 @@ describe("HttpDoorConnection", () => {
     }
   });
 
-  it("rejects cosign response whose phase does not match the request", async () => {
-    const helloRequest = {
-      protocol_version: DOOR_PROTOCOL_VERSION,
-      soul_pubkey: encodePublicKey(env.soul.publicKey)
-    };
-    await env.httpClient.hello(helloRequest);
-
-    const epoch = EPOCH + 8;
-    await env.httpClient.attest(
-      signAttestRequest(
-        env.soul,
-        env.session,
-        {
-          protocol_version: DOOR_PROTOCOL_VERSION,
-          door_id: DOOR_ID,
-          epoch,
-          kind: "arrival",
-          core: CORE,
-          session_pubkey: encodePublicKey(env.session.publicKey),
-          issued_at: ISSUED_AT
-        },
-        true
-      )
-    );
-
-    const reviewRequest = signCosignReviewRequest(env.session, {
-      protocol_version: DOOR_PROTOCOL_VERSION,
-      phase: "review",
-      door_id: DOOR_ID,
-      epoch,
-      session_pubkey: encodePublicKey(env.session.publicKey),
-      shards: sampleShards(5),
-      issued_at: ISSUED_AT
-    });
-
-    const originalFetch = globalThis.fetch;
-    const mismatchedFetch: typeof fetch = async (input, init) => {
-      const response = await originalFetch(input, init);
-      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-      if (!url.includes("/door/cosign")) {
-        return response;
-      }
-      const json = (await response.json()) as Record<string, unknown>;
-      // Flip a valid review response into a commit-shaped body so phase ≠ request.
-      return new Response(
-        JSON.stringify({
-          phase: "commit",
-          door_id: json.door_id,
-          epoch: json.epoch,
-          shard_id: "shard_01",
-          door_cosig:
-            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-          received_at: json.received_at,
-          door_sig: json.door_sig
-        }),
-        {
-          status: response.status,
-          headers: { "Content-Type": "application/json" }
-        }
-      );
-    };
-
-    vi.stubGlobal("fetch", mismatchedFetch);
-    try {
-      await expect(env.httpClient.cosign(reviewRequest)).rejects.toMatchObject({
-        code: "invalid_request"
-      });
-    } finally {
-      vi.unstubAllGlobals();
-    }
-  });
-
-  it("happy path: hello then attest, heartbeat, and cosign review", async () => {
+  it("happy path: hello then attest and heartbeat", async () => {
     const helloRequest = {
       protocol_version: DOOR_PROTOCOL_VERSION,
       soul_pubkey: encodePublicKey(env.soul.publicKey)
@@ -567,7 +436,7 @@ describe("HttpDoorConnection", () => {
         door_id: DOOR_ID,
         epoch,
         kind: "arrival",
-        core: CORE,
+        core: attestCore("arrival", epoch),
         session_pubkey: encodePublicKey(env.session.publicKey),
         issued_at: ISSUED_AT
       },
@@ -587,18 +456,6 @@ describe("HttpDoorConnection", () => {
     });
     const heartbeatResponse = await env.httpClient.heartbeat(heartbeat);
     expect(heartbeatResponse.accepted).toBe(true);
-
-    const reviewRequest = signCosignReviewRequest(env.session, {
-      protocol_version: DOOR_PROTOCOL_VERSION,
-      phase: "review",
-      door_id: DOOR_ID,
-      epoch,
-      session_pubkey: encodePublicKey(env.session.publicKey),
-      shards: sampleShards(5),
-      issued_at: ISSUED_AT
-    });
-    const reviewResponse = await env.httpClient.cosign(reviewRequest);
-    expect(reviewResponse.phase).toBe("review");
   });
 });
 
@@ -623,7 +480,7 @@ describe("WsDoorSessionClient", () => {
         door_id: DOOR_ID,
         epoch,
         kind: "arrival",
-        core: CORE,
+        core: attestCore("arrival", epoch),
         session_pubkey: encodePublicKey(env.session.publicKey),
         issued_at: ISSUED_AT
       },
@@ -702,9 +559,13 @@ describe("WsDoorSessionClient", () => {
     await establishArrival(epoch);
 
     let connectAttempts = 0;
+    let bindFailures = 0;
     const client = new WsDoorSessionClient({
       wsBaseUrl: env.wsBaseUrl,
       bind: sessionBindParams(generateKeypair(), DOOR_ID, epoch),
+      onBindFailed: () => {
+        bindFailures += 1;
+      },
       initialBackoffMs: 20,
       maxBackoffMs: 40,
       sleep: async () => {
@@ -719,7 +580,89 @@ describe("WsDoorSessionClient", () => {
     await expect(client.connect()).rejects.toMatchObject({ code: "session_invalid" });
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect(connectAttempts).toBe(1);
+    expect(bindFailures).toBe(1);
+    await expect(client.connect()).rejects.toMatchObject({ code: "session_invalid" });
+    expect(bindFailures).toBe(1);
     await client.close();
+  });
+
+  it("calls onBindFailed once when a reconnect is refused (the Door forgot the session)", async () => {
+    const epoch = EPOCH + 14;
+    await establishArrival(epoch);
+    const bind = sessionBindParams(env.session, DOOR_ID, epoch);
+
+    let socketCount = 0;
+    let bindFailures = 0;
+    const client = new WsDoorSessionClient({
+      wsBaseUrl: env.wsBaseUrl,
+      bind,
+      initialBackoffMs: 10,
+      maxBackoffMs: 20,
+      sleep: async (ms) => {
+        await new Promise((resolve) => setTimeout(resolve, ms));
+      },
+      onBindFailed: () => {
+        bindFailures += 1;
+      },
+      createWebSocket: (url) => {
+        socketCount += 1;
+        return new WebSocket(url);
+      }
+    });
+
+    try {
+      await client.connect();
+      // A newer arrival supersedes the session; the Door drops the socket (plain close),
+      // the client reconnects with the old bind, and the Door refuses it with 4401.
+      const next = generateKeypair();
+      await env.inProcessDoor.attest(
+        signAttestRequest(
+          env.soul,
+          next,
+          {
+            protocol_version: DOOR_PROTOCOL_VERSION,
+            door_id: DOOR_ID,
+            epoch: epoch + 1,
+            kind: "arrival",
+            core: attestCore("arrival", epoch + 1),
+            session_pubkey: encodePublicKey(next.publicKey),
+            issued_at: ISSUED_AT
+          },
+          true
+        )
+      );
+      env.wsServer.closeSessionClients(DOOR_ID, epoch, "superseded");
+
+      await vi.waitFor(
+        () => {
+          expect(bindFailures).toBe(1);
+        },
+        { timeout: 2000 }
+      );
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(bindFailures).toBe(1);
+      expect(socketCount).toBe(2);
+      expect(client.isConnected()).toBe(false);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("does not call onBindFailed after an intentional close", async () => {
+    const epoch = EPOCH + 15;
+    await establishArrival(epoch);
+    let bindFailures = 0;
+    const client = new WsDoorSessionClient({
+      wsBaseUrl: env.wsBaseUrl,
+      bind: sessionBindParams(env.session, DOOR_ID, epoch),
+      onBindFailed: () => {
+        bindFailures += 1;
+      }
+    });
+    await client.connect();
+    await client.close();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(bindFailures).toBe(0);
   });
 
   it("close during in-flight connect does not leave a live socket", async () => {
@@ -839,5 +782,79 @@ describe("WsDoorSessionClient", () => {
     } finally {
       await client.close();
     }
+  });
+});
+
+describe("HttpDoorConnection timeouts", () => {
+  let server: ReturnType<typeof createServer> | null = null;
+
+  afterEach(async () => {
+    const running = server;
+    server = null;
+    if (running !== null) {
+      running.closeAllConnections();
+      await new Promise((resolve) => running.close(resolve));
+    }
+  });
+
+  /** A Door that answers hello (when `helloAnswers`) and never answers anything else. */
+  async function hangingDoor(helloAnswers: boolean): Promise<string> {
+    const door = new Door({
+      doorId: DOOR_ID,
+      doorKeypair: generateKeypair(),
+      soulPublicKey: generateKeypair().publicKey,
+      clock: new FakeClock(RECEIVED_AT),
+      policy: defaultPolicy
+    });
+    const hello = await door.hello(helloRequest);
+    server = createServer((req, res) => {
+      if (helloAnswers && req.url === "/door/hello") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(hello));
+        return;
+      }
+      // Never answer.
+    });
+    await new Promise<void>((resolve) => server?.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (address === null || typeof address === "string") {
+      throw new Error("no address");
+    }
+    return `http://127.0.0.1:${String(address.port)}`;
+  }
+
+  const helloRequest = {
+    protocol_version: DOOR_PROTOCOL_VERSION,
+    soul_pubkey: encodePublicKey(generateKeypair().publicKey)
+  };
+  const request = (kind: AttestRequest["kind"]): AttestRequest =>
+    ({ kind, door_id: DOOR_ID, epoch: EPOCH }) as unknown as AttestRequest;
+
+  it("defaults: 30 s for hello / heartbeat / presence attests, 180 s for memory attests", () => {
+    expect(DEFAULT_HTTP_TIMEOUT_MS).toBe(30_000);
+    expect(DEFAULT_MEMORY_ATTEST_TIMEOUT_MS).toBe(180_000);
+  });
+
+  it("a memory attest waits for the memory timeout; everything else for the short one", async () => {
+    const baseUrl = await hangingDoor(true);
+    const client = new HttpDoorConnection({ baseUrl, timeoutMs: 50, memoryTimeoutMs: 300 });
+    await client.hello(helloRequest);
+    const timedOut = (ms: number): unknown => ({
+      code: "door_unavailable",
+      message: `door unavailable: request timed out after ${String(ms)}ms`
+    });
+    await expect(client.attest(request("departure"))).rejects.toMatchObject(timedOut(50));
+    await expect(client.heartbeat({} as HeartbeatRequest)).rejects.toMatchObject(timedOut(50));
+    const started = Date.now();
+    await expect(client.attest(request("memory"))).rejects.toMatchObject(timedOut(300));
+    expect(Date.now() - started).toBeGreaterThanOrEqual(250);
+  });
+
+  it("hello times out too", async () => {
+    const client = new HttpDoorConnection({ baseUrl: await hangingDoor(false), timeoutMs: 50 });
+    await expect(client.hello(helloRequest)).rejects.toMatchObject({
+      code: "door_unavailable",
+      message: "door unavailable: request timed out after 50ms"
+    });
   });
 });

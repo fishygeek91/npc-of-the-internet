@@ -2,8 +2,6 @@ import type { Door } from "../door.js";
 import type {
   AttestRequest,
   AttestResponse,
-  CosignRequest,
-  CosignResponse,
   DoorConnection,
   HeartbeatRequest,
   HeartbeatResponse,
@@ -13,7 +11,7 @@ import type {
 
 /**
  * In-process `DoorConnection` adapter for tests and same-process Session wiring.
- * Delegates attest, heartbeat, and cosign to the underlying `Door` core.
+ * Delegates attest and heartbeat to the underlying `Door` core.
  */
 export class InProcessDoorConnection implements DoorConnection {
   constructor(private readonly door: Door) {}
@@ -26,11 +24,6 @@ export class InProcessDoorConnection implements DoorConnection {
   /** `POST /door/heartbeat` — delegate to Door core. */
   heartbeat(req: HeartbeatRequest): Promise<HeartbeatResponse> {
     return this.door.heartbeat(req);
-  }
-
-  /** `POST /door/cosign` — delegate to Door core. */
-  cosign(req: CosignRequest): Promise<CosignResponse> {
-    return this.door.cosign(req);
   }
 
   /** `POST /door/hello` — exposed for transport parity tests. */

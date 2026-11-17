@@ -4,7 +4,7 @@
 |---|---|
 | **Version** | `osp-ipfs/0.1` |
 | **License** | [CC-BY-4.0](https://creativecommons.org/licenses/by/4.0/) |
-| **Status** | **Draft plan** — authored by Claude (reviewer) for T7.1 (#55). The T7.1 implementer finalizes this document in PR A; when this spec and implementation disagree, this spec wins. |
+| **Status** | **Normative** — Phase A (T7.1a, #113) lands this document as normative. When this spec and implementation disagree, this spec wins. |
 | **Depends on** | `spec/osp/records.md` (`osp/0.1`), ENGINEERING.md D2/D5, ARCHITECTURE.md §2 |
 
 This document specifies how the soulchain lives on IPFS: the block layout, head tracking, the replication ("pinning") strategy, crash/concurrency semantics, and the privacy gate that must be satisfied before any record is publicly replicated. It is written so that a less capable agent can implement it without making design decisions.
@@ -50,7 +50,7 @@ dag-json decoders interpret a JSON map whose **only** key is `"/"` as a link (an
 |---|---|---|
 | **G1** | #67 (append-time verification + canonical-bytes enforcement) merged | Otherwise the second store bakes in the "append accepts unverifiable records / non-canonical bytes brick" contract twice |
 | **G2** | #79 store extraction (at minimum: blob-write, head-pointer, lock primitives extracted from `FileSoulStore`) merged | `IpfsSoulStore` reuses these primitives instead of duplicating fsync/lock/recovery logic |
-| **G3 (E1)** | Privacy & erasure decision (§7) recorded | Public replication of `memory` records is irreversible; the decision must precede the first push |
+| **G3 (E1)** | Privacy & erasure decision (§7) recorded — **(b)** in [`privacy.md`](./privacy.md) | Public replication of `memory` records is irreversible; the decision must precede the first push |
 
 Phases A–B (§8) may proceed after G1+G2. Phase D (public replication) additionally requires G3.
 
@@ -94,19 +94,19 @@ Implements the existing `SoulStore` interface (`append`, `head`, `get(cid)`, `it
   blocks/…            # blockstore-fs sharded layout, key = CID, value = canonical record bytes
   HEAD                # JSON {"cid": "bagu…", "seq": n} — atomic write (tmp + rename + fsync)
   seq-index.jsonl     # append-only: {"seq": n, "cid": "bagu…"} per record (see 3.3)
-  LOCK                # wx-mode lockfile (same primitive as FileSoulStore)
+  LOCK                # wx-mode lockfile (same primitive as FileSoulStore): {pid, acquiredAt, nonce, host, startedAt}
   replication.jsonl   # L2 queue (§5); absent when replication disabled
 ```
 
 ### 3.2 Append (same contract as FileSoulStore post-#67)
 
 1. Hold the `LOCK` (wx; refuse concurrent open-for-append).
-2. Verify the record fully (schema, sigs, cosigners where required, `prev` equals current `HEAD.cid`, `seq` equals `HEAD.seq + 1`) — append-time verification per #67.
+2. Verify the record fully (schema, sigs, cosigners where required, `prev` equals current `HEAD.cid`, `seq` equals `HEAD.seq + 1`) — append-time verification per #67 — **and** the chain-level rules of `records.md` Verification (homogeneous `spec`, drift evidence, tombstone references, PoP continuity/conflicts) against the stored prefix, before any durable write.
 3. Serialize to canonical bytes; compute CID; **verify the caller-supplied record round-trips to those exact bytes** (canonical-bytes enforcement per #67 — never store bytes whose CID wouldn't re-derive).
 4. `blockstore.put` (fsync), append to `seq-index.jsonl` (fsync), then atomically replace `HEAD`.
 5. If replication is enabled, append the CID to `replication.jsonl` (§5). Failures here MUST NOT fail the append.
 
-Crash windows: block written but `HEAD` not updated → on open, recovery walks `seq-index.jsonl` tail vs `HEAD` and truncates/repairs exactly as `openWithRecovery` does for torn JSONL lines today. Document each window and its recovery in the impl PR; test the block-written/HEAD-stale case explicitly.
+Crash windows: block written but `HEAD` not updated → on open, recovery walks `seq-index.jsonl` tail vs `HEAD` and truncates/repairs exactly as `openWithRecovery` does for torn JSONL lines today. `HEAD` MUST name exactly the last seq-index entry (seq **and** CID) on a normal open; recovery advances a lagging or missing `HEAD` **only after** the full indexed chain verifies, and treats a `HEAD` that is ahead of or diverges from the index as corruption. A block whose bytes do not hash to its CID (torn) is replaced atomically on the next put; an existing identical block is fsynced before the put returns. Block deletion (erasure) fsyncs the shard directory. Document each window and its recovery in the impl PR; test the block-written/HEAD-stale case explicitly.
 
 ### 3.3 Why a seq index
 
@@ -114,7 +114,7 @@ Crash windows: block written but `HEAD` not updated → on open, recovery walks 
 
 ### 3.4 Dual-write mode (Ghost default for v0.2)
 
-`FileSoulStore` remains the system of record until IPFS has run in production for a full residency cycle. v0.2 ships a `DualSoulStore` wrapper: append → `FileSoulStore` first (authoritative, feeds existing B2 backup per #63 hardening), then `IpfsSoulStore`; divergence between the two (differing head CID at any point) is a fatal boot error. Cutover to IPFS-primary is a separate, later decision — not part of T7.1.
+`FileSoulStore` remains the system of record until IPFS has run in production for a full residency cycle. v0.2 ships a `DualSoulStore` wrapper: append → `FileSoulStore` first (authoritative, feeds existing B2 backup per #63 hardening), then `IpfsSoulStore`; divergence between the two (differing head CID at any point) is a fatal boot error, as is a populated mirror behind an empty authoritative `FileSoulStore`. At open, every blob tombstoned on the authoritative chain that the authoritative `FileSoulStore` no longer holds is removed from the mirror (a crash between the file and mirror deletes must not leave erased prose mirrored). The mirror follows the file store, not the tombstone alone: identical bytes share a CID, so a later live record may legitimately re-put an erased blob, and the mirror then keeps its copy. Cutover to IPFS-primary is a separate, later decision — not part of T7.1.
 
 ### 3.5 Conformance suite
 
@@ -123,7 +123,7 @@ A shared test suite (`packages/osp-core/test/store-conformance.ts`) parameterize
 - append/head/get/iterate happy paths; refuse `prev` ≠ head; refuse seq gaps; refuse concurrent append (second open fails on lock)
 - torn-state recovery per store's documented windows
 - **CID identity:** same fixture records appended to both stores yield byte-identical CIDs and identical `iterate()` output
-- all `spec/osp/vectors/` chains loaded through `IpfsSoulStore` produce identical verify results
+- all **valid** `spec/osp/vectors/` chains loaded through `IpfsSoulStore.append` produce identical `verifyChain` results (append refuses unverifiable records per #67). Invalid-vector rejection via direct block/seq-index injection (bypassing append) is deferred to T7.1c
 - no network access anywhere (enforced: tests run with no listener and no dialer configured)
 
 ---
@@ -150,7 +150,7 @@ Because records carry no IPLD links (§0), we publish a **pin manifest**: a dag-
 - `records` lists **every** record CID genesis→head, in seq order, as dag-json links. Recursive-pinning the manifest CID pins the full chain plus the manifest itself.
 - `prev_manifest` links the previous manifest (null-omitted on the first), giving pinners of the latest manifest the manifest history too at negligible cost.
 - `sig`: soul-key Ed25519 over the manifest's canonical bytes with `sig` omitted (same signing-payload convention as records). This makes "the official pinset" spoof-proof: integrity comes from content addressing, *authenticity* from the signature.
-- Encoding: strict dag-json (links as `{"/": …}`), canonical key order, no whitespace — the manifest, unlike records, IS a native IPLD block and follows dag-json rules.
+- Encoding: strict dag-json (links as `{"/": …}`), canonical key order, no whitespace — the manifest, unlike records, IS a native IPLD block and follows dag-json rules. Decoders MUST reject manifest bytes that do not re-encode byte-identically (unknown keys, non-canonical form): otherwise such bytes verify (verification re-encodes) under a CID different from the signed manifest's.
 - Manifests are **distribution artifacts, not chain records**: no `seq`, no envelope, never appended to the soulchain, and losing them loses nothing (regenerable from the chain at any time).
 - Cadence: regenerate on every `departure` attestation and at least every 500 appends, whichever first. Size stays trivial (10k records ≈ a few hundred KB of links).
 - Scaling note (future, non-normative): past ~100k records, shard `records` into linked segment blocks; not needed for years.
@@ -171,6 +171,8 @@ Because records carry no IPLD links (§0), we publish a **pin manifest**: a dag-
 
 `replication.jsonl`: append-only journal of `{"cid": …, "kind": "record" | "manifest" | "car", "enqueued_at": …}` plus ack lines `{"acked": cid, "target": "<service>", "at": …}`. At-least-once delivery; idempotent because everything is content-addressed (re-uploading a block is a no-op server-side). A small replicator loop inside the runtime process (no new container — D8 "three processes, period") drains the queue with exponential backoff. Replication lag is observable (`queue depth` in logs + Atlas `/state` later); it never blocks or fails `append`.
 
+**Scaling note:** the baseline drain re-uploads the full manifest-rooted CAR on each cadence/unacked tick (O(chain) bytes). Fine at early chain sizes; when chains grow, the escape hatch is incremental push (per-record raw block upload for `kind: "record"` entries) while keeping CAR upload for manifest roots.
+
 ### 5.2 Targets
 
 **≥ 2 independent pinning services** (single-service outage or account loss must not orphan the public copy). Selection criteria (evaluate at impl time; the API shapes to support):
@@ -188,15 +190,20 @@ Credentials via env (`ops/SECRETS.md` entries; Zod-validated at boot, per D2). P
 
 ### 5.4 Volunteer pinners
 
-Published on the Atlas ("Pin the soul" page, later task) and in `spec/osp/ipfs-store.md` appendix:
+Published on the Atlas and in this appendix:
 
-```
-# one-time, and again whenever a new manifest is announced
-curl -LO https://<atlas>/soulchain-latest.car
+```bash
+# Fetch the latest CAR and manifest CID from Atlas (SSH tunnel or public URL when Gate 2 approves)
+curl -LO https://<atlas-host>/soulchain-latest.car
+curl -s https://<atlas-host>/soulchain/manifest
+# → {"manifestCid":"bagu..."} — verify this CID matches the CAR root before pinning
+
 ipfs dag import soulchain-latest.car
-ipfs pin add --recursive <manifest-cid>   # printed by the Atlas next to the CAR
+ipfs pin add --recursive <manifest-cid>   # use manifestCid from /soulchain/manifest
 ipfs pin rm <previous-manifest-cid>       # optional; old records are shared, dedup keeps cost ≈ 0
 ```
+
+Re-run when a new manifest is announced (departure or every ~500 appends).
 
 Sybil/abuse surface: none — pinning is permissionless replication of public signed data; volunteers need no registration and get no protocol role (invitation weight is unrelated).
 
@@ -222,14 +229,18 @@ Sybil/abuse surface: none — pinning is permissionless replication of public si
 
 ## 7. E1 — Privacy & erasure gate (normative, blocks Phase D)
 
-Ghost's chain contains distilled `memory` text (and journals) derived from real people's messages. Today it lives on one VPS + a private B2 bucket, so deletion is *operationally* possible. **Public IPFS replication removes that option permanently.** Before the first push of any `memory` record, the project must adopt, in writing (a `spec/osp/privacy.md` + charter update), exactly one of:
+Ghost's chain contains distilled `memory` text (and journals) derived from real people's messages. Today it lives on one VPS + a private B2 bucket, so deletion is *operationally* possible. **Public IPFS replication removes that option permanently** unless erasure is designed in from the start.
 
-- **(a) Immutability accepted.** Shard text stays on-chain. Requires: strengthened PII screen (beyond the current 3 regexes — this is #T7.4 territory), explicit host-consent language in the Door cosign flow, a published takedown policy that is honest about its limits (unpin ≠ erase, §5.3), and a documented legal-risk acceptance by the operator.
-- **(b) Text-off-chain-by-reference (`osp/0.2`).** `memory.body.text` (and `journal`) move to side blobs; the chain records a blob CID + hash. Erasure = delete/unpin the blob; the chain keeps a verifiable tombstone (hash remains, content gone). Costs: `osp/0.1→0.2` schema bump with migration vectors (per D7 spec-versioning rules), Self-Composer fetch path, cosign semantics over blob bytes, "tombstoned shard" handling in composition, and a WHITEPAPER §3.1/§3.2 wording update in the same PR ("shards are published to the soulchain" becomes "published via the soulchain"; the append-only *identity* claim is unchanged — erasure is itself public and auditable). Under (b), Arweave/cold snapshots (§9) receive envelope blocks only, never text blobs.
+**Decision recorded: (b) — text-off-chain-by-reference (`osp/0.2`), durability by default.** Full policy: [`spec/osp/privacy.md`](./privacy.md). Under (b):
 
-**Recommendation (Claude, reviewer): (b).** It is the only option compatible with both "the soul is public forever" and "a human can make us delete what a bot memorized about them." It also cleanly separates *identity* (permanently pinned envelopes) from *content* (pinned-until-erased blobs) — the chain's integrity never depends on blob availability. Decision is the owner's; either choice unblocks Phase D once recorded.
+- `memory.body.text` (and `journal`) move to **side blobs**; the chain records a blob CID + hash.
+- **Erasure** = delete/unpin the blob from infrastructure we control; the chain keeps a verifiable tombstone (hash remains, content gone). Unpin ≠ erase for volunteer copies already held elsewhere (§5.3) — announcements and policies must be honest about that asymmetry.
+- **Durability by default:** blobs are pinned and retained indefinitely; erasure is an exceptional, on-chain-visible event.
+- Under (b), Arweave/cold snapshots (§9) receive **envelope blocks only**, never text blobs.
 
-Interim rule regardless of choice: Phases A–C are unaffected (local-only). If Phase D ships before E1 is decided, replication MUST be configured to an **empty target set** — the code path exists, nothing leaves the box.
+Schema/format work for `osp/0.2` is tracked in [#119](https://github.com/fishygeek91/npc-of-the-internet/issues/119) (migration vectors per D7, Self-Composer fetch path, cosign semantics over blob bytes, tombstoned-shard handling in composition). Record, tombstone, and side-blob shapes are normative in [`records.md`](./records.md) (`osp/0.2`). WHITEPAPER §3.1/§3.2 and genesis charter are updated in the same gate. The append-only *identity* claim is unchanged — erasure is itself public and auditable.
+
+Phases A–C are unaffected (local-only). Until `#119` lands and operators explicitly configure Phase D replication, replication MUST be configured to an **empty target set** — the code path exists, nothing leaves the box.
 
 ---
 

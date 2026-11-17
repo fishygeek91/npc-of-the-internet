@@ -1,0 +1,13 @@
+---
+description: Keep plan frontmatter todos in sync with actual progress
+alwaysApply: true
+---
+
+# Plan todos stay current
+
+When a Cursor plan file is in use for the current work (`.cursor/plans/*.plan.md` or `~/.cursor/plans/*.plan.md`):
+
+1. **Update plan todos as you go** — mark `in_progress` when starting, `completed` when done, `cancelled` if abandoned. Do not leave finished work as `pending`.
+2. **Refresh the overview** when phase status changes (merged PR, next gate, blocked).
+3. **Prefer the plan file’s YAML `todos:`** as the source of truth for long-running multi-phase work; keep the session todo list aligned with it.
+4. Do this in the same turn you finish a todo — not only at session end.

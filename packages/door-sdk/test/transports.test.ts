@@ -26,7 +26,19 @@ const DOOR_ID = "discord:http";
 const EPOCH = 11;
 const ISSUED_AT = "2026-07-20T15:09:00.000Z";
 const RECEIVED_AT = "2026-07-20T15:10:00.000Z";
-const CORE = '{"type":"attestation","kind":"arrival"}';
+/** Canonical OSP attestation core bound to `(door_id, epoch, kind)` — the Door rejects unbound cores. */
+function attestCore(kind: AttestRequest["kind"], epoch: number, doorId = DOOR_ID): string {
+  return new TextDecoder().decode(
+    canonicalize({
+      spec: "osp/0.2",
+      seq: 1,
+      prev: "bafyprev",
+      type: "attestation",
+      body: { kind, door_id: doorId, epoch },
+      residency: `door:${doorId}/epoch:${String(epoch)}`
+    })
+  );
+}
 
 class FakeClock {
   constructor(private readonly fixed: string) {}
@@ -43,7 +55,7 @@ const defaultPolicy: HostPolicy = {
     platform: "discord",
     invitation_required: false
   },
-  capabilities: ["session.text", "heartbeat", "attest", "cosign.manual"]
+  capabilities: ["session.text", "heartbeat", "attest"]
 };
 
 function createDoor(soulPublicKey: Uint8Array): Door {
@@ -233,7 +245,7 @@ describe("HTTP transport", () => {
     const { baseUrl } = await httpServer.start();
 
     const response = await postJson(baseUrl, "/door/hello", {
-      protocol_version: "door/0.2",
+      protocol_version: "door/0.1",
       soul_pubkey: encodePublicKey(soul.publicKey)
     });
 
@@ -259,7 +271,7 @@ describe("HTTP transport", () => {
           door_id: DOOR_ID,
           epoch: EPOCH,
           kind: "arrival",
-          core: CORE,
+          core: attestCore("arrival", EPOCH),
           session_pubkey: encodePublicKey(session.publicKey),
           issued_at: ISSUED_AT
         },
@@ -279,7 +291,7 @@ describe("HTTP transport", () => {
           door_id: DOOR_ID,
           epoch: EPOCH + 1,
           kind: "departure",
-          core: '{"type":"attestation","kind":"departure"}',
+          core: attestCore("departure", EPOCH + 1),
           session_pubkey: encodePublicKey(session.publicKey),
           issued_at: ISSUED_AT
         },
@@ -309,7 +321,7 @@ describe("HTTP transport", () => {
           door_id: DOOR_ID,
           epoch: EPOCH,
           kind: "arrival",
-          core: CORE,
+          core: attestCore("arrival", EPOCH),
           session_pubkey: encodePublicKey(session.publicKey),
           issued_at: ISSUED_AT
         },
@@ -354,22 +366,23 @@ describe("HTTP transport", () => {
     expect((response.body.error as { code: string }).code).toBe("payload_too_large");
   });
 
-  it("stream body exceeding 128KiB without Content-Length returns 413", async () => {
+  it("stream body exceeding MAX_HTTP_BODY_BYTES without Content-Length returns 413", async () => {
     const soul = generateKeypair();
     const door = createDoor(soul.publicKey);
     httpServer = new HttpDoorServer({ door });
     const { baseUrl } = await httpServer.start();
 
     const chunk = Buffer.alloc(64 * 1024, 0x61);
+    const chunkCount = Math.ceil(MAX_HTTP_BODY_BYTES / chunk.length) + 1;
     const response = await postRaw(baseUrl, "/door/hello", {
-      streamChunks: [chunk, chunk, chunk]
+      streamChunks: Array.from({ length: chunkCount }, () => chunk)
     });
 
     expect(response.status).toBe(413);
     expect((response.body.error as { code: string }).code).toBe("payload_too_large");
   });
 
-  it("stream body one byte over 128KiB returns 413", async () => {
+  it("stream body one byte over MAX_HTTP_BODY_BYTES returns 413", async () => {
     const soul = generateKeypair();
     const door = createDoor(soul.publicKey);
     httpServer = new HttpDoorServer({ door });
@@ -460,7 +473,7 @@ describe("WS session lifecycle (#66)", () => {
           door_id: DOOR_ID,
           epoch: EPOCH,
           kind: "arrival",
-          core: CORE,
+          core: attestCore("arrival", EPOCH),
           session_pubkey: encodePublicKey(sessionN.publicKey),
           issued_at: ISSUED_AT
         },
@@ -500,7 +513,7 @@ describe("WS session lifecycle (#66)", () => {
           door_id: DOOR_ID,
           epoch: EPOCH + 1,
           kind: "arrival",
-          core: CORE,
+          core: attestCore("arrival", EPOCH + 1),
           session_pubkey: encodePublicKey(sessionN1.publicKey),
           issued_at: ISSUED_AT
         },
@@ -558,7 +571,7 @@ describe("WS session lifecycle (#66)", () => {
           door_id: DOOR_ID,
           epoch: EPOCH,
           kind: "arrival",
-          core: CORE,
+          core: attestCore("arrival", EPOCH),
           session_pubkey: encodePublicKey(session.publicKey),
           issued_at: ISSUED_AT
         },
@@ -588,7 +601,7 @@ describe("WS session lifecycle (#66)", () => {
           door_id: DOOR_ID,
           epoch: EPOCH,
           kind: "departure",
-          core: '{"type":"attestation","kind":"departure"}',
+          core: attestCore("departure", EPOCH),
           session_pubkey: encodePublicKey(session.publicKey),
           issued_at: ISSUED_AT
         },

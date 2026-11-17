@@ -34,7 +34,7 @@ describe("display-body", () => {
     expect(printed).not.toContain("text");
   });
 
-  it("keeps candidate memory text in the display body", () => {
+  it("keeps legacy candidate memory text in the display body", () => {
     const record = {
       type: "memory" as const,
       spec: "osp/0.1" as const,
@@ -43,7 +43,7 @@ describe("display-body", () => {
       residency: "door:discord:g/epoch:1",
       body: {
         kind: "candidate" as const,
-        text: "a proposed shard awaiting host review",
+        text: "a legacy candidate from before witnessed memory",
         proposed_at: "2026-01-02T01:10:00.000Z"
       },
       cosigners: [] as string[],
@@ -53,7 +53,7 @@ describe("display-body", () => {
     const display = toDisplayBody(record);
     expect(display).toMatchObject({
       kind: "candidate",
-      text: "a proposed shard awaiting host review"
+      text: "a legacy candidate from before witnessed memory"
     });
   });
 });
