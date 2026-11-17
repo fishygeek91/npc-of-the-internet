@@ -4,23 +4,12 @@ import { mkdir, unlink, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import {
-  DoorError,
-  DOOR_PROTOCOL_VERSION,
-  HttpDoorConnection,
-  sessionBindSigningPayload,
-  WsDoorSessionClient
-} from "@npc/door-sdk";
-import {
-  DualSoulStore,
-  encodePublicKey,
-  encodeSignature,
-  FileSoulStore,
-  type SoulStore
-} from "@npc/osp-core";
+import { DoorError } from "@npc/door-sdk";
+import { DualSoulStore, FileSoulStore, type SoulStore } from "@npc/osp-core";
 import pino, { type Logger } from "pino";
 
-import { AnthropicBrain } from "./brain/anthropic-brain.js";
+import { createBrain } from "./brain/create-brain.js";
+import { BrainError, brainErrorLogFields } from "./brain/errors.js";
 import type { Brain } from "./brain/types.js";
 import { loadDaemonConfig, type DaemonConfig } from "./daemon-config.js";
 import { DaemonError } from "./daemon-errors.js";
@@ -32,7 +21,19 @@ import {
   startReplicationDrain,
   type ReplicationDrainHandle
 } from "./replication/index.js";
-import { Session } from "./session/session.js";
+import { watchControlDir, type ControlDirWatcher } from "./residency/control-dir.js";
+import {
+  abortableSleep,
+  ResidencyController,
+  type AbortableSleep,
+  type CycleOutcome,
+  type CycleTrigger
+} from "./residency/controller.js";
+import {
+  arriveDaemonResidency,
+  type DaemonResidencyContext
+} from "./residency/daemon-residency.js";
+import { doorEndpoint, probeDoors, type DoorEndpoint } from "./residency/doors.js";
 import type { Clock, Timer } from "./session/types.js";
 
 /** SoulStore with lifecycle close (all runtime store implementations). */
@@ -53,15 +54,41 @@ export type ResidencyDaemonDeps = {
       replicationEnabled: boolean;
     }
   ) => Promise<{ store: ClosableSoulStore; truncatedBytes: number }>;
-  /** When true, do not register SIGTERM/SIGINT handlers. */
+  /** When true, do not register SIGTERM/SIGINT (and SIGUSR2) handlers. */
   skipSignals?: boolean;
-  /** Called after the ready file is written and residency is live. */
+  /** Called once the first residency is live (session socket connected). */
   onReady?: () => void;
+  /** Heartbeat / control-dir / residency-age timer (tests inject a fake). */
+  timer?: Timer;
+  /** Session heartbeat interval override (default 10 min). */
+  heartbeatIntervalMs?: number;
+  /** Abortable sleep for cycle and arrival backoff (tests). */
+  sleep?: AbortableSleep;
+  /** Wall clock override (tests); defaults to the system clock. */
+  clock?: Clock;
+  /** Uniform `[0, 1)` source for choosing the next Door (tests); defaults to `Math.random`. */
+  random?: () => number;
+  /** Per-Door `hello` timeout while probing (default 10 s). */
+  doorProbeTimeoutMs?: number;
+  /** Depart retry backoff override (default 30 s, 120 s). */
+  departRetryDelaysMs?: readonly number[];
+  /** First arrival retry delay override (default 5 s). */
+  arriveRetryBaseMs?: number;
 };
 
-/** Handle returned by {@link startResidencyDaemon} for graceful shutdown. */
+/** Handle returned by {@link startResidencyDaemon}. */
 export type ResidencyDaemonHandle = {
+  /** Graceful shutdown (no departure): abort cycle waits, close session + store. */
   shutdown: () => Promise<void>;
+  /**
+   * Run one residency cycle now (depart → travel → arrive at the next Door), regardless of
+   * whether the operator trigger env is enabled — this is the programmatic API.
+   */
+  requestCycle: (trigger?: CycleTrigger) => Promise<CycleOutcome>;
+  /** Epoch of the live residency, or `null` while traveling / after shutdown. */
+  currentEpoch: () => number | null;
+  /** Door of the live residency, or `null` while traveling / after shutdown. */
+  currentDoorId: () => string | null;
 };
 
 function createRealClock(): Clock {
@@ -97,8 +124,14 @@ function createRealTimer(): Timer {
 }
 
 /**
- * Boot the long-running residency daemon: open soulchain, arrive at Door via HTTP,
- * bind the session WebSocket, and maintain inbound → outbound handling until shutdown.
+ * Boot the long-running residency daemon: open the soulchain, probe the configured Doors,
+ * arrive at one (where the chain says the Wanderer is — the last travel's `to_door_id` when
+ * no arrival followed it, else the last arrival's Door — if online, else `CURRENT_DOOR_ID`,
+ * else a random online Door — retrying with backoff while none is online; SIGTERM/SIGINT
+ * already stop it then), bind the session WebSocket,
+ * and maintain inbound → outbound handling until shutdown. Residency cycles (depart →
+ * travel → arrive at another online Door) run on the residency timer, the operator
+ * trigger, or {@link ResidencyDaemonHandle.requestCycle}.
  */
 export async function startResidencyDaemon(
   config: DaemonConfig,
@@ -138,32 +171,75 @@ export async function startResidencyDaemon(
     logger.warn({ truncatedBytes }, "soulchain_recovery_truncated_torn_append");
   }
 
-  const baseUrl = `http://${config.doorHttpHost}:${String(config.doorHttpPort)}`;
-  const wsBaseUrl = `ws://${config.doorHttpHost}:${String(config.doorHttpPort)}`;
-  const door = new HttpDoorConnection({ baseUrl });
-
-  const hello = await door.hello({
-    protocol_version: DOOR_PROTOCOL_VERSION,
-    soul_pubkey: encodePublicKey(keyring.getSoulPublicKey())
-  });
-  logger.info(
-    {
-      door_id: hello.door_id,
-      active_epoch: hello.active_epoch,
-      capabilities: hello.capabilities
-    },
-    "door_hello"
-  );
-  if (hello.door_id !== config.doorId) {
-    throw new DaemonError(
-      `CURRENT_DOOR_ID mismatch: config has ${config.doorId}, door reports ${hello.door_id}`,
-      "door_mismatch"
-    );
+  const resources: BootResources = { store };
+  try {
+    return await bootResidency({ config, deps, logger, keyring, soulPrivateKey, resources });
+  } catch (error: unknown) {
+    // Boot failed after the store was opened: release whatever was acquired (WS client,
+    // session heartbeat timer, replication drain, store) so nothing leaks, then rethrow.
+    for (const cleanupError of await releaseResources(resources)) {
+      const message = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+      logger.warn({ err: message }, "boot_cleanup_failed");
+    }
+    throw error;
   }
+}
 
-  const brain = deps.brain ?? new AnthropicBrain({ config: config.brain });
-  const clock = createRealClock();
-  const timer = createRealTimer();
+/** Resources acquired during boot, released on boot failure or shutdown. */
+type BootResources = {
+  store: ClosableSoulStore;
+  replicationDrain?: ReplicationDrainHandle;
+  controller?: ResidencyController;
+  controlWatcher?: ControlDirWatcher;
+};
+
+/**
+ * Release boot resources (control watcher → residency controller [aborts any cycle wait,
+ * closes the live residency: WS client + session] → replication drain → store). Every
+ * step runs even when an earlier one throws, so a failing socket close still closes the
+ * store. Returns the errors thrown, in order.
+ */
+async function releaseResources(resources: BootResources): Promise<unknown[]> {
+  const errors: unknown[] = [];
+  const step = async (fn: () => Promise<void>): Promise<void> => {
+    try {
+      await fn();
+    } catch (error: unknown) {
+      errors.push(error);
+    }
+  };
+  await step(async () => {
+    resources.controlWatcher?.stop();
+    await resources.controller?.shutdown();
+  });
+  await step(async () => {
+    await resources.replicationDrain?.stop();
+  });
+  await step(async () => {
+    await resources.store.close();
+  });
+  return errors;
+}
+
+/**
+ * Door probe → hello → session start → WS bind (via the {@link ResidencyController}), plus
+ * the residency-cycle triggers; records each acquired resource in `resources`.
+ */
+async function bootResidency(ctx: {
+  config: DaemonConfig;
+  deps: ResidencyDaemonDeps;
+  logger: Logger;
+  keyring: SingleKeyKeyring;
+  soulPrivateKey: Uint8Array;
+  resources: BootResources;
+}): Promise<ResidencyDaemonHandle> {
+  const { config, deps, logger, keyring, soulPrivateKey, resources } = ctx;
+  const { store } = resources;
+  const endpoints = config.doorUrls.map(doorEndpoint);
+
+  const brain = deps.brain ?? createBrain(config.brain);
+  const clock = deps.clock ?? createRealClock();
+  const timer = deps.timer ?? createRealTimer();
 
   /** Counts heartbeat Door/append failures for ops visibility. */
   let heartbeatErrorCount = 0;
@@ -180,6 +256,7 @@ export async function startResidencyDaemon(
       intervalMs: config.replication.drainIntervalMs,
       logger
     });
+    resources.replicationDrain = replicationDrain;
     logger.info(
       { targetCount: adapters.length, intervalMs: config.replication.drainIntervalMs },
       "replication_drain_started"
@@ -202,38 +279,6 @@ export async function startResidencyDaemon(
         }
       : undefined;
 
-  const session = await Session.start({
-    store,
-    door,
-    doorId: config.doorId,
-    keyring,
-    brain,
-    clock,
-    timer,
-    doorPublicKeys: config.doorPublicKeys,
-    activeEpoch: hello.active_epoch,
-    onHeartbeatError: (error, stage) => {
-      heartbeatErrorCount += 1;
-      const message = error instanceof Error ? error.message : String(error);
-      logger.warn({ err: message, stage, heartbeatErrorCount }, "heartbeat_failed");
-    },
-    ...(onDeparted !== undefined ? { onDeparted } : {})
-  });
-
-  const sessionSigner = keyring.deriveSessionKey(config.doorId, session.epoch);
-  const sessionPubkey = encodePublicKey(sessionSigner.publicKey);
-  const bindPayload = sessionBindSigningPayload({
-    door_id: config.doorId,
-    epoch: session.epoch,
-    session_pubkey: sessionPubkey
-  });
-  const bind = {
-    door_id: config.doorId,
-    epoch: session.epoch,
-    session_pubkey: sessionPubkey,
-    session_sig: encodeSignature(sessionSigner.sign(bindPayload))
-  };
-
   let shuttingDown = false;
 
   /** Compose healthcheck target: present only while the session WebSocket is connected. */
@@ -253,80 +298,147 @@ export async function startResidencyDaemon(
     }
   };
 
-  // onInbound runs after construction, so `const` is safe for the closed-over client.
-  const wsClient = new WsDoorSessionClient({
-    wsBaseUrl,
-    bind,
-    onConnectionChange: (connected) => {
-      if (shuttingDown) {
-        return;
-      }
-      void setReadyFile(connected)
-        .then(() => {
-          if (connected) {
-            logger.info({ readyFilePath: config.readyFilePath }, "ws_session_ready");
-          } else {
-            logger.warn("ws_session_disconnected");
-          }
-        })
-        .catch((error: unknown) => {
-          const message = error instanceof Error ? error.message : String(error);
-          logger.error({ err: message }, "ready_file_update_failed");
-        });
-    },
-    onInbound: (frame) => {
-      void (async () => {
-        try {
-          const result = await session.handleInbound(frame);
-          if (result.ok) {
-            try {
-              wsClient.sendOutbound(result.outbound);
-            } catch (error: unknown) {
-              // Ghost contract: replies are not queued across reconnect gaps.
-              if (error instanceof DoorError && error.code === "door_unavailable") {
-                logger.warn({ err: error.message }, "outbound_dropped_ws_down");
-                return;
-              }
-              throw error;
-            }
-            return;
-          }
-          if ("screened" in result && result.screened) {
-            logger.warn({ categories: result.categories }, "inbound_screened");
-            return;
-          }
-          if ("error" in result) {
-            logger.warn({ err: result.error.message }, "inbound_brain_error");
-          }
-        } catch (error: unknown) {
-          const message = error instanceof Error ? error.message : String(error);
-          logger.error({ err: message }, "inbound_handler_error");
-        }
-      })();
+  // Serialize ready-file updates so a quick disconnect → connect cannot reorder them.
+  let readyFileChain: Promise<void> = Promise.resolve();
+  const onConnectionChange = (connected: boolean): void => {
+    if (shuttingDown) {
+      return;
     }
+    readyFileChain = readyFileChain
+      .then(() => setReadyFile(connected))
+      .then(() => {
+        if (connected) {
+          logger.info({ readyFilePath: config.readyFilePath }, "ws_session_ready");
+        } else {
+          logger.warn("ws_session_disconnected");
+        }
+      })
+      .catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        logger.error({ err: message }, "ready_file_update_failed");
+      });
+  };
+
+  const residencyConfig = config.residency;
+
+  const residencyCtx: DaemonResidencyContext = {
+    store,
+    doorPublicKeys: config.doorPublicKeys,
+    keyring,
+    brain,
+    clock,
+    timer,
+    logger,
+    attentionMode: config.attentionMode,
+    journalDir: residencyConfig.journalDir,
+    onHeartbeatError: (error, stage) => {
+      heartbeatErrorCount += 1;
+      const message = error instanceof Error ? error.message : String(error);
+      const brainFields = error instanceof BrainError ? brainErrorLogFields(error) : {};
+      logger.warn({ err: message, stage, heartbeatErrorCount, ...brainFields }, "heartbeat_failed");
+    },
+    onConnectionChange,
+    onSessionLost: (epoch) => {
+      if (controller.current?.epoch === epoch) {
+        void controller.requestCycle("lost_session");
+      }
+    },
+    ...(deps.heartbeatIntervalMs !== undefined
+      ? { heartbeatIntervalMs: deps.heartbeatIntervalMs }
+      : {}),
+    ...(onDeparted !== undefined ? { onDeparted } : {})
+  };
+
+  /** Endpoints of the Doors the last probe found online (arrive needs the URL). */
+  const online = new Map<string, DoorEndpoint>();
+  const probe = async (): Promise<string[]> => {
+    const available = await probeDoors({
+      endpoints,
+      soulPublicKey: keyring.getSoulPublicKey(),
+      doorPublicKeys: config.doorPublicKeys,
+      logger,
+      ...(deps.doorProbeTimeoutMs !== undefined ? { timeoutMs: deps.doorProbeTimeoutMs } : {})
+    });
+    online.clear();
+    for (const door of available) {
+      online.set(door.doorId, door.endpoint);
+    }
+    return available.map((door) => door.doorId);
+  };
+
+  const controller = new ResidencyController({
+    probe,
+    arrive: async (doorId) => {
+      const endpoint = online.get(doorId);
+      if (endpoint === undefined) {
+        throw new DaemonError(`door ${doorId} is not online`, "door_mismatch");
+      }
+      return arriveDaemonResidency(residencyCtx, { doorId, endpoint });
+    },
+    bootPreference: async () => {
+      const last = await lastDoorId(store);
+      return [last, config.preferredDoorId].filter(
+        (doorId): doorId is string => doorId !== undefined && doorId !== null
+      );
+    },
+    // Door trouble (unreachable, refused, swapped identity) is retried; local failures
+    // (invalid chain, spec cutover, storage) fail boot.
+    isFatalBootError: (error) =>
+      !(
+        error instanceof DoorError ||
+        (error instanceof DaemonError && error.reason === "door_mismatch")
+      ),
+    maxResidencyMs: residencyConfig.maxResidencyMs,
+    minMemoryLines: residencyConfig.minMemoryLines,
+    nowMs: () => Date.parse(clock.now()),
+    timer,
+    sleep: deps.sleep ?? abortableSleep,
+    logger,
+    ...(deps.random !== undefined ? { random: deps.random } : {}),
+    ...(deps.departRetryDelaysMs !== undefined
+      ? { departRetryDelaysMs: deps.departRetryDelaysMs }
+      : {}),
+    ...(deps.arriveRetryBaseMs !== undefined ? { arriveRetryBaseMs: deps.arriveRetryBaseMs } : {})
   });
+  resources.controller = controller;
 
-  await wsClient.connect();
+  logger.info(
+    {
+      doors: config.doorUrls,
+      maxResidencyMs: residencyConfig.maxResidencyMs,
+      minLines: residencyConfig.minMemoryLines,
+      operatorTrigger: residencyConfig.operatorTrigger,
+      journalDir: residencyConfig.journalDir
+    },
+    "residency_lifecycle_config"
+  );
 
-  logger.info({ doorId: config.doorId, epoch: session.epoch }, "residency_live");
-  deps.onReady?.();
+  /** Operator trigger (SIGUSR2 / `wanderer depart`): run one cycle (it logs its outcome). */
+  const requestOperatorCycle = (source: "signal" | "control_dir"): void => {
+    logger.info({ source }, "residency_cycle_requested");
+    void controller.requestCycle("operator");
+  };
+
+  const signalHandlers: Array<[NodeJS.Signals, () => void]> = [];
 
   const shutdown = async (): Promise<void> => {
     if (shuttingDown) {
       return;
     }
     shuttingDown = true;
-
-    await setReadyFile(false);
-    await wsClient.close();
-    session.stop();
-    await session.drainAppends();
-    if (replicationDrain !== undefined) {
-      await replicationDrain.stop();
+    for (const [signal, handler] of signalHandlers) {
+      process.removeListener(signal, handler);
     }
-    await store.close();
+
+    await readyFileChain;
+    await setReadyFile(false);
+    const errors = await releaseResources(resources);
+    if (errors.length > 0) {
+      throw errors[0];
+    }
   };
 
+  // Registered before the first arrival so SIGTERM works while no Door is reachable.
   if (!deps.skipSignals) {
     const onSignal = (): void => {
       void shutdown()
@@ -338,11 +450,98 @@ export async function startResidencyDaemon(
           process.exit(0);
         });
     };
-    process.once("SIGTERM", onSignal);
-    process.once("SIGINT", onSignal);
+    signalHandlers.push(["SIGTERM", onSignal], ["SIGINT", onSignal]);
+    // Always handle SIGUSR2: Node's default action would terminate the daemon (and the
+    // restart would end the residency crash-style) if an operator signals it while the
+    // trigger is off.
+    signalHandlers.push([
+      "SIGUSR2",
+      () => {
+        if (residencyConfig.operatorTrigger) {
+          requestOperatorCycle("signal");
+        } else {
+          logger.warn("residency_cycle_signal_ignored_trigger_disabled");
+        }
+      }
+    ]);
+    for (const [signal, handler] of signalHandlers) {
+      if (signal === "SIGUSR2") {
+        process.on(signal, handler);
+      } else {
+        process.once(signal, handler);
+      }
+    }
   }
 
-  return { shutdown };
+  const handle: ResidencyDaemonHandle = {
+    shutdown,
+    requestCycle: (trigger = "operator") => controller.requestCycle(trigger),
+    currentEpoch: () => controller.current?.epoch ?? null,
+    currentDoorId: () => controller.current?.doorId ?? null
+  };
+
+  try {
+    await controller.begin();
+
+    if (residencyConfig.operatorTrigger) {
+      const watcher = await watchControlDir({
+        controlDir: residencyConfig.controlDir,
+        timer,
+        onDepartRequest: () => {
+          requestOperatorCycle("control_dir");
+        },
+        onError: (error) => {
+          const message = error instanceof Error ? error.message : String(error);
+          logger.warn({ err: message }, "control_dir_poll_failed");
+        }
+      });
+      resources.controlWatcher = watcher;
+      if (shuttingDown) {
+        // A signal released everything while the watcher was starting.
+        watcher.stop();
+      }
+    }
+
+    deps.onReady?.();
+  } catch (error: unknown) {
+    if (shuttingDown) {
+      // A signal stopped the daemon during boot; shutdown released everything.
+      return handle;
+    }
+    // Boot failed after the signal handlers were registered (arrival, control dir, …):
+    // unregister them and clear the ready file; startResidencyDaemon then releases the
+    // controller (live residency), replication drain and store.
+    shuttingDown = true;
+    for (const [signal, handler] of signalHandlers) {
+      process.removeListener(signal, handler);
+    }
+    await readyFileChain;
+    await setReadyFile(false);
+    throw error;
+  }
+
+  return handle;
+}
+
+/**
+ * Where the chain says the Wanderer is (boot preference): the `to_door_id` of the last
+ * `travel` when it comes after the last `arrival` (it left, the arrival never happened),
+ * else the last arrival's Door (also when that travel has no `to_door_id`), else `null`.
+ */
+async function lastDoorId(store: SoulStore): Promise<string | null> {
+  let doorId: string | null = null;
+  for await (const record of store.iterate()) {
+    if (record.type !== "attestation") {
+      continue;
+    }
+    if (record.body.kind === "arrival") {
+      doorId = record.body.door_id;
+    } else if (record.body.kind === "travel" && record.body.to_door_id !== undefined) {
+      // A travel without a destination says nothing about where to go: keep the arrival's Door.
+      doorId = record.body.to_door_id;
+    }
+  }
+  return doorId;
 }
 
 /**

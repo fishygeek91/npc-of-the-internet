@@ -9,20 +9,19 @@ export function defaultHttpStatusForDoorError(code: string): number {
     case "epoch_mismatch":
     case "epoch_replay":
     case "seq_replay":
+    case "msg_replay":
       return 409;
-    case "shard_not_approved":
     case "not_hosting":
       return 403;
-    case "shard_count":
-    case "shard_invalid":
+    case "witness_declined":
       return 422;
     case "invalid_request":
     case "core_invalid":
       return 400;
     case "payload_too_large":
       return 413;
-    case "review_pending":
     case "door_unavailable":
+    case "witness_unavailable":
       return 503;
     default:
       if (code.startsWith("unsupported_")) {

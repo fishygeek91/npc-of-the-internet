@@ -1,12 +1,11 @@
 import type { Clock } from "@npc/door-sdk";
 
 import type { RateClock } from "../../src/rate-limit.js";
-import type { ReviewGateClock } from "../../src/review-gate.js";
 
 /**
- * Injectable wall clock for rate limits, review timeouts, and Door timestamps.
+ * Injectable wall clock for rate limits and Door timestamps.
  */
-export class MutableClock implements Clock, RateClock, ReviewGateClock {
+export class MutableClock implements Clock, RateClock {
   constructor(private currentMs = 0) {}
 
   now(): string {

@@ -2,6 +2,7 @@
   "name": "npc-of-the-internet",
   "version": "0.0.1",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "engines": {
     "node": ">=22"
@@ -9,7 +10,15 @@
   "packageManager": "pnpm@9.15.9",
   "pnpm": {
     "overrides": {
-      "fast-uri": "4.1.2"
+      "fast-uri": ">=4.2.3",
+      "undici@6": "^6.29.1",
+      "undici@8": "^8.12.2",
+      "source-map-js": ">=1.2.2"
+    },
+    "auditConfig": {
+      "ignoreGhsas": [
+        "GHSA-vfj7-8cjw-p6xm"
+      ]
     }
   },
   "scripts": {

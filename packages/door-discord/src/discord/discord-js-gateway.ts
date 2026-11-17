@@ -2,25 +2,86 @@ import {
   Client,
   Events,
   GatewayIntentBits,
-  Partials,
   REST,
   Routes,
   SlashCommandBuilder,
   type ChatInputCommandInteraction,
   type Message,
-  type MessageReaction,
-  type PartialMessageReaction,
-  type PartialUser,
-  type User
+  type MessageMentionOptions
 } from "discord.js";
 
 import { DiscordDoorError } from "../errors.js";
-import type { DiscordGateway, GatewayCommand, GatewayMessage, GatewayReaction } from "./gateway.js";
+import { clampDiscordMessage } from "./chunk.js";
+import type { DiscordGateway, GatewayCommand, GatewayMessage } from "./gateway.js";
 
 export type DiscordJsGatewayOptions = {
   token: string;
   guildId: string;
+  /**
+   * Called when a Discord event handler fails (message / command dispatch).
+   * Errors never propagate into discord.js as unhandled rejections.
+   */
+  onError?: (event: string, error: unknown) => void;
 };
+
+/**
+ * Mentions the bot may ping: none. Wanderer / host text is untrusted (LLM output can
+ * contain `@everyone`, `<@&role>`, `<@user>`), and replies must not ping the author.
+ * Returns a fresh object per send.
+ */
+export function noPingAllowedMentions(): MessageMentionOptions {
+  return { parse: [], repliedUser: false };
+}
+
+/** Name the Wanderer answers to; bot mentions are rendered as this plain word. */
+export const WANDERER_MENTION_NAME = "Wanderer";
+
+/**
+ * Replace Discord mention tokens with readable plain names (no leading `@`).
+ *
+ * The runtime immune screen treats `@handle` tokens as PII and drops the whole message, so
+ * `cleanContent`'s `@name` rendering would silently swallow every mention. Raw `<@id>`
+ * tokens are unreadable to the Wanderer. Plain names are both readable and screen-safe;
+ * a bot mention becomes `Wanderer`, which the runtime also treats as addressing.
+ */
+export function renderMentionTokens(
+  content: string,
+  lookup: {
+    botId: string | null;
+    userName: (id: string) => string | undefined;
+    channelName: (id: string) => string | undefined;
+    roleName: (id: string) => string | undefined;
+  }
+): string {
+  return content
+    .replace(/(^|\s)@(everyone|here)\b/gu, "$1$2")
+    .replace(/<@!?(\d+)>/gu, (_token, id: string) => {
+      if (id === lookup.botId) {
+        return WANDERER_MENTION_NAME;
+      }
+      return lookup.userName(id) ?? "someone";
+    })
+    .replace(/<@&(\d+)>/gu, (_token, id: string) => lookup.roleName(id) ?? "a role")
+    .replace(/<#(\d+)>/gu, (_token, id: string) => {
+      const name = lookup.channelName(id);
+      return name === undefined ? "a channel" : `#${name}`;
+    });
+}
+
+function renderMentions(message: Message, botId: string | null): string {
+  return renderMentionTokens(message.content, {
+    botId,
+    userName: (id) =>
+      message.mentions.members?.get(id)?.displayName ?? message.mentions.users.get(id)?.username,
+    channelName: (id) => {
+      const channel = message.mentions.channels.get(id);
+      return channel !== undefined && "name" in channel && typeof channel.name === "string"
+        ? channel.name
+        : undefined;
+    },
+    roleName: (id) => message.mentions.roles.get(id)?.name
+  });
+}
 
 /**
  * Real discord.js binding for {@link DiscordGateway}.
@@ -31,7 +92,6 @@ export class DiscordJsGateway implements DiscordGateway {
   private readonly options: DiscordJsGatewayOptions;
   private readyBotId: string | null = null;
   private messageHandler: ((message: GatewayMessage) => void | Promise<void>) | null = null;
-  private reactionHandler: ((reaction: GatewayReaction) => void | Promise<void>) | null = null;
   private commandHandler: ((command: GatewayCommand) => void | Promise<void>) | null = null;
   private readonly pendingEphemeral = new Map<string, ChatInputCommandInteraction>();
 
@@ -41,10 +101,21 @@ export class DiscordJsGateway implements DiscordGateway {
       intents: [
         GatewayIntentBits.Guilds,
         GatewayIntentBits.GuildMessages,
-        GatewayIntentBits.MessageContent,
-        GatewayIntentBits.GuildMessageReactions
+        GatewayIntentBits.MessageContent
       ],
-      partials: [Partials.Message, Partials.Channel, Partials.Reaction]
+      // Client-wide default; every send also passes allowedMentions explicitly.
+      allowedMentions: noPingAllowedMentions(),
+      failIfNotExists: false
+    });
+    // Wired once here (events only flow after login in start()).
+    this.client.on(Events.MessageCreate, (message) => {
+      this.guard("message", () => this.dispatchMessage(message));
+    });
+    this.client.on(Events.InteractionCreate, (interaction) => {
+      if (!interaction.isChatInputCommand()) {
+        return;
+      }
+      this.guard("command", () => this.dispatchCommand(interaction));
     });
   }
 
@@ -56,28 +127,11 @@ export class DiscordJsGateway implements DiscordGateway {
     this.messageHandler = handler;
   }
 
-  onReaction(handler: (reaction: GatewayReaction) => void | Promise<void>): void {
-    this.reactionHandler = handler;
-  }
-
   onCommand(handler: (command: GatewayCommand) => void | Promise<void>): void {
     this.commandHandler = handler;
   }
 
   async start(): Promise<void> {
-    this.client.on(Events.MessageCreate, (message) => {
-      void this.dispatchMessage(message);
-    });
-    this.client.on(Events.MessageReactionAdd, (reaction, user) => {
-      void this.dispatchReaction(reaction, user);
-    });
-    this.client.on(Events.InteractionCreate, (interaction) => {
-      if (!interaction.isChatInputCommand()) {
-        return;
-      }
-      void this.dispatchCommand(interaction);
-    });
-
     // Register ready/error before login so we never miss a fast ready event.
     const ready = new Promise<void>((resolve, reject) => {
       const onReady = (readyClient: { user: { id: string } }): void => {
@@ -120,11 +174,26 @@ export class DiscordJsGateway implements DiscordGateway {
       );
     }
     const replyToId = options?.replyToId;
+    // Last-resort length guard (relay chunks Wanderer text before reaching here).
+    const safeContent = clampDiscordMessage(content);
     const sent =
       replyToId === undefined
-        ? await channel.send({ content })
-        : await channel.send({ content, reply: { messageReference: replyToId } });
+        ? await channel.send({ content: safeContent, allowedMentions: noPingAllowedMentions() })
+        : await channel.send({
+            content: safeContent,
+            allowedMentions: noPingAllowedMentions(),
+            // A deleted parent must not fail the send (spec: post without the reference).
+            reply: { messageReference: replyToId, failIfNotExists: false }
+          });
     return { id: sent.id };
+  }
+
+  async sendTyping(channelId: string): Promise<void> {
+    const channel = await this.client.channels.fetch(channelId);
+    if (channel === null || !channel.isTextBased() || channel.isDMBased()) {
+      return;
+    }
+    await channel.sendTyping();
   }
 
   async addReaction(channelId: string, messageId: string, emoji: string): Promise<void> {
@@ -145,11 +214,42 @@ export class DiscordJsGateway implements DiscordGateway {
       throw new DiscordDoorError("discord_error", "unknown interaction for ephemeral reply");
     }
     this.pendingEphemeral.delete(interactionId);
+    const safeContent = clampDiscordMessage(content);
     if (interaction.replied || interaction.deferred) {
-      await interaction.followUp({ content, ephemeral: true });
+      await interaction.followUp({
+        content: safeContent,
+        ephemeral: true,
+        allowedMentions: noPingAllowedMentions()
+      });
       return;
     }
-    await interaction.reply({ content, ephemeral: true });
+    await interaction.reply({
+      content: safeContent,
+      ephemeral: true,
+      allowedMentions: noPingAllowedMentions()
+    });
+  }
+
+  /** Run an async event handler; failures go to `onError`, never unhandled rejections. */
+  private guard(event: string, run: () => Promise<void>): void {
+    let pending: Promise<void>;
+    try {
+      pending = run();
+    } catch (error: unknown) {
+      this.reportError(event, error);
+      return;
+    }
+    pending.catch((error: unknown) => {
+      this.reportError(event, error);
+    });
+  }
+
+  private reportError(event: string, error: unknown): void {
+    try {
+      this.options.onError?.(event, error);
+    } catch {
+      // The error reporter itself must never take the gateway down.
+    }
   }
 
   private async registerSlashCommands(): Promise<void> {
@@ -158,22 +258,6 @@ export class DiscordJsGateway implements DiscordGateway {
         .setName("wanderer")
         .setDescription("Wanderer host operator commands")
         .addSubcommand((sub) => sub.setName("status").setDescription("Show residency status"))
-        .addSubcommand((sub) =>
-          sub
-            .setName("approve")
-            .setDescription("Approve a candidate shard")
-            .addStringOption((opt) =>
-              opt.setName("shard_id").setDescription("Shard id").setRequired(true)
-            )
-        )
-        .addSubcommand((sub) =>
-          sub
-            .setName("reject")
-            .setDescription("Reject a candidate shard")
-            .addStringOption((opt) =>
-              opt.setName("shard_id").setDescription("Shard id").setRequired(true)
-            )
-        )
         .toJSON()
     ];
 
@@ -193,45 +277,20 @@ export class DiscordJsGateway implements DiscordGateway {
     if (handler === null) {
       return;
     }
+    const botId = this.readyBotId;
+    const mentionsBot =
+      botId !== null &&
+      (message.mentions.users.has(botId) || message.mentions.repliedUser?.id === botId);
     const mapped: GatewayMessage = {
       id: message.id,
       guildId: message.guildId,
       channelId: message.channelId,
       authorId: message.author.id,
       authorDisplay: message.member?.displayName ?? message.author.username,
-      content: message.content,
+      content: renderMentions(message, botId),
       isBot: message.author.bot,
-      replyToId: message.reference?.messageId ?? undefined
-    };
-    await handler(mapped);
-  }
-
-  private async dispatchReaction(
-    reaction: MessageReaction | PartialMessageReaction,
-    user: User | PartialUser
-  ): Promise<void> {
-    if (user.bot === true) {
-      return;
-    }
-    const handler = this.reactionHandler;
-    if (handler === null) {
-      return;
-    }
-    const full =
-      reaction.partial || user.partial ? await reaction.fetch().catch(() => null) : reaction;
-    if (full === null) {
-      return;
-    }
-    const message = full.message.partial ? await full.message.fetch() : full.message;
-    const emoji = full.emoji.name;
-    if (emoji === null) {
-      return;
-    }
-    const mapped: GatewayReaction = {
-      messageId: message.id,
-      channelId: message.channelId,
-      userId: user.id,
-      emoji
+      replyToId: message.reference?.messageId ?? undefined,
+      mentionsBot
     };
     await handler(mapped);
   }
@@ -244,27 +303,15 @@ export class DiscordJsGateway implements DiscordGateway {
     if (handler === null) {
       return;
     }
-    const sub = interaction.options.getSubcommand();
-    if (sub === "status") {
-      this.pendingEphemeral.set(interaction.id, interaction);
-      await handler({
-        kind: "status",
-        interactionId: interaction.id,
-        userId: interaction.user.id,
-        ephemeral: true
-      });
+    if (interaction.options.getSubcommand() !== "status") {
       return;
     }
-    if (sub === "approve" || sub === "reject") {
-      this.pendingEphemeral.set(interaction.id, interaction);
-      const shardId = interaction.options.getString("shard_id", true);
-      await handler({
-        kind: sub,
-        interactionId: interaction.id,
-        userId: interaction.user.id,
-        shardId,
-        ephemeral: true
-      });
-    }
+    this.pendingEphemeral.set(interaction.id, interaction);
+    await handler({
+      kind: "status",
+      interactionId: interaction.id,
+      userId: interaction.user.id,
+      ephemeral: true
+    });
   }
 }

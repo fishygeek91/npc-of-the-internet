@@ -22,8 +22,8 @@ Usage:
   osp verify --from-ipfs <head-cid> [--gateway <url>] [--door-key <doorId=base64url>]...
   osp manifest <dir> [--soul-key <path>] [--generated-at <iso>] [--prev-manifest <cid>]
   osp export-car <dir> --out <path> [--soul-key <path>] [--generated-at <iso>] [--prev-manifest <cid>]
-  osp log <dir>
-  osp show <cid> --dir <dir>
+  osp log <dir> [--door-key <doorId=base64url>]...
+  osp show <cid> --dir <dir> [--door-key <doorId=base64url>]...
 
 Exit codes:
   0  success / chain valid
@@ -47,7 +47,7 @@ function fatalError(error: unknown): never {
   process.exit(EXIT_USAGE);
 }
 
-/** Parse repeatable --door-key flags from verify argv. */
+/** Parse repeatable --door-key flags (verify, log, show argv). */
 function parseDoorKeys(values: { "door-key"?: string | string[] }): string[] {
   const raw = values["door-key"];
   if (raw === undefined) {
@@ -262,8 +262,11 @@ export async function main(argv: readonly string[] = process.argv): Promise<void
       }
 
       case "log": {
-        const { positionals } = parseArgs({
+        const { positionals, values } = parseArgs({
           args: argv.slice(3),
+          options: {
+            "door-key": { type: "string", multiple: true }
+          },
           allowPositionals: true
         });
 
@@ -272,8 +275,8 @@ export async function main(argv: readonly string[] = process.argv): Promise<void
           usageError("log requires a soulchain directory");
         }
 
-        await runLog(dir);
-        process.exit(0);
+        const exitCode = await runLog({ dir, doorKeys: parseDoorKeys(values) });
+        process.exit(exitCode);
         break;
       }
 
@@ -281,7 +284,8 @@ export async function main(argv: readonly string[] = process.argv): Promise<void
         const { positionals, values } = parseArgs({
           args: argv.slice(3),
           options: {
-            dir: { type: "string" }
+            dir: { type: "string" },
+            "door-key": { type: "string", multiple: true }
           },
           allowPositionals: true
         });
@@ -296,8 +300,8 @@ export async function main(argv: readonly string[] = process.argv): Promise<void
           usageError("show requires --dir <soulchain-directory>");
         }
 
-        await runShow({ dir, cid });
-        process.exit(0);
+        const exitCode = await runShow({ dir, cid, doorKeys: parseDoorKeys(values) });
+        process.exit(exitCode);
         break;
       }
 

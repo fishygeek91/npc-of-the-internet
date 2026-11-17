@@ -1,0 +1,68 @@
+# Monthly offline restore drill (T7.13).
+# Same fixture drill as CI. No production remote, no VPS, no repository secrets.
+# A failed run opens or comments on a GitHub issue with the workflow token.
+name: Ops drill
+
+on:
+  schedule:
+    # 16:00 UTC on the 1st of each month.
+    - cron: "0 16 1 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ops-drill
+  cancel-in-progress: false
+
+jobs:
+  drill:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install rclone
+        run: sudo apt-get update && sudo apt-get install -y rclone
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @npc/osp-cli... build
+      - name: Run offline restore drill
+        run: bash ops/scripts/restore-drill.sh
+
+  report-failure:
+    needs: drill
+    if: failure()
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Open or update a drill-failure issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          title="[ops] offline restore drill failed"
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          body=$(cat <<EOF
+          The offline restore drill failed.
+
+          Run: ${run_url}
+
+          Consult ops/RUNBOOK.md section 5.1 and ops/AI-OPERATOR.md.
+          This workflow does not contact production and has no deploy credentials.
+          A human still approves every Gate 2 action.
+          EOF
+          )
+          number="$(gh issue list --state open --search "in:title \"${title}\"" --json number,title --jq "[.[] | select(.title == \"${title}\") | .number] | first // empty")"
+          if [[ -z "${number}" ]]; then
+            gh issue create --title "${title}" --body "${body}"
+          else
+            gh issue comment "${number}" --body "${body}"
+          fi

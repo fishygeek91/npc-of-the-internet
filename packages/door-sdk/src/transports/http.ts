@@ -5,12 +5,16 @@ import type { Door } from "../door.js";
 import { DoorError, doorErrorToBody } from "../errors.js";
 import {
   AttestRequestSchema,
-  CosignRequestSchema,
   HeartbeatRequestSchema,
   type AttestRequest,
-  type CosignRequest,
   type HeartbeatRequest
 } from "../schemas.js";
+
+/**
+ * Server-side log for an internal failure.
+ * `message` is the thrown error text. Callers must not pass request bodies or headers.
+ */
+export type HttpDoorServerLog = (event: "http_internal_error", message: string) => void;
 
 /** Configuration for a minimal Node HTTP Door API server. */
 export type HttpDoorServerOptions = {
@@ -19,11 +23,23 @@ export type HttpDoorServerOptions = {
   host?: string;
   /** Listen port; defaults to `0` (ephemeral). */
   port?: number;
+  /**
+   * Logs the thrown message when a non-{@link DoorError} becomes HTTP 500.
+   * Defaults to stderr. The HTTP body stays a fixed string.
+   */
+  log?: HttpDoorServerLog;
 };
+
+/** Fixed client body for unexpected failures. The thrown text is logged, not returned. */
+const INTERNAL_ERROR_MESSAGE = "internal server error";
+
+function defaultHttpDoorLog(event: "http_internal_error", message: string): void {
+  process.stderr.write(`door-sdk ${event}: ${message}\n`);
+}
 
 const JSON_CONTENT_TYPE = "application/json";
 /** Max accumulated HTTP JSON body size before rejecting with 413. */
-export const MAX_HTTP_BODY_BYTES = 128 * 1024;
+export const MAX_HTTP_BODY_BYTES = 256 * 1024;
 
 type RouteHandler = (body: unknown) => Promise<unknown>;
 
@@ -37,18 +53,20 @@ class PayloadTooLargeError extends Error {
 
 /**
  * Minimal `node:http` server exposing the Door REST endpoints:
- * `POST /door/hello`, `/door/heartbeat`, `/door/attest`, `/door/cosign`.
+ * `POST /door/hello`, `/door/heartbeat`, `/door/attest`.
  */
 export class HttpDoorServer {
   private readonly door: Door;
   private readonly host: string;
   private readonly port: number;
+  private readonly log: HttpDoorServerLog;
   private server: Server | null = null;
 
   constructor(options: HttpDoorServerOptions) {
     this.door = options.door;
     this.host = options.host ?? "127.0.0.1";
     this.port = options.port ?? 0;
+    this.log = options.log ?? defaultHttpDoorLog;
   }
 
   /** Start listening and return the bound address and base URL. */
@@ -67,10 +85,6 @@ export class HttpDoorServer {
       "/door/attest": async (body) => {
         const request = parseWithSchema<AttestRequest>(AttestRequestSchema, body);
         return this.door.attest(request);
-      },
-      "/door/cosign": async (body) => {
-        const request = parseWithSchema<CosignRequest>(CosignRequestSchema, body);
-        return this.door.cosign(request);
       }
     };
 
@@ -188,13 +202,17 @@ export class HttpDoorServer {
     try {
       const result = await handler(body);
       this.sendJson(res, 200, result);
-    } catch (error) {
+    } catch (error: unknown) {
       if (error instanceof DoorError) {
         this.sendJson(res, error.httpStatus, doorErrorToBody(error));
         return;
       }
-      const message = error instanceof Error ? error.message : "internal server error";
-      this.sendJson(res, 500, { error: { code: "internal_error", message } });
+      // Log the thrown text only. Never the request body or headers.
+      const detail = error instanceof Error ? error.message : INTERNAL_ERROR_MESSAGE;
+      this.log("http_internal_error", detail);
+      this.sendJson(res, 500, {
+        error: { code: "internal_error", message: INTERNAL_ERROR_MESSAGE }
+      });
     }
   }
 

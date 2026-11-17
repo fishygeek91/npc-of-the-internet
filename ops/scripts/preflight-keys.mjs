@@ -17,7 +17,20 @@ const repoRoot = join(scriptDir, "../..");
 const ospCoreEntry = join(repoRoot, "packages/osp-core/dist/index.js");
 const ospRequire = createRequire(ospCoreEntry);
 
-/** @type {{ decodeBase64Url: (s: string) => Uint8Array, encodePublicKey: (k: Uint8Array) => string }} */
+/**
+ * @type {{
+ *   encodePublicKey: (key: Uint8Array) => string,
+ *   parsePrivateKeyBytes: (bytes: Uint8Array) => Uint8Array,
+ *   publicKeyFromPrivate: (key: Uint8Array) => Uint8Array,
+ *   PrivateKeyParseError: new (failure: {
+ *     kind: "empty" | "invalid_encoding" | "bad_length",
+ *     detail?: string,
+ *     decodedLength?: number
+ *   }) => Error & {
+ *     failure: { kind: string, detail?: string, decodedLength?: number }
+ *   }
+ * }}
+ */
 let ospCore;
 try {
   ospCore = ospRequire(ospCoreEntry);
@@ -28,35 +41,38 @@ try {
   process.exit(2);
 }
 
-/** @type {typeof import("@noble/ed25519")} */
-const ed = ospRequire("@noble/ed25519");
-/** @type {typeof import("@noble/hashes/sha512")} */
-const { sha512 } = ospRequire("@noble/hashes/sha512");
-
-ed.etc.sha512Sync = (...messages) => sha512(ed.etc.concatBytes(...messages));
-
 const KEY_LEN = 32;
 
 /**
- * @param {Buffer} fileBytes
+ * Same acceptance rule as `parsePrivateKeyBytes`. Messages stay the historical
+ * preflight wording: invalid base64url is the decoder detail alone (no path, no
+ * "must be 32 raw bytes" wrapper); empty and bad length name the path.
+ *
+ * @param {Uint8Array} fileBytes
  * @param {string} path
  * @returns {Uint8Array}
  */
-function parsePrivateKeyBytes(fileBytes, path) {
-  if (fileBytes.length === KEY_LEN) {
-    return new Uint8Array(fileBytes);
+function parsePrivateKeyFile(fileBytes, path) {
+  try {
+    return ospCore.parsePrivateKeyBytes(fileBytes);
+  } catch (error) {
+    if (!(error instanceof ospCore.PrivateKeyParseError)) {
+      throw error;
+    }
+    const failure = error.failure;
+    if (failure.kind === "empty") {
+      throw new Error(`key file at ${path} is empty`);
+    }
+    if (failure.kind === "bad_length") {
+      throw new Error(
+        `key file at ${path} must decode to ${String(KEY_LEN)} bytes, got ${String(failure.decodedLength)}`
+      );
+    }
+    if (failure.kind === "invalid_encoding") {
+      throw new Error(failure.detail ?? "invalid base64url encoding");
+    }
+    throw error;
   }
-  const trimmed = fileBytes.toString("utf8").trim();
-  if (trimmed.length === 0) {
-    throw new Error(`key file at ${path} is empty`);
-  }
-  const decoded = ospCore.decodeBase64Url(trimmed);
-  if (decoded.length !== KEY_LEN) {
-    throw new Error(
-      `key file at ${path} must decode to ${String(KEY_LEN)} bytes, got ${String(decoded.length)}`
-    );
-  }
-  return decoded;
 }
 
 const mode = process.argv[2];
@@ -69,8 +85,8 @@ if ((mode !== "soul" && mode !== "door") || keyPath === undefined || keyPath ===
 
 try {
   const fileBytes = readFileSync(keyPath);
-  const privateKey = parsePrivateKeyBytes(fileBytes, keyPath);
-  const publicKey = ed.getPublicKey(privateKey);
+  const privateKey = parsePrivateKeyFile(fileBytes, keyPath);
+  const publicKey = ospCore.publicKeyFromPrivate(privateKey);
   process.stdout.write(`${ospCore.encodePublicKey(publicKey)}\n`);
 } catch (error) {
   const detail = error instanceof Error ? error.message : "failed";
