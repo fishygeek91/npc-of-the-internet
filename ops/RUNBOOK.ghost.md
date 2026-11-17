@@ -289,14 +289,19 @@ is mandatory.)
 >   (smoke tests only; [`RUNBOOK.md`](RUNBOOK.md) §1.2).
 > - **`door.key`** is an independent Ed25519 seed — 32 raw bytes is valid:
 >   `openssl rand -out door.key 32` ([`LAUNCH.md`](LAUNCH.md) §1 Option A), or
->   the programmatic Option B. `node ops/scripts/preflight-keys.mjs door <path>`
->   prints that key's public key (build `@npc/osp-core` first). Compose
->   `ATLAS_DOOR_PUBKEYS` from it the way LAUNCH.md §1 does
->   (`discord:<guild>=<pubkey>,web:home=<pubkey>`). The script does not print
->   that full value.
+>   the programmatic Option B. The finished `ATLAS_DOOR_PUBKEYS` value is
+>   printed by the helper in [`LAUNCH.md`](LAUNCH.md) §1 ("Derive
+>   `ATLAS_DOOR_PUBKEYS` from an existing door private key file"): it prints
+>   `discord:<guild>=<pubkey>,web:home=<pubkey>`. `node ops/scripts/preflight-keys.mjs door <path>`
+>   prints only the raw public key (build `@npc/osp-core` first), not that
+>   binding string.
 >
 > **VPS prerequisites for the commands in this runbook** (not just Docker):
-> Node ≥ 22 (root `package.json` `engines`; CI is Node 22) and `pnpm`. Build
+> Node ≥ 22 (root `package.json` `engines`; CI is Node 22) and `pnpm`. Install
+> Node system-wide — NodeSource, or the official tarball so `node` is on
+> `/usr/bin` — because `sudo` uses a `secure_path` that does not include nvm or
+> other user-local installs. Ubuntu 24.04's apt package `nodejs` is v18, which
+> is older than `engines`. Build
 > the packages preflight and `osp init` import:
 > `pnpm install --frozen-lockfile && pnpm --filter @npc/osp-core --filter @npc/osp-cli build`.
 > `ghostc` runs preflight before every mutating command. Preflight dies without
@@ -308,8 +313,10 @@ is mandatory.)
 > ownership; `key-backup.sh` exits `SOUL_KEY_HOST_PATH missing/unreadable`.
 > After §5d, `rclone.conf` is unreadable for the same reason (`rclone.conf not
 > readable`). Run `ghostc` and the backup scripts via `sudo`, for example
-> `alias ghostc='sudo bash ~/npc/ops/scripts/ghostc.sh'`. The `chmod` lines in
-> this section need `sudo` too, once the directory is owned by 10001.
+> `alias ghostc='sudo bash ~/npc/ops/scripts/ghostc.sh'` (the same alias §7
+> writes into `~/.bashrc`). File modes use `sudo find`, not `chmod …/*`: the
+> login shell expands `*` before `sudo`, and it cannot list a 0700 directory
+> owned by 10001.
 
 On your **Mac** (if you ran the genesis ceremony locally; if you ran it on the
 server per [`LAUNCH.md`](LAUNCH.md), skip the `scp` and `install` the staged
@@ -325,7 +332,7 @@ Back on the server, hand ownership to the container user and restrict them:
 ```bash
 sudo chown -R 10001:10001 /var/lib/npc-ghost/keys
 sudo chmod 700 /var/lib/npc-ghost/keys
-sudo chmod 600 /var/lib/npc-ghost/keys/*
+sudo find /var/lib/npc-ghost/keys -type f -exec chmod 600 {} +
 ```
 
 **Encrypted offsite key backup (required):** configure `AGE_RECIPIENT` and a
@@ -388,7 +395,8 @@ Or, if you copied keys and rclone config in one session:
 ```bash
 sudo chown -R 10001:10001 /var/lib/npc-ghost/keys /var/lib/npc-ghost/rclone
 sudo chmod 700 /var/lib/npc-ghost/keys /var/lib/npc-ghost/rclone
-sudo chmod 600 /var/lib/npc-ghost/keys/* /var/lib/npc-ghost/rclone/rclone.conf
+sudo find /var/lib/npc-ghost/keys -type f -exec chmod 600 {} +
+sudo find /var/lib/npc-ghost/rclone -type f -exec chmod 600 {} +
 ```
 
 Test it:
@@ -473,7 +481,7 @@ docker compose --env-file ops/.env -f ops/compose.ghost.yml up -d
 That's a lot to type; make an alias. Add to `~/.bashrc` on the server:
 
 ```bash
-echo "alias ghostc='bash ~/npc/ops/scripts/ghostc.sh'" >> ~/.bashrc
+echo "alias ghostc='sudo bash ~/npc/ops/scripts/ghostc.sh'" >> ~/.bashrc
 source ~/.bashrc
 ```
 
