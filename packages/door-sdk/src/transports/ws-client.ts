@@ -13,7 +13,7 @@ import {
   type OutboundFrame,
   type SessionBindParams
 } from "../schemas.js";
-import { WS_SESSION_BIND_FAILED } from "./ws.js";
+import { WS_MAX_PAYLOAD_BYTES, WS_SESSION_BIND_FAILED } from "./ws.js";
 
 /** Minimal WebSocket surface for {@link WsDoorSessionClient} (injectable in tests). */
 export interface WebSocketLike {
@@ -60,7 +60,10 @@ export type WsDoorSessionClientOptions = {
   initialBackoffMs?: number;
   /** Maximum reconnect backoff in milliseconds; defaults to `30000`. */
   maxBackoffMs?: number;
-  /** Injectable WebSocket factory; defaults to the `ws` package. */
+  /**
+   * Injectable WebSocket factory. The default is `ws` with `maxPayload` set to
+   * {@link WS_MAX_PAYLOAD_BYTES}; an oversized frame errors and closes the socket.
+   */
   createWebSocket?: WebSocketFactory;
   /** Clock for outbound control-frame timestamps; defaults to system UTC. */
   clock?: WsClock;
@@ -81,9 +84,15 @@ const defaultSleep = (ms: number): Promise<void> =>
     setTimeout(resolve, ms);
   });
 
+/** Default socket: the `ws` client, capped at the same frame size as the Door server. */
+function createCappedWebSocket(url: string): WebSocket {
+  return new WebSocket(url, { maxPayload: WS_MAX_PAYLOAD_BYTES });
+}
+
 /**
  * WebSocket client for `WS /door/session` — session bind, inbound delivery,
  * outbound send, ping/pong, and automatic reconnect with exponential backoff.
+ * Inbound frames are capped at {@link WS_MAX_PAYLOAD_BYTES}.
  */
 export class WsDoorSessionClient {
   private readonly wsBaseUrl: string;
@@ -117,7 +126,7 @@ export class WsDoorSessionClient {
     this.onErrorFrame = options.onErrorFrame;
     this.onConnectionChange = options.onConnectionChange;
     this.onBindFailed = options.onBindFailed;
-    this.createWebSocket = options.createWebSocket ?? ((url: string) => new WebSocket(url));
+    this.createWebSocket = options.createWebSocket ?? createCappedWebSocket;
     this.clock = options.clock ?? defaultClock;
     this.sleep = options.sleep ?? defaultSleep;
     this.initialBackoffMs = options.initialBackoffMs ?? 1000;

@@ -9,6 +9,16 @@ import { ZERO_BRAIN_USAGE } from "./types.js";
 const MAX_RETRIES = 2;
 const BACKOFF_BASE_MS = 200;
 
+/**
+ * Max OpenAI-compatible chat-completion response body, in bytes.
+ *
+ * Default output is 1024 tokens. 4 MiB still fits a long reasoning trace or a
+ * provider payload with extra JSON, and it is the limit read before `JSON.parse`.
+ * Overflow throws {@link BrainError} (`provider`) whose `cause` is a plain
+ * `Error` and carries no request headers or parameters.
+ */
+export const MAX_PROVIDER_RESPONSE_BYTES = 4 * 1024 * 1024;
+
 const chatCompletionResponseSchema = z.object({
   choices: z
     .array(
@@ -193,6 +203,7 @@ export class OpenAICompatBrain implements Brain {
 
   private async once(body: ChatCompletionBody): Promise<BrainResult> {
     const url = chatCompletionsUrl(this.config.baseUrl);
+    const capAbort = new AbortController();
     let response: Response;
     try {
       response = await this.fetchImpl(url, {
@@ -202,7 +213,7 @@ export class OpenAICompatBrain implements Brain {
           "Content-Type": "application/json"
         },
         body: JSON.stringify(body),
-        signal: AbortSignal.timeout(this.config.timeoutMs)
+        signal: AbortSignal.any([AbortSignal.timeout(this.config.timeoutMs), capAbort.signal])
       });
     } catch (error) {
       if (isAbortError(error)) {
@@ -215,7 +226,22 @@ export class OpenAICompatBrain implements Brain {
       });
     }
 
-    const bodyText = await response.text();
+    let bodyText: string;
+    try {
+      bodyText = await readCappedResponseText(response, MAX_PROVIDER_RESPONSE_BYTES, capAbort);
+    } catch (error) {
+      if (error instanceof BrainError) {
+        throw error;
+      }
+      if (isAbortError(error)) {
+        throw new BrainError("OpenAI-compatible API request timed out", "timeout", {
+          cause: error
+        });
+      }
+      throw new BrainError("OpenAI-compatible API request failed", "unavailable", {
+        cause: error
+      });
+    }
     if (!response.ok) {
       const reason = reasonFromHttpStatus(response.status, bodyText);
       const snippet = errorBodySnippet(bodyText);
@@ -277,4 +303,125 @@ function errorBodySnippet(bodyText: string): string {
     return collapsed;
   }
   return `${collapsed.slice(0, 200)}…`;
+}
+
+/**
+ * Cap failure for a provider body. `cause` is a plain Error: no status, headers,
+ * request parameters, or response bytes.
+ */
+function responseTooLarge(): BrainError {
+  return new BrainError(
+    `OpenAI-compatible API response exceeds ${String(MAX_PROVIDER_RESPONSE_BYTES)} bytes`,
+    "provider",
+    { cause: new Error("response body exceeds cap") }
+  );
+}
+
+/**
+ * Read a response body as UTF-8, refusing anything over `maxBytes`.
+ *
+ * A Content-Length above the cap fails before the body is read. Otherwise the
+ * body is streamed and the download is aborted as soon as the running total
+ * exceeds the cap. Exactly `maxBytes` is accepted.
+ */
+async function readCappedResponseText(
+  response: Response,
+  maxBytes: number,
+  abort: AbortController
+): Promise<string> {
+  if (contentLengthExceeds(response, maxBytes)) {
+    await abortCappedRead(response, undefined, abort);
+    throw responseTooLarge();
+  }
+
+  const body = response.body;
+  if (body === null) {
+    return "";
+  }
+
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const next = await reader.read();
+      if (next.done) {
+        break;
+      }
+      const value = next.value;
+      if (value === undefined) {
+        continue;
+      }
+      total += value.byteLength;
+      if (total > maxBytes) {
+        chunks.length = 0;
+        await abortCappedRead(response, reader, abort);
+        throw responseTooLarge();
+      }
+      chunks.push(value);
+    }
+  } catch (error) {
+    if (error instanceof BrainError) {
+      throw error;
+    }
+    await abortCappedRead(response, reader, abort);
+    throw error;
+  }
+
+  return new TextDecoder().decode(concatBytes(chunks));
+}
+
+/** True when Content-Length is a byte count strictly above `maxBytes`. */
+function contentLengthExceeds(response: Response, maxBytes: number): boolean {
+  const header = response.headers.get("content-length");
+  if (header === null) {
+    return false;
+  }
+  const trimmed = header.trim();
+  if (!/^\d+$/u.test(trimmed)) {
+    return false;
+  }
+  const value = Number(trimmed);
+  if (!Number.isFinite(value)) {
+    return true;
+  }
+  return value > maxBytes;
+}
+
+/**
+ * Abort the fetch and cancel the body. Swallows cancel failures so the size
+ * error (whose cause has no request data) is what callers see.
+ */
+async function abortCappedRead(
+  response: Response,
+  reader: { cancel: () => Promise<void> } | undefined,
+  abort: AbortController
+): Promise<void> {
+  abort.abort();
+  try {
+    if (reader !== undefined) {
+      await reader.cancel();
+      return;
+    }
+    if (response.body !== null) {
+      await response.body.cancel();
+    }
+  } catch {
+    // The peer may already have dropped the socket.
+  }
+}
+
+/** Copy streamed chunks into one buffer. `chunks` together are at most the cap. */
+function concatBytes(chunks: readonly Uint8Array[]): Uint8Array {
+  let total = 0;
+  for (const chunk of chunks) {
+    total += chunk.byteLength;
+  }
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out;
 }

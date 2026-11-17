@@ -47,7 +47,7 @@ export type {
 export { loadBrainConfig, isOpenRouterBaseUrl } from "./brain/config.js";
 export { AnthropicBrain } from "./brain/anthropic-brain.js";
 export type { AnthropicBrainOptions, AnthropicMessagesClient } from "./brain/anthropic-brain.js";
-export { OpenAICompatBrain } from "./brain/openai-compat-brain.js";
+export { OpenAICompatBrain, MAX_PROVIDER_RESPONSE_BYTES } from "./brain/openai-compat-brain.js";
 export type { OpenAICompatBrainOptions, SleepFn, RandomFn } from "./brain/openai-compat-brain.js";
 export { createBrain } from "./brain/create-brain.js";
 export { BrainError, brainErrorLogFields } from "./brain/errors.js";
