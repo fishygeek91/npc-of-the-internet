@@ -56,7 +56,7 @@ pnpm --filter @npc/door-discord manual-residency
 What you should see:
 
 1. Bot online in the guild; the log shows `door_witness_config` with `enabled: true` and your model (never the key).
-2. `/wanderer status` → `presence: absent` before arrival, then `present` after the harness arrives; `memories: witnessed by this Door's AI witness`.
+2. `/wanderer status` → `presence: absent` before arrival, then `present` after the harness arrives; `memories: witnessed by this Door's AI witness`. Without `NPC_BUDGET_STATUS_PATH` the reply also says `budget: not configured`.
 3. On arrival the channel shows `✨ The Wanderer has arrived.`
 4. Post a normal (non-bot) message in the bound channel → Wanderer replies (FakeBrain by default).
 5. Ctrl+C departs: the Door's witness judges each memory against what was said in the channel — nobody reacts or approves anything. Witnessed memories are co-signed and final; declined ones are recorded as `rejected` (`witness_<reason>`). The harness distills canned FakeBrain shards ("a brief stay and question N"), so expect declines for any your conversation does not support. Then the channel shows `🌫️ The Wanderer has moved on.`

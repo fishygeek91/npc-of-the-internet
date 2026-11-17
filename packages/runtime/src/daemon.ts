@@ -9,6 +9,7 @@ import { DualSoulStore, FileSoulStore, type SoulStore } from "@npc/osp-core";
 import pino, { type Logger } from "pino";
 
 import type { BudgetTierConfig } from "./brain/budget-policy.js";
+import { budgetStatusBody, createBudgetStatusPublisher } from "./brain/budget-status-file.js";
 import type { BudgetedBrain } from "./brain/budgeted-brain.js";
 import { createBrain } from "./brain/create-brain.js";
 import { BrainError, brainErrorLogFields } from "./brain/errors.js";
@@ -248,9 +249,31 @@ async function bootResidency(ctx: {
 
   const clock = deps.clock ?? createRealClock();
   const timer = deps.timer ?? createRealTimer();
-  const opened = await openDaemonBrain(config, deps, () => clock.now());
+  // Reassigned once the brain exists. Invoked only after the completion lock
+  // is released, and again on each heartbeat tick (month rollover, no model call).
+  let publishBudget: () => void = () => undefined;
+  const opened = await openDaemonBrain(
+    config,
+    deps,
+    () => clock.now(),
+    config.budgetStatusPath === undefined
+      ? undefined
+      : (): void => {
+          publishBudget();
+        }
+  );
   const brain = opened.chat;
   const budgeted = opened.budgeted;
+  if (config.budgetStatusPath !== undefined) {
+    const publisher = createBudgetStatusPublisher(config.budgetStatusPath, (message) => {
+      // Message only. The snapshot (fraction included) is not logged.
+      logger.warn({ err: message }, "budget_status_publish_failed");
+    });
+    publishBudget = (): void => {
+      publisher.publish(budgetStatusBody(budgeted?.publicStatus()));
+    };
+    publishBudget();
+  }
   if (budgeted !== undefined) {
     const status = budgeted.publicStatus();
     logger.info(
@@ -352,7 +375,11 @@ async function bootResidency(ctx: {
     ...(opened.journal !== undefined ? { journalBrain: opened.journal } : {}),
     ...(budgeted !== undefined
       ? {
-          suspendHeartbeats: (): boolean => budgeted.publicStatus().sleeping,
+          suspendHeartbeats: (): boolean => {
+            const sleeping = budgeted.publicStatus().sleeping;
+            publishBudget();
+            return sleeping;
+          },
           onAwakeTick: (): boolean => controller.releaseHeldCycle(),
           onSuspendedTick: async (residency: string): Promise<void> => {
             const draft = budgeted.sleepDraft();
@@ -607,7 +634,8 @@ type OpenedDaemonBrain = {
 async function openDaemonBrain(
   config: DaemonConfig,
   deps: ResidencyDaemonDeps,
-  clock: () => string
+  clock: () => string,
+  afterExclusive?: () => void
 ): Promise<OpenedDaemonBrain> {
   if (deps.brain !== undefined) {
     return { chat: deps.brain };
@@ -634,7 +662,8 @@ async function openDaemonBrain(
       maxTokens,
       timeoutMs,
       clock,
-      ...(deps.createTierBrain !== undefined ? { createTierBrain: deps.createTierBrain } : {})
+      ...(deps.createTierBrain !== undefined ? { createTierBrain: deps.createTierBrain } : {}),
+      ...(afterExclusive !== undefined ? { afterExclusive } : {})
     });
     return {
       chat: budgeted,

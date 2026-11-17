@@ -196,4 +196,24 @@ describe("loadDaemonConfig", () => {
       }
     }
   });
+
+  it("accepts an absolute budget status path and does not echo a relative one", () => {
+    expect(
+      loadDaemonConfig({
+        ...VALID_ENV,
+        NPC_BUDGET_STATUS_PATH: "/data/budget-status/status.json"
+      }).budgetStatusPath
+    ).toBe("/data/budget-status/status.json");
+    const secret = "sk-ant-path-secret";
+    try {
+      loadDaemonConfig({ ...VALID_ENV, NPC_BUDGET_STATUS_PATH: `${secret}/status.json` });
+      expect.unreachable();
+    } catch (error: unknown) {
+      expect(error).toBeInstanceOf(DaemonError);
+      if (error instanceof DaemonError) {
+        expect(error.message).not.toContain(secret);
+        expect(error.envVar).toBe("NPC_BUDGET_STATUS_PATH");
+      }
+    }
+  });
 });

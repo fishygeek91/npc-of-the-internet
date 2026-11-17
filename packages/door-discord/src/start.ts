@@ -25,6 +25,7 @@ import { loadDoorKeypairFromPath } from "./load-door-key.js";
 import { DualRateLimiter, type RateClock } from "./rate-limit.js";
 import { stopAll } from "./shutdown.js";
 import { formatStatusReply, type DoorStatusSnapshot } from "./status.js";
+import { loadDoorBudgetStatus } from "./budget-status.js";
 
 /** Posted in the residency channel when the Wanderer arrives here. */
 export const ARRIVED_NOTICE = "✨ The Wanderer has arrived.";
@@ -235,7 +236,11 @@ export async function startDiscordDoor(
         await gateway.replyEphemeral(command.interactionId, "Ignored (not an operator).");
         return;
       }
-      await gateway.replyEphemeral(command.interactionId, formatStatusReply(readStatus()));
+      const snapshot = readStatus();
+      if (snapshot.budget?.state === "unavailable") {
+        logger.warn({ reason: snapshot.budget.reason }, "budget_status_unreadable");
+      }
+      await gateway.replyEphemeral(command.interactionId, formatStatusReply(snapshot));
     } catch (error: unknown) {
       logger.warn({ notice: operatorNotice(error) }, "command_error");
       try {
@@ -258,7 +263,8 @@ export async function startDiscordDoor(
       epoch,
       // T6.1: distinguish WS session attachment from Door active epoch, or drop this field.
       sessionLive: present,
-      witnessesMemories: door.witnessesMemories()
+      witnessesMemories: door.witnessesMemories(),
+      budget: loadDoorBudgetStatus(config.budgetStatusPath)
     };
   }
 

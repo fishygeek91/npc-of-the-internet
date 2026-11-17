@@ -27,6 +27,7 @@ describe("loadDiscordDoorConfig", () => {
     expect(config.operatorIds).toEqual(["10004"]);
     expect(config.witness).toBeNull();
     expect(config.presenceNotices).toBe(true);
+    expect(config.budgetStatusPath).toBeUndefined();
   });
 
   it("DISCORD_PRESENCE_NOTICES=0 disables presence notices; junk is a config error", () => {
@@ -141,5 +142,24 @@ describe("loadDiscordDoorConfig", () => {
   it("fails fast naming SOUL_PUBLIC_KEY when invalid", () => {
     const env = { ...baseEnv(), SOUL_PUBLIC_KEY: "!!!not-a-key!!!" };
     expect(() => loadDiscordDoorConfig(env)).toThrow(/SOUL_PUBLIC_KEY/);
+  });
+
+  it("accepts an absolute budget status path and does not echo a bad one", () => {
+    const secret = "sk-ant-path-secret";
+    expect(
+      loadDiscordDoorConfig({
+        ...baseEnv(),
+        NPC_BUDGET_STATUS_PATH: "/data/budget-status/status.json"
+      }).budgetStatusPath
+    ).toBe("/data/budget-status/status.json");
+    try {
+      loadDiscordDoorConfig({ ...baseEnv(), NPC_BUDGET_STATUS_PATH: `${secret}/status.json` });
+      expect.unreachable();
+    } catch (error: unknown) {
+      expect(error).toBeInstanceOf(DiscordDoorError);
+      if (error instanceof DiscordDoorError) {
+        expect(error.message).not.toContain(secret);
+      }
+    }
   });
 });

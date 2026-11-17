@@ -5,6 +5,7 @@ import { decodePublicKey } from "@npc/osp-core";
 import { z } from "zod";
 
 import { DiscordDoorError } from "./errors.js";
+import { isBudgetStatusPath } from "./budget-status.js";
 
 const DEFAULT_HTTP_HOST = "127.0.0.1";
 const DEFAULT_HTTP_PORT = 9090;
@@ -39,6 +40,11 @@ const discordDoorConfigSchema = z.object({
 export type DiscordDoorConfig = z.infer<typeof discordDoorConfigSchema> & {
   /** Memory witness model settings (`loadWitnessConfig`); `null` = this Door witnesses no memories. */
   witness: WitnessConfig;
+  /**
+   * Absolute runtime budget snapshot (`NPC_BUDGET_STATUS_PATH`).
+   * Absent when unset. Not a Door protocol message.
+   */
+  budgetStatusPath?: string;
 };
 
 /**
@@ -170,6 +176,20 @@ function parseOperatorIds(raw: string): string[] {
   return ids;
 }
 
+function parseBudgetStatusPath(env: NodeJS.ProcessEnv): string | undefined {
+  const raw = env.NPC_BUDGET_STATUS_PATH?.trim() ?? "";
+  if (raw === "") {
+    return undefined;
+  }
+  if (!isBudgetStatusPath(raw)) {
+    throw new DiscordDoorError(
+      "invalid_config",
+      "NPC_BUDGET_STATUS_PATH must be an absolute path with no .. segment"
+    );
+  }
+  return raw;
+}
+
 function parseSoulPublicKey(raw: string): Uint8Array {
   try {
     return decodePublicKey(raw.trim());
@@ -196,6 +216,10 @@ function parseSoulPublicKey(raw: string): Uint8Array {
  * Presence notices: `DISCORD_PRESENCE_NOTICES` (default on; `0` disables the
  * arrived / moved-on posts in the residency channel).
  *
+ * Budget status: `NPC_BUDGET_STATUS_PATH` (optional absolute file the runtime
+ * publishes). Unset means `/wanderer status` says the budget is not configured.
+ * The file is not a Door protocol message.
+ *
  * @param env - Environment map; defaults to `process.env`. Inject a plain object in tests.
  */
 export function loadDiscordDoorConfig(env: NodeJS.ProcessEnv = process.env): DiscordDoorConfig {
@@ -221,6 +245,7 @@ export function loadDiscordDoorConfig(env: NodeJS.ProcessEnv = process.env): Dis
       : env.DISCORD_COMMUNITY_DESCRIPTION;
 
   const witness = loadWitness(env);
+  const budgetStatusPath = parseBudgetStatusPath(env);
 
   const result = discordDoorConfigSchema.safeParse({
     botToken,
@@ -257,5 +282,9 @@ export function loadDiscordDoorConfig(env: NodeJS.ProcessEnv = process.env): Dis
     throw new DiscordDoorError("invalid_config", `Invalid Discord Door configuration: ${detail}`);
   }
 
-  return { ...result.data, witness };
+  return {
+    ...result.data,
+    witness,
+    ...(budgetStatusPath !== undefined ? { budgetStatusPath } : {})
+  };
 }
