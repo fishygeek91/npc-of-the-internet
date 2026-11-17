@@ -23,6 +23,7 @@ Environment variable names and purposes only. **Never commit values.**
 | `NPC_RESIDENCY_MAX_MS` | Travel once the live residency is older than this (checked every minute). Default `86400000` (daily); `0` = only on operator request; otherwise `≥ 3600000`. |
 | `NPC_RESIDENCY_MIN_LINES` | A timer-triggered departure forms memories only when the stay's transcript holds at least this many lines (default `10`); a quieter stay still travels, without memories. Operator-requested departures need one line. |
 | `NPC_CONTROL_DIR` | Directory the daemon polls for `wanderer depart` requests (default `/tmp/npc-control`; Ghost compose pins it on the `/tmp` tmpfs). |
+| `NPC_BUDGET_STATUS_PATH` | Absolute path of the fraction-only budget snapshot (public config, not a secret). Ghost compose sets `/data/budget-status/status.json` on runtime (read-write) and door-discord (read-only). The file has sleeping, tier, and remaining fraction — no dollar amounts. |
 | `NPC_JOURNAL_DIR` | Directory for residency journal markdown files written at departure (default `/data/published/journals`; Ghost compose pins it on the `published` volume). |
 | `NPC_IMAGE_TAG` | Docker image tag for all Ghost stack services (default: `latest`). Set to `local` when using locally built images. |
 | `NPC_CONTAINER_UID` | Container user id for `npc` in all Ghost images (fixed `10001`). Host `keys/` and `rclone/` bind mounts must be owned by this uid. Not a secret — documented constant. |

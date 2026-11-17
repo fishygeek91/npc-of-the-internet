@@ -7,7 +7,7 @@ Discord Door adapter: one guild channel becomes a Door. Wraps the `@npc/door-sdk
 - **`startDiscordDoor(options)`** — boot the Door (with the memory witness when configured), HTTP/WS servers (optional), Discord gateway, channel relay, and presence notices. `options.witness` overrides the witness (tests).
 - **`loadDiscordDoorConfig(env)`** — Zod-validated env config (inject `env` in tests)
 - **`DiscordGateway`** — thin seam over discord.js (`DiscordJsGateway` in prod; `FakeGateway` in tests)
-- **`formatStatusReply` / `DoorStatusSnapshot`** — the ephemeral `/wanderer status` reply (presence, door id, epoch, session, whether memories are witnessed)
+- **`formatStatusReply` / `DoorStatusSnapshot`** — the ephemeral `/wanderer status` reply (presence, door id, epoch, session, whether memories are witnessed, and — when `NPC_BUDGET_STATUS_PATH` points at the runtime snapshot — sleeping, chat tier, and remaining fraction). Dollar amounts are not in the reply. Unknown spend is `remaining_fraction: unknown`.
 
 ## Memory witness
 
@@ -34,6 +34,7 @@ The Wanderer is in one place at a time. The adapter posts in the bound channel w
 | `DISCORD_USER_RATE_PER_MIN` / `DISCORD_USER_BURST` | no | Per-user inbound token bucket |
 | `DISCORD_CHANNEL_RATE_PER_MIN` / `DISCORD_CHANNEL_BURST` | no | Per-channel inbound token bucket |
 | `DISCORD_PRESENCE_NOTICES` | no | `0` disables the arrived / moved-on posts (default `1`) |
+| `NPC_BUDGET_STATUS_PATH` | no | Absolute fraction-only snapshot the runtime publishes. Unset → `budget: not configured`. Not a Door protocol message. |
 | `DOOR_WITNESS` | no | `off` disables the memory witness |
 | `DOOR_WITNESS_BASE_URL` / `DOOR_WITNESS_MODEL` | no | Witness OpenAI-compatible endpoint + model (fallback `NPC_BRAIN_BASE_URL` / `NPC_BRAIN_MODEL`) |
 | `DOOR_WITNESS_API_KEY` / `DOOR_WITNESS_API_KEY_FILE` | no | Witness API key, inline or file (fallback `NPC_BRAIN_API_KEY` / `NPC_BRAIN_API_KEY_FILE`) |

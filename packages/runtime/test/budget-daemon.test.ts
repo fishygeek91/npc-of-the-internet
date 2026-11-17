@@ -3,7 +3,7 @@
  * holds heartbeats; a new month lets the next heartbeat land. Unknown spend
  * stays off the chain until `wanderer wake` clears the latch.
  */
-import { rm, writeFile } from "node:fs/promises";
+import { readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { OSP_SPEC_V02, type OspRecord } from "@npc/osp-core";
@@ -94,7 +94,11 @@ describe("treasury-lite daemon wiring", () => {
     }
   });
 
-  async function boot(ledgerLine: string, budget: Omit<BudgetConfig, "ledgerPath">) {
+  async function boot(
+    ledgerLine: string,
+    budget: Omit<BudgetConfig, "ledgerPath">,
+    options?: { publishStatus?: boolean }
+  ) {
     const clock = new OffsetClock();
     const timer = new FakeTimer();
     const { logger, lines } = capturingLogger();
@@ -108,6 +112,8 @@ describe("treasury-lite daemon wiring", () => {
     });
     doors.push(door);
     const ledgerPath = join(dirs.root, "spend.jsonl");
+    const statusPath =
+      options?.publishStatus === true ? join(dirs.root, "budget-status.json") : undefined;
     const stamped = ledgerLine.replaceAll("__TS__", clock.now());
     await writeFile(ledgerPath, `${stamped}\n`, "utf8");
     const inner = new FakeBrain(["should-not-be-called"]);
@@ -119,7 +125,8 @@ describe("treasury-lite daemon wiring", () => {
         preferredDoorId: DOOR_ID,
         residency: { maxResidencyMs: 0 }
       }),
-      budget: { ...budget, ledgerPath }
+      budget: { ...budget, ledgerPath },
+      ...(statusPath !== undefined ? { budgetStatusPath: statusPath } : {})
     };
     const deps = {
       createTierBrain: (): FakeBrain => inner,
@@ -136,6 +143,7 @@ describe("treasury-lite daemon wiring", () => {
       lines,
       dirs,
       inner,
+      statusPath,
       restart: async (): Promise<void> => {
         await handle?.shutdown();
         handle = await startResidencyDaemon(config, deps);
@@ -286,5 +294,62 @@ describe("treasury-lite daemon wiring", () => {
     timer.tick();
     await awaitChainShape(dirs.chainDir, [...moved, "heartbeat"]);
     expect(inner.calls).toHaveLength(0);
+  });
+
+  it("publishes sleeping and a fraction, and omits a balance when spend is unknown", async () => {
+    const unknown = JSON.stringify({
+      kind: "unknown_spend",
+      ts: "__TS__",
+      tier: "cheap",
+      model: "tier-cheap"
+    });
+    const { clock, timer, lines, dirs, statusPath } = await boot(
+      unknown,
+      budgetConfig(10_000_000n, "10"),
+      { publishStatus: true }
+    );
+    if (statusPath === undefined) {
+      throw new Error("status path was not set");
+    }
+    const secret = "test-key";
+    await waitFor(async () => {
+      try {
+        const raw = await readFile(statusPath, "utf8");
+        return raw.includes('"remainingFraction":null');
+      } catch {
+        // The boot publish is async.
+        return false;
+      }
+    }, "unknown budget status");
+    const asleep = await readFile(statusPath, "utf8");
+    expect(JSON.parse(asleep)).toEqual({
+      configured: true,
+      sleeping: true,
+      tier: null,
+      remainingFraction: null
+    });
+    expect(asleep).not.toContain("balance");
+    expect(asleep).not.toContain(secret);
+    expect(asleep).not.toContain("10");
+    expect(JSON.stringify(lines)).not.toContain("remainingFraction");
+    expect(JSON.stringify(lines)).not.toContain(secret);
+
+    await writeWakeRequest(dirs.controlDir, clock.now());
+    timer.tick();
+    await waitFor(() => lines.some((line) => line.msg === "budget_wake"), "journal wake");
+    await waitFor(async () => {
+      const raw = await readFile(statusPath, "utf8");
+      return raw.includes('"remainingFraction":"1"');
+    }, "awake budget status");
+    const awake = await readFile(statusPath, "utf8");
+    expect(JSON.parse(awake)).toEqual({
+      configured: true,
+      sleeping: false,
+      tier: "cheap",
+      remainingFraction: "1"
+    });
+    expect(awake).not.toContain("balance");
+    expect(awake).not.toContain(secret);
+    expect(awake).not.toContain("usd");
   });
 });

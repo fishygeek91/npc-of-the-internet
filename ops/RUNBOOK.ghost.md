@@ -707,6 +707,7 @@ The in-process journal is how the Wanderer knows it is spending. The prepaid key
 5. Restart runtime. If the journal file is missing, boot fails and names `wanderer budget-init`. Logs otherwise show `budget_enabled`. A known balance at or below the threshold appends `sleep` and stops heartbeats and travel. Atlas then reports `sleeping`. A process restart while asleep appends a new arrival and then seals `sleep` again.
 6. To wake a provider-exhausted or unknown-spend latch: `wanderer wake`. That does not add money. Raise `NPC_BUDGET_USD` and restart, or wait for the next UTC month, when the balance itself is the reason. The next heartbeat after the policy is awake is the public wake.
 7. `wanderer depart` while asleep does not travel immediately. The daemon holds that one cycle and runs it when the policy wakes. A Door that restarts during sleep is held the same way, then the residency moves on after wake.
+8. Ghost compose shares `/data/budget-status/status.json` (`NPC_BUDGET_STATUS_PATH`). In Discord, an operator's `/wanderer status` adds `sleeping`, `tier`, and `remaining_fraction`. It does not show dollar amounts. Unknown spend is `remaining_fraction: unknown`. Treasury left off is `budget: not configured`. A missing or rejected file is `budget: unavailable`. The web porch does not show the fraction; Atlas still shows `sleeping` from the chain.
 
 A corrupt line, or a paid call that reported zero tokens, refuses further model calls and does not publish a dollar balance. The daemon still boots in the corrupt case.
 

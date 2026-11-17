@@ -53,8 +53,10 @@ COPY --from=build /out /app
 # missed when T7.1 added them, making first boot fail with EACCES on
 # 'mkdir /data/soulchain-ipfs/blocks'. Upgrading pre-10001 volumes: RUNBOOK §1.4
 # (host-side chown of the volume mountpoints applies to all three).
-RUN mkdir -p /data/soulchain /data/soulchain-ipfs /data/published \
-  && chown npc:npc /data/soulchain /data/soulchain-ipfs /data/published
+# `/data/budget-status` is the fraction-only `/wanderer status` snapshot.
+# door-discord starts first and must own the same path so a fresh volume is npc.
+RUN mkdir -p /data/soulchain /data/soulchain-ipfs /data/published /data/budget-status \
+  && chown npc:npc /data/soulchain /data/soulchain-ipfs /data/published /data/budget-status
 
 WORKDIR /app
 USER npc
