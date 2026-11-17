@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 import { CidSchema } from "../crypto/cid.js";
-import { decodeSignature } from "../encoding/base64url.js";
+import { Ed25519SignatureSchema, decodeSignature } from "../encoding/base64url.js";
 import { EncodingError } from "../errors.js";
 import {
   AttestationBodySchema,
@@ -21,6 +21,62 @@ import { validateNoProtoKeys } from "./proto-key.js";
 
 /** Residency descriptor format: `door:<platform>:<door-id>/epoch:<n>`. */
 export const RESIDENCY_RE = /^door:[a-z0-9-]+:[A-Za-z0-9_-]+\/epoch:(0|[1-9][0-9]*)$/;
+
+/**
+ * Type-only brand carrier. Residency is not branded on {@link EnvelopeFieldsSchema}:
+ * a null residency is required for genesis and tombstones, so the field schema
+ * cannot require the regex without changing which errors are reported.
+ */
+const residencyBrandSchema = z.string().brand<"Residency">();
+
+/**
+ * Residency wire string `door:<platform>:<door-id>/epoch:<n>`.
+ *
+ * Zod output brand (type-only). A plain `string` is not assignable to `Residency`;
+ * `Residency` is assignable to `string`. Construct with {@link asResidency} or
+ * {@link makeResidency}. {@link parseResidency} is the shared format check.
+ */
+export type Residency = z.output<typeof residencyBrandSchema>;
+
+/**
+ * True when {@link parseResidency} accepts `value`. Narrows to {@link Residency}.
+ */
+export function isResidency(value: string): value is Residency {
+  return parseResidency(value) !== null;
+}
+
+/**
+ * Require a residency wire string.
+ *
+ * @throws {EncodingError} when `value` does not match {@link RESIDENCY_RE}.
+ */
+export function asResidency(value: string): Residency {
+  if (!isResidency(value)) {
+    throw new EncodingError(
+      "residency must match door:<platform>:<door-id>/epoch:<n> (example: door:discord:guild123/epoch:77)"
+    );
+  }
+  return residencyBrandSchema.parse(value);
+}
+
+/**
+ * Build a residency from its three parts.
+ *
+ * `platform` is the lowercase segment (`discord`). `doorId` is the door's own id
+ * (`guild123`), not `platform:id`. The result is `door:<platform>:<doorId>/epoch:<n>`.
+ *
+ * @throws {EncodingError} when the parts do not match {@link RESIDENCY_RE}.
+ */
+export function makeResidency(parts: {
+  readonly platform: string;
+  readonly doorId: string;
+  readonly epoch: number;
+}): Residency {
+  if (!Number.isInteger(parts.epoch) || parts.epoch < 0) {
+    throw new EncodingError("residency epoch must be a non-negative integer");
+  }
+  return asResidency(`door:${parts.platform}:${parts.doorId}/epoch:${String(parts.epoch)}`);
+}
 
 /** Validates that a string decodes to a 64-byte Ed25519 signature. */
 function validateSignatureString(
@@ -77,8 +133,8 @@ export const EnvelopeFieldsSchema = z
     seq: nonnegativeInteger(),
     prev: CidSchema.nullable(),
     residency: z.string().nullable(),
-    cosigners: z.array(z.string()),
-    sig: z.string()
+    cosigners: z.array(Ed25519SignatureSchema),
+    sig: Ed25519SignatureSchema
   })
   .strict();
 

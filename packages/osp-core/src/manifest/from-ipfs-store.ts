@@ -1,5 +1,6 @@
 import * as path from "node:path";
 
+import type { Cid } from "../crypto/cid.js";
 import { CorruptionError } from "../errors.js";
 import { readHead } from "../store/head-file.js";
 import { readSeqIndex } from "../store/seq-index.js";
@@ -19,7 +20,7 @@ export type BuildPinManifestForIpfsDirOptions = {
  *
  * Validates contiguous seq 0..n-1 and that HEAD matches the last entry.
  */
-export async function listRecordCidsFromIpfsDir(dir: string): Promise<string[]> {
+export async function listRecordCidsFromIpfsDir(dir: string): Promise<Cid[]> {
   const absoluteDir = path.resolve(dir);
   const entries = await readSeqIndex(path.join(absoluteDir, SEQ_INDEX_FILE));
 

@@ -1,4 +1,5 @@
-import { computeCid } from "./crypto/cid.js";
+import { asCid, computeCid, type Cid } from "./crypto/cid.js";
+import type { Base64Url } from "./encoding/base64url.js";
 import { EncodingError, StorageError } from "./errors.js";
 import { contentAddressSideBlob, encodeJournalBlob, encodeShardTextBlob } from "./memory-blob.js";
 import { createRecord, signCore, type CreateRecordFields } from "./record.js";
@@ -28,8 +29,8 @@ export type MigrateChainToV02Result = {
 /**
  * Rewrite a CID string through the migration map when present.
  */
-function remapCid(cid: string, cidMap: ReadonlyMap<string, string>): string {
-  return cidMap.get(cid) ?? cid;
+function remapCid(cid: string, cidMap: ReadonlyMap<string, string>): Cid {
+  return asCid(cidMap.get(cid) ?? cid);
 }
 
 /**
@@ -83,12 +84,12 @@ async function migrateMemoryBody(
 
   const nextBody: {
     kind: "shard";
-    text_cid: string;
-    text_hash: string;
+    text_cid: Cid;
+    text_hash: Base64Url;
     distilled_at: string;
-    candidate_cid?: string;
-    journal_cid?: string;
-    journal_hash?: string;
+    candidate_cid?: Cid;
+    journal_cid?: Cid;
+    journal_hash?: Base64Url;
   } = {
     kind: "shard",
     text_cid: textAddr.cid,

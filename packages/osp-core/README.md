@@ -6,11 +6,12 @@ OSP soulchain primitives: Zod record schemas, canonical JSON, Ed25519 signing, C
 
 | Area | Exports |
 |------|---------|
-| Schemas | `RecordSchema`, body schemas (`GenesisBodySchema`, …), `OspRecord` types, `RECORD_TYPES`, `RecordType`, `RESIDENCY_RE`, `parseResidency` |
+| Schemas | `RecordSchema`, body schemas (`GenesisBodySchema`, …), `OspRecord` types, `RECORD_TYPES`, `RecordType`, `RESIDENCY_RE`, `parseResidency`, `asResidency`, `makeResidency` |
 | Canonical JSON | `canonicalize` — sorted keys, no whitespace (UTF-16 code-unit order) |
-| Encoding | `encodeBase64Url`, `decodeBase64Url`, `encodePublicKey`, `decodePublicKey`, `encodeSignature`, `decodeSignature`, `parsePrivateKeyBytes` |
-| Ed25519 | `generateKeypair`, `publicKeyFromPrivate`, `sign`, `verify` |
-| CIDs | `computeCid`, `computeCidFromCanonicalBytes` — dag-json codec + sha2-256 → CIDv1 base32 strings (typically `bagu…`, not `bafy…` which is dag-pb) |
+| Encoding | `encodeBase64Url`, `decodeBase64Url`, `asBase64Url`, `encodePublicKey`, `decodePublicKey`, `asSoulPublicKey`, `encodeSignature`, `decodeSignature`, `asEd25519Signature`, `parsePrivateKeyBytes` |
+| Ed25519 | `generateKeypair`, `publicKeyFromPrivate`, `sign`, `verify` (raw `Uint8Array` keys and signatures) |
+| CIDs | `computeCid`, `computeCidFromCanonicalBytes`, `asCid`, `parseCid`, `isValidCid` — dag-json codec + sha2-256 → CIDv1 base32 strings (typically `bagu…`, not `bafy…` which is dag-pb) |
+| Brands | `Cid`, `SoulPublicKey`, `Ed25519Signature`, `Base64Url`, `Residency` — see below |
 | Records | `createRecord`, `createRecordWithSigner`, `verifyRecord`, `signCore`, `corePayload`, `soulPayload` |
 | Door keys | `parseDoorPublicKeyBinding`, `parseDoorPublicKeyMap`, `hasDoorPublicKeys` — `doorId=base64url` bindings |
 | Chain verify | `verifyRecords`, `verifyChain`, `ChainRule`, `ChainFailure`, `VerifyChainResult`, `VerifyChainOptions` |
@@ -22,6 +23,24 @@ OSP soulchain primitives: Zod record schemas, canonical JSON, Ed25519 signing, C
 `RECORD_TYPES` is every envelope `type` (including `tombstone`), in schema order. `RecordType` is that union (`OspRecord["type"]`).
 
 `parsePrivateKeyBytes` reads private-key file bytes: exactly 32 raw bytes, otherwise trimmed UTF-8 that is unpadded base64url for 32 bytes. It throws `PrivateKeyParseError` (an `EncodingError`) and does not take a path or include key bytes. `publicKeyFromPrivate` is the Ed25519 public-key derivation callers should use.
+
+### Branded wire strings
+
+`Cid`, `SoulPublicKey`, `Ed25519Signature`, `Base64Url`, and `Residency` are Zod output brands (`schema.brand<"Name">()`, direction `"out"`). The brand is erased at runtime: record bytes, base64url text, and `spec/osp/schema/*.json` stay the same. A plain `string` is not assignable to a brand. A brand is assignable to `string`.
+
+Crypto functions keep raw bytes. `sign`, `verify`, `decodePublicKey`, `decodeSignature`, `VerifyRecordOptions.soulPublicKey`, and door-key maps take `Uint8Array`. `encodePublicKey`, `encodeSignature`, and `encodeBase64Url` are the crossings back to wire brands. `SoulPublicKey` is every 32-byte Ed25519 wire key (soul, session, and Door) — it stops those strings being passed where a CID or signature is required, and it does not distinguish key roles.
+
+| Brand | Produced by | Checked by |
+|-------|-------------|------------|
+| `Cid` | `computeCid`, `computeCidFromCanonicalBytes`, `CidSchema` parse | `asCid`, `parseCid`, `isValidCid` |
+| `SoulPublicKey` | `encodePublicKey`, `SoulPublicKeySchema` parse | `asSoulPublicKey`, `decodePublicKey` |
+| `Ed25519Signature` | `encodeSignature`, `signCore`, `Ed25519SignatureSchema` parse | `asEd25519Signature`, `decodeSignature` |
+| `Base64Url` | `encodeBase64Url` (empty string encodes zero bytes) | `asBase64Url` (`decodeBase64Url` also rejects empty input) |
+| `Residency` | `makeResidency({ platform, doorId, epoch })` | `asResidency`, `parseResidency` |
+
+`makeResidency` builds `door:<platform>:<doorId>/epoch:<n>`. `doorId` is the door's own id (`guild123`), not `platform:id`. `OspRecord.residency` stays `string | null` because genesis and tombstones require null; brand it with `asResidency` when the value is non-null.
+
+Parsed record CID fields, `soul_pubkey` / `session_pubkey`, `sig`, and `cosigners` are branded outputs. `CreateRecordFields` (and `SoulStore.get`, `expectedCid`, replication journal entries) still accept plain `string`, so a brand or an unbranded string can be passed in. `HeadInfo.cid`, `AppendResult.cid`, and `PutSideBlobResult.cid` are `Cid`. `createRecord` / `verifyRecord` return `cid: Cid`.
 
 ## Chain verification
 

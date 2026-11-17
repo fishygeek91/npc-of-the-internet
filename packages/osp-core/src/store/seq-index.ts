@@ -1,7 +1,7 @@
 import { closeSync, existsSync, fsyncSync, openSync } from "node:fs";
 import { readFile, stat, truncate } from "node:fs/promises";
 
-import { isValidCid } from "../crypto/cid.js";
+import { isValidCid, type Cid } from "../crypto/cid.js";
 import { CorruptionError, StorageError } from "../errors.js";
 
 import { fsyncPath, writeAllSync } from "./fsync.js";
@@ -10,7 +10,7 @@ import { isNodeError, nodeErrorMessage } from "./node-fs-error.js";
 /** One seq-index journal line: ordered record pointer. */
 export type SeqIndexEntry = {
   seq: number;
-  cid: string;
+  cid: Cid;
 };
 
 /** Parse and validate one seq-index JSONL line. */
