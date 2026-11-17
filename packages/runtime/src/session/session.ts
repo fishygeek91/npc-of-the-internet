@@ -7,11 +7,9 @@ import {
 } from "@npc/door-sdk";
 import {
   OSP_SPEC_V02,
-  SchemaError,
   canonicalize,
   computeCid,
   corePayload,
-  createRecordWithSigner,
   encodePublicKey,
   encodeSignature,
   type CreateRecordFields,
@@ -51,7 +49,10 @@ import {
   ATTENTION_SYSTEM,
   ATTENTION_USER_TEMPLATE
 } from "../prompts/attention/system.js";
+import { AppendQueue } from "./append-queue.js";
+import { POP_VERSION, sealRecord } from "./attest.js";
 import { SessionError } from "./errors.js";
+import { HeartbeatPump, type HeartbeatErrorStage } from "./heartbeat-pump.js";
 import {
   DOOR_PROTOCOL_VERSION,
   InboundFrameSchema,
@@ -59,7 +60,6 @@ import {
   type AttestRequest,
   type Clock,
   type DoorConnection,
-  type HeartbeatRequest,
   type InboundFrame,
   type OutboundFrame,
   type Timer
@@ -70,7 +70,6 @@ type SessionPhase = "live" | "departing" | "departed";
 
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 600_000;
 const DEFAULT_MAX_HISTORY_MESSAGES = 40;
-const POP_VERSION = "pop/0.1" as const;
 
 const ATTESTATION_KINDS_WITH_EPOCH = ["arrival", "departure", "heartbeat", "travel"] as const;
 
@@ -80,8 +79,7 @@ function isAttestationKindWithEpoch(kind: string): kind is AttestationKindWithEp
   return (ATTESTATION_KINDS_WITH_EPOCH as readonly string[]).includes(kind);
 }
 
-/** Where a heartbeat failure occurred (Door call vs soulchain append). */
-export type HeartbeatErrorStage = "door" | "append";
+export type { HeartbeatErrorStage };
 
 /** Configuration for {@link Session.start}. */
 export type SessionOptions = {
@@ -286,11 +284,11 @@ export class Session {
   private readonly witnessesMemories: boolean;
   private phase: SessionPhase = "live";
   private heartbeatTimerId: unknown = null;
-  private heartbeatSeq = 0;
+  private readonly heartbeat: HeartbeatPump;
   private outboundCounter = 0;
   private readonly history: BrainHistoryMessage[] = [];
-  private appendChain: Promise<unknown> = Promise.resolve();
-  private inboundChain: Promise<unknown> = Promise.resolve();
+  private readonly appends = new AppendQueue();
+  private readonly inbound = new AppendQueue();
   private lastHeartbeatErrorValue: unknown = null;
   /** Depart state across retries; created by the first depart attempt. */
   private ledger: DepartLedger | null = null;
@@ -330,6 +328,20 @@ export class Session {
     this.sessionSigner = sessionSigner;
     this.sessionPublicKeyValue = sessionSigner.publicKey;
     this.residency = `door:${options.doorId}/epoch:${String(epoch)}`;
+    this.heartbeat = new HeartbeatPump({
+      store: this.store,
+      door: this.door,
+      clock: this.clock,
+      sessionSigner: this.sessionSigner,
+      keyring: this.keyring,
+      doorId: this.doorId,
+      epoch: this.epochValue,
+      residency: this.residency,
+      sessionPublicKey: this.sessionPublicKeyValue,
+      notifyHeartbeatError: (error, stage) => {
+        this.notifyHeartbeatError(error, stage);
+      }
+    });
   }
 
   /** Global residency epoch for this session. */
@@ -427,7 +439,7 @@ export class Session {
   }
 
   /**
-   * Screen, complete, and append history for one inbound frame (runs on inboundChain).
+   * Screen, complete, and append history for one inbound frame (runs on the inbound queue).
    */
   private async processInbound(frame: InboundFrame): Promise<HandleInboundResult> {
     if (this.phase !== "live") {
@@ -548,7 +560,7 @@ export class Session {
     return this.enqueueInbound(async () => this.decideAttention(entry.ref));
   }
 
-  /** One attention decision over every pending room entry (runs on inboundChain). */
+  /** One attention decision over every pending room entry (runs on the inbound queue). */
   private async decideAttention(ref: number): Promise<ObserveResult> {
     if (!this.pendingEntries.some((entry) => entry.ref === ref)) {
       return { kind: "coalesced" };
@@ -708,7 +720,7 @@ export class Session {
 
   /** Wait until all queued chain appends finish (for tests). */
   async drainAppends(): Promise<void> {
-    await this.appendChain;
+    await this.appends.settled();
   }
 
   /**
@@ -803,7 +815,7 @@ export class Session {
     // Let any in-flight inbound decision settle (it re-checks the phase after its Brain
     // call and bails) before the transcript is read and destroyed. Also covers a caller
     // that ran stop() itself before depart.
-    await this.inboundChain;
+    await this.inbound.settled();
   }
 
   /** The depart ledger; created on the first attempt, which reads and destroys the transcript. */
@@ -1168,22 +1180,12 @@ export class Session {
   }
 
   private enqueueAppend<T>(fn: () => Promise<T>): Promise<T> {
-    const run = this.appendChain.then(fn, fn);
-    this.appendChain = run.then(
-      () => undefined,
-      () => undefined
-    );
-    return run;
+    return this.appends.enqueue(fn);
   }
 
   /** Serialize inbound handling so Brain+history updates never interleave. */
   private enqueueInbound<T>(fn: () => Promise<T>): Promise<T> {
-    const run = this.inboundChain.then(fn, fn);
-    this.inboundChain = run.then(
-      () => undefined,
-      () => undefined
-    );
-    return run;
+    return this.inbound.enqueue(fn);
   }
 
   private notifyHeartbeatError(error: unknown, stage: HeartbeatErrorStage): void {
@@ -1205,123 +1207,8 @@ export class Session {
     }
   }
 
-  private async runHeartbeat(): Promise<void> {
-    if (this.phase !== "live") {
-      return;
-    }
-
-    const head = await this.store.head();
-    if (head === null) {
-      throw new SessionError("heartbeat: store has no head");
-    }
-
-    const seq = this.heartbeatSeq + 1;
-    const issuedAt = this.clock.now();
-    const sessionPubkeyEncoded = encodePublicKey(this.sessionPublicKeyValue);
-
-    const unsignedHeartbeat: Omit<HeartbeatRequest, "sig"> = {
-      protocol_version: DOOR_PROTOCOL_VERSION,
-      door_id: this.doorId,
-      epoch: this.epochValue,
-      session_pubkey: sessionPubkeyEncoded,
-      seq,
-      issued_at: issuedAt
-    };
-    const heartbeatSig = encodeSignature(this.sessionSigner.sign(canonicalize(unsignedHeartbeat)));
-
-    try {
-      await this.door.heartbeat({
-        ...unsignedHeartbeat,
-        sig: heartbeatSig
-      });
-    } catch (error) {
-      this.notifyHeartbeatError(error, "door");
-      throw error;
-    }
-
-    this.heartbeatSeq = seq;
-
-    const heartbeatBody = {
-      kind: "heartbeat" as const,
-      pop_version: POP_VERSION,
-      door_id: this.doorId,
-      epoch: this.epochValue,
-      session_pubkey: sessionPubkeyEncoded,
-      at: this.clock.now()
-    };
-
-    await this.appendHeartbeatAttestation({
-      body: heartbeatBody,
-      seq: head.seq + 1,
-      prev: head.cid
-    });
-  }
-
-  /**
-   * Heartbeat-only attest+append with stage-tagged errors for {@link onHeartbeatError}.
-   */
-  private async appendHeartbeatAttestation(params: {
-    body: CreateRecordFields["body"];
-    seq: number;
-    prev: string;
-  }): Promise<void> {
-    const core = new TextDecoder().decode(
-      canonicalize(
-        corePayload({
-          spec: OSP_SPEC_V02,
-          seq: params.seq,
-          prev: params.prev,
-          type: "attestation",
-          body: params.body,
-          residency: this.residency
-        })
-      )
-    );
-
-    const issuedAt = this.clock.now();
-    const sessionPubkeyEncoded = encodePublicKey(this.sessionPublicKeyValue);
-
-    const unsignedAttest: Omit<AttestRequest, "sig"> = {
-      protocol_version: DOOR_PROTOCOL_VERSION,
-      door_id: this.doorId,
-      epoch: this.epochValue,
-      kind: "heartbeat",
-      core,
-      session_pubkey: sessionPubkeyEncoded,
-      issued_at: issuedAt
-    };
-
-    const attestSig = encodeSignature(
-      this.sessionSigner.sign(attestSigningPayload(unsignedAttest))
-    );
-
-    let doorCosig: string;
-    try {
-      const attestResponse = await this.door.attest({
-        ...unsignedAttest,
-        sig: attestSig
-      });
-      doorCosig = attestResponse.door_cosig;
-    } catch (error) {
-      this.notifyHeartbeatError(error, "door");
-      throw error;
-    }
-
-    const { record } = await sealRecord(this.keyring, {
-      seq: params.seq,
-      prev: params.prev,
-      type: "attestation",
-      body: params.body,
-      residency: this.residency,
-      cosigners: [doorCosig]
-    });
-
-    try {
-      await this.store.append(record);
-    } catch (error) {
-      this.notifyHeartbeatError(error, "append");
-      throw error;
-    }
+  private runHeartbeat(): Promise<void> {
+    return this.heartbeat.run(this.phase);
   }
 
   /** Ask the Door to co-sign an attestation (`core` bound) and seal it; not appended. */
@@ -1410,27 +1297,4 @@ function extractAttestationEpoch(record: OspRecord): number | null {
   }
 
   return null;
-}
-
-/**
- * Seal a signed record using the Keyring (never touches raw private keys in Session).
- *
- * Sealing lives in `createRecordWithSigner`. This wrapper pins `spec` to
- * {@link OSP_SPEC_V02} and turns a schema failure into {@link SessionError}
- * (`invalid record: …`), which is the error callers already see.
- */
-async function sealRecord(
-  keyring: Keyring,
-  fields: CreateRecordFields
-): Promise<{ record: OspRecord; cid: string }> {
-  try {
-    return await createRecordWithSigner({ ...fields, spec: OSP_SPEC_V02 }, (bytes: Uint8Array) =>
-      keyring.signWithSoulKey(bytes)
-    );
-  } catch (error) {
-    if (error instanceof SchemaError) {
-      throw new SessionError(`invalid record: ${error.message}`);
-    }
-    throw error;
-  }
 }
