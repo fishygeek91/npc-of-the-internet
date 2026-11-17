@@ -138,6 +138,8 @@ export async function startWebDoor(options: StartWebDoorOptions): Promise<WebDoo
     room,
     isPresent,
     lastSeenHere: () => lastSeenHere,
+    // get() throws WebDoorError payload_too_large and does not cache it.
+    // VisitorSite catches that code and still answers /api/state.
     ...(atlas === undefined ? {} : { whereabouts: () => atlas.get() }),
     relay: (request) => {
       if (!isPresent()) {

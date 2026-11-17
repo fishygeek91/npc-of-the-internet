@@ -63,6 +63,7 @@ export type WsDoorSessionClientOptions = {
   /**
    * Injectable WebSocket factory. The default is `ws` with `maxPayload` set to
    * {@link WS_MAX_PAYLOAD_BYTES}; an oversized frame errors and closes the socket.
+   * An injected factory does not receive that cap and must set `maxPayload` itself.
    */
   createWebSocket?: WebSocketFactory;
   /** Clock for outbound control-frame timestamps; defaults to system UTC. */
@@ -92,7 +93,7 @@ function createCappedWebSocket(url: string): WebSocket {
 /**
  * WebSocket client for `WS /door/session` — session bind, inbound delivery,
  * outbound send, ping/pong, and automatic reconnect with exponential backoff.
- * Inbound frames are capped at {@link WS_MAX_PAYLOAD_BYTES}.
+ * Inbound frames are capped at {@link WS_MAX_PAYLOAD_BYTES} on the default socket.
  */
 export class WsDoorSessionClient {
   private readonly wsBaseUrl: string;
