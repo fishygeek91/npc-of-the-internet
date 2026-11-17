@@ -11,10 +11,10 @@ export type OutboundSigned = {
   msg_id: string;
   issued_at: string;
   body: {
-    text?: string;
-    reply_to?: string;
-    channel_id?: string;
-    reaction?: { emoji: string; target_msg_id: string };
+    text?: string | undefined;
+    reply_to?: string | undefined;
+    channel_id?: string | undefined;
+    reaction?: { emoji: string; target_msg_id: string } | undefined;
   };
 };
 
