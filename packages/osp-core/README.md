@@ -18,6 +18,7 @@ OSP soulchain primitives: Zod record schemas, canonical JSON, Ed25519 signing, C
 | Chain verify | `verifyRecords`, `verifyChain`, `ChainRule`, `ChainFailure`, `VerifyChainResult`, `VerifyChainOptions` |
 | Pin manifest | `buildUnsignedPinManifest`, `signPinManifest`, `verifyPinManifest`, `encodePinManifest`, `decodePinManifest`, `computeManifestCid`, `listRecordCidsFromIpfsDir`, `buildAndSignPinManifestForIpfsDir` |
 | CAR | `exportSoulchainCar`, `importSoulchainCar` |
+| Browser | `@npc/osp-core/browser` — see below. Not re-exported from the package root. |
 
 `createRecord` signs with a soul private key. `createRecordWithSigner(fields, signSoul)` is the same sealer with a synchronous soul signer (`(bytes: Uint8Array) => Uint8Array`). Both default `spec` to `OSP_SPEC` (`osp/0.1`).
 
@@ -42,6 +43,18 @@ Crypto functions keep raw bytes. `sign`, `verify`, `decodePublicKey`, `decodeSig
 `makeResidency({ doorId, epoch })` takes the `platform:id` door id `parseResidency` returns (`discord:guild123`) and builds `door:<doorId>/epoch:<n>`. `makeResidency(parseResidency(value))` round-trips. `OspRecord.residency` stays `string | null` because genesis and tombstones require null; brand it with `asResidency` when the value is non-null.
 
 Parsed record CID fields, `soul_pubkey` / `session_pubkey`, `sig`, and `cosigners` are branded outputs. `CreateRecordFields` (and `SoulStore.get`, `expectedCid`, replication journal entries) still accept plain `string`, so a brand or an unbranded string can be passed in. `HeadInfo.cid`, `AppendResult.cid`, and `PutSideBlobResult.cid` are `Cid`. `createRecord` / `verifyRecord` return `cid: Cid`.
+
+## Browser verification
+
+Import `@npc/osp-core/browser` from a porch page or replica shrine. Do not bundle the package root: that entry loads `SoulStore` (`node:fs` and the other Node stores). The browser subpath exports `verifyRecords`, `verifyRecord`, `verify`, `canonicalize`, `computeCid`, `decodePublicKey`, `decodeSignature`, `parseResidency`, `hashBlobBytes`, `cidMatchesHash`, and `decodeJournalBlob`.
+
+`verify` is strict RFC 8032 via `@noble/ed25519`. CID hashing uses `multiformats` sha2-256; a browser bundle resolves the `browser` export (`crypto.subtle`), not `node:crypto`. The contract for PRESENT / ELSEWHERE, session-key checks, and the shrine embed is `spec/door/web.md`.
+
+```typescript
+import { verifyRecords, decodePublicKey } from "@npc/osp-core/browser";
+```
+
+Key generation, `sign`, `createRecord`, pin manifests, and CAR stay on the package root.
 
 ## Chain verification
 
