@@ -2,7 +2,7 @@
   "$ref": "#/definitions/OspRecord",
   "definitions": {
     "OspRecord": {
-      "anyOf": [
+      "oneOf": [
         {
           "type": "object",
           "properties": {
@@ -495,7 +495,7 @@
               "const": "attestation"
             },
             "body": {
-              "anyOf": [
+              "oneOf": [
                 {
                   "type": "object",
                   "properties": {

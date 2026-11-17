@@ -290,6 +290,8 @@ These are sequenced but intentionally coarser; split them into T-numbered subtas
   - Notes: Agent: Cursor, 2026-11-16. New upstream advisories turned `pnpm audit --prod` red on main with no repo change. Zod 3 has no patched release; ignore + rationale in DEVIATIONS.md, migration tracked in #172.
 - **Hygiene ✅ Licensing manifests + tracker sync** (`"license": "MIT"` in root + all 9 package manifests; README license line → MIT code / CC-BY-4.0 specs + whitepaper; Phase-7 rows T7.12–T7.15, T7.17, T7.18, T7.2b; `approved` label declared authoritative over the in-body `## Approval` block) — Deps: none — Issue: #87 — Agent: Cursor (Claude Opus maestro), 2026-11-16
   - Notes: Chose "label is authoritative" over backfilling issue bodies: every gate in LIFECYCLE.md and the Cursor rules already keys on the label, 9 of 11 open approved issues had no block, and 6 closed issues were approved with an unticked box. Whitepaper "MIT/Apache" wording stays with #75. Spec-package CC-BY-4.0 manifest is T7.10 scope.
+- **Deps ⏳ #172 Zod 4 migration — PR 1/2 osp-core + spec schemas** (`@npc/osp-core` zod ^4.6.6, JSON Schema via `z.toJSONSchema`; GHSA-mrhx-c7xc-m3w5 ignore stays until PR 2) — Deps: #171 — Issue: #172
+  - Notes: Agent: Cursor Grok 4.7, 2026-11-16. osp-core only. Discriminated unions in `spec/osp/schema/records.json` emit `oneOf` instead of `anyOf` (exclusive `const` on `type` and attestation `kind`); accept/reject set unchanged. Envelope schema unchanged. Vectors not regenerated. Remaining six packages and dropping the audit ignore are PR 2.
 
 ---
 
