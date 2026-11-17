@@ -98,8 +98,8 @@ importers:
         specifier: ^2.2.3
         version: 2.3.0
       '@noble/hashes':
-        specifier: ^1.7.1
-        version: 1.8.0
+        specifier: ^2.3.0
+        version: 2.3.0
       '@npc/door-sdk':
         specifier: workspace:*
         version: link:../door-sdk
@@ -219,8 +219,8 @@ importers:
         specifier: ^2.2.3
         version: 2.3.0
       '@noble/hashes':
-        specifier: ^1.7.1
-        version: 1.8.0
+        specifier: ^2.3.0
+        version: 2.3.0
       blockstore-fs:
         specifier: ^4.0.1
         version: 4.0.1
@@ -250,14 +250,14 @@ importers:
   packages/runtime:
     dependencies:
       '@anthropic-ai/sdk':
-        specifier: ^0.112.4
-        version: 0.112.4(zod@4.6.7)
+        specifier: ^0.116.0
+        version: 0.116.0(zod@4.6.7)
       '@noble/ed25519':
         specifier: ^2.2.3
         version: 2.3.0
       '@noble/hashes':
-        specifier: ^1.7.1
-        version: 1.8.0
+        specifier: ^2.3.0
+        version: 2.3.0
       '@npc/door-sdk':
         specifier: workspace:*
         version: link:../door-sdk
@@ -295,8 +295,8 @@ importers:
 
 packages:
 
-  '@anthropic-ai/sdk@0.112.4':
-    resolution: {integrity: sha512-7eXJJnrmBI5GMC6drrCiSkycVsT7crRZX3qv5HusLSm+qiILjmtqP7gf+UiT7ASu/7Gdj+Zfl4f2haV8wATKUg==}
+  '@anthropic-ai/sdk@0.116.0':
+    resolution: {integrity: sha512-4UEapYQ+epLEMsAuLZDvW8ExVSOtHD8a7zTyLzhw0H9RXJ1eilPgmqhjwgcdg22diwx13spw6fJ4rONZ+bS7Ww==}
     hasBin: true
     peerDependencies:
       zod: ^3.25.0 || ^4.0.0
@@ -1020,9 +1020,9 @@ packages:
   '@noble/ed25519@2.3.0':
     resolution: {integrity: sha512-M7dvXL2B92/M7dw9+gzuydL8qn/jiqNHaoR3Q+cb1q1GHV7uwE17WCyFMG+Y+TZb5izcaXk5TdJRrDUxHXL78A==}
 
-  '@noble/hashes@1.8.0':
-    resolution: {integrity: sha512-jCs9ldd7NwzpgXDIf6P3+NrHh9/sD6CQdxHyjQI+h/6rDNo88ypBxxz45UDuZHz9r3tNz7N/VInSVoVdtXEI4A==}
-    engines: {node: ^14.21.3 || >=16}
+  '@noble/hashes@2.3.0':
+    resolution: {integrity: sha512-oN+QwyX7VSHotibwubG3kpzbwKrfnyR6OOO+3Nk/53ADL7FmgHHz4TgrbaYKvvOw09u6QTx0oiH1cNCIOuN0CQ==}
+    engines: {node: '>= 20.19.0'}
 
   '@nodelib/fs.scandir@2.1.5':
     resolution: {integrity: sha512-vq24Bq3ym5HEQm2NKCr3yXDwjc7vTsEThRDnkp2DK9p1uqLR+DHurm/NOTo0KG7HYHU7eppKZj3MyqYuMBf62g==}
@@ -3091,7 +3091,7 @@ packages:
 
 snapshots:
 
-  '@anthropic-ai/sdk@0.112.4(zod@4.6.7)':
+  '@anthropic-ai/sdk@0.116.0(zod@4.6.7)':
     dependencies:
       json-schema-to-ts: 3.1.1
       standardwebhooks: 1.0.0
@@ -3846,7 +3846,7 @@ snapshots:
 
   '@noble/ed25519@2.3.0': {}
 
-  '@noble/hashes@1.8.0': {}
+  '@noble/hashes@2.3.0': {}
 
   '@nodelib/fs.scandir@2.1.5':
     dependencies:
