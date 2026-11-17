@@ -13,6 +13,7 @@ import {
 export const JOURNAL_ERASED = "[journal erased]";
 
 const WEB_DOOR_ID_RE = /^web:[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const DOOR_ID_RE = /^[a-z0-9-]+:[A-Za-z0-9_-]+$/u;
 
 /** Embed settings. `doorPublicKeys === null` means use the export's map. */
 export type ShrineConfig = {
@@ -39,14 +40,14 @@ export type ShrineCache = {
   snapshot: ShrineSnapshot;
 };
 
-export const SHRINE_FAILED_SNAPSHOT: ShrineSnapshot = {
+export const SHRINE_FAILED_SNAPSHOT: ShrineSnapshot = Object.freeze({
   phase: "failed",
   badge: "ELSEWHERE",
   detail: "verification failed",
   doorId: null,
   porchUrl: null,
-  journals: []
-};
+  journals: Object.freeze([])
+});
 
 /** Verify `GET /chain/export`. A bad chain, pin, or fetch carries no journals. */
 export async function loadShrine(
@@ -142,7 +143,7 @@ function snapshotOf(
   return {
     phase: "verified",
     badge: "ELSEWHERE",
-    detail: presence.kind === "none" ? null : presence.kind,
+    detail: presence.kind,
     doorId: null,
     porchUrl: null,
     journals
@@ -151,7 +152,7 @@ function snapshotOf(
 
 function presenceOf(
   records: readonly OspRecord[]
-): { kind: "present"; doorId: string } | { kind: "traveling" | "sleeping" | "none" } {
+): { kind: "present"; doorId: string } | { kind: "traveling" | "sleeping" } {
   for (let index = records.length - 1; index >= 0; index -= 1) {
     const record = records[index];
     if (record === undefined) {
@@ -171,7 +172,7 @@ function presenceOf(
       return { kind: "traveling" };
     }
   }
-  return { kind: "none" };
+  return { kind: "sleeping" };
 }
 
 async function journalsOf(
@@ -303,8 +304,16 @@ function isStringMap(value: unknown): value is Record<string, string> {
 
 function decodeDoorKeys(encoded: Record<string, string>): Record<string, Uint8Array> {
   const decoded: Record<string, Uint8Array> = {};
-  for (const [doorId, publicKey] of Object.entries(encoded)) {
-    decoded[doorId] = decodePublicKey(publicKey);
+  for (const [doorId, publicKey] of new Map(Object.entries(encoded))) {
+    if (!DOOR_ID_RE.test(doorId)) {
+      throw new Error("door public key id is not a door id");
+    }
+    Object.defineProperty(decoded, doorId, {
+      value: decodePublicKey(publicKey),
+      enumerable: true,
+      writable: true,
+      configurable: true
+    });
   }
   return decoded;
 }
