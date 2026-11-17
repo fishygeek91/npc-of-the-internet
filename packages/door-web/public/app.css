@@ -140,6 +140,21 @@ body.present .dot {
   border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
 }
 
+.msg-unverified {
+  border-color: var(--error);
+}
+
+.verify-label {
+  color: var(--error);
+  font-size: 0.85rem;
+  font-weight: 600;
+  margin: 6px 0 0;
+}
+
+.reaction-failed .verify-label {
+  margin-left: 0.4rem;
+}
+
 .msg-system {
   background: none;
   border: none;

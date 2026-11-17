@@ -5,3 +5,5 @@ pnpm-lock.yaml
 *.astro
 **/.astro/**
 .pnpm-store/
+packages/door-web/public/verify.js
+packages/door-web/public/shrine.js

@@ -59,6 +59,11 @@ describe("VisitorSite", () => {
       trustProxy: false,
       clock: { nowMs: () => Date.now() },
       logger: silentLogger,
+      verifyPins: {
+        soulPublicKey: "test-soul",
+        doorPublicKey: "test-door",
+        atlasUrl: null
+      },
       ...overrides
     });
     sites.push(site);
@@ -71,6 +76,7 @@ describe("VisitorSite", () => {
     for (const [path, type] of [
       ["/", "text/html"],
       ["/app.js", "text/javascript"],
+      ["/verify.js", "text/javascript"],
       ["/app.css", "text/css"]
     ] as const) {
       const response = await fetch(`${url}${path}`);
@@ -84,6 +90,12 @@ describe("VisitorSite", () => {
       expect(response.headers.get("referrer-policy")).toBe("no-referrer");
       expect(response.headers.get("set-cookie")).toBeNull();
     }
+    const script = await fetch(`${url}/verify.js`);
+    const etag = script.headers.get("etag");
+    expect(etag).toMatch(/^"[A-Za-z0-9_-]+"$/u);
+    const cached = await fetch(`${url}/verify.js`, { headers: { "if-none-match": etag ?? "" } });
+    expect(cached.status).toBe(304);
+    expect(await cached.text()).toBe("");
     const health = await fetch(`${url}/healthz`);
     expect(health.status).toBe(200);
     expect(await health.text()).toBe("ok");
@@ -94,6 +106,9 @@ describe("VisitorSite", () => {
   it("never renders room text with innerHTML in the browser client", async () => {
     const { url } = await start();
     const script = await (await fetch(`${url}/app.js`)).text();
+    expect(script).toContain("verification failed");
+    expect(script).toContain('visibilityState === "hidden"');
+    expect(script).toContain("location.origin");
     expect(script).not.toMatch(/innerHTML|outerHTML|insertAdjacentHTML|document\.write/u);
   });
 
@@ -243,8 +258,19 @@ describe("VisitorSite", () => {
 
     room.append({ id: "m1", at: "t", from: "wanderer", name: "The Wanderer", text: "<b>hi</b>" });
     expect(await first.next("message")).toMatchObject({ id: "m1", text: "<b>hi</b>" });
-    room.react("m1", "✨");
-    expect(await second.next("reaction")).toEqual({ target: "m1", emoji: "✨" });
+    const proof = {
+      signed: {
+        type: "outbound" as const,
+        door_id: "web:test",
+        epoch: 1,
+        msg_id: "r",
+        issued_at: "t",
+        body: { reaction: { emoji: "✨", target_msg_id: "m1" } }
+      },
+      sig: "sig"
+    };
+    room.react("m1", "✨", proof);
+    expect(await second.next("reaction")).toEqual({ target: "m1", emoji: "✨", proof });
     site.broadcastPresence(false);
     expect(
       await second.next("presence", (data) => (data as { present: boolean }).present === false)

@@ -11,9 +11,11 @@ import {
   type HostPolicy,
   type OutboundFrame
 } from "@npc/door-sdk";
+import { encodePublicKey } from "@npc/osp-core";
 import pino, { type Logger } from "pino";
 
 import { AtlasWhereabouts } from "./atlas.js";
+import { roomIdFor, type OutboundProof } from "./browser/proof.js";
 import type { WebDoorConfig } from "./config.js";
 import { loadDoorKeypairFromPath } from "./load-door-key.js";
 import type { MsClock } from "./rate-limit.js";
@@ -62,9 +64,12 @@ export type WebDoorHandle = {
   stop: () => Promise<void>;
 };
 
-/** Room id for a Wanderer-side msg_id: visitor ids pass through, others are epoch-scoped. */
-function roomIdFor(epoch: number, msgId: string): string {
-  return msgId.startsWith("web-") ? msgId : `w${String(epoch)}-${msgId}`;
+/**
+ * Copy an outbound frame without `sig`. The copy is what the page verifies.
+ */
+function outboundProof(frame: OutboundFrame): OutboundProof {
+  const { sig, ...signed } = frame;
+  return { signed, sig };
 }
 
 /**
@@ -138,6 +143,12 @@ export async function startWebDoor(options: StartWebDoorOptions): Promise<WebDoo
     room,
     isPresent,
     lastSeenHere: () => lastSeenHere,
+    verifyPins: {
+      soulPublicKey: encodePublicKey(config.soulPublicKey),
+      doorPublicKey: encodePublicKey(doorKeypair.publicKey),
+      atlasUrl: null
+    },
+    ...(config.atlasApiUrl === undefined ? {} : { atlasUpstream: config.atlasApiUrl }),
     // get() throws WebDoorError payload_too_large and does not cache it.
     // VisitorSite catches that code and still answers /api/state.
     ...(atlas === undefined ? {} : { whereabouts: () => atlas.get() }),
@@ -197,6 +208,7 @@ export async function startWebDoor(options: StartWebDoorOptions): Promise<WebDoo
 
   const offOutbound = door.addOutboundListener((frame: OutboundFrame) => {
     const { text, reply_to: replyTo, reaction } = frame.body;
+    const proof = outboundProof(frame);
     if (text !== undefined) {
       room.append({
         id: roomIdFor(frame.epoch, frame.msg_id),
@@ -204,11 +216,12 @@ export async function startWebDoor(options: StartWebDoorOptions): Promise<WebDoo
         from: "wanderer",
         name: "The Wanderer",
         text,
+        proof,
         ...(replyTo === undefined ? {} : { reply_to: roomIdFor(frame.epoch, replyTo) })
       });
     }
     if (reaction !== undefined) {
-      room.react(roomIdFor(frame.epoch, reaction.target_msg_id), reaction.emoji);
+      room.react(roomIdFor(frame.epoch, reaction.target_msg_id), reaction.emoji, proof);
     }
   });
 

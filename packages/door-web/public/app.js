@@ -1,4 +1,4 @@
-/* global document, window, fetch, EventSource, localStorage, setTimeout, setInterval */
+/* global document, window, fetch, location, EventSource, localStorage, setTimeout, setInterval */
 // The Wanderer's web Door — vanilla browser client. All visitor and Wanderer text is
 // rendered with textContent only, never parsed as HTML.
 "use strict";
@@ -31,7 +31,10 @@
     lastSeenHere: null,
     whereabouts: null,
     byId: new Map(),
-    sending: false
+    sending: false,
+    hold: { phase: "checking" },
+    cache: null,
+    refreshing: false
   };
 
   function loadName() {
@@ -100,24 +103,88 @@
     return window.innerHeight + window.scrollY >= doc.scrollHeight - 160;
   }
 
-  function renderReactions(node, reactions) {
+  function holdVerdict(hold) {
+    return hold.phase === "checking" ? "checking" : "failed";
+  }
+
+  function failChain() {
+    state.cache = { etag: null, hold: { phase: "failed" } };
+    state.hold = state.cache.hold;
+  }
+
+  function lineLabel(node) {
+    for (const child of node.children) {
+      if (child.classList.contains("verify-label")) {
+        return child;
+      }
+    }
+    return null;
+  }
+
+  function paintVerdict(node, message) {
+    const api = globalThis.WandererVerify;
+    let verdict = "plain";
+    if (message.from === "wanderer") {
+      verdict = api ? api.verifyText(state.hold, message) : holdVerdict(state.hold);
+    }
+    node.classList.toggle("msg-wanderer", verdict === "verified");
+    node.classList.toggle("msg-unverified", verdict === "failed");
+    const label = lineLabel(node);
+    if (verdict === "failed") {
+      if (!label) {
+        node.appendChild(el("p", "verify-label", "verification failed"));
+      }
+    } else if (label) {
+      label.remove();
+    }
+  }
+
+  function renderReactions(node, targetId, reactions) {
     let box = node.querySelector(".reactions");
     if (!Array.isArray(reactions) || reactions.length === 0) {
+      if (box) {
+        box.remove();
+      }
       return;
     }
     if (!box) {
       box = el("div", "reactions");
       node.appendChild(box);
     }
-    box.textContent = reactions.join(" ");
-    box.setAttribute("aria-label", `The Wanderer reacted ${reactions.join(" ")}`);
+    box.textContent = "";
+    const names = [];
+    const api = globalThis.WandererVerify;
+    for (const reaction of reactions) {
+      const emoji = typeof reaction === "string" ? reaction : String(reaction.emoji || "");
+      const chip = el("span", "reaction");
+      chip.appendChild(document.createTextNode(emoji));
+      if (reaction && typeof reaction === "object" && reaction.proof) {
+        const verdict = api
+          ? api.verifyReaction(state.hold, targetId, reaction)
+          : holdVerdict(state.hold);
+        if (verdict === "failed") {
+          chip.classList.add("reaction-failed");
+          chip.appendChild(el("span", "verify-label", "verification failed"));
+        }
+      }
+      names.push(emoji);
+      box.appendChild(chip);
+    }
+    box.setAttribute("aria-label", `The Wanderer reacted ${names.join(" ")}`);
+  }
+
+  function repaint() {
+    for (const entry of state.byId.values()) {
+      paintVerdict(entry.node, entry.message);
+      renderReactions(entry.node, entry.message.id, entry.message.reactions);
+    }
   }
 
   function renderMessage(message) {
     const from = ["visitor", "wanderer", "system"].includes(message.from)
       ? message.from
       : "visitor";
-    const item = el("li", `msg msg-${from}`);
+    const item = el("li", from === "wanderer" ? "msg" : `msg msg-${from}`);
     if (from === "system") {
       item.textContent = String(message.text);
       return item;
@@ -138,7 +205,8 @@
       }
     }
     item.appendChild(el("p", "text", String(message.text)));
-    renderReactions(item, message.reactions);
+    renderReactions(item, message.id, message.reactions);
+    paintVerdict(item, message);
     return item;
   }
 
@@ -166,17 +234,17 @@
     }
   }
 
-  function addReaction(target, emoji) {
+  function addReaction(target, emoji, proof) {
     const entry = state.byId.get(target);
-    if (!entry || typeof emoji !== "string") {
+    if (!entry || typeof emoji !== "string" || !proof || typeof proof !== "object") {
       return;
     }
     const reactions = Array.isArray(entry.message.reactions) ? entry.message.reactions : [];
-    if (!reactions.includes(emoji)) {
-      reactions.push(emoji);
+    if (!reactions.some((reaction) => reaction && reaction.emoji === emoji)) {
+      reactions.push({ emoji, proof });
     }
     entry.message.reactions = reactions;
-    renderReactions(entry.node, reactions);
+    renderReactions(entry.node, target, reactions);
   }
 
   function renderStatus() {
@@ -264,7 +332,7 @@
     source.addEventListener("reaction", (event) => {
       const data = parse(event);
       if (data) {
-        addReaction(data.target, data.emoji);
+        addReaction(data.target, data.emoji, data.proof);
       }
     });
     source.addEventListener("presence", (event) => {
@@ -365,7 +433,50 @@
       els.form.requestSubmit();
     }
   });
+  async function refreshChain() {
+    if (state.refreshing) {
+      return;
+    }
+    state.refreshing = true;
+    try {
+      const api = globalThis.WandererVerify;
+      if (!api) {
+        failChain();
+        return;
+      }
+      const response = await fetch("/api/verify-pins", { cache: "no-store" });
+      if (!response.ok) {
+        failChain();
+        return;
+      }
+      const pins = await response.json();
+      if (pins && typeof pins.atlasUrl === "string") {
+        pins.atlasUrl = location.origin;
+      }
+      const next = await api.fetchChain(pins, state.cache);
+      state.cache = next;
+      state.hold = next.hold;
+    } catch {
+      failChain();
+    } finally {
+      state.refreshing = false;
+      repaint();
+    }
+  }
+
   setInterval(renderStatus, 60000);
+  setInterval(() => {
+    if (document.visibilityState === "hidden") {
+      return;
+    }
+    void refreshChain();
+  }, 60000);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") {
+      void refreshChain();
+    }
+  });
   renderStatus();
+  void refreshChain();
   connect();
 })();

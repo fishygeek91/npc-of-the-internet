@@ -681,7 +681,7 @@ binding**: its co-signatures stay on the chain and must keep verifying.
 ### 7.7 Web Door and public HTTPS
 
 door-web is the Ghost's second Door: a public room while the Wanderer is there; otherwise it
-says where the Wanderer is now (via `ATLAS_API_URL` → atlas-api). Its Door protocol (9091)
+says where the Wanderer is now (via `ATLAS_API_URL` → atlas-api, server-side only). Visitors fetch the porch's own `GET /chain/export`; do not publish atlas-api (that is Gate 2). Its Door protocol (9091)
 stays internal; the visitor site is published on `127.0.0.1:8080` only:
 
 ```bash
