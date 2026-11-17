@@ -77,6 +77,7 @@ describe("VisitorSite", () => {
       ["/", "text/html"],
       ["/app.js", "text/javascript"],
       ["/verify.js", "text/javascript"],
+      ["/shrine.js", "text/javascript"],
       ["/app.css", "text/css"]
     ] as const) {
       const response = await fetch(`${url}${path}`);

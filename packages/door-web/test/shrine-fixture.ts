@@ -156,7 +156,7 @@ export function serveExport(
   });
 }
 
-async function witnessed(
+export async function witnessed(
   soul: Ed25519Keypair,
   door: Ed25519Keypair,
   seq: number,

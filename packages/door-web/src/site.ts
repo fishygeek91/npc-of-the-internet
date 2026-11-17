@@ -63,6 +63,7 @@ function loadAssets(): Map<string, StaticAsset> {
     ["/", { body: read("index.html"), type: "text/html; charset=utf-8" }],
     ["/app.js", { body: read("app.js"), type: "text/javascript; charset=utf-8" }],
     ["/verify.js", { body: read("verify.js"), type: "text/javascript; charset=utf-8" }],
+    ["/shrine.js", { body: read("shrine.js"), type: "text/javascript; charset=utf-8" }],
     ["/app.css", { body: read("app.css"), type: "text/css; charset=utf-8" }]
   ]);
 }

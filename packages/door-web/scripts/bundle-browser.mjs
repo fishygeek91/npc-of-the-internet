@@ -33,17 +33,19 @@ export function resolveEsbuildMain() {
 }
 
 /**
- * Bundle the porch verifier for the browser. Minified IIFE, browser condition
- * so multiformats uses sha2-browser.js.
+ * Bundle one classic-script entry. Minified IIFE, browser condition so
+ * multiformats uses sha2-browser.js. The outfile is a single line.
+ * @param {string} entry file name under src/browser
+ * @param {string} fileName file name under public
  * @returns {Promise<{ outfile: string, bytes: number, inputs: string[] }>}
  */
-export async function buildPorchBundle() {
+export async function buildBrowserBundle(entry, fileName) {
   const require = createRequire(import.meta.url);
   const esbuild = require(resolveEsbuildMain());
-  const outfile = join(packageRoot, "public", "verify.js");
+  const outfile = join(packageRoot, "public", fileName);
   const result = await esbuild.build({
     absWorkingDir: packageRoot,
-    entryPoints: [join(packageRoot, "src", "browser", "porch-entry.ts")],
+    entryPoints: [join(packageRoot, "src", "browser", entry)],
     bundle: true,
     format: "iife",
     platform: "browser",
@@ -60,6 +62,16 @@ export async function buildPorchBundle() {
   writeFileSync(outfile, `${source}\n`);
   assertPorchBundle(inputs, source);
   return { outfile, bytes: statSync(outfile).size, inputs };
+}
+
+/** Bundle the porch verifier to `public/verify.js`. */
+export async function buildPorchBundle() {
+  return buildBrowserBundle("porch-entry.ts", "verify.js");
+}
+
+/** Bundle the replica shrine to `public/shrine.js`. */
+export async function buildShrineBundle() {
+  return buildBrowserBundle("shrine-entry.ts", "shrine.js");
 }
 
 /**
@@ -97,6 +109,8 @@ const isMain =
   process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
 
 if (isMain) {
-  const built = await buildPorchBundle();
-  process.stdout.write(`verify.js ${String(built.bytes)} bytes\n`);
+  const porch = await buildPorchBundle();
+  const shrine = await buildShrineBundle();
+  process.stdout.write(`verify.js ${String(porch.bytes)} bytes\n`);
+  process.stdout.write(`shrine.js ${String(shrine.bytes)} bytes\n`);
 }
