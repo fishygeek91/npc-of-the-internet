@@ -10,6 +10,13 @@ import Fastify, { type FastifyInstance, type FastifyReply } from "fastify";
 import { ChainView, type ChainSnapshot, type ChainViewOptions } from "./chain-view.js";
 import type { AtlasConfig } from "./config.js";
 import {
+  buildChainExport,
+  chainExportEtag,
+  headerSingle,
+  ifNoneMatchSatisfied,
+  type ChainExportBody
+} from "./export-chain.js";
+import {
   deriveHead,
   deriveJournals,
   deriveRecordsPage,
@@ -36,7 +43,9 @@ export async function createAtlasServer(config: AtlasConfig): Promise<FastifyIns
 
   await app.register(cors, {
     origin: true,
-    methods: ["GET"]
+    methods: ["GET"],
+    // Browsers on another origin must be able to read ETag for If-None-Match.
+    exposedHeaders: ["ETag"]
   });
 
   app.setErrorHandler((error, _request, reply) => {
@@ -62,6 +71,21 @@ export async function createAtlasServer(config: AtlasConfig): Promise<FastifyIns
       return;
     }
     void reply.send(deriveState(snap.records, snap.verified));
+  });
+
+  app.get("/chain/export", async (request, reply) => {
+    const snap = await chainView.snapshot();
+    if (replyIfUnreadable(snap, reply)) {
+      return;
+    }
+
+    const exported = cachedChainExport(snap, config.doorPublicKeys);
+    void reply.header("ETag", exported.etag).header("Cache-Control", "no-cache");
+    if (ifNoneMatchSatisfied(headerSingle(request.headers["if-none-match"]), exported.etag)) {
+      void reply.code(304).send();
+      return;
+    }
+    void reply.send(exported.body);
   });
 
   app.get("/chain/head", async (_request, reply) => {
@@ -200,6 +224,32 @@ function replyIfUnreadable(snap: ChainSnapshot, reply: FastifyReply): boolean {
     .status(503)
     .send(atlasErrorToBody(new AtlasError("chain_unreadable", "chain is unreadable", 503)));
   return true;
+}
+
+type CachedExport = {
+  body: ChainExportBody;
+  etag: string;
+};
+
+/**
+ * One encoded body and `ETag` per snapshot object. `ChainView` returns the same
+ * object until the chain file changes, so a `304` does not hash the chain again.
+ * Door keys are the process config and do not change under a live snapshot.
+ */
+const chainExportCache = new WeakMap<ChainSnapshot, CachedExport>();
+
+function cachedChainExport(
+  snapshot: ChainSnapshot,
+  doorPublicKeys: Readonly<Record<string, Uint8Array>> | undefined
+): CachedExport {
+  const hit = chainExportCache.get(snapshot);
+  if (hit !== undefined) {
+    return hit;
+  }
+  const body = buildChainExport(snapshot, doorPublicKeys);
+  const entry = { body, etag: chainExportEtag(body) };
+  chainExportCache.set(snapshot, entry);
+  return entry;
 }
 
 /** Parse `page` / `per_page` query strings for paginated journal-style routes. */

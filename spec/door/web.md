@@ -61,7 +61,11 @@ The shrine and the porch obtain an ordered record array and verify it with `veri
 |-------|------|----------|---------|
 | `records` | array | yes | Full OSP records in chain order. Not the `/records` summary list. |
 | `doorPublicKeys` | object | yes | door id → base64url Ed25519 **public** key. Private keys are forbidden. |
-| `blobs` | object | no | side-blob CID → base64url bytes. Omitted CIDs are unavailable, not erased. |
+| `blobs` | object | no | Journal side-blob CID → base64url bytes. Omitted CIDs are unavailable, not erased. |
+
+`@npc/atlas` serves this route. The body has no `verified` and no `status` field. `blobs` includes journal side blobs (`journal_cid` on `journal` records and on shards). Shard `text_cid` blobs are omitted: they are not journals, and leaving them out does not fail verification. Atlas omits a blob whose CID is the `blob_cid` of any tombstone on the chain. A client that receives one anyway still renders `[journal erased]`.
+
+The response SHOULD include an `ETag`, and SHOULD expose that header to cross-origin callers (`Access-Control-Expose-Headers: ETag`). A client SHOULD send the previous tag as `If-None-Match`. `304` (empty body, same `ETag`) means the previous successful body is unchanged and MUST be kept. A client with no previous success MUST NOT treat `304` as a chain. `Cache-Control: no-cache` means revalidate; it does not replace the shrine's 60-second refetch.
 
 Absence of a blob does not fail `verifyRecords` (`spec/osp/records.md`). A verified `tombstone` whose `blob_cid` covers a journal means the prose is gone: render `[journal erased]` and never the bytes, even if a blob is still present.
 
@@ -113,16 +117,19 @@ The badge text is exactly `PRESENT` or `ELSEWHERE` (uppercase, real text, not on
 
 Presence uses the verified records only, with the same scan as Atlas `GET /state`: newest `sleep` before any later attestation means sleeping; otherwise the newest `arrival` or `heartbeat` means present at that `door_id` and epoch; `departure`, `travel`, or `handover` means traveling. An invalid chain is not scanned for presence.
 
-The widget renders inside a closed shadow root so page CSS cannot hide the badge while leaving journals visible. Hiding the host element hides the whole shrine (it cannot show journals alone). The shrine refetches `GET /chain/export` when the document becomes visible and at least every 60 seconds while it is open, so a departure does not stay `PRESENT` after the Atlas is reachable.
+The widget renders inside a closed shadow root so page CSS cannot hide the badge while leaving journals visible. Hiding the host element hides the whole shrine (it cannot show journals alone). The shrine refetches `GET /chain/export` when the document becomes visible and at least every 60 seconds while it is open, so a departure does not stay `PRESENT` after the Atlas is reachable. Those refetches SHOULD send `If-None-Match` and keep the last verified snapshot on `304`.
 
 ### Journals
 
 Shown only from a valid chain, after the badge, in the same shadow tree:
 
 - **osp/0.2 `memory` / `journal`:** prose from blob bytes whose `sha256` is `journal_hash` and whose CID matches. Otherwise the journal is not verified prose.
+- **osp/0.2 shard `journal_cid`:** a verified shard that carries both `journal_cid` and `journal_hash` (legacy embedded journal; both or neither) uses the same blob rules as an `osp/0.2` `journal` record. Shard `text` is never shown.
 - **Verified tombstone** of that blob: `[journal erased]`.
 - **osp/0.1 inline `journal`** on a verified shard: the inline string may be shown. Shard `text` is never shown.
 - Unavailable blob, hash mismatch, or failed chain: do not show the prose as a journal.
+
+The same `journal_hash`, or the same inline journal string, is shown once: the earliest in chain order. Later copies are omitted.
 
 Journals are the published markdown only. No usernames, shard text, or other residency transcript.
 
