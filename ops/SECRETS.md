@@ -66,7 +66,7 @@ Environment variable names and purposes only. **Never commit values.**
 | `DOOR_WEB_GLOBAL_PER_MIN` | Visitor messages per minute for all door-web visitors together (default `30`). |
 | `DOOR_WEB_MAX_CLIENTS` | Max concurrent door-web SSE streams (default `200`). |
 | `DOOR_WEB_DAILY_MAX` | Visitor messages relayed to the Wanderer per UTC day (default `1500`; bounds LLM cost — beyond it the porch answers `quiet_hours`). |
-| `ATLAS_API_URL` | atlas-api base URL door-web uses to show where the Wanderer is while away (compose pins `http://atlas-api:8787`). |
+| `ATLAS_API_URL` | atlas-api base URL door-web uses server-side (whereabouts, and the `GET /chain/export` pass-through). Compose pins `http://atlas-api:8787`. Browsers are not given this value; making Atlas public is a Gate 2 action. |
 | `WEB_DOMAIN` | Public hostname for the web Door (compose profile `public`: Caddy serves `https://$WEB_DOMAIN` → door-web). Needs a DNS A/AAAA record and ports 80/443 open. Public config. |
 | `NPC_RUNTIME_READY_FILE` | Path written when the residency WebSocket is live (default `/tmp/npc-runtime.ready`). Used by compose healthcheck; optional override. |
 | `NPC_REPLICATION_ENABLED` | Set to `1` or `true` to enable outbound IPFS replication drain in runtime. Default unset (disabled). Empty target set is safe — no push until targets are configured. Gate 2 before live tokens. |

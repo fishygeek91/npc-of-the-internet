@@ -1,35 +1,28 @@
 /* global process */
-import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { readFileSync, statSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
-const repoRoot = join(packageRoot, "..", "..");
 
 /**
- * esbuild is already in the lockfile via astro/vite. door-web does not declare
- * it (a new dependency needs an approved issue). See DEVIATIONS.md.
+ * esbuild is not a declared door-web dependency. Resolve the copy vitest
+ * already pulls in (vitest → vite → esbuild). See DEVIATIONS.md and #222.
  * @returns {string} absolute path to esbuild's main module
  */
 export function resolveEsbuildMain() {
-  const pnpmDir = join(repoRoot, "node_modules", ".pnpm");
-  let names;
+  const require = createRequire(import.meta.url);
+  let vitestPkg;
   try {
-    names = readdirSync(pnpmDir);
+    vitestPkg = require.resolve("vitest/package.json");
   } catch {
-    throw new Error("node_modules/.pnpm is missing; run pnpm install before bundling verify.js");
+    throw new Error("vitest is not installed; run pnpm install before bundling verify.js");
   }
-  for (const name of names) {
-    if (!name.startsWith("esbuild@")) {
-      continue;
-    }
-    const main = join(pnpmDir, name, "node_modules", "esbuild", "lib", "main.js");
-    if (existsSync(main)) {
-      return main;
-    }
-  }
-  throw new Error("esbuild is not in the lockfile install (expected via astro/vite)");
+  const fromVitest = createRequire(vitestPkg);
+  const vitePkg = fromVitest.resolve("vite/package.json");
+  const fromVite = createRequire(vitePkg);
+  return fromVite.resolve("esbuild/lib/main.js");
 }
 
 /**
@@ -37,10 +30,9 @@ export function resolveEsbuildMain() {
  * so multiformats uses sha2-browser.js.
  * @returns {Promise<{ outfile: string, bytes: number, inputs: string[] }>}
  */
-export async function buildPorchBundle() {
+export async function buildPorchBundle(outfile = join(packageRoot, "public", "verify.js")) {
   const require = createRequire(import.meta.url);
   const esbuild = require(resolveEsbuildMain());
-  const outfile = join(packageRoot, "public", "verify.js");
   const result = await esbuild.build({
     absWorkingDir: packageRoot,
     entryPoints: [join(packageRoot, "src", "browser", "porch-entry.ts")],

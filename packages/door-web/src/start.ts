@@ -15,7 +15,7 @@ import { encodePublicKey } from "@npc/osp-core";
 import pino, { type Logger } from "pino";
 
 import { AtlasWhereabouts } from "./atlas.js";
-import { roomIdFor, type OutboundProof, type OutboundSigned } from "./browser/proof.js";
+import { roomIdFor, type OutboundProof } from "./browser/proof.js";
 import type { WebDoorConfig } from "./config.js";
 import { loadDoorKeypairFromPath } from "./load-door-key.js";
 import type { MsClock } from "./rate-limit.js";
@@ -68,33 +68,8 @@ export type WebDoorHandle = {
  * Copy an outbound frame without `sig`. The copy is what the page verifies.
  */
 function outboundProof(frame: OutboundFrame): OutboundProof {
-  const body: OutboundSigned["body"] = {};
-  if (frame.body.text !== undefined) {
-    body.text = frame.body.text;
-  }
-  if (frame.body.reply_to !== undefined) {
-    body.reply_to = frame.body.reply_to;
-  }
-  if (frame.body.channel_id !== undefined) {
-    body.channel_id = frame.body.channel_id;
-  }
-  if (frame.body.reaction !== undefined) {
-    body.reaction = {
-      emoji: frame.body.reaction.emoji,
-      target_msg_id: frame.body.reaction.target_msg_id
-    };
-  }
-  return {
-    signed: {
-      type: "outbound",
-      door_id: frame.door_id,
-      epoch: frame.epoch,
-      msg_id: frame.msg_id,
-      issued_at: frame.issued_at,
-      body
-    },
-    sig: frame.sig
-  };
+  const { sig, ...signed } = frame;
+  return { signed, sig };
 }
 
 /**
@@ -171,8 +146,9 @@ export async function startWebDoor(options: StartWebDoorOptions): Promise<WebDoo
     verifyPins: {
       soulPublicKey: encodePublicKey(config.soulPublicKey),
       doorPublicKey: encodePublicKey(doorKeypair.publicKey),
-      atlasUrl: config.atlasApiUrl ?? null
+      atlasUrl: null
     },
+    ...(config.atlasApiUrl === undefined ? {} : { atlasUpstream: config.atlasApiUrl }),
     // get() throws WebDoorError payload_too_large and does not cache it.
     // VisitorSite catches that code and still answers /api/state.
     ...(atlas === undefined ? {} : { whereabouts: () => atlas.get() }),

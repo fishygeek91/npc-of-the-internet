@@ -1,3 +1,4 @@
+import "./jitless.js";
 import { fetchChain, verifyReaction, verifyText } from "./verify-porch.js";
 
 /**

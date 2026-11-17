@@ -90,6 +90,12 @@ describe("VisitorSite", () => {
       expect(response.headers.get("referrer-policy")).toBe("no-referrer");
       expect(response.headers.get("set-cookie")).toBeNull();
     }
+    const script = await fetch(`${url}/verify.js`);
+    const etag = script.headers.get("etag");
+    expect(etag).toMatch(/^"[A-Za-z0-9_-]+"$/u);
+    const cached = await fetch(`${url}/verify.js`, { headers: { "if-none-match": etag ?? "" } });
+    expect(cached.status).toBe(304);
+    expect(await cached.text()).toBe("");
     const health = await fetch(`${url}/healthz`);
     expect(health.status).toBe(200);
     expect(await health.text()).toBe("ok");
@@ -100,6 +106,9 @@ describe("VisitorSite", () => {
   it("never renders room text with innerHTML in the browser client", async () => {
     const { url } = await start();
     const script = await (await fetch(`${url}/app.js`)).text();
+    expect(script).toContain("verification failed");
+    expect(script).toContain('visibilityState === "hidden"');
+    expect(script).toContain("location.origin");
     expect(script).not.toMatch(/innerHTML|outerHTML|insertAdjacentHTML|document\.write/u);
   });
 

@@ -42,7 +42,7 @@ Cryptography is `@noble/ed25519`, `@noble/hashes`, and `multiformats` only. The 
 | Record `sig` | Genesis `body.soul_pubkey` | The soul key signed the soul payload (envelope including `cosigners`, excluding `sig`). |
 | Each `cosigners[]` entry | Door public key for `parseResidency(residency).doorId` | That Door signed `core` (envelope excluding `cosigners` and `sig`). |
 | Arrival `body.session_pubkey` | (no separate signature) | The session key is authentic only because the arrival record itself verifies under the soul key and that Door's key. |
-| Outbound `/door/session` frame `sig` | That epoch's arrival `session_pubkey` | The session key signed the canonical frame with `sig` omitted (`spec/door/api.md`). |
+| Outbound `/door/session` frame `sig` | The open arrival's `session_pubkey` for this porch and `signed.epoch` (see [Porch lines](#porch-lines)) | The session key signed the canonical frame with `sig` omitted (`spec/door/api.md`). |
 | Heartbeat `body.session_pubkey` | Must equal the open arrival's session key | A different key is `bad_session_continuity`. The chain is then not verified. |
 
 **Chain of trust.** Genesis names the soul key. The soul key signs the arrival record, which publishes exactly one session public key for `(door_id, epoch)`. Later heartbeats must repeat that key. Outbound porch lines verify under it. A signature from any other key fails, even if the bytes are otherwise well formed. v0.1 has no second session key and no rotation: a later arrival is a new epoch, and a second arrival for the same epoch is `presence_conflict`.
@@ -61,7 +61,11 @@ The shrine and the porch obtain an ordered record array and verify it with `veri
 |-------|------|----------|---------|
 | `records` | array | yes | Full OSP records in chain order. Not the `/records` summary list. |
 | `doorPublicKeys` | object | yes | door id → base64url Ed25519 **public** key. Private keys are forbidden. |
-| `blobs` | object | no | side-blob CID → base64url bytes. Omitted CIDs are unavailable, not erased. |
+| `blobs` | object | no | Journal side-blob CID → base64url bytes. Omitted CIDs are unavailable, not erased. |
+
+`@npc/atlas` serves this route. The body has no `verified` and no `status` field. `blobs` includes journal side blobs (`journal_cid` on `journal` records and on shards). Shard `text_cid` blobs are omitted: they are not journals, and leaving them out does not fail verification. Atlas omits a blob whose CID is the `blob_cid` of any tombstone on the chain. A client that receives one anyway still renders `[journal erased]`.
+
+The response SHOULD include an `ETag`, and SHOULD expose that header to cross-origin callers (`Access-Control-Expose-Headers: ETag`). A client SHOULD send the previous tag as `If-None-Match`. `304` (empty body, same `ETag`) means the previous successful body is unchanged and MUST be kept. A client with no previous success MUST NOT treat `304` as a chain. `Cache-Control: no-cache` means revalidate; it does not replace the shrine's 60-second refetch.
 
 Absence of a blob does not fail `verifyRecords` (`spec/osp/records.md`). A verified `tombstone` whose `blob_cid` covers a journal means the prose is gone: render `[journal erased]` and never the bytes, even if a blob is still present.
 
@@ -85,13 +89,13 @@ One script element plus one config object. Embedders do not install a framework.
 ></script>
 ```
 
-`data-atlas-url` is required (absolute `http:` or `https:` URL). `data-porch-url` is optional and is only a link, shown when the verified presence door is the web porch. `data-mount` defaults to `#wanderer-shrine`.
+`data-atlas-url` is required (absolute `http:` or `https:` URL). It may be an Atlas origin or a porch origin that serves `GET /chain/export` (the web porch proxies that path to its server-side Atlas). `data-porch-url` is optional and is only a link, shown when the verified presence door is the web porch. `data-mount` defaults to `#wanderer-shrine`.
 
 The same fields MAY be supplied as `globalThis.WANDERER_SHRINE` before the script runs. When both are set, the object wins. The object MAY also pin keys:
 
 | Field | Required | Meaning |
 |-------|----------|---------|
-| `atlasUrl` | yes | Atlas origin serving `GET /chain/export`. |
+| `atlasUrl` | yes | Origin serving `GET /chain/export` (an Atlas, or a porch that proxies it). |
 | `porchUrl` | no | Link only. |
 | `mount` | no | CSS selector. Default `#wanderer-shrine`. |
 | `soulPublicKey` | no | Base64url pin. If set, genesis `soul_pubkey` must equal it. |
@@ -154,11 +158,13 @@ The porch already knows whether a session socket is bound. That flag is not a si
 | `sig` | Base64url session-key signature over those canonical bytes. |
 | `text` | The words on screen. MUST equal `signed.body.text` when text is shown. |
 
-Before the line may be marked verified, the browser has a valid chain (soul pin matched), the open arrival for `signed.door_id` + `signed.epoch` publishes `session_pubkey`, and `verify(canonicalize(signed), sig, session_pubkey)` is true. A reaction is verified only when `signed.body.reaction` is that emoji and target. A wrong session key, a tampered byte, or a text that does not match `signed.body.text` is a failed line.
+Before the line may be marked verified, the browser has a valid chain (soul pin matched) and `signed.door_id` equals this porch's configured door id. The session key is the open arrival for that door and for `signed.epoch`. Open is the same newest-first scan as Atlas `GET /state` and the shrine badge: a `sleep` newer than every attestation means sleeping and no line verifies; `departure`, `travel`, or `handover` means traveling and no line verifies; otherwise the newest `arrival` or `heartbeat` is present at that door and epoch. A newer arrival supersedes older epochs. The key is that arrival's `session_pubkey` (a heartbeat does not publish a second key). `verify(canonicalize(signed), sig, session_pubkey)` must be true over the original `signed` object, including fields a schema does not name. A reaction is verified only when `signed.body.reaction` is that emoji and target. A wrong session key, a wrong door, a departed, superseded, or sleeping epoch, a tampered byte, a malformed proof, or a text that does not match `signed.body.text` is a failed line. A malformed proof is `failed`. It does not throw.
+
+The porch sends `If-None-Match` only while it still holds a verified export. A failed fetch, a failed verification, or a `304` that does not follow a verified snapshot drops that cache (no ETag and no verified snapshot). The next request is a full GET. A `304` after a verified snapshot reuses it, including when the Wanderer is sleeping or away and no line verifies. A failed fetch does not keep the previous snapshot as verified speech.
 
 A failed Wanderer line stays on screen (it is not dropped) with the visible label `verification failed`. It MUST NOT use the verified-speech treatment. Visitor lines and system notices have no session signature and MUST NOT use that treatment either.
 
-The porch page pins `soulPublicKey` and the door public keys needed to verify the chain, and points `atlasUrl` at the same export. It does not ask the visitor to trust the server's "this is the Wanderer" bit.
+The porch page pins `soulPublicKey` and the door public keys needed to verify the chain. `atlasUrl` is the porch's own origin when `ATLAS_API_URL` is set: the browser fetches `GET /chain/export` from the porch, and the porch forwards only `If-None-Match` to Atlas. The browser is never given the server-side Atlas URL. It does not ask the visitor to trust the server's "this is the Wanderer" bit.
 
 The porch loads those pins from its own origin (`GET /api/verify-pins`: soul public key, this door's public key, door id, and `atlasUrl`). It does not take the soul key or this door's key from the export. The export's entry for this door id must equal the pin; every other door id is taken from the export so a chain that has visited other Doors can still verify. A mismatch, a missing genesis, or a genesis `soul_pubkey` other than the pin fails every Wanderer line. The page refetches the export when the tab becomes visible and at least every 60 seconds, and SHOULD send `If-None-Match`, keeping the last verified snapshot on `304`.
 
