@@ -37,9 +37,9 @@ During a residency through a Door:
 
 - **Public messages** and related Door events in the residency channel (as delivered by the Door implementation).
 - **Session context** may be sent to the configured **Brain** provider for live replies and for end-of-residency distillation / journal generation.
-- **Operator review** decisions over candidate shards (accept / reject / edit) as required by the Door cosign flow.
+- **Witnessing:** at departure the Door's witness (reference Doors: a separate AI model call) reads the Door's own in-memory record of the residency to check each memory before co-signing it. That record is discarded when the residency ends.
 
-The project does not intend to build a surveillance archive of private individuals. Distillation aims for short, first-person shards without PII unless the cosigning host explicitly approves an identifier for that shard (charter: [`genesis.md`](./genesis.md)).
+The project does not intend to build a surveillance archive of private individuals. Distillation aims for short, first-person shards without PII; the Door's witness declines memories that carry private details about identifiable people (charter: [`genesis.md`](./genesis.md)).
 
 ---
 
@@ -115,13 +115,13 @@ Under decision (b):
 
 - The **erasure path** is the primary control for residual personal data that slips into durable shards.
 - Stronger name/doxx screening belongs in the **Brain distill contract** and the **T7.4 verifier ensemble**, not an ever-growing regex list in the static screen.
-- Charter hard constraint `no-pii-in-shards` still applies; host cosign approval remains the exception path for identifiers.
+- Charter hard constraint `no-pii-in-shards` still applies. The Door witness is a second, independent check (it declines `private` memories); there is no per-shard host-approval path for identifiers any more.
 
 ---
 
 ## 10. Third-party processors
 
-LLM completions go through the runtime `Brain` interface. Ghost’s **current** default implementation is the **Anthropic** API (`ANTHROPIC_API_KEY` / `ANTHROPIC_API_KEY_FILE`, model via `NPC_BRAIN_MODEL` — see [`ops/SECRETS.md`](../../ops/SECRETS.md)). The interface is provider-agnostic; retention rules above do not depend on which provider is configured. If the default Brain changes (e.g. multi-provider / budget tiering), update the named default in this section in the same PR. Message content and distillation prompts may be sent to the configured provider under their terms.
+LLM completions go through the runtime `Brain` interface. When `NPC_BRAIN_PROVIDER` is unset, the implementation is the **Anthropic** API (`ANTHROPIC_API_KEY` / `ANTHROPIC_API_KEY_FILE`). The recommended Ghost deploy config is **OpenAI-compat via OpenRouter** (`NPC_BRAIN_PROVIDER=openai-compat`, `NPC_BRAIN_BASE_URL`, `NPC_BRAIN_API_KEY`, `NPC_BRAIN_MODEL`, `NPC_BRAIN_PROVIDER_ALLOWLIST` — see [`ops/SECRETS.md`](../../ops/SECRETS.md)). The interface is provider-agnostic; retention rules above do not depend on which provider is configured. Message content and distillation prompts may be sent to the configured provider under their terms.
 
 ---
 

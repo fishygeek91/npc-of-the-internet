@@ -1,7 +1,8 @@
 {
   "name": "@npc/osp-cli",
-  "version": "0.2.0",
+  "version": "0.6.0",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

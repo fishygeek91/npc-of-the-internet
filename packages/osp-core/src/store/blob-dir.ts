@@ -1,12 +1,23 @@
-import { closeSync, fsyncSync, openSync, unlinkSync } from "node:fs";
+import { unlinkSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import * as path from "node:path";
 
 import { computeCidFromCanonicalBytes, isValidCid } from "../crypto/cid.js";
 import { CorruptionError, StorageError } from "../errors.js";
 
-import { bytesEqual, fsyncDirectory, writeAllSync } from "./fsync.js";
+import { bytesEqual, fsyncDirectory, fsyncPath, writeFileAtomic } from "./fsync.js";
 import { isNodeError, nodeErrorMessage } from "./node-fs-error.js";
+
+/** Refuse to write bytes under a CID they do not hash to. */
+export async function assertBytesHashToCid(
+  cid: string,
+  bytes: Uint8Array,
+  kind: "blob" | "block"
+): Promise<void> {
+  if ((await computeCidFromCanonicalBytes(bytes)) !== cid) {
+    throw new StorageError(`${kind} bytes do not hash to CID ${cid}`);
+  }
+}
 
 export type BlobMissingBehavior = "not_found" | "corruption";
 
@@ -19,6 +30,12 @@ export class BlobDir {
   /**
    * Write blob bytes, treating an existing byte-identical blob as already written
    * (idempotent retry after crash between blob and chain append).
+   *
+   * Writes go temp → fsync → rename → dir fsync, so a crash never leaves a torn blob at
+   * the CID path. A pre-existing file whose bytes do not hash to `cid` (torn by an older
+   * non-atomic writer, or bit rot) is replaced atomically; an existing identical file is
+   * fsynced (file + directory) before returning, since a crashed writer may never have
+   * made it durable.
    */
   async putIdempotent(cid: string, bytes: Uint8Array): Promise<void> {
     // invariant: cid is computed, not caller-supplied — assertion guards against a future refactor passing external input
@@ -28,33 +45,32 @@ export class BlobDir {
 
     const blobPath = path.join(this.dirPath, cid);
 
-    let blobFd: number;
+    let existing: Buffer | null;
     try {
-      blobFd = openSync(blobPath, "wx");
+      existing = await readFile(blobPath);
     } catch (error) {
-      if (isNodeError(error) && error.code === "EEXIST") {
-        let existing: Buffer;
-        try {
-          existing = await readFile(blobPath);
-        } catch (readError) {
-          throw new StorageError(
-            `failed to read existing blob ${cid}: ${nodeErrorMessage(readError)}`
-          );
-        }
-        if (bytesEqual(new Uint8Array(existing), bytes)) {
-          return;
-        }
-        throw new CorruptionError(`blob already exists for CID ${cid} with different bytes`);
+      if (!isNodeError(error) || error.code !== "ENOENT") {
+        throw new StorageError(`failed to read existing blob ${cid}: ${nodeErrorMessage(error)}`);
       }
-      throw new StorageError(`failed to create blob ${cid}: ${nodeErrorMessage(error)}`);
+      existing = null;
     }
 
-    try {
-      writeAllSync(blobFd, bytes);
-      fsyncSync(blobFd);
-    } finally {
-      closeSync(blobFd);
+    if (existing !== null) {
+      const existingBytes = new Uint8Array(existing);
+      if (bytesEqual(existingBytes, bytes)) {
+        await fsyncPath(blobPath);
+        await fsyncDirectory(this.dirPath);
+        return;
+      }
+      if ((await computeCidFromCanonicalBytes(existingBytes)) === cid) {
+        // Unreachable without a sha2-256 collision; never overwrite bytes that verify.
+        throw new CorruptionError(`blob already exists for CID ${cid} with different bytes`);
+      }
+      // Torn/corrupt blob (does not hash to its CID): fall through and replace atomically.
     }
+
+    await assertBytesHashToCid(cid, bytes, "blob");
+    await writeFileAtomic(blobPath, bytes);
   }
 
   /**

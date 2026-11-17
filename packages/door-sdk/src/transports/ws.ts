@@ -16,6 +16,36 @@ import {
 /** WebSocket close code for failed session binding per `spec/door/api.md`. */
 export const WS_SESSION_BIND_FAILED = 4401;
 
+/**
+ * Max inbound WebSocket message size (bytes). Outbound text is capped at 4000 chars
+ * by schema, so 256 KiB leaves ample headroom while bounding per-frame memory.
+ */
+export const WS_MAX_PAYLOAD_BYTES = 256 * 1024;
+
+/** RFC 6455 limits a close reason to 123 bytes of UTF-8. */
+export const WS_CLOSE_REASON_MAX_BYTES = 123;
+
+/**
+ * Truncate a close reason to at most {@link WS_CLOSE_REASON_MAX_BYTES} UTF-8 bytes
+ * without splitting a code point (`ws` throws a RangeError on longer reasons).
+ */
+export function safeCloseReason(reason: string): string {
+  if (Buffer.byteLength(reason, "utf8") <= WS_CLOSE_REASON_MAX_BYTES) {
+    return reason;
+  }
+  let out = "";
+  let bytes = 0;
+  for (const codePoint of reason) {
+    const size = Buffer.byteLength(codePoint, "utf8");
+    if (bytes + size > WS_CLOSE_REASON_MAX_BYTES) {
+      break;
+    }
+    out += codePoint;
+    bytes += size;
+  }
+  return out;
+}
+
 /** Configuration for the Door WebSocket session server. */
 export type WsDoorSessionServerOptions = {
   door: Door;
@@ -55,8 +85,10 @@ export class WsDoorSessionServer {
     this.port = options.port ?? 0;
     this.externalServer = options.server;
     // Close WS clients when Door retires or supersedes an epoch.
-    this.door.setSessionLifecycleListener((event) => {
-      this.closeSessionClients(event.doorId, event.epoch, event.type);
+    this.door.addSessionLifecycleListener((event) => {
+      if (event.type !== "arrived") {
+        this.closeSessionClients(event.doorId, event.epoch, event.type);
+      }
     });
   }
 
@@ -66,20 +98,28 @@ export class WsDoorSessionServer {
       return Promise.reject(new Error("WsDoorSessionServer is already started"));
     }
 
-    const wss = new WebSocketServer({ noServer: true });
+    const wss = new WebSocketServer({ noServer: true, maxPayload: WS_MAX_PAYLOAD_BYTES });
     this.wss = wss;
 
     const upgradeHandler = (req: IncomingMessage, socket: Socket, head: Buffer): void => {
-      const pathname = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`)
-        .pathname;
-      if (pathname !== "/door/session") {
+      // Unauthenticated peers reach this handler: no synchronous throw may escape it,
+      // and no socket may lack an 'error' listener (both crash the host process).
+      socket.on("error", () => {
         socket.destroy();
-        return;
-      }
-
-      wss.handleUpgrade(req, socket, head, (ws) => {
-        this.handleConnection(ws, req);
       });
+      try {
+        const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
+        if (pathname !== "/door/session") {
+          socket.destroy();
+          return;
+        }
+
+        wss.handleUpgrade(req, socket, head, (ws) => {
+          this.handleConnectionSafely(ws, req);
+        });
+      } catch {
+        socket.destroy();
+      }
     };
     this.upgradeHandler = upgradeHandler;
 
@@ -190,15 +230,26 @@ export class WsDoorSessionServer {
   }
 
   /**
-   * Broadcast a Door-originated inbound frame to bound clients for the active epoch only.
-   * Used by tests / host relays to simulate community-originated traffic.
+   * Create (via {@link Door.createInboundFrame}, which also records the line in the Door's
+   * residency record) and send an inbound frame to bound clients of the active epoch.
    */
   broadcastInbound(body: InboundFrame["body"], msg_id: string): void {
-    const activeEpoch = this.door.getActiveEpoch();
-    if (activeEpoch === null) {
+    if (this.door.getActiveEpoch() === null) {
       throw DoorError.fromCode("session_invalid", "session_invalid: no active session");
     }
-    const frame = this.door.createInboundFrame({ body, msg_id });
+    this.sendInbound(this.door.createInboundFrame({ body, msg_id }));
+  }
+
+  /**
+   * Send an inbound frame already created by {@link Door.createInboundFrame} to bound
+   * clients of its epoch (no second residency-record entry). Frames for an epoch that is
+   * no longer active are dropped.
+   */
+  sendInbound(frame: InboundFrame): void {
+    const activeEpoch = this.door.getActiveEpoch();
+    if (activeEpoch === null || frame.epoch !== activeEpoch) {
+      return;
+    }
     const payload = JSON.stringify(frame);
     for (const client of this.clients) {
       if (
@@ -247,19 +298,37 @@ export class WsDoorSessionServer {
     return sockets;
   }
 
+  /**
+   * Attach the socket error listener before any check, then run binding. Any
+   * unexpected throw terminates only this socket.
+   */
+  private handleConnectionSafely(socket: WebSocket, req: IncomingMessage): void {
+    // ws emits 'error' for protocol violations (unmasked frames, oversize payloads);
+    // without a listener that is an uncaught exception.
+    socket.on("error", () => {
+      socket.terminate();
+    });
+    try {
+      this.handleConnection(socket, req);
+    } catch {
+      socket.terminate();
+    }
+  }
+
   private handleConnection(socket: WebSocket, req: IncomingMessage): void {
-    const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+    const url = new URL(req.url ?? "/", "http://localhost");
     const bindResult = this.parseBindParams(url.searchParams);
     if (bindResult.ok === false) {
-      socket.close(WS_SESSION_BIND_FAILED, bindResult.message);
+      socket.close(WS_SESSION_BIND_FAILED, safeCloseReason(bindResult.message));
       return;
     }
 
     try {
       this.door.bindSession(bindResult.params);
     } catch (error) {
-      const message = error instanceof DoorError ? error.message : "session binding failed";
-      socket.close(WS_SESSION_BIND_FAILED, message);
+      // Fixed short reason: DoorError messages can exceed the 123-byte close limit.
+      const code = error instanceof DoorError ? error.code : "internal_error";
+      socket.close(WS_SESSION_BIND_FAILED, safeCloseReason(`session bind failed: ${code}`));
       return;
     }
 
@@ -280,7 +349,13 @@ export class WsDoorSessionServer {
       }
 
       const text = typeof data === "string" ? data : data.toString("utf8");
-      void this.handleTextMessage(client, text);
+      this.handleTextMessage(client, text).catch(() => {
+        this.sendErrorFrame(
+          client,
+          DoorError.fromCode("internal_error", "frame handling failed"),
+          undefined
+        );
+      });
     });
 
     socket.on("close", () => {
@@ -302,7 +377,9 @@ export class WsDoorSessionServer {
     });
 
     if (!parsed.success) {
-      return { ok: false, message: parsed.error.message };
+      // Never echo Zod output in a close reason (unbounded length).
+      const fields = [...new Set(parsed.error.issues.map((issue) => String(issue.path[0])))];
+      return { ok: false, message: `session bind failed: invalid ${fields.join(",")}` };
     }
     return { ok: true, params: parsed.data };
   }
@@ -384,8 +461,12 @@ export class WsDoorSessionServer {
     if (client.socket.readyState !== WebSocket.OPEN) {
       return;
     }
-    const frame = this.buildErrorFrame(client, err, relatedMsgId);
-    client.socket.send(JSON.stringify(frame));
+    try {
+      const frame = this.buildErrorFrame(client, err, relatedMsgId);
+      client.socket.send(JSON.stringify(frame));
+    } catch {
+      client.socket.terminate();
+    }
   }
 
   private buildErrorFrame(client: BoundClient, err: DoorError, relatedMsgId?: string): ErrorFrame {

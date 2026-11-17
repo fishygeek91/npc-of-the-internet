@@ -14,7 +14,11 @@ import {
   type Ed25519Keypair
 } from "@npc/osp-core";
 
-import { createCarUploadAdapter, type CarUploadAdapter } from "../src/replication/adapters.js";
+import {
+  createCarUploadAdapter,
+  DEFAULT_CAR_UPLOAD_TIMEOUT_MS,
+  type CarUploadAdapter
+} from "../src/replication/adapters.js";
 import { startReplicationDrain } from "../src/replication/drain.js";
 
 const TARGET = "test-target";
@@ -267,5 +271,85 @@ describe("replication drain", () => {
 
     await drain.stop();
     expect(callCount).toBe(2);
+  });
+  it("stop() waits for the upload that is actually in flight, then acks it", async () => {
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let uploadStarted = false;
+    let uploads = 0;
+    const adapter: CarUploadAdapter = {
+      name: TARGET,
+      uploadCar: async () => {
+        uploads += 1;
+        uploadStarted = true;
+        await gate;
+      }
+    };
+    const drain = startReplicationDrain({
+      ipfsDir,
+      soulPrivateKey: soul.privateKey,
+      publishedCarPath,
+      manifestCidPath,
+      targets: [adapter],
+      intervalMs: 20,
+      logger: pino({ level: "silent" }),
+      now: () => FIXED_NOW
+    });
+    while (!uploadStarted) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    // Several interval firings land while the slow upload is still running.
+    await new Promise((resolve) => setTimeout(resolve, 80));
+
+    let stopped = false;
+    const stopping = drain.stop().then(() => {
+      stopped = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(stopped).toBe(false);
+
+    release?.();
+    await stopping;
+    expect(stopped).toBe(true);
+    expect(uploads).toBe(1);
+    // Acks were written before stop() resolved — nothing lands after shutdown.
+    expect(await listUnackedForTarget(ipfsDir, TARGET)).toEqual([]);
+  });
+
+  it("aborts a hung CAR upload after the configured timeout", async () => {
+    let sawSignal = false;
+    const fetchImpl: typeof fetch = async (_url, init) =>
+      new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal;
+        if (signal === undefined || signal === null) {
+          return;
+        }
+        sawSignal = true;
+        signal.addEventListener("abort", () => {
+          reject(signal.reason instanceof Error ? signal.reason : new Error("aborted"));
+        });
+      });
+    const adapter = createCarUploadAdapter(
+      {
+        name: TARGET,
+        kind: "car-upload",
+        endpoint: "https://pin.example/car",
+        tokenEnv: "TEST_TOKEN"
+      },
+      "test-token",
+      fetchImpl,
+      { timeoutMs: 30 }
+    );
+
+    await expect(adapter.uploadCar(new Uint8Array([1, 2, 3]), "bagu-test")).rejects.toThrow(
+      /timeout|abort/i
+    );
+    expect(sawSignal).toBe(true);
+  });
+
+  it("defaults the CAR upload timeout to two minutes", () => {
+    expect(DEFAULT_CAR_UPLOAD_TIMEOUT_MS).toBe(120_000);
   });
 });

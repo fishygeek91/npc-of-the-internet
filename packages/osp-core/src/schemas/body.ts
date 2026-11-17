@@ -218,6 +218,28 @@ export const CandidateBodyV02Schema = z
  */
 export const CandidateBodySchema = z.union([CandidateBodyV01Schema, CandidateBodyV02Schema]);
 
+/**
+ * Witnessed residency journal (`memory.body.kind: "journal"`, `osp/0.2` only): the
+ * Wanderer's account of a residency, written from its witnessed shards, as a side blob.
+ */
+export const JournalBodySchema = z
+  .object({
+    kind: z.literal("journal"),
+    journal_cid: CidSchema,
+    journal_hash: BlobContentHashSchema,
+    written_at: IsoUtcTimestampSchema
+  })
+  .strict()
+  .superRefine((body, ctx) => {
+    if (!cidMatchesHash(body.journal_cid, body.journal_hash)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "journal_cid digest must match journal_hash",
+        path: ["journal_hash"]
+      });
+    }
+  });
+
 /** Rejected candidate memory body (`memory.body.kind: "rejected"`). */
 export const RejectedBodySchema = z
   .object({
@@ -228,10 +250,14 @@ export const RejectedBodySchema = z
   })
   .strict();
 
-/** Memory record body — union of versioned shard/candidate shapes plus rejected. */
+/**
+ * Memory record body — witnessed shard / journal, rejected, plus legacy candidate shapes
+ * (records.md §Legacy memory forms).
+ */
 export const MemoryBodySchema = z.union([
   ShardBodyV01Schema,
   ShardBodyV02Schema,
+  JournalBodySchema,
   CandidateBodyV01Schema,
   CandidateBodyV02Schema,
   RejectedBodySchema

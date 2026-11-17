@@ -1,4 +1,4 @@
-import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -76,6 +76,37 @@ describe("FileTranscriptSource", () => {
     await expect(source.read()).rejects.toSatisfy((error: unknown) => {
       return error instanceof DistillError && error.reason === "invalid_transcript";
     });
+  });
+
+  it("omits the transcript directory from read and delete errors", async () => {
+    const dir = await makeTempDir();
+    const filePath = join(dir, "transcript.jsonl");
+    await mkdir(filePath);
+    const logged: { event: string; path: string }[] = [];
+    const source = new FileTranscriptSource(filePath, (event, fields) => {
+      logged.push({ event, path: fields.path });
+    });
+
+    await expect(source.read()).rejects.toSatisfy((error: unknown) => {
+      return (
+        error instanceof DistillError &&
+        error.reason === "invalid_transcript" &&
+        error.message === "cannot read transcript" &&
+        !error.message.includes(dir)
+      );
+    });
+    await expect(source.destroy()).rejects.toSatisfy((error: unknown) => {
+      return (
+        error instanceof DistillError &&
+        error.message === "cannot delete transcript" &&
+        !error.message.includes(dir)
+      );
+    });
+
+    expect(logged).toEqual([
+      { event: "transcript_read_failed", path: filePath },
+      { event: "transcript_delete_failed", path: filePath }
+    ]);
   });
 
   it("destroy is idempotent when the file is already gone", async () => {

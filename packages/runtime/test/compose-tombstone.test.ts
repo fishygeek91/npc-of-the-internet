@@ -11,7 +11,6 @@ import {
 import { describe, expect, it } from "vitest";
 
 import { composeSelf, erasedMemoryMarker } from "../src/compose/compose-self.js";
-import { scanQuarantineState } from "../src/quarantine/scan.js";
 import { DOOR_ID, RESIDENCY, createGenesisRecord } from "./helpers/fixtures.js";
 import { DOOR, SESSION, SOUL } from "./helpers/fixed-keys.js";
 import { MemorySoulStore } from "./helpers/memory-soul-store.js";
@@ -92,7 +91,7 @@ describe("composeSelf osp/0.2 tombstones", () => {
     expect(after.memoryIndex.some((entry) => entry.text === text)).toBe(false);
   });
 
-  it("scanQuarantineState survives candidate→shard sharing a blob after erase", async () => {
+  it("legacy candidate→shard sharing an erased blob: one erased marker, the candidate is ignored", async () => {
     const store = new MemorySoulStore();
     const genesis = await createGenesisRecord(SOUL);
     await store.append(genesis.record);
@@ -150,15 +149,11 @@ describe("composeSelf osp/0.2 tombstones", () => {
       erasedAt: "2026-01-03T00:00:00.000Z"
     });
 
-    const scan = await scanQuarantineState(store);
-    expect(scan.candidates).toHaveLength(0);
-    expect(scan.committedCandidateCids.has(candidateCid)).toBe(true);
-
     const composed = await composeSelf(store, {
       doorPublicKeys: { [DOOR_ID]: DOOR.publicKey }
     });
-    expect(
-      composed.memoryIndex.some((entry) => entry.text === erasedMemoryMarker("erasure_request"))
-    ).toBe(true);
+    expect(composed.memoryIndex.map((entry) => entry.text)).toEqual([
+      erasedMemoryMarker("erasure_request")
+    ]);
   });
 });

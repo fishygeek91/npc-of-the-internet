@@ -1,7 +1,8 @@
 {
   "name": "@npc/atlas",
-  "version": "0.2.0",
+  "version": "0.6.0",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -17,7 +18,7 @@
   "dependencies": {
     "@fastify/cors": "^11.0.1",
     "@npc/osp-core": "workspace:*",
-    "fastify": "^5.2.1",
+    "fastify": "^5.12.6",
     "zod": "^3.24.2"
   },
   "devDependencies": {

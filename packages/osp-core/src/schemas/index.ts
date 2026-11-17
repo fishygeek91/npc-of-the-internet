@@ -14,6 +14,7 @@ export {
   CandidateBodyV02Schema,
   CandidateBodySchema,
   RejectedBodySchema,
+  JournalBodySchema,
   MemoryBodySchema,
   TombstoneBodySchema,
   DriftBodySchema,
@@ -49,6 +50,7 @@ import type {
   GenesisBodySchema,
   HandoverBodySchema,
   HeartbeatBodySchema,
+  JournalBodySchema,
   MemoryBodySchema,
   RejectedBodySchema,
   ShardBodySchema,
@@ -64,6 +66,7 @@ export type GenesisBody = z.infer<typeof GenesisBodySchema>;
 export type ShardBody = z.infer<typeof ShardBodySchema>;
 export type CandidateBody = z.infer<typeof CandidateBodySchema>;
 export type RejectedBody = z.infer<typeof RejectedBodySchema>;
+export type JournalBody = z.infer<typeof JournalBodySchema>;
 export type MemoryBody = z.infer<typeof MemoryBodySchema>;
 export type TombstoneBody = z.infer<typeof TombstoneBodySchema>;
 export type DriftBody = z.infer<typeof DriftBodySchema>;

@@ -1,34 +1,53 @@
+import { DoorError } from "@npc/door-sdk";
 import {
   canonicalize,
-  decodeSignature,
+  contentAddressSideBlob,
   encodePublicKey,
+  encodeShardTextBlob,
   encodeSignature,
-  verify
+  verify,
+  decodeSignature
 } from "@npc/osp-core";
 import { describe, expect, it } from "vitest";
 
 import { SingleKeyKeyring } from "../src/keyring/single-key-keyring.js";
-import {
-  attestSigningPayload,
-  cosignCommitSigningPayload,
-  cosignReviewSigningPayload,
-  DOOR_PROTOCOL_VERSION
-} from "../src/session/types.js";
-import type {
-  AttestRequest,
-  CosignCandidateShard,
-  CosignRequest,
-  OutboundFrame
-} from "../src/session/types.js";
-import { DoorStub, DoorStubError } from "./helpers/door-stub.js";
+import { attestSigningPayload, DOOR_PROTOCOL_VERSION } from "../src/session/types.js";
+import type { AttestRequest, OutboundFrame } from "../src/session/types.js";
+import { DoorStub, ScriptedWitness } from "./helpers/door-stub.js";
 import { FakeClock } from "./helpers/fake-timer.js";
 import { DOOR, SOUL } from "./helpers/fixed-keys.js";
 
 const DOOR_ID = "discord:g";
 const EPOCH = 77;
 const ISSUED_AT = "2026-07-20T15:09:00.000Z";
-const CORE = '{"type":"attestation","kind":"arrival"}';
-const MEMORY_CORE = '{"type":"memory","body":{"kind":"shard","text":"I remember the hall."}}';
+/** Canonical OSP attestation core bound to `(door_id, epoch, kind)` — the Door rejects unbound cores. */
+function attestCore(kind: AttestRequest["kind"], epoch: number, doorId = DOOR_ID): string {
+  return new TextDecoder().decode(
+    canonicalize({
+      spec: "osp/0.2",
+      seq: 1,
+      prev: "bafyprev",
+      type: "attestation",
+      body: { kind, door_id: doorId, epoch },
+      residency: `door:${doorId}/epoch:${String(epoch)}`
+    })
+  );
+}
+
+/** Canonical osp/0.2 `memory` shard core binding `text` by side-blob hash. */
+async function memoryCore(text: string, epoch: number): Promise<string> {
+  const { cid, hash } = await contentAddressSideBlob(encodeShardTextBlob(text));
+  return new TextDecoder().decode(
+    canonicalize({
+      spec: "osp/0.2",
+      seq: 2,
+      prev: "bafyprev",
+      type: "memory",
+      body: { kind: "shard", text_cid: cid, text_hash: hash, distilled_at: ISSUED_AT },
+      residency: `door:${DOOR_ID}/epoch:${String(epoch)}`
+    })
+  );
+}
 
 function signAttestRequest(
   keyring: SingleKeyKeyring,
@@ -51,31 +70,6 @@ function signOutboundFrame(
   return { ...frame, sig: encodeSignature(sessionSigner.sign(payload)) };
 }
 
-function sampleShards(count: number): CosignCandidateShard[] {
-  return Array.from({ length: count }, (_, index) => ({
-    shard_id: `shard_${String(index + 1).padStart(2, "0")}`,
-    text: `Memory shard ${String(index + 1)} from the residency.`
-  }));
-}
-
-function signCosignReviewRequest(
-  keyring: SingleKeyKeyring,
-  fields: Omit<Extract<CosignRequest, { phase: "review" }>, "sig">
-): Extract<CosignRequest, { phase: "review" }> {
-  const sessionSigner = keyring.deriveSessionKey(fields.door_id, fields.epoch);
-  const payload = cosignReviewSigningPayload(fields);
-  return { ...fields, sig: encodeSignature(sessionSigner.sign(payload)) };
-}
-
-function signCosignCommitRequest(
-  keyring: SingleKeyKeyring,
-  fields: Omit<Extract<CosignRequest, { phase: "commit" }>, "sig">
-): Extract<CosignRequest, { phase: "commit" }> {
-  const sessionSigner = keyring.deriveSessionKey(fields.door_id, fields.epoch);
-  const payload = cosignCommitSigningPayload(fields);
-  return { ...fields, sig: encodeSignature(sessionSigner.sign(payload)) };
-}
-
 async function establishArrival(
   stub: DoorStub,
   keyring: SingleKeyKeyring,
@@ -89,7 +83,7 @@ async function establishArrival(
       door_id: DOOR_ID,
       epoch,
       kind: "arrival",
-      core: CORE,
+      core: attestCore("arrival", epoch),
       session_pubkey: encodePublicKey(sessionSigner.publicKey),
       issued_at: ISSUED_AT
     },
@@ -103,13 +97,31 @@ describe("DoorStub", () => {
   const keyring = new SingleKeyKeyring(SOUL.privateKey);
   const sessionSigner = keyring.deriveSessionKey(DOOR_ID, EPOCH);
 
-  function createStub(): DoorStub {
+  function createStub(witness?: ScriptedWitness | null): DoorStub {
     return new DoorStub({
       doorId: DOOR_ID,
       doorKeypair: DOOR,
       soulPublicKey: SOUL.publicKey,
-      clock
+      clock,
+      ...(witness === undefined ? {} : { witness })
     });
+  }
+
+  async function memoryRequest(text: string): Promise<AttestRequest> {
+    return signAttestRequest(
+      keyring,
+      {
+        protocol_version: DOOR_PROTOCOL_VERSION,
+        door_id: DOOR_ID,
+        epoch: EPOCH,
+        kind: "memory",
+        core: await memoryCore(text, EPOCH),
+        session_pubkey: encodePublicKey(sessionSigner.publicKey),
+        text,
+        issued_at: ISSUED_AT
+      },
+      false
+    );
   }
 
   it("accepts arrival attest with correct soul signature and sets session", async () => {
@@ -121,7 +133,7 @@ describe("DoorStub", () => {
         door_id: DOOR_ID,
         epoch: EPOCH,
         kind: "arrival",
-        core: CORE,
+        core: attestCore("arrival", EPOCH),
         session_pubkey: encodePublicKey(sessionSigner.publicKey),
         issued_at: ISSUED_AT
       },
@@ -147,14 +159,14 @@ describe("DoorStub", () => {
         door_id: DOOR_ID,
         epoch: EPOCH,
         kind: "heartbeat",
-        core: CORE,
+        core: attestCore("heartbeat", EPOCH),
         session_pubkey: encodePublicKey(sessionSigner.publicKey),
         issued_at: ISSUED_AT
       },
       false
     );
 
-    await expect(stub.attest(request)).rejects.toThrow(DoorStubError);
+    await expect(stub.attest(request)).rejects.toThrow(DoorError);
     await expect(stub.attest(request)).rejects.toThrow(/no active session/);
   });
 
@@ -167,7 +179,7 @@ describe("DoorStub", () => {
         door_id: DOOR_ID,
         epoch: EPOCH,
         kind: "arrival",
-        core: CORE,
+        core: attestCore("arrival", EPOCH),
         session_pubkey: encodePublicKey(sessionSigner.publicKey),
         issued_at: ISSUED_AT
       },
@@ -202,7 +214,7 @@ describe("DoorStub", () => {
         door_id: DOOR_ID,
         epoch: EPOCH,
         kind: "arrival",
-        core: CORE,
+        core: attestCore("arrival", EPOCH),
         session_pubkey: encodePublicKey(sessionSigner.publicKey),
         issued_at: ISSUED_AT
       },
@@ -236,7 +248,7 @@ describe("DoorStub", () => {
         door_id: DOOR_ID,
         epoch: EPOCH,
         kind: "arrival",
-        core: CORE,
+        core: attestCore("arrival", EPOCH),
         session_pubkey: encodePublicKey(sessionSigner.publicKey),
         issued_at: ISSUED_AT
       },
@@ -259,180 +271,11 @@ describe("DoorStub", () => {
 
     const replaySig = encodeSignature(sessionSigner.sign(heartbeatPayload));
     await expect(stub.heartbeat({ ...unsignedHeartbeat, sig: replaySig })).rejects.toThrow(
-      DoorStubError
+      DoorError
     );
     await expect(stub.heartbeat({ ...unsignedHeartbeat, sig: replaySig })).rejects.toThrow(
       /seq_replay/
     );
-  });
-
-  it("cosign review approves all shards by default and rejects a second review", async () => {
-    const stub = createStub();
-    await establishArrival(stub, keyring, EPOCH);
-
-    const shards = sampleShards(5);
-    const reviewRequest = signCosignReviewRequest(keyring, {
-      protocol_version: DOOR_PROTOCOL_VERSION,
-      phase: "review",
-      door_id: DOOR_ID,
-      epoch: EPOCH,
-      session_pubkey: encodePublicKey(sessionSigner.publicKey),
-      shards,
-      issued_at: ISSUED_AT
-    });
-
-    const reviewResponse = await stub.cosign(reviewRequest);
-
-    expect(reviewResponse.phase).toBe("review");
-    expect(reviewResponse.decisions).toHaveLength(5);
-    expect(reviewResponse.decisions.every((decision) => decision.status === "approved")).toBe(true);
-
-    await expect(stub.cosign(reviewRequest)).rejects.toThrow(DoorStubError);
-    await expect(stub.cosign(reviewRequest)).rejects.toThrow(/epoch_closed/);
-  });
-
-  it("cosign review honors rejectShardIds and blocks commit for rejected shards", async () => {
-    const shards = sampleShards(5);
-    const rejectedId = shards[2].shard_id;
-    const stub = new DoorStub({
-      doorId: DOOR_ID,
-      doorKeypair: DOOR,
-      soulPublicKey: SOUL.publicKey,
-      clock,
-      rejectShardIds: new Set([rejectedId])
-    });
-    await establishArrival(stub, keyring, EPOCH);
-
-    const reviewResponse = await stub.cosign(
-      signCosignReviewRequest(keyring, {
-        protocol_version: DOOR_PROTOCOL_VERSION,
-        phase: "review",
-        door_id: DOOR_ID,
-        epoch: EPOCH,
-        session_pubkey: encodePublicKey(sessionSigner.publicKey),
-        shards,
-        issued_at: ISSUED_AT
-      })
-    );
-
-    const rejected = reviewResponse.decisions.find((decision) => decision.shard_id === rejectedId);
-    expect(rejected?.status).toBe("rejected");
-    expect(rejected?.reason).toBeDefined();
-
-    const approvedId = shards[0].shard_id;
-    const commitRequest = signCosignCommitRequest(keyring, {
-      protocol_version: DOOR_PROTOCOL_VERSION,
-      phase: "commit",
-      door_id: DOOR_ID,
-      epoch: EPOCH,
-      session_pubkey: encodePublicKey(sessionSigner.publicKey),
-      shard_id: rejectedId,
-      core: MEMORY_CORE,
-      issued_at: ISSUED_AT
-    });
-    await expect(stub.cosign(commitRequest)).rejects.toThrow(DoorStubError);
-    await expect(stub.cosign(commitRequest)).rejects.toThrow(/shard_not_approved/);
-
-    const approvedCommit = await stub.cosign(
-      signCosignCommitRequest(keyring, {
-        protocol_version: DOOR_PROTOCOL_VERSION,
-        phase: "commit",
-        door_id: DOOR_ID,
-        epoch: EPOCH,
-        session_pubkey: encodePublicKey(sessionSigner.publicKey),
-        shard_id: approvedId,
-        core: MEMORY_CORE,
-        issued_at: ISSUED_AT
-      })
-    );
-    expect(approvedCommit.phase).toBe("commit");
-    expect(approvedCommit.shard_id).toBe(approvedId);
-  });
-
-  it("cosign commit signs core bytes verifiable under door pubkey", async () => {
-    const stub = createStub();
-    await establishArrival(stub, keyring, EPOCH);
-
-    const shards = sampleShards(5);
-    await stub.cosign(
-      signCosignReviewRequest(keyring, {
-        protocol_version: DOOR_PROTOCOL_VERSION,
-        phase: "review",
-        door_id: DOOR_ID,
-        epoch: EPOCH,
-        session_pubkey: encodePublicKey(sessionSigner.publicKey),
-        shards,
-        issued_at: ISSUED_AT
-      })
-    );
-
-    const shardId = shards[0].shard_id;
-    const commitResponse = await stub.cosign(
-      signCosignCommitRequest(keyring, {
-        protocol_version: DOOR_PROTOCOL_VERSION,
-        phase: "commit",
-        door_id: DOOR_ID,
-        epoch: EPOCH,
-        session_pubkey: encodePublicKey(sessionSigner.publicKey),
-        shard_id: shardId,
-        core: MEMORY_CORE,
-        issued_at: ISSUED_AT
-      })
-    );
-
-    const coreBytes = new TextEncoder().encode(MEMORY_CORE);
-    const doorCosig = decodeSignature(commitResponse.door_cosig);
-    expect(verify(coreBytes, doorCosig, DOOR.publicKey)).toBe(true);
-  });
-
-  it("cosign commit succeeds after departure when review completed", async () => {
-    const stub = createStub();
-    await establishArrival(stub, keyring, EPOCH);
-
-    const shards = sampleShards(5);
-    await stub.cosign(
-      signCosignReviewRequest(keyring, {
-        protocol_version: DOOR_PROTOCOL_VERSION,
-        phase: "review",
-        door_id: DOOR_ID,
-        epoch: EPOCH,
-        session_pubkey: encodePublicKey(sessionSigner.publicKey),
-        shards,
-        issued_at: ISSUED_AT
-      })
-    );
-
-    const departureRequest = signAttestRequest(
-      keyring,
-      {
-        protocol_version: DOOR_PROTOCOL_VERSION,
-        door_id: DOOR_ID,
-        epoch: EPOCH,
-        kind: "departure",
-        core: '{"type":"attestation","kind":"departure"}',
-        session_pubkey: encodePublicKey(sessionSigner.publicKey),
-        issued_at: ISSUED_AT
-      },
-      false
-    );
-    await stub.attest(departureRequest);
-
-    const shardId = shards[0].shard_id;
-    const commitResponse = await stub.cosign(
-      signCosignCommitRequest(keyring, {
-        protocol_version: DOOR_PROTOCOL_VERSION,
-        phase: "commit",
-        door_id: DOOR_ID,
-        epoch: EPOCH,
-        session_pubkey: encodePublicKey(sessionSigner.publicKey),
-        shard_id: shardId,
-        core: MEMORY_CORE,
-        issued_at: ISSUED_AT
-      })
-    );
-
-    expect(commitResponse.phase).toBe("commit");
-    expect(commitResponse.shard_id).toBe(shardId);
   });
 
   it("departure attest clears session and refuses heartbeat afterward", async () => {
@@ -446,7 +289,7 @@ describe("DoorStub", () => {
         door_id: DOOR_ID,
         epoch: EPOCH,
         kind: "departure",
-        core: '{"type":"attestation","kind":"departure"}',
+        core: attestCore("departure", EPOCH),
         session_pubkey: encodePublicKey(sessionSigner.publicKey),
         issued_at: ISSUED_AT
       },
@@ -468,62 +311,58 @@ describe("DoorStub", () => {
     const heartbeatSig = encodeSignature(sessionSigner.sign(heartbeatPayload));
 
     await expect(stub.heartbeat({ ...unsignedHeartbeat, sig: heartbeatSig })).rejects.toThrow(
-      DoorStubError
+      DoorError
     );
     await expect(stub.heartbeat({ ...unsignedHeartbeat, sig: heartbeatSig })).rejects.toThrow(
       /epoch_closed/
     );
   });
 
-  it("re-arrival resets cosignState so a later epoch can review again", async () => {
-    const stub = createStub();
-    const epoch1 = EPOCH;
-    const epoch2 = EPOCH + 2;
+  it("witnesses a memory: door_cosig over core verifies under the door pubkey", async () => {
+    const witness = new ScriptedWitness();
+    const stub = createStub(witness);
+    expect(stub.witnessesMemories).toBe(true);
+    await establishArrival(stub, keyring, EPOCH);
 
-    await establishArrival(stub, keyring, epoch1);
-    const shards = sampleShards(5);
-    await stub.cosign(
-      signCosignReviewRequest(keyring, {
-        protocol_version: DOOR_PROTOCOL_VERSION,
-        phase: "review",
-        door_id: DOOR_ID,
-        epoch: epoch1,
-        session_pubkey: encodePublicKey(keyring.deriveSessionKey(DOOR_ID, epoch1).publicKey),
-        shards,
-        issued_at: ISSUED_AT
-      })
-    );
+    const request = await memoryRequest("I remember the lantern light.");
+    const response = await stub.attest(request);
 
-    const departureRequest = signAttestRequest(
-      keyring,
-      {
-        protocol_version: DOOR_PROTOCOL_VERSION,
-        door_id: DOOR_ID,
-        epoch: epoch1,
-        kind: "departure",
-        core: '{"type":"attestation","kind":"departure"}',
-        session_pubkey: encodePublicKey(keyring.deriveSessionKey(DOOR_ID, epoch1).publicKey),
-        issued_at: ISSUED_AT
-      },
-      false
-    );
-    await stub.attest(departureRequest);
+    expect(response.kind).toBe("memory");
+    expect(
+      verify(
+        new TextEncoder().encode(request.core),
+        decodeSignature(response.door_cosig),
+        DOOR.publicKey
+      )
+    ).toBe(true);
+    expect(witness.texts("shard")).toEqual(["I remember the lantern light."]);
+  });
 
-    await establishArrival(stub, keyring, epoch2);
-    const reviewAgain = await stub.cosign(
-      signCosignReviewRequest(keyring, {
-        protocol_version: DOOR_PROTOCOL_VERSION,
-        phase: "review",
-        door_id: DOOR_ID,
-        epoch: epoch2,
-        session_pubkey: encodePublicKey(keyring.deriveSessionKey(DOOR_ID, epoch2).publicKey),
-        shards,
-        issued_at: ISSUED_AT
-      })
-    );
+  it("declines with witness_declined and a reason; an outage is witness_unavailable", async () => {
+    const witness = new ScriptedWitness(() => ({ witnessed: false, reason: "private" }));
+    const stub = createStub(witness);
+    await establishArrival(stub, keyring, EPOCH);
 
-    expect(reviewAgain.phase).toBe("review");
-    expect(reviewAgain.decisions).toHaveLength(5);
-    expect(reviewAgain.decisions.every((decision) => decision.status === "approved")).toBe(true);
+    const declined = await stub.attest(await memoryRequest("A secret.")).catch((e: unknown) => e);
+    expect(declined).toBeInstanceOf(DoorError);
+    expect((declined as DoorError).code).toBe("witness_declined");
+    expect((declined as DoorError).details).toEqual({ reason: "private" });
+
+    witness.decide = () => "unavailable";
+    const outage = await stub.attest(await memoryRequest("Later.")).catch((e: unknown) => e);
+    expect((outage as DoorError).code).toBe("witness_unavailable");
+  });
+
+  it("without a witness the Door does not advertise attest.memory and refuses memories", async () => {
+    const stub = createStub(null);
+    expect(stub.witnessesMemories).toBe(false);
+    const hello = await stub.hello({
+      protocol_version: DOOR_PROTOCOL_VERSION,
+      soul_pubkey: encodePublicKey(SOUL.publicKey)
+    });
+    expect(hello.capabilities).not.toContain("attest.memory");
+    await establishArrival(stub, keyring, EPOCH);
+
+    await expect(stub.attest(await memoryRequest("Anything."))).rejects.toThrow(/unsupported_kind/);
   });
 });

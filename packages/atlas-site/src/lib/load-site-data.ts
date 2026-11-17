@@ -1,9 +1,17 @@
-import type { HeadResponse, JournalEntry, RecordsPageResponse, StateResponse } from "@npc/atlas";
+import type {
+  DeriveJournalsOptions,
+  HeadResponse,
+  JournalEntry,
+  RecordsPageResponse,
+  ResidencyEntry,
+  StateResponse
+} from "@npc/atlas";
 import {
   ChainView,
   deriveHead,
   deriveJournals,
   deriveRecordsPage,
+  deriveResidencies,
   deriveState,
   extractRecordTimestamp,
   formatRecordKind,
@@ -13,7 +21,6 @@ import { computeCid, verifyRecords, type OspRecord, type VerifyChainResult } fro
 import { loadAtlasSiteConfig } from "./config.js";
 import { RECORDS_PER_PAGE } from "./constants.js";
 import { prettyPrintBody, toDisplayBody } from "./display-body.js";
-import { deriveJourney, type JourneyEntry } from "./journey.js";
 import { renderJournalHtml } from "./markdown.js";
 import { recordVerified } from "./verification.js";
 
@@ -54,7 +61,8 @@ export type AtlasSiteData = {
   chainVerified: boolean;
   state: StateResponse;
   head: HeadResponse | null;
-  journey: JourneyEntry[];
+  /** Residencies, newest first (Door, times, witnessed/declined counts, journal, travel). */
+  residencies: ResidencyEntry[];
   journals: JournalWithHtml[];
   recordTypes: string[];
   totalRecords: number;
@@ -229,12 +237,11 @@ async function loadSiteDataUncached(env: NodeJS.ProcessEnv): Promise<AtlasSiteDa
 
   const state = deriveState(snapshot.records, chainVerified);
   const head = await deriveHead(snapshot.records, chainVerified);
-  const journey = await deriveJourney(snapshot.records);
   const sideBlobs = snapshot.sideBlobs;
-  const journalsResponse =
+  const blobOptions: DeriveJournalsOptions =
     sideBlobs === undefined
-      ? await deriveJournals(snapshot.records, chainVerified)
-      : await deriveJournals(snapshot.records, chainVerified, undefined, {
+      ? {}
+      : {
           getSideBlob: async (cid: string): Promise<Uint8Array> => {
             const bytes = sideBlobs.get(cid);
             if (bytes === undefined) {
@@ -242,7 +249,16 @@ async function loadSiteDataUncached(env: NodeJS.ProcessEnv): Promise<AtlasSiteDa
             }
             return bytes;
           }
-        });
+        };
+  const journalsResponse = await deriveJournals(
+    snapshot.records,
+    chainVerified,
+    undefined,
+    blobOptions
+  );
+  const residencies = (
+    await deriveResidencies(snapshot.records, chainVerified, undefined, blobOptions)
+  ).residencies;
 
   const journals: JournalWithHtml[] = journalsResponse.journals.map((entry) => ({
     ...entry,
@@ -259,7 +275,7 @@ async function loadSiteDataUncached(env: NodeJS.ProcessEnv): Promise<AtlasSiteDa
     chainVerified,
     state,
     head,
-    journey,
+    residencies,
     journals,
     recordTypes,
     totalRecords: snapshot.records.length,

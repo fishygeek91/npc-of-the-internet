@@ -19,4 +19,4 @@ TASKS.md ID: T0.0
 
 ## Approval
 
-- [ ] Human approved to begin (add label `approved`)
+- [ ] Human approved to begin (add label `approved` — the label is authoritative; this block is optional context)

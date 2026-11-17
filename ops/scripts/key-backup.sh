@@ -46,7 +46,7 @@ env_get() {
   fi
 }
 
-command -v age >/dev/null 2>&1 || die "age not found on PATH (install: brew install age)"
+command -v age >/dev/null 2>&1 || die "age not found on PATH (install: sudo apt install -y age on the VPS, brew install age on macOS)"
 command -v rclone >/dev/null 2>&1 || die "rclone not found on PATH"
 
 soul_key="$(env_get SOUL_KEY_HOST_PATH)"

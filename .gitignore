@@ -13,3 +13,4 @@ _tmp_*
 *.key
 *.p12
 **/.astro/
+.pnpm-store/

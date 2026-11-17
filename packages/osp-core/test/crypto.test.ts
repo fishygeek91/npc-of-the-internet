@@ -22,6 +22,31 @@ describe("ed25519", () => {
     const signature = sign(message, alice.privateKey);
     expect(verify(message, signature, bob.publicKey)).toBe(false);
   });
+
+  it("rejects a small-order public key with identity R and S=0 (strict RFC 8032, not ZIP-215)", () => {
+    // Review F6: under ZIP-215 this forged pair "verifies" ANY message.
+    const identityPublicKey = new Uint8Array(32);
+    identityPublicKey[0] = 1;
+    const forged = new Uint8Array(64);
+    forged[0] = 1; // R = identity point, S = 0
+    for (const text of ["anything", "a soulchain record", ""]) {
+      expect(verify(new TextEncoder().encode(text), forged, identityPublicKey)).toBe(false);
+    }
+  });
+
+  it("rejects every small-order public key encoding under a forged identity signature", () => {
+    // y = 1 (identity), y = -1 (order 2) — canonical small-order encodings.
+    const minusOne = new Uint8Array(32).fill(0xff);
+    minusOne[0] = 0xec;
+    minusOne[31] = 0x7f;
+    const identity = new Uint8Array(32);
+    identity[0] = 1;
+    const forged = new Uint8Array(64);
+    forged[0] = 1;
+    for (const key of [identity, minusOne]) {
+      expect(verify(new TextEncoder().encode("m"), forged, key)).toBe(false);
+    }
+  });
 });
 
 describe("computeCid", () => {

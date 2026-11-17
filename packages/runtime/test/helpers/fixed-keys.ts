@@ -23,3 +23,5 @@ export const DOOR = testKeypair(8);
 export const SESSION = testKeypair(9);
 /** TEST-ONLY alternate door key for door-key-order tests (fill 10). */
 export const OTHER_DOOR = testKeypair(10);
+/** TEST-ONLY third door key for multi-Door and rogue-Door tests (fill 11). */
+export const THIRD_DOOR = testKeypair(11);

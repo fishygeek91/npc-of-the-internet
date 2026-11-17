@@ -16,6 +16,7 @@ import {
   TransactionBodySchema
 } from "./body.js";
 import { validateDagJsonReservedForm } from "./dag-json-reserved.js";
+import { validateNoProtoKeys } from "./proto-key.js";
 
 /** Residency descriptor format: `door:<platform>:<door-id>/epoch:<n>`. */
 export const RESIDENCY_RE = /^door:[a-z0-9-]+:[A-Za-z0-9_-]+\/epoch:(0|[1-9][0-9]*)$/;
@@ -198,11 +199,11 @@ function validateCosignerRules(
       ? record.body.kind
       : undefined;
 
-  if (record.type === "memory" && bodyKind === "shard") {
+  if (record.type === "memory" && (bodyKind === "shard" || bodyKind === "journal")) {
     if (record.cosigners.length < 1) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: "shard memory records require at least one cosigner",
+        message: `${bodyKind} memory records require at least one cosigner`,
         path: ["cosigners"]
       });
     }
@@ -251,6 +252,16 @@ function validateSpecBodyCompatibility(
     return;
   }
   const kind = record.body.kind;
+  if (kind === "journal") {
+    if (record.spec !== OSP_SPEC_V02) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "journal memory records require spec osp/0.2",
+        path: ["spec"]
+      });
+    }
+    return;
+  }
   if (kind !== "shard" && kind !== "candidate") {
     return;
   }
@@ -455,14 +466,22 @@ export const RecordSchemaBase = z.discriminatedUnion("type", [
 /**
  * Full OSP soulchain record schema.
  * Discriminates on top-level `type`; memory and attestation bodies further discriminate on `body.kind`.
+ *
+ * The raw input is first checked for own `"__proto__"` keys (rejected — they would be silently
+ * dropped by parsing/canonicalization, making record bytes malleable), then parsed.
  */
-export const RecordSchema = RecordSchemaBase.superRefine((record, ctx) => {
-  validateChainLinkFields(record, ctx);
-  validateCosignerRules(record, ctx);
-  validateCosignerOrdering(record, ctx);
-  validateSignatureFields(record, ctx);
-  validateAttestationDoorId(record, ctx);
-  validateAttestationEpoch(record, ctx);
-  validateSpecBodyCompatibility(record, ctx);
-  validateDagJsonReservedForm(record, ctx);
-});
+export const RecordSchema = z
+  .unknown()
+  .superRefine(validateNoProtoKeys)
+  .pipe(
+    RecordSchemaBase.superRefine((record, ctx) => {
+      validateChainLinkFields(record, ctx);
+      validateCosignerRules(record, ctx);
+      validateCosignerOrdering(record, ctx);
+      validateSignatureFields(record, ctx);
+      validateAttestationDoorId(record, ctx);
+      validateAttestationEpoch(record, ctx);
+      validateSpecBodyCompatibility(record, ctx);
+      validateDagJsonReservedForm(record, ctx);
+    })
+  );

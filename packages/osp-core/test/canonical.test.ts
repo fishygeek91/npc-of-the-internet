@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { canonicalize } from "../src/canonical.js";
+import { EncodingError } from "../src/errors.js";
 
 describe("canonicalize", () => {
   it("produces identical bytes regardless of key insertion order", () => {
@@ -46,5 +47,19 @@ describe("canonicalize", () => {
     const bytes = canonicalize({ "10": 1, "2": 2 });
     // UTF-16: "10" < "2"; JS object order would put "2" before "10".
     expect(new TextDecoder().decode(bytes)).toBe('{"10":1,"2":2}');
+  });
+
+  it('rejects an own "__proto__" key at any depth instead of silently dropping it', () => {
+    // JSON.parse creates `__proto__` as an ordinary own property (review F5).
+    const top: unknown = JSON.parse('{"__proto__":{"evil":1},"a":1}');
+    const nested: unknown = JSON.parse('{"a":{"b":[{"__proto__":{}}]}}');
+    expect(() => canonicalize(top)).toThrow(EncodingError);
+    expect(() => canonicalize(top)).toThrow(/__proto__/);
+    expect(() => canonicalize(nested)).toThrow(EncodingError);
+  });
+
+  it("still canonicalizes keys that merely resemble prototype names", () => {
+    const bytes = canonicalize({ constructor: 1, prototype: 2, proto: 3 });
+    expect(new TextDecoder().decode(bytes)).toBe('{"constructor":1,"proto":3,"prototype":2}');
   });
 });

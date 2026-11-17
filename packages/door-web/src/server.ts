@@ -1,0 +1,47 @@
+#!/usr/bin/env node
+
+import { pathToFileURL } from "node:url";
+
+import pino from "pino";
+
+import { loadWebDoorConfig } from "./config.js";
+import { WebDoorError } from "./errors.js";
+import { exitAfterStop } from "./shutdown.js";
+import { startWebDoor } from "./start.js";
+
+/**
+ * Production entrypoint: load env config and start the website Door.
+ */
+export async function main(): Promise<void> {
+  const logger = pino({ name: "door-web" });
+  try {
+    const config = loadWebDoorConfig();
+    const handle = await startWebDoor({ config, logger });
+    logger.info({ doorId: handle.doorId }, "web_door_started");
+
+    const shutdown = (): void => {
+      exitAfterStop(
+        () => handle.stop(),
+        (code) => {
+          process.exit(code);
+        },
+        (error: unknown) => {
+          const message = error instanceof Error ? error.message : String(error);
+          logger.error({ err: message }, "shutdown_error");
+        }
+      );
+    };
+    process.on("SIGINT", shutdown);
+    process.on("SIGTERM", shutdown);
+  } catch (error: unknown) {
+    const code = error instanceof WebDoorError ? error.code : undefined;
+    const message = error instanceof Error ? error.message : String(error);
+    logger.error({ code, err: message }, "boot_failed");
+    process.exit(1);
+  }
+}
+
+const isDirectRun = import.meta.url === pathToFileURL(process.argv[1] ?? "").href;
+if (isDirectRun) {
+  void main();
+}
