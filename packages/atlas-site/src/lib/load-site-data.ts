@@ -17,22 +17,18 @@ import {
   formatRecordKind,
   type ChainSnapshot
 } from "@npc/atlas";
-import { computeCid, verifyRecords, type OspRecord, type VerifyChainResult } from "@npc/osp-core";
+import {
+  computeCid,
+  RECORD_TYPES,
+  verifyRecords,
+  type OspRecord,
+  type VerifyChainResult
+} from "@npc/osp-core";
 import { loadAtlasSiteConfig } from "./config.js";
 import { RECORDS_PER_PAGE } from "./constants.js";
 import { prettyPrintBody, toDisplayBody } from "./display-body.js";
 import { renderJournalHtml } from "./markdown.js";
 import { recordVerified } from "./verification.js";
-
-const RECORD_TYPES = [
-  "genesis",
-  "memory",
-  "drift",
-  "decision",
-  "transaction",
-  "attestation",
-  "sleep"
-] as const;
 
 /** Explorer detail for one soulchain record. */
 export type RecordDetail = {
@@ -71,7 +67,9 @@ export type AtlasSiteData = {
 };
 
 /**
- * Collect distinct top-level record types present in the chain.
+ * Types present on the chain, in `RECORD_TYPES` order.
+ * Tombstone is included: those records are already on the all-records list and
+ * have detail pages. The filter chip appears only when a tombstone is present.
  */
 function collectRecordTypes(records: readonly OspRecord[]): string[] {
   const present = new Set<string>();

@@ -2,7 +2,9 @@ import {
   computeCid,
   decodeJournalBlob,
   parseResidency as parseOspResidency,
-  type OspRecord
+  RECORD_TYPES,
+  type OspRecord,
+  type RecordType
 } from "@npc/osp-core";
 
 import { AtlasError } from "./errors.js";
@@ -81,19 +83,6 @@ export type JournalsResponse = {
   total: number;
   verified: boolean;
 };
-
-const RECORD_TYPES = [
-  "genesis",
-  "memory",
-  "drift",
-  "decision",
-  "transaction",
-  "attestation",
-  "sleep",
-  "tombstone"
-] as const;
-
-type RecordType = (typeof RECORD_TYPES)[number];
 
 function isRecordType(value: string): value is RecordType {
   return (RECORD_TYPES as readonly string[]).includes(value);
