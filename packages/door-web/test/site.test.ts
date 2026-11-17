@@ -1,7 +1,8 @@
 import { request } from "node:http";
 import { connect, type Socket } from "node:net";
+import { performance } from "node:perf_hooks";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { Room } from "../src/room.js";
 import {
@@ -22,14 +23,20 @@ describe("VisitorSite", () => {
   const sockets: Socket[] = [];
 
   afterEach(async () => {
-    for (const reader of readers.splice(0)) {
-      reader.close();
-    }
-    for (const socket of sockets.splice(0)) {
-      socket.destroy();
-    }
-    for (const site of sites.splice(0)) {
-      await site.stop();
+    try {
+      for (const reader of readers.splice(0)) {
+        reader.close();
+      }
+      for (const socket of sockets.splice(0)) {
+        socket.destroy();
+      }
+      for (const site of sites.splice(0)) {
+        await site.stop();
+      }
+    } finally {
+      // The slow-body test installs fake timers. Restore them even if stop throws,
+      // so later tests in this file keep real setTimeout / setInterval.
+      vi.useRealTimers();
     }
   });
 
@@ -304,20 +311,38 @@ describe("VisitorSite", () => {
 
   it("answers 408 and closes the connection when a body trickles in too slowly", async () => {
     expect(SAY_BODY_TIMEOUT_MS).toBe(5_000);
-    const { url, relayed } = await start({ bodyTimeoutMs: 300 });
+    // Fake only the deadline and the drip. Socket I/O stays on the real poll so
+    // the 408 and the peer reset still happen; we do not sleep for them.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    const bodyTimeoutMs = 300;
+    const { url, relayed } = await start({ bodyTimeoutMs });
     const { port } = new URL(url);
     const socket = connect(Number(port), "127.0.0.1");
     sockets.push(socket);
+    const socketErrors: NodeJS.ErrnoException[] = [];
+    // The server destroys the socket after 408. A drip write still in flight
+    // emits read ECONNRESET / EPIPE. Without a listener Node fails the run.
+    socket.on("error", (error: NodeJS.ErrnoException) => {
+      socketErrors.push(error);
+    });
     let response = "";
     socket.setEncoding("utf8");
     socket.on("data", (chunk: string) => {
       response += chunk;
     });
-    const closed = new Promise<void>((resolve) => socket.once("close", () => resolve()));
+    await pollImmediate(() => socket.readyState === "open" || socketErrors.length > 0, 1_000);
+    if (socket.readyState !== "open") {
+      const codes = socketErrors.map((error) => error.code ?? "unknown").join(",");
+      throw new Error(`socket did not connect (${codes})`);
+    }
     socket.write(
       "POST /api/say HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n" +
         "Content-Length: 100\r\n\r\n{"
     );
+    // Poll runs before this setImmediate, so readBody has armed its deadline.
+    await new Promise<void>((resolve) => {
+      setImmediate(resolve);
+    });
     // Keep the body "alive" with a byte every 50 ms; the deadline is for the whole body.
     const drip = setInterval(() => {
       if (!socket.destroyed) {
@@ -325,16 +350,18 @@ describe("VisitorSite", () => {
       }
     }, 50);
     try {
-      await Promise.race([
-        closed,
-        new Promise((_, reject) => setTimeout(() => reject(new Error("still open")), 3000))
-      ]);
+      await vi.advanceTimersByTimeAsync(bodyTimeoutMs);
     } finally {
       clearInterval(drip);
     }
+    await pollImmediate(() => socket.destroyed && response.includes("request_timeout"), 1_000);
+    expect(socket.destroyed).toBe(true);
     expect(response).toMatch(/^HTTP\/1\.1 408 /u);
     expect(response).toContain("request_timeout");
     expect(relayed).toHaveLength(0);
+    for (const error of socketErrors) {
+      expect(error.code).toMatch(/^(?:ECONNRESET|EPIPE)$/u);
+    }
   });
 
   it("stops relaying for the day at dailyMax (429 quiet_hours until UTC midnight)", async () => {
@@ -383,6 +410,23 @@ function postChunked(url: string, text: string): Promise<number> {
     req.write(text);
     req.end(`"}`);
   });
+}
+
+/**
+ * Poll `predicate` from setImmediate until it holds, or `timeoutMs` of wall time passes.
+ * setImmediate is not faked by the slow-body test, so this still observes real socket I/O
+ * while that test's deadline and drip run on Vitest fake timers.
+ */
+async function pollImmediate(predicate: () => boolean, timeoutMs: number): Promise<void> {
+  const started = performance.now();
+  while (!predicate()) {
+    if (performance.now() - started >= timeoutMs) {
+      throw new Error("condition not met in time");
+    }
+    await new Promise<void>((resolve) => {
+      setImmediate(resolve);
+    });
+  }
 }
 
 async function waitFor(predicate: () => boolean, timeoutMs = 3000): Promise<void> {
