@@ -2,9 +2,14 @@ import { decode, encode } from "@ipld/dag-json";
 import { CID } from "multiformats/cid";
 import { z } from "zod";
 
-import { computeCidFromCanonicalBytes, CidSchema } from "../crypto/cid.js";
+import { computeCidFromCanonicalBytes, CidSchema, type Cid } from "../crypto/cid.js";
 import { sign, verify } from "../crypto/ed25519.js";
-import { decodeSignature, encodeSignature } from "../encoding/base64url.js";
+import {
+  decodeSignature,
+  ed25519SignatureBrandSchema,
+  encodeSignature,
+  type Ed25519Signature
+} from "../encoding/base64url.js";
 import { EncodingError, SchemaError, VerificationError } from "../errors.js";
 import { nonnegativeInteger } from "../schemas/nonnegative-integer.js";
 import { bytesEqual } from "../store/fsync.js";
@@ -15,17 +20,17 @@ export const OSP_PIN_MANIFEST_VERSION = "osp-ipfs/0.1";
 /** Unsigned pin manifest (dag-json block without `sig`). */
 export type UnsignedPinManifest = {
   osp_pin_manifest: typeof OSP_PIN_MANIFEST_VERSION;
-  head: string;
+  head: Cid;
   seq: number;
-  genesis: string;
-  records: string[];
+  genesis: Cid;
+  records: Cid[];
   generated_at: string;
-  prev_manifest?: string;
+  prev_manifest?: Cid;
 };
 
 /** Signed pin manifest including soul-key `sig`. */
 export type PinManifest = UnsignedPinManifest & {
-  sig: string;
+  sig: Ed25519Signature;
 };
 
 /** Input to {@link buildUnsignedPinManifest}. */
@@ -63,7 +68,9 @@ const UnsignedPinManifestSchema = z
   .strict();
 
 const PinManifestSchema = UnsignedPinManifestSchema.extend({
-  sig: z.string()
+  // Type-only brand. decodePinManifest's decodeSignature is the only check,
+  // and it still throws SchemaError with the decoder message.
+  sig: ed25519SignatureBrandSchema
 }).strict();
 
 /**
@@ -91,7 +98,7 @@ export function assertManifestInvariants(manifest: UnsignedPinManifest | PinMani
 /**
  * Convert a dag-json decoded link value to a validated bagu CID string.
  */
-function cidLinkToString(value: unknown, field: string): string {
+function cidLinkToString(value: unknown, field: string): Cid {
   const cid = CID.asCID(value);
   if (cid == null) {
     throw new SchemaError(`${field} must be a dag-json CID link`);
@@ -311,7 +318,7 @@ export function signPinManifest(
 export async function verifyPinManifest(
   manifest: PinManifest,
   soulPublicKey: Uint8Array
-): Promise<{ cid: string }> {
+): Promise<{ cid: Cid }> {
   const { sig, ...unsigned } = manifest;
   const unsignedBytes = encodeUnsignedPinManifest(unsigned);
   const signature = decodeSignature(sig);
@@ -328,13 +335,13 @@ export async function verifyPinManifest(
 /**
  * Compute the manifest block CID from a signed in-memory manifest.
  */
-export async function computeManifestCid(manifest: PinManifest): Promise<string> {
+export async function computeManifestCid(manifest: PinManifest): Promise<Cid> {
   return computeCidFromCanonicalBytes(encodePinManifest(manifest));
 }
 
 /**
  * Compute the manifest block CID from pre-encoded dag-json bytes.
  */
-export async function computeManifestCidFromBytes(bytes: Uint8Array): Promise<string> {
+export async function computeManifestCidFromBytes(bytes: Uint8Array): Promise<Cid> {
   return computeCidFromCanonicalBytes(bytes);
 }
