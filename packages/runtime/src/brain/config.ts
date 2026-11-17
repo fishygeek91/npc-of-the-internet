@@ -120,6 +120,30 @@ export function resolveSecretFromEnv(
   throw new BrainError(`${name} is required but not set`, "invalid_config", { envVar: name });
 }
 
+/**
+ * Shared completion limits. Treasury-lite tiers use these; the model and key
+ * come from `NPC_BRAIN_TIERS`, not from {@link loadBrainConfig}.
+ *
+ * @param env - Environment map. Tests pass a plain object.
+ */
+export function loadBrainLimits(env: NodeJS.ProcessEnv = process.env): {
+  maxTokens: number;
+  timeoutMs: number;
+} {
+  return {
+    maxTokens: parsePositiveInt(
+      env.NPC_BRAIN_MAX_TOKENS,
+      DEFAULT_MAX_TOKENS,
+      "NPC_BRAIN_MAX_TOKENS"
+    ),
+    timeoutMs: parsePositiveInt(
+      env.NPC_BRAIN_TIMEOUT_MS,
+      DEFAULT_TIMEOUT_MS,
+      "NPC_BRAIN_TIMEOUT_MS"
+    )
+  };
+}
+
 function parsePositiveInt(value: string | undefined, fallback: number, name: string): number {
   if (value === undefined || value === "") {
     return fallback;
@@ -228,16 +252,7 @@ function parseRequiredModel(raw: string | undefined): string {
  */
 export function loadBrainConfig(env: NodeJS.ProcessEnv = process.env): BrainConfig {
   const provider = parseProvider(env.NPC_BRAIN_PROVIDER);
-  const maxTokens = parsePositiveInt(
-    env.NPC_BRAIN_MAX_TOKENS,
-    DEFAULT_MAX_TOKENS,
-    "NPC_BRAIN_MAX_TOKENS"
-  );
-  const timeoutMs = parsePositiveInt(
-    env.NPC_BRAIN_TIMEOUT_MS,
-    DEFAULT_TIMEOUT_MS,
-    "NPC_BRAIN_TIMEOUT_MS"
-  );
+  const { maxTokens, timeoutMs } = loadBrainLimits(env);
 
   let parsed: ReturnType<typeof brainConfigSchema.safeParse>;
 

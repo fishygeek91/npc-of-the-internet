@@ -85,6 +85,30 @@ export type { HeartbeatErrorStage };
 export type SessionOptions = {
   store: SoulStore;
   brain: Brain;
+  /**
+   * Distill completions. Defaults to {@link brain}. Treasury-lite passes
+   * `BudgetedBrain.forKind("distill")` so distillation can step up one tier.
+   */
+  distillBrain?: Brain;
+  /** Journal completions. Defaults to {@link brain}. */
+  journalBrain?: Brain;
+  /**
+   * When true, a heartbeat tick does not call the Door and does not append an
+   * attestation. Atlas clears `sleeping` on any later heartbeat, so treasury-lite
+   * returns true for the whole time the budget policy is asleep.
+   */
+  suspendHeartbeats?: () => boolean;
+  /**
+   * Called instead of a heartbeat while {@link suspendHeartbeats} is true, and
+   * once at session start if already suspended. Used to seal a `sleep` record.
+   */
+  onSuspendedTick?: (residency: string) => Promise<void>;
+  /**
+   * Called on a tick that finds the policy awake, before any heartbeat.
+   * Return true to skip the heartbeat (a residency cycle that was held while
+   * asleep is starting and must not attest on a dead session).
+   */
+  onAwakeTick?: () => boolean;
   door: DoorConnection;
   keyring: Keyring;
   doorId: string;
@@ -257,6 +281,11 @@ type BrainHistoryMessage = {
 export class Session {
   private readonly store: SoulStore;
   private readonly brain: Brain;
+  private readonly distillBrain: Brain;
+  private readonly journalBrain: Brain;
+  private readonly suspendHeartbeats?: () => boolean;
+  private readonly onSuspendedTick?: (residency: string) => Promise<void>;
+  private readonly onAwakeTick?: () => boolean;
   private readonly door: DoorConnection;
   private readonly keyring: Keyring;
   private readonly doorId: string;
@@ -301,6 +330,17 @@ export class Session {
   ) {
     this.store = options.store;
     this.brain = options.brain;
+    this.distillBrain = options.distillBrain ?? options.brain;
+    this.journalBrain = options.journalBrain ?? options.brain;
+    if (options.suspendHeartbeats !== undefined) {
+      this.suspendHeartbeats = options.suspendHeartbeats;
+    }
+    if (options.onSuspendedTick !== undefined) {
+      this.onSuspendedTick = options.onSuspendedTick;
+    }
+    if (options.onAwakeTick !== undefined) {
+      this.onAwakeTick = options.onAwakeTick;
+    }
     this.door = options.door;
     this.keyring = options.keyring;
     this.doorId = options.doorId;
@@ -421,6 +461,15 @@ export class Session {
     session.heartbeatTimerId = options.timer.setInterval(() => {
       void session.onHeartbeatTick();
     }, session.heartbeatIntervalMs);
+
+    // Already broke at arrival: seal sleep before the first heartbeat can land.
+    // A failure stops the timer so a discarded session does not keep attesting.
+    try {
+      await session.enqueueAppend(() => session.sealSleepIfSuspended());
+    } catch (error) {
+      session.stop();
+      throw error;
+    }
 
     return session;
   }
@@ -751,14 +800,18 @@ export class Session {
       // would orphan it. Only departBare may finish this residency now.
       throw new SessionError("depart refused: departBare already sealed travel; retry departBare");
     }
-    const brain = options.brain ?? this.brain;
+    // An explicit depart brain overrides both jobs (existing tests). Otherwise
+    // distill and journal can be different tiers of the same BudgetedBrain.
+    const distillBrain = options.brain ?? this.distillBrain;
+    const journalBrain = options.brain ?? this.journalBrain;
     const ledger = await this.openLedger(options.transcript);
 
     // Departure closes the epoch at the Door, for memories too.
     if (ledger.departure === null) {
       await this.formMemories(
         ledger,
-        brain,
+        distillBrain,
+        journalBrain,
         options.minMemoryLines ?? DEFAULT_MIN_MEMORY_LINES,
         options.journalDir
       );
@@ -839,11 +892,12 @@ export class Session {
   /** Steps 2–4 of {@link depart}: screen rejections, witnessed shards, journal. */
   private async formMemories(
     ledger: DepartLedger,
-    brain: Brain,
+    distillBrain: Brain,
+    journalBrain: Brain,
     minMemoryLines: number,
     journalDir: string
   ): Promise<void> {
-    const candidates = await this.distillOnce(ledger, brain, minMemoryLines);
+    const candidates = await this.distillOnce(ledger, distillBrain, minMemoryLines);
 
     for (const category of ledger.screenCategories) {
       let entry = ledger.screened.get(category);
@@ -867,7 +921,7 @@ export class Session {
       await this.appendEntry(verdict.entry);
     }
 
-    await this.journalStep(ledger, brain, journalDir);
+    await this.journalStep(ledger, journalBrain, journalDir);
   }
 
   /**
@@ -1199,6 +1253,20 @@ export class Session {
 
     try {
       await this.enqueueAppend(async () => {
+        if (this.phase !== "live") {
+          return;
+        }
+        // Re-check inside the append chain so a wake that landed first resumes
+        // heartbeats, and a sleep that landed first cannot be cleared by this tick.
+        if (this.suspendHeartbeats?.() === true) {
+          await this.sealSleepIfSuspended();
+          return;
+        }
+        // Stay here, ahead of runHeartbeat. A later heartbeat pump that only
+        // sees `phase` cannot decide whether a held cycle should run instead.
+        if (this.onAwakeTick?.() === true) {
+          return;
+        }
         await this.runHeartbeat();
       });
       this.lastHeartbeatErrorValue = null;
@@ -1207,6 +1275,26 @@ export class Session {
     }
   }
 
+  /**
+   * While the budget policy is asleep, append the sleep record (if the balance
+   * is known) and do not attest. No-op when heartbeats are allowed.
+   */
+  private async sealSleepIfSuspended(): Promise<void> {
+    if (this.suspendHeartbeats?.() !== true) {
+      return;
+    }
+    try {
+      await this.onSuspendedTick?.(this.residency);
+    } catch (error) {
+      this.notifyHeartbeatError(error, "append");
+      throw error;
+    }
+  }
+
+  /**
+   * One Door heartbeat. Sleep and a held cycle are decided in
+   * {@link onHeartbeatTick} before this runs; the pump only attests.
+   */
   private runHeartbeat(): Promise<void> {
     return this.heartbeat.run(this.phase);
   }

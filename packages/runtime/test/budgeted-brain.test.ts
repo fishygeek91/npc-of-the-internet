@@ -20,6 +20,7 @@ import {
 import { BudgetedBrain, BudgetError } from "../src/brain/budgeted-brain.js";
 import { BrainError } from "../src/brain/errors.js";
 import { FakeBrain } from "../src/brain/fake-brain.js";
+import { openBudgetedBrain } from "../src/brain/open-budgeted-brain.js";
 import { SpendLedger } from "../src/brain/spend-ledger.js";
 import type { Brain } from "../src/brain/types.js";
 
@@ -212,12 +213,69 @@ describe("loadBudgetConfig", () => {
     expect(config?.tiers[1]?.inPricePerMTokMicros).toBe(140_000n);
   });
 
-  it("honors an explicit default tier and ledger init", () => {
-    const config = loadBudgetConfig(
-      env({ NPC_BUDGET_DEFAULT_TIER: "free", NPC_BUDGET_LEDGER_INIT: "1" })
-    );
+  it("honors an explicit default tier and never creates the journal at boot", () => {
+    const config = loadBudgetConfig(env({ NPC_BUDGET_DEFAULT_TIER: "free" }));
     expect(config?.defaultTierName).toBe("free");
-    expect(config?.createLedgerIfMissing).toBe(true);
+    expect(config?.createLedgerIfMissing).toBe(false);
+  });
+
+  it("rejects a standing ledger-init flag and an apiKeyEnv that is not an API key", () => {
+    expect(() => loadBudgetConfig(env({ NPC_BUDGET_LEDGER_INIT: "1" }))).toThrow(/budget-init/);
+    const planted = env();
+    planted.DISCORD_BOT_TOKEN = SECRET;
+    planted.NPC_BRAIN_TIERS = JSON.stringify([
+      {
+        name: "cheap",
+        baseUrl: "https://example.com/v1",
+        apiKeyEnv: "DISCORD_BOT_TOKEN",
+        model: "tier-cheap",
+        inPricePerMTok: "1",
+        outPricePerMTok: "1"
+      }
+    ]);
+    expect(() => loadBudgetConfig(planted)).toThrow(/_API_KEY/);
+    try {
+      loadBudgetConfig(planted);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : "";
+      expect(message).not.toContain(SECRET);
+    }
+  });
+
+  it("fails open when the spend journal was never created, and still opens a corrupt one", async () => {
+    const loaded = loadBudgetConfig(env());
+    expect(loaded).toBeDefined();
+    if (loaded === undefined) {
+      return;
+    }
+    const dir = await mkdtemp(join(tmpdir(), "npc-budget-missing-"));
+    try {
+      const missing = join(dir, "spend.jsonl");
+      const options = {
+        budget: { ...loaded, ledgerPath: missing },
+        maxTokens: 16,
+        timeoutMs: 1_000,
+        clock: (): string => NOW,
+        createTierBrain: (): FakeBrain => new FakeBrain(["unused"])
+      };
+      await expect(openBudgetedBrain(options)).rejects.toThrow(/wanderer budget-init/);
+      try {
+        await openBudgetedBrain(options);
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : "";
+        expect(message).not.toContain(SECRET);
+        expect(message).not.toContain("from-env");
+      }
+      await writeFile(missing, "not-json\n", "utf8");
+      const corrupt = await openBudgetedBrain({
+        ...options,
+        budget: { ...loaded, ledgerPath: missing }
+      });
+      expect(corrupt.publicStatus().sleepReason).toBe("ledger_unknown");
+      expect(corrupt.sleepDraft()).toBeNull();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   it("resolves a tier key from the named env var and from its _FILE companion", async () => {
@@ -707,6 +765,13 @@ describe("BudgetedBrain", () => {
       budgetReason: "ledger_unknown"
     });
     expect(brains.get("cheap")?.calls).toHaveLength(0);
+    expect(brain.sleepDraft()).toBeNull();
+    expect(brain.publicStatus()).toMatchObject({
+      sleeping: true,
+      tier: null,
+      remainingFraction: null,
+      sleepReason: "ledger_unknown"
+    });
   });
 
   it("serializes calls so the second sees the first call's spend", async () => {
@@ -786,6 +851,7 @@ describe("BudgetedBrain", () => {
     await expect(budgeted.complete([{ role: "user", content: "hi" }])).rejects.toMatchObject({
       budgetReason: "ledger_unknown"
     });
+    expect(budgeted.sleepDraft()).toBeNull();
     expect(odd.calls).toHaveLength(1);
     await budgeted.wake("operator");
     await expect(budgeted.complete([{ role: "user", content: "hi" }])).resolves.toMatchObject({
@@ -812,5 +878,63 @@ describe("BudgetedBrain", () => {
           clock: () => NOW
         })
     ).toThrow(/no Brain registered/);
+  });
+
+  it("sleepDraft is the known balance, and publicStatus does not wait on an in-flight call", async () => {
+    dir = await mkdtemp(join(tmpdir(), "npc-budget-"));
+    const ledger = await SpendLedger.open({
+      path: join(dir, "status.jsonl"),
+      createIfMissing: true
+    });
+    let release: () => void = () => undefined;
+    const block = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let entered = 0;
+    const cheap = new FakeBrain(async () => {
+      entered += 1;
+      await block;
+      return { text: "ok", usage: { promptTokens: 0, completionTokens: 1 } };
+    });
+    const brain = new BudgetedBrain({
+      tiers: sampleTiers(),
+      brains: new Map<string, Brain>([
+        ["free", new FakeBrain(["free"])],
+        ["cheap", cheap],
+        ["quality", new FakeBrain(["quality"])]
+      ]),
+      ledger,
+      budgetMicros: 10n,
+      thresholdMicros: 0n,
+      defaultTierName: "cheap",
+      clock: () => NOW
+    });
+    const pending = brain.complete([{ role: "user", content: "hi" }]);
+    await vi.waitFor(() => {
+      expect(entered).toBe(1);
+    });
+    expect(brain.publicStatus()).toMatchObject({
+      sleeping: false,
+      tier: "cheap",
+      remainingFraction: "1"
+    });
+    expect(brain.sleepDraft()).toBeNull();
+    release();
+    await pending;
+    expect(brain.publicStatus()).toMatchObject({
+      sleeping: true,
+      remainingFraction: "0",
+      sleepReason: "balance_below_threshold"
+    });
+    expect(brain.sleepDraft()).toEqual({
+      reason: "balance_below_threshold",
+      balance: "0",
+      threshold: "0",
+      as_of: NOW
+    });
+    await expect(brain.complete([{ role: "user", content: "again" }])).rejects.toMatchObject({
+      budgetReason: "balance_below_threshold"
+    });
+    expect(cheap.calls).toHaveLength(1);
   });
 });

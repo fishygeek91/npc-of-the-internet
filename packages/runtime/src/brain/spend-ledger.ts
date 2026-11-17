@@ -1,5 +1,5 @@
-import { open, readFile, unlink } from "node:fs/promises";
-import { dirname } from "node:path";
+import { mkdir, open, readFile, unlink } from "node:fs/promises";
+import path, { isAbsolute } from "node:path";
 
 import { z } from "zod";
 
@@ -19,8 +19,9 @@ import { BrainError } from "./errors.js";
  * This is off the soulchain on purpose: public `transaction` records are T7.7,
  * and treasury-lite only needs the brain to know what it has already spent.
  * The file is the state. Totals are replayed; nothing mutable is stored beside it.
- * A missing file is not zero spend unless `createIfMissing` is set
- * (`NPC_BUDGET_LEDGER_INIT=1`, a one-shot against an absolute path). A corrupt
+ * A missing file is not zero spend. `createIfMissing` is for
+ * {@link initSpendLedgerFile} (`wanderer budget-init`), not for every boot.
+ * A corrupt
  * line or a torn tail is untrusted and is left untouched — the caller fails
  * closed (no further model calls) until an
  * operator removes the bad tail. A crash after a provider response and before
@@ -89,6 +90,50 @@ export type SpendView =
       unknownSpend: boolean;
     }
   | { trusted: false; reason: LedgerUntrustedReason };
+
+/**
+ * Create an empty journal at an absolute path. Refuses when the file already
+ * exists so a second run cannot reset spend to zero. Does not read the soulchain.
+ *
+ * @param ledgerPath - Absolute `spend.jsonl` path (`NPC_BUDGET_LEDGER_PATH`).
+ * @throws {BrainError} When the path is not absolute, contains `..`, the file exists, or the create fails.
+ */
+export async function initSpendLedgerFile(ledgerPath: string): Promise<void> {
+  assertLedgerPath(ledgerPath);
+  await mkdir(path.dirname(ledgerPath), { recursive: true, mode: 0o700 });
+  const created = await createEmpty(ledgerPath);
+  if (created === "exists") {
+    throw new BrainError("spend ledger already exists; refusing to reset spend", "invalid_config", {
+      envVar: "NPC_BUDGET_LEDGER_PATH"
+    });
+  }
+  if (created === "failed") {
+    throw new BrainError("failed to create spend ledger", "invalid_config", {
+      envVar: "NPC_BUDGET_LEDGER_PATH"
+    });
+  }
+}
+
+/**
+ * Operator path for the journal. Absolute, no NUL, no `..` segment, and already
+ * normalized so a path cannot climb out of the directory the operator named.
+ */
+function assertLedgerPath(ledgerPath: string): void {
+  const segments = ledgerPath.split(/[/\\]/u);
+  if (
+    ledgerPath.trim() === "" ||
+    ledgerPath.includes("\0") ||
+    !isAbsolute(ledgerPath) ||
+    segments.includes("..") ||
+    path.normalize(ledgerPath) !== ledgerPath
+  ) {
+    throw new BrainError(
+      "NPC_BUDGET_LEDGER_PATH must be an absolute path with no .. segment",
+      "invalid_config",
+      { envVar: "NPC_BUDGET_LEDGER_PATH" }
+    );
+  }
+}
 
 export type SpendLedgerOptions = {
   path: string;
@@ -400,7 +445,7 @@ async function createEmpty(path: string): Promise<"created" | "exists" | "failed
  * directory throws; the caller then treats the journal as unreadable.
  */
 async function fsyncParentDirectory(filePath: string): Promise<void> {
-  const handle = await open(dirname(filePath), "r");
+  const handle = await open(path.dirname(filePath), "r");
   try {
     await handle.sync();
   } finally {

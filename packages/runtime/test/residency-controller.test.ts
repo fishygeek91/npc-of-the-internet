@@ -589,4 +589,126 @@ describe("ResidencyController cycle", () => {
       expect.arrayContaining(["residency_detach_failed", "residency_close_failed"])
     );
   });
+
+  it("does not depart or arrive again while travel is held for sleep", async () => {
+    const world = fakeWorld();
+    const { controller } = controllerWith(world, { holdTravel: () => true });
+    await controller.begin();
+    expect(await controller.requestCycle("operator")).toEqual({
+      kind: "asleep",
+      trigger: "operator"
+    });
+    expect(await controller.requestCycle("lost_session")).toEqual({
+      kind: "asleep",
+      trigger: "lost_session"
+    });
+    expect(world.events.filter((event) => event.startsWith("depart"))).toEqual([]);
+    expect(world.events.filter((event) => event.startsWith("arrive"))).toHaveLength(1);
+    await controller.shutdown();
+  });
+
+  it("runs a held lost_session once when travel is released, and does not replay a timer", async () => {
+    let asleep = true;
+    const world = fakeWorld();
+    const { controller } = controllerWith(world, { holdTravel: () => asleep });
+    await controller.begin();
+    expect(await controller.requestCycle("timer")).toEqual({ kind: "asleep", trigger: "timer" });
+    expect(await controller.requestCycle("operator")).toEqual({
+      kind: "asleep",
+      trigger: "operator"
+    });
+    expect(await controller.requestCycle("lost_session")).toEqual({
+      kind: "asleep",
+      trigger: "lost_session"
+    });
+    expect(controller.releaseHeldCycle()).toBe(false);
+    asleep = false;
+    expect(controller.releaseHeldCycle()).toBe(true);
+    expect(controller.releaseHeldCycle()).toBe(false);
+    await settle(controller);
+    expect(world.events.filter((event) => event.startsWith("depart_bare"))).toEqual([
+      "depart_bare:1"
+    ]);
+    expect(world.events.filter((event) => event.startsWith("depart:"))).toEqual([]);
+    expect(world.events.filter((event) => event.startsWith("arrive"))).toHaveLength(2);
+    await controller.shutdown();
+  });
+
+  it("runs a held operator depart once when travel is released", async () => {
+    let asleep = true;
+    const world = fakeWorld();
+    const { controller } = controllerWith(world, { holdTravel: () => asleep });
+    await controller.begin();
+    expect(await controller.requestCycle("operator")).toEqual({
+      kind: "asleep",
+      trigger: "operator"
+    });
+    asleep = false;
+    expect(controller.releaseHeldCycle()).toBe(true);
+    await settle(controller);
+    expect(world.events.filter((event) => event.startsWith("depart:"))).toEqual(["depart:1"]);
+    expect(world.events.filter((event) => event.startsWith("arrive"))).toHaveLength(2);
+    expect(controller.releaseHeldCycle()).toBe(false);
+    await controller.shutdown();
+  });
+
+  it("does not replay a held lost_session after an age-check cycle already moved", async () => {
+    let asleep = true;
+    const world = fakeWorld();
+    const { controller } = controllerWith(world, { holdTravel: () => asleep });
+    await controller.begin();
+    expect(await controller.requestCycle("lost_session")).toEqual({
+      kind: "asleep",
+      trigger: "lost_session"
+    });
+    asleep = false;
+    expect(await controller.requestCycle("timer")).toMatchObject({
+      kind: "cycled",
+      trigger: "timer",
+      fromEpoch: 1,
+      toEpoch: 2
+    });
+    expect(controller.releaseHeldCycle()).toBe(false);
+    await settle(controller);
+    expect(world.events.filter((event) => event.startsWith("depart_bare"))).toEqual([]);
+    expect(world.events.filter((event) => event.startsWith("depart:"))).toEqual(["depart:1"]);
+    expect(world.events.filter((event) => event.startsWith("arrive"))).toHaveLength(2);
+    await controller.shutdown();
+  });
+
+  it("does not replay a held operator depart after a later depart while awake", async () => {
+    let asleep = true;
+    const world = fakeWorld();
+    const { controller } = controllerWith(world, { holdTravel: () => asleep });
+    await controller.begin();
+    expect(await controller.requestCycle("operator")).toEqual({
+      kind: "asleep",
+      trigger: "operator"
+    });
+    asleep = false;
+    expect(await controller.requestCycle("operator")).toMatchObject({
+      kind: "cycled",
+      trigger: "operator",
+      fromEpoch: 1,
+      toEpoch: 2
+    });
+    expect(controller.releaseHeldCycle()).toBe(false);
+    await settle(controller);
+    expect(world.events.filter((event) => event.startsWith("depart:"))).toEqual(["depart:1"]);
+    expect(world.events.filter((event) => event.startsWith("depart_bare"))).toEqual([]);
+    expect(world.events.filter((event) => event.startsWith("arrive"))).toHaveLength(2);
+    await controller.shutdown();
+  });
+
+  it("does not replay a timer request that was held while asleep", async () => {
+    let asleep = true;
+    const world = fakeWorld();
+    const { controller } = controllerWith(world, { holdTravel: () => asleep });
+    await controller.begin();
+    expect(await controller.requestCycle("timer")).toEqual({ kind: "asleep", trigger: "timer" });
+    asleep = false;
+    expect(controller.releaseHeldCycle()).toBe(false);
+    expect(world.events.filter((event) => event.startsWith("arrive"))).toHaveLength(1);
+    await controller.shutdown();
+  });
 });

@@ -3,8 +3,9 @@
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 
+import { initSpendLedgerFile } from "./brain/spend-ledger.js";
 import { DEFAULT_CONTROL_DIR } from "./residency/config.js";
-import { requestDaemonDepart } from "./residency/control-dir.js";
+import { requestDaemonDepart, requestDaemonWake } from "./residency/control-dir.js";
 
 /** Exit code for usage or configuration errors. */
 export const EXIT_USAGE = 2;
@@ -16,18 +17,30 @@ const USAGE = `wanderer — NPC of the Internet operator CLI
 
 Usage:
   wanderer depart [--control-dir <dir>] [--timeout-ms <ms>]
+  wanderer wake [--control-dir <dir>] [--timeout-ms <ms>]
+  wanderer budget-init
 
 depart: ask the running residency daemon (same container / host) to end this residency
-  now and travel — witnessed memories → journal → departure + travel → arrival at the
+  and travel — witnessed memories → journal → departure + travel → arrival at the
   next Door. The operator trigger is on by default (NPC_RESIDENCY_OPERATOR_TRIGGER=0 turns
   it off). Writes a request into the control dir (NPC_CONTROL_DIR, default
   /tmp/npc-control) and waits for the daemon to pick it up (exit 0) or times out (exit 1,
-  request withdrawn). The cycle itself runs in the daemon: follow its logs for
-  residency_cycle_outcome.
+  request withdrawn). If the Wanderer is asleep, the request does not travel now:
+  the daemon holds it and runs that one cycle when the budget policy wakes.
+  Follow the runtime logs for residency_cycle_outcome.
+
+wake: ask the daemon to append a spend-journal wake line. That clears a provider-exhausted
+  or unknown-spend latch. It does not raise the balance: if remaining is still at or
+  below the threshold, the Wanderer stays asleep. Requires NPC_BRAIN_TIERS on the daemon.
+  The next heartbeat after the policy is awake is the public wake (Atlas leaves sleeping).
+
+budget-init: create an empty spend journal at NPC_BUDGET_LEDGER_PATH (absolute). Refuses
+  when the file already exists. Run once before enabling treasury-lite. Boot never creates
+  the journal. Does not print key material.
 
 Exit codes:
   0  success
-  1  depart request not picked up by a running daemon
+  1  depart or wake request not picked up by a running daemon
   2  usage or missing configuration
 `;
 
@@ -35,6 +48,10 @@ Exit codes:
 export type WandererCliDeps = {
   /** Defaults to {@link requestDaemonDepart} (control-dir request to the running daemon). */
   runDepart?: (options: { controlDir: string; timeoutMs: number }) => Promise<boolean>;
+  /** Defaults to {@link requestDaemonWake}. */
+  runWake?: (options: { controlDir: string; timeoutMs: number }) => Promise<boolean>;
+  /** Defaults to {@link initSpendLedgerFile}. */
+  initLedger?: (ledgerPath: string) => Promise<void>;
   /** Environment for defaults such as `NPC_CONTROL_DIR` (defaults to `process.env`). */
   env?: NodeJS.ProcessEnv;
   writeStdout?: (line: string) => void;
@@ -113,7 +130,61 @@ export async function runWandererCli(
           return EXIT_NOT_ACCEPTED;
         }
         writeStdout("Depart requested: the daemon accepted the request.");
+        writeStdout(
+          "If the Wanderer is asleep, it does not travel now. The held cycle runs once when the budget policy wakes."
+        );
         writeStdout("Watch the runtime logs for residency_cycle_outcome.");
+        return 0;
+      }
+
+      case "wake": {
+        const { values, positionals } = parseArgs({
+          args: argv.slice(3),
+          options: {
+            "control-dir": { type: "string" },
+            "timeout-ms": { type: "string" }
+          },
+          allowPositionals: true
+        });
+        if (positionals.length > 0) {
+          usageError(writeStderr, "wake takes no positional arguments");
+        }
+        const env = deps.env ?? process.env;
+        const envDir = env.NPC_CONTROL_DIR?.trim() ?? "";
+        const controlDir = values["control-dir"] ?? (envDir === "" ? DEFAULT_CONTROL_DIR : envDir);
+        const timeoutRaw = values["timeout-ms"] ?? "15000";
+        if (!/^\d+$/u.test(timeoutRaw) || Number.parseInt(timeoutRaw, 10) <= 0) {
+          usageError(writeStderr, `--timeout-ms must be a positive integer (got ${timeoutRaw})`);
+        }
+        const timeoutMs = Number.parseInt(timeoutRaw, 10);
+        const runWake = deps.runWake ?? requestDaemonWake;
+        const accepted = await runWake({ controlDir, timeoutMs });
+        if (!accepted) {
+          writeStderr(
+            `No running daemon picked up the wake request in ${controlDir} within ${String(timeoutMs)} ms ` +
+              "(is the daemon running with NPC_BRAIN_TIERS set?). Request withdrawn."
+          );
+          return EXIT_NOT_ACCEPTED;
+        }
+        writeStdout("Wake requested: the daemon accepted the request.");
+        writeStdout("A balance still at or below the threshold stays asleep.");
+        return 0;
+      }
+
+      case "budget-init": {
+        const { positionals } = parseArgs({
+          args: argv.slice(3),
+          options: {},
+          allowPositionals: true
+        });
+        if (positionals.length > 0) {
+          usageError(writeStderr, "budget-init takes no positional arguments");
+        }
+        const env = deps.env ?? process.env;
+        const ledgerPath = env.NPC_BUDGET_LEDGER_PATH?.trim() ?? "";
+        const initLedger = deps.initLedger ?? initSpendLedgerFile;
+        await initLedger(ledgerPath);
+        writeStdout(`Created spend journal at ${ledgerPath}`);
         return 0;
       }
 

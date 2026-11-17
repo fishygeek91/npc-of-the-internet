@@ -3,6 +3,7 @@ import {
   chooseTier,
   estimateCostMicros,
   formatDecimalMicros,
+  monthlyPeriodStart,
   type BudgetSleepReason,
   type BudgetState,
   type CallKind,
@@ -17,6 +18,32 @@ export type IsoClock = () => string;
 
 /** Operator acknowledgement that clears a provider-exhausted or unknown-spend latch. */
 export type WakeReason = "operator" | "budget_raised" | "period_reset";
+
+/**
+ * Fraction of the period allowance still unused, for Door status.
+ * Dollar amounts are intentionally absent. Null when spend is unknown.
+ */
+export type BudgetPublicStatus = {
+  sleeping: boolean;
+  /** Tier `kind` would use, or null while sleeping. */
+  tier: string | null;
+  /** Remaining / budget in `[0, 1]`, or null when the ledger is unknown or the budget is 0. */
+  remainingFraction: string | null;
+  periodStart: string;
+  sleepReason: BudgetSleepReason | null;
+};
+
+/**
+ * Body for a `sleep` record (`spec/osp/records.md`). Returned only when the
+ * balance is known. A missing, corrupt, or `unknown_spend` journal yields null
+ * so a caller does not publish a fabricated balance.
+ */
+export type SleepRecordDraft = {
+  reason: string;
+  balance: string;
+  threshold: string;
+  as_of: string;
+};
 
 export type BudgetedBrainOptions = {
   tiers: readonly PricedTier[];
@@ -61,7 +88,11 @@ export class BudgetError extends BrainError {
  * A paid tier that reports zero tokens (or omits usage, which inner brains turn
  * into zeros) is journaled as `unknown_spend` and latches sleep. A zero-price
  * tier may record a zero cost. Provider timeouts and 5xx are not journaled;
- * only `credit_exhausted` latches the provider. Not wired into the daemon.
+ * only `credit_exhausted` latches the provider.
+ *
+ * {@link publicStatus} and {@link sleepDraft} do not take the completion lock,
+ * so a Door status read is not stuck behind a provider call. The lock still
+ * serializes completions, including distill. That is acceptable for v1.
  */
 export class BudgetedBrain implements Brain {
   private readonly tiers: readonly PricedTier[];
@@ -152,17 +183,72 @@ export class BudgetedBrain implements Brain {
   }
 
   /**
-   * Clear a provider-exhausted or unknown-spend latch by appending a wake line.
-   * Does nothing for a balance that is still at or below the threshold, and
-   * throws if the journal itself is untrusted.
+   * Append a wake line. The line is written whenever the journal is trusted;
+   * a balance still at or below the threshold does not skip the append.
    *
-   * @param reason - Why the operator or the period reset is waking.
+   * The line clears a provider-exhausted or unknown-spend latch for this period.
+   * It does not change recorded spend, so the next completion still sleeps when
+   * remaining is at or below the threshold. Throws when the journal is untrusted.
+   *
+   * @param reason - Why the operator is waking. `period_reset` is recorded the
+   *   same way; a new UTC month already drops the latch without this call.
    */
   async wake(reason: WakeReason): Promise<void> {
     await this.exclusive(async () => {
       const now = this.clock();
       await this.ledger.append({ kind: "wake", ts: now, reason });
     });
+  }
+
+  /**
+   * Door-facing status. Fraction only — no allowance, spend, or balance.
+   * Does not wait on the completion lock.
+   *
+   * @param kind - Call kind used to name the tier that would run. Default `chat`.
+   */
+  publicStatus(kind: CallKind = "chat"): BudgetPublicStatus {
+    const now = this.clock();
+    const state = this.toState(this.ledger.replay(now));
+    const choice = chooseTier(state, kind);
+    const base = {
+      remainingFraction: remainingFraction(state),
+      periodStart: monthlyPeriodStart(now)
+    };
+    if (choice.action === "sleep") {
+      return {
+        ...base,
+        sleeping: true,
+        tier: null,
+        sleepReason: choice.reason
+      };
+    }
+    return {
+      ...base,
+      sleeping: false,
+      tier: choice.tier.name,
+      sleepReason: null
+    };
+  }
+
+  /**
+   * Sleep-record body when the policy is sleeping and the balance is known.
+   * Null when the brain would still answer, or when spend is unknown
+   * (missing, corrupt, degraded, or `unknown_spend`). Does not wait on the
+   * completion lock.
+   */
+  sleepDraft(): SleepRecordDraft | null {
+    const now = this.clock();
+    const state = this.toState(this.ledger.replay(now));
+    const choice = chooseTier(state, this.callKind);
+    if (choice.action !== "sleep" || !state.known) {
+      return null;
+    }
+    return {
+      reason: choice.reason,
+      balance: formatDecimalMicros(state.remainingMicros),
+      threshold: formatDecimalMicros(this.thresholdMicros),
+      as_of: now
+    };
   }
 
   private completeKind(
@@ -276,6 +362,8 @@ export class BudgetedBrain implements Brain {
   /**
    * Persist a journal line. A failed write marks this process degraded and
    * does not throw: the current exchange can still finish, and the next call sleeps.
+   * The miss lives only in this process. A restart onto a writable file does not
+   * see it (DEVIATIONS.md). The prepaid key is the wall for that one call.
    */
   private async appendOrDegrade(event: LedgerEvent): Promise<void> {
     try {
@@ -296,6 +384,22 @@ export class BudgetedBrain implements Brain {
     );
     return run;
   }
+}
+
+/**
+ * Remaining / budget as a decimal in `[0, 1]`. Null when the figure would be a guess.
+ */
+function remainingFraction(state: BudgetState): string | null {
+  if (!state.known || state.budgetMicros <= 0n) {
+    return null;
+  }
+  if (state.remainingMicros <= 0n) {
+    return "0";
+  }
+  if (state.remainingMicros >= state.budgetMicros) {
+    return "1";
+  }
+  return formatDecimalMicros((state.remainingMicros * 1_000_000n) / state.budgetMicros);
 }
 
 function isRecordableCount(value: number): boolean {
