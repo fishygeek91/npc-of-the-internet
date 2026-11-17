@@ -21,6 +21,8 @@ import {
   helloResponseSigningPayload,
   verifyDoorCosig
 } from "../signing.js";
+import { readBodyCapped, ResponseTooLargeError } from "../read-body.js";
+import { MAX_HTTP_BODY_BYTES } from "./http.js";
 
 const JSON_CONTENT_TYPE = "application/json";
 /** Max characters of a non-Door error body retained in {@link DoorError.details}. */
@@ -50,6 +52,7 @@ export type HttpDoorConnectionOptions = {
  * HTTP client implementing {@link DoorConnection} against a remote Door REST API.
  * Posts JSON to `/door/hello`, `/door/attest`, and `/door/heartbeat`.
  * Verifies Door response signatures per `spec/door/api.md` before returning.
+ * Response bodies are capped at {@link MAX_HTTP_BODY_BYTES} before `JSON.parse`.
  */
 export class HttpDoorConnection implements DoorConnection {
   private readonly baseUrl: string;
@@ -139,13 +142,14 @@ export class HttpDoorConnection implements DoorConnection {
     successSchema: z.ZodType<T>,
     timeoutMs: number
   ): Promise<T> {
+    const capAbort = new AbortController();
     let response: Response;
     try {
       response = await fetch(`${this.baseUrl}${path}`, {
         method: "POST",
         headers: { "Content-Type": JSON_CONTENT_TYPE },
         body: JSON.stringify(body),
-        signal: AbortSignal.timeout(timeoutMs)
+        signal: AbortSignal.any([AbortSignal.timeout(timeoutMs), capAbort.signal])
       });
     } catch (cause) {
       throw DoorError.fromCode(
@@ -160,8 +164,15 @@ export class HttpDoorConnection implements DoorConnection {
 
     let json: unknown;
     try {
-      json = await response.json();
+      const bytes = await readBodyCapped(response, MAX_HTTP_BODY_BYTES, capAbort);
+      json = JSON.parse(new TextDecoder().decode(bytes));
     } catch (cause) {
+      if (cause instanceof ResponseTooLargeError) {
+        throw DoorError.fromCode(
+          "payload_too_large",
+          `payload_too_large: response body exceeds ${String(cause.maxBytes)} bytes`
+        );
+      }
       if (isTimeoutError(cause)) {
         throw DoorError.fromCode(
           "door_unavailable",

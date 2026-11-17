@@ -18,6 +18,7 @@ export {
   loadWitnessConfig,
   parseWitnessReply,
   WitnessConfigError,
+  MAX_WITNESS_RESPONSE_BYTES,
   MAX_WITNESS_TIMEOUT_MS
 } from "./witness.js";
 export { buildWitnessUserPrompt, WITNESS_SYSTEM_PROMPT } from "./prompts/witness.js";
@@ -96,6 +97,7 @@ export {
 export type { AttestSigningFields } from "./signing.js";
 
 export { DoorError, defaultHttpStatusForDoorError, doorErrorToBody } from "./errors.js";
+export { readBodyCapped, ResponseTooLargeError } from "./read-body.js";
 
 export { InProcessDoorConnection } from "./transports/in-process.js";
 export { HttpDoorServer, MAX_HTTP_BODY_BYTES } from "./transports/http.js";

@@ -4,6 +4,7 @@ import { performance } from "node:perf_hooks";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { WebDoorError } from "../src/errors.js";
 import { Room } from "../src/room.js";
 import {
   SAY_BODY_TIMEOUT_MS,
@@ -127,6 +128,18 @@ describe("VisitorSite", () => {
       door_id: "discord:1",
       since: "2026-10-06T08:00:00Z"
     });
+  });
+
+  it("still serves /api/state when atlas rejects an oversized body", async () => {
+    const { url } = await start({
+      isPresent: () => false,
+      whereabouts: () =>
+        Promise.reject(new WebDoorError("payload_too_large", "atlas response exceeds cap"))
+    });
+    const response = await fetch(`${url}/api/state`);
+    expect(response.status).toBe(200);
+    const state = (await response.json()) as Record<string, unknown>;
+    expect(state.wanderer).toEqual({ last_seen_here: null });
   });
 
   it("accepts a visitor message with 202 and relays it", async () => {

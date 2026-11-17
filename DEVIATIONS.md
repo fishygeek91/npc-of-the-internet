@@ -48,7 +48,7 @@ ENGINEERING.md D8 says deployables are three processes. Ghost compose now runs `
 
 ## Audit — Zod 3 advisory resolved (2026-11-16)
 
-GHSA-mrhx-c7xc-m3w5 (memory exhaustion in zod < 4.6.6) was ignored while the packages were on Zod 3. The migration landed in #185 (osp-core) and #187 (door-sdk, runtime, door-web, door-discord, atlas, atlas-site); `GHSA-mrhx-c7xc-m3w5` is no longer in `ignoreGhsas`. Client-side reads of operator-configured counterparts (runtime → Door HTTP/WS, door-web → Atlas, runtime → model provider) are not yet capped; tracked in #174.
+GHSA-mrhx-c7xc-m3w5 (memory exhaustion in zod < 4.6.6) was ignored while the packages were on Zod 3. The migration landed in #185 (osp-core) and #187 (door-sdk, runtime, door-web, door-discord, atlas, atlas-site); `GHSA-mrhx-c7xc-m3w5` is no longer in `ignoreGhsas`.
 
 ## JSON Schema generation — Zod 4 `z.toJSONSchema` instead of `zod-to-json-schema` (2026-11-16)
 

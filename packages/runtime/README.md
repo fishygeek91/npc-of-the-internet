@@ -40,6 +40,8 @@ const { text, usage } = await brain.complete([
 
 Temperature is omitted from openai-compat requests unless `CompleteOptions.temperature` is set (provider default; OpenAI-compatible APIs typically use 1.0).
 
+OpenAI-compatible response bodies are read only up to 4 MiB (`MAX_PROVIDER_RESPONSE_BYTES`, via door-sdk `readBodyCapped`). A larger body or `Content-Length` fails with `BrainError` (`provider`) before `JSON.parse`; the cause is a plain `Error` and does not include request headers or parameters. `AnthropicBrain` goes through `@anthropic-ai/sdk` `messages.create` and does not read the raw HTTP body.
+
 See `ops/SECRETS.md` for the canonical secret registry and OpenRouter account hardening.
 
 ### Tested openai-compat base URLs

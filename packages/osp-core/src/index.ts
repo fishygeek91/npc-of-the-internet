@@ -48,6 +48,8 @@ export {
   encodeSignature,
   decodeSignature
 } from "./encoding/base64url.js";
+export { parsePrivateKeyBytes, PrivateKeyParseError } from "./encoding/private-key.js";
+export type { PrivateKeyParseFailure } from "./encoding/private-key.js";
 export { generateKeypair, publicKeyFromPrivate, sign, verify } from "./crypto/ed25519.js";
 export type { Ed25519Keypair } from "./crypto/ed25519.js";
 export {

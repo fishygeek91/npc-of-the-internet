@@ -8,8 +8,8 @@ OSP soulchain primitives: Zod record schemas, canonical JSON, Ed25519 signing, C
 |------|---------|
 | Schemas | `RecordSchema`, body schemas (`GenesisBodySchema`, …), `OspRecord` types, `RECORD_TYPES`, `RecordType`, `RESIDENCY_RE`, `parseResidency` |
 | Canonical JSON | `canonicalize` — sorted keys, no whitespace (UTF-16 code-unit order) |
-| Encoding | `encodeBase64Url`, `decodeBase64Url`, `encodePublicKey`, `decodePublicKey`, `encodeSignature`, `decodeSignature` |
-| Ed25519 | `generateKeypair`, `sign`, `verify` |
+| Encoding | `encodeBase64Url`, `decodeBase64Url`, `encodePublicKey`, `decodePublicKey`, `encodeSignature`, `decodeSignature`, `parsePrivateKeyBytes` |
+| Ed25519 | `generateKeypair`, `publicKeyFromPrivate`, `sign`, `verify` |
 | CIDs | `computeCid`, `computeCidFromCanonicalBytes` — dag-json codec + sha2-256 → CIDv1 base32 strings (typically `bagu…`, not `bafy…` which is dag-pb) |
 | Records | `createRecord`, `createRecordWithSigner`, `verifyRecord`, `signCore`, `corePayload`, `soulPayload` |
 | Door keys | `parseDoorPublicKeyBinding`, `parseDoorPublicKeyMap`, `hasDoorPublicKeys` — `doorId=base64url` bindings |
@@ -20,6 +20,8 @@ OSP soulchain primitives: Zod record schemas, canonical JSON, Ed25519 signing, C
 `createRecord` signs with a soul private key. `createRecordWithSigner(fields, signSoul)` is the same sealer with a synchronous soul signer (`(bytes: Uint8Array) => Uint8Array`). Both default `spec` to `OSP_SPEC` (`osp/0.1`).
 
 `RECORD_TYPES` is every envelope `type` (including `tombstone`), in schema order. `RecordType` is that union (`OspRecord["type"]`).
+
+`parsePrivateKeyBytes` reads private-key file bytes: exactly 32 raw bytes, otherwise trimmed UTF-8 that is unpadded base64url for 32 bytes. It throws `PrivateKeyParseError` (an `EncodingError`) and does not take a path or include key bytes. `publicKeyFromPrivate` is the Ed25519 public-key derivation callers should use.
 
 ## Chain verification
 
@@ -33,7 +35,7 @@ OSP soulchain primitives: Zod record schemas, canonical JSON, Ed25519 signing, C
 - After a mid-chain `schema_violation`, later `seq_gap` / `broken_prev_link` entries may appear as cascade noise; check rule presence rather than assuming a minimal `failures` list.
 | SoulStore | `SoulStore`, `FileSoulStore`, `IpfsSoulStore`, `DualSoulStore`, `HeadInfo`, `AppendResult`, open-option types |
 | Replication | `enqueueReplication`, `ackReplication`, `readReplicationJournal`, `recoverReplicationJournal`, `listPendingReplication`, `listUnackedForTarget`, enqueue/ack types |
-| Errors | `SchemaError`, `VerificationError`, `EncodingError`, `StorageError`, `CorruptionError`, `ConcurrentAppendError`, `ChainMismatchError` |
+| Errors | `SchemaError`, `VerificationError`, `EncodingError`, `PrivateKeyParseError`, `StorageError`, `CorruptionError`, `ConcurrentAppendError`, `ChainMismatchError` |
 
 ## SoulStore
 
