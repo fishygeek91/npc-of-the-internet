@@ -50,8 +50,8 @@ export type { AnthropicBrainOptions, AnthropicMessagesClient } from "./brain/ant
 export { OpenAICompatBrain } from "./brain/openai-compat-brain.js";
 export type { OpenAICompatBrainOptions, SleepFn, RandomFn } from "./brain/openai-compat-brain.js";
 export { createBrain } from "./brain/create-brain.js";
-export { BrainError } from "./brain/errors.js";
-export type { BrainErrorReason } from "./brain/errors.js";
+export { BrainError, brainErrorLogFields } from "./brain/errors.js";
+export type { BrainErrorLogFields, BrainErrorReason } from "./brain/errors.js";
 export { FakeBrain } from "./brain/fake-brain.js";
 export type { FakeBrainCall, FakeBrainHandler, FakeBrainOptions } from "./brain/fake-brain.js";
 export type {
@@ -74,6 +74,7 @@ export { distillTranscripts } from "./distill/distill-transcripts.js";
 export { DistillError } from "./distill/errors.js";
 export type { DistillErrorReason } from "./distill/errors.js";
 export { FileTranscriptSource } from "./distill/file-transcript-source.js";
+export type { TranscriptIoEvent, TranscriptIoLog } from "./distill/file-transcript-source.js";
 export { MemoryTranscriptSource } from "./distill/memory-transcript-source.js";
 export type {
   CandidateShard,
