@@ -17,7 +17,7 @@ const { text, usage } = await brain.complete([
 ]);
 ```
 
-`FakeBrain` provides deterministic scripted responses for unit tests. `createBrain` refuses `NPC_BRAIN_PROVIDER=fake` (tests construct `FakeBrain` directly).
+`FakeBrain` provides deterministic scripted responses for unit tests. `createBrain` refuses `NPC_BRAIN_PROVIDER=fake` (tests construct `FakeBrain` directly). `brainErrorLogFields` returns `{ reason, status? }` for logs: a numeric HTTP status only, never headers or response bodies. Anthropic failures store `{ status?, type }` as `cause`, not the SDK error.
 
 ### Environment variables
 
@@ -124,7 +124,7 @@ const shards: CandidateShard[] = await distillTranscripts(source, brain, {
 });
 ```
 
-`FileTranscriptSource` reads newline-delimited JSON; each line is `{ role: "user" | "assistant", text: string, author_id?: string }`. After a successful read, the source is destroyed whether distillation succeeds or fails (privacy). `MemoryTranscriptSource` replays cached in-memory lines when `Session.depart` retries after the on-disk transcript is gone.
+`FileTranscriptSource` reads newline-delimited JSON; each line is `{ role: "user" | "assistant", text: string, author_id?: string }`. After a successful read, the source is destroyed whether distillation succeeds or fails (privacy). IO failures throw a path-free `DistillError` (`cannot read transcript` / `cannot delete transcript`); the absolute path is passed to the optional log (stderr by default). `MemoryTranscriptSource` replays cached in-memory lines when `Session.depart` retries after the on-disk transcript is gone.
 
 Prompt templates live at `src/prompts/distiller/` (TS string constants, strategy a).
 

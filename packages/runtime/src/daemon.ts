@@ -9,6 +9,7 @@ import { DualSoulStore, FileSoulStore, type SoulStore } from "@npc/osp-core";
 import pino, { type Logger } from "pino";
 
 import { createBrain } from "./brain/create-brain.js";
+import { BrainError, brainErrorLogFields } from "./brain/errors.js";
 import type { Brain } from "./brain/types.js";
 import { loadDaemonConfig, type DaemonConfig } from "./daemon-config.js";
 import { DaemonError } from "./daemon-errors.js";
@@ -333,7 +334,8 @@ async function bootResidency(ctx: {
     onHeartbeatError: (error, stage) => {
       heartbeatErrorCount += 1;
       const message = error instanceof Error ? error.message : String(error);
-      logger.warn({ err: message, stage, heartbeatErrorCount }, "heartbeat_failed");
+      const brainFields = error instanceof BrainError ? brainErrorLogFields(error) : {};
+      logger.warn({ err: message, stage, heartbeatErrorCount, ...brainFields }, "heartbeat_failed");
     },
     onConnectionChange,
     onSessionLost: (epoch) => {

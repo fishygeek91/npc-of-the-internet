@@ -2,6 +2,7 @@ import { DoorError, sessionBindSigningPayload, WsDoorSessionClient } from "@npc/
 import { encodePublicKey, encodeSignature, type SoulStore } from "@npc/osp-core";
 import type { Logger } from "pino";
 
+import { brainErrorLogFields } from "../brain/errors.js";
 import type { Brain } from "../brain/types.js";
 import type { AttentionMode } from "../daemon-config.js";
 import { DaemonError } from "../daemon-errors.js";
@@ -236,7 +237,10 @@ export async function arriveDaemonResidency(
         logger.warn({ categories: result.categories }, "inbound_screened");
         return;
       case "error":
-        logger.warn({ err: result.error.message }, "inbound_brain_error");
+        logger.warn(
+          { err: result.error.message, ...brainErrorLogFields(result.error) },
+          "inbound_brain_error"
+        );
         return;
     }
   };
@@ -253,7 +257,10 @@ export async function arriveDaemonResidency(
       return;
     }
     if ("error" in result) {
-      logger.warn({ err: result.error.message }, "inbound_brain_error");
+      logger.warn(
+        { err: result.error.message, ...brainErrorLogFields(result.error) },
+        "inbound_brain_error"
+      );
     }
   };
 
