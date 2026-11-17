@@ -314,7 +314,9 @@ is mandatory.)
 > After §5d, `rclone.conf` is unreadable for the same reason (`rclone.conf not
 > readable`). Run `ghostc` and the backup scripts via `sudo`, for example
 > `alias ghostc='sudo bash ~/npc/ops/scripts/ghostc.sh'` (the same alias §7
-> writes into `~/.bashrc`). File modes use `sudo find`, not `chmod …/*`: the
+> writes into `~/.bashrc`). sudo drops your shell's environment; pass variables
+> explicitly with `sudo env VAR=value bash ~/npc/ops/scripts/ghostc.sh …`.
+> File modes use `sudo find`, not `chmod …/*`: the
 > login shell expands `*` before `sudo`, and it cannot list a 0700 directory
 > owned by 10001.
 
@@ -487,7 +489,8 @@ source ~/.bashrc
 
 `ghostc` runs `ops/scripts/preflight.sh` before mutating compose commands
 (`up`, `restart`, …). Read-only helpers (`ps`, `logs`, `config`) skip preflight;
-set `NPC_SKIP_PREFLIGHT=1` only when deliberately debugging a failed preflight.
+use `sudo env NPC_SKIP_PREFLIGHT=1 bash ~/npc/ops/scripts/ghostc.sh …` only when
+deliberately debugging a failed preflight.
 
 From now on: `ghostc up -d`, `ghostc ps`, `ghostc logs -f runtime`, etc.
 
