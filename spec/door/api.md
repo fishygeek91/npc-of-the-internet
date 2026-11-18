@@ -39,7 +39,7 @@ A Door implements four HTTP/WS paths. `/door/attest` is the single co-signing pa
 | Type | Format | Example | Notes |
 |------|--------|---------|-------|
 | `door_id` | `platform:community-id` | `discord:123456789012345678` | Stable identity of a hosted community. **No** leading `door:` prefix. `<platform>` is a short slug (`discord`, `web`, `matrix`, …). `<community-id>` is opaque to the protocol. |
-| `epoch` | unsigned integer ≥ 1 | `77` | **Global** residency epoch from the Wanderer soulchain (PoP). Not per-Door. The Wanderer supplies `epoch` on every call; Doors MUST NOT allocate or invent epochs. Only one valid session key may exist for a given epoch globally. |
+| `epoch` | safe integer, 1 ≤ n ≤ 2^53-1 | `77` | **Global** residency epoch from the Wanderer soulchain (PoP). Not per-Door. The Wanderer supplies `epoch` on every call; Doors MUST NOT allocate or invent epochs. Only one valid session key may exist for a given epoch globally. Every Door-wire `epoch` is a safe integer in this range (`Number.MAX_SAFE_INTEGER`); receivers MUST reject a value outside it. |
 | `msg_id` | string | `msg_01HY…` | Unique within a session stream. Implementations MAY use ULID/UUID; the wire format is opaque. |
 
 **Residency string** (used in soulchain records, not on every Door wire message): `door:<platform>:<community-id>/epoch:<n>` — e.g. `door:discord:123456789012345678/epoch:77` — i.e. `door:` + `door_id` + `/epoch:` + epoch.
@@ -283,7 +283,7 @@ Same object as HTTP `error` shape, plus optional `related_msg_id`.
 | `door_id` | string | yes | Active residency. |
 | `epoch` | integer | yes | Active epoch. |
 | `session_pubkey` | string | yes | Session public key. |
-| `seq` | integer | yes | Monotonic heartbeat sequence for this epoch, starting at `1`. |
+| `seq` | safe integer, 1 ≤ n ≤ 2^53-1 | yes | Monotonic heartbeat sequence for this epoch, starting at `1`. A Door-wire `seq` is a safe integer in this range (`Number.MAX_SAFE_INTEGER`); receivers MUST reject a value outside it. |
 | `issued_at` | string | yes | Wanderer timestamp. |
 | `sig` | string | yes | Session-key signature over all other request fields. |
 
