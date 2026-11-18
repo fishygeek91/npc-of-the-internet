@@ -5,6 +5,7 @@ import { createContext, runInContext } from "node:vm";
 
 import { describe, expect, it } from "vitest";
 
+import { SHRINE_REFRESH_MS } from "../src/browser/shrine.js";
 import { buildPorchBundle, buildShrineBundle } from "../scripts/bundle-browser.mjs";
 
 describe("porch verify.js bundle", () => {
@@ -49,6 +50,30 @@ describe("porch verify.js bundle", () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  });
+
+  it("refetches the built shrine.js when timers and fetch keep the page as this", async () => {
+    const source = await readFile(new URL("../public/shrine.js", import.meta.url), "utf8");
+    const run = await runShrineAgainstPageReceivers(source);
+    const listenerAt = run.order.indexOf("visibilitychange");
+    const intervalAt = run.order.indexOf("setInterval");
+    expect(listenerAt).toBeGreaterThanOrEqual(0);
+    expect(intervalAt).toBeGreaterThan(listenerAt);
+    expect(run.fetches).toEqual(["https://atlas.example/chain/export"]);
+    expect(run.intervalMs).toBe(SHRINE_REFRESH_MS);
+    run.fireInterval();
+    await new Promise((resolve) => {
+      setTimeout(resolve, 30);
+    });
+    expect(run.fetches).toEqual(["https://atlas.example/chain/export"]);
+    run.show();
+    await new Promise((resolve) => {
+      setTimeout(resolve, 30);
+    });
+    expect(run.fetches).toEqual([
+      "https://atlas.example/chain/export",
+      "https://atlas.example/chain/export"
+    ]);
   });
 });
 
@@ -164,7 +189,8 @@ async function shrineParsesWithoutFunction(source: string): Promise<number> {
         return;
       }
     },
-    setInterval: (): number => 1
+    setInterval: (): number => 1,
+    clearInterval: (): void => undefined
   };
   const context = createContext(sandbox);
   runInContext(source, context, { timeout: 5_000 });
@@ -184,4 +210,200 @@ async function shrineParsesWithoutFunction(source: string): Promise<number> {
     throw new Error("zod called Function");
   }
   return invoked;
+}
+
+type ShrineReceiverRun = {
+  order: string[];
+  fetches: string[];
+  intervalMs: number;
+  fireInterval: () => void;
+  show: () => void;
+};
+
+/**
+ * Load `public/shrine.js` in a vm whose `setInterval`, `fetch`, and document
+ * methods throw unless `this` is the page. Node's vm global is not the sandbox
+ * object, so the window is captured from inside the context first.
+ */
+function runShrineAgainstPageReceivers(source: string): ShrineReceiverRun {
+  const order: string[] = [];
+  const fetches: string[] = [];
+  let visibilityState = "hidden";
+  let onVisible: (() => void) | null = null;
+  let onInterval: (() => void) | null = null;
+  let intervalMs = 0;
+  let fakeDocument: ShrineVmDocument | null = null;
+  let fakeWindow: object | null = null;
+  const host = shrineElement();
+
+  const document: ShrineVmDocument = {
+    currentScript: {
+      dataset: { atlasUrl: "https://atlas.example", mount: "#wanderer-shrine" }
+    },
+    get visibilityState(): string {
+      if (this !== fakeDocument) {
+        throw new TypeError("Illegal invocation");
+      }
+      return visibilityState;
+    },
+    set visibilityState(value: string) {
+      if (this !== fakeDocument) {
+        throw new TypeError("Illegal invocation");
+      }
+      visibilityState = value;
+    },
+    querySelector(selector: string): ReturnType<typeof shrineElement> | null {
+      if (this !== fakeDocument) {
+        throw new TypeError("Illegal invocation");
+      }
+      return selector === "#wanderer-shrine" ? host : null;
+    },
+    createElement(): ReturnType<typeof shrineElement> {
+      if (this !== fakeDocument) {
+        throw new TypeError("Illegal invocation");
+      }
+      return shrineElement();
+    },
+    addEventListener(type: string, listener: () => void): void {
+      if (this !== fakeDocument) {
+        throw new TypeError("Illegal invocation");
+      }
+      if (type !== "visibilitychange") {
+        return;
+      }
+      order.push("visibilitychange");
+      onVisible = listener;
+    }
+  };
+  fakeDocument = document;
+
+  function setInterval(this: unknown, fn: () => void, ms: number): number {
+    if (this !== fakeWindow) {
+      throw new TypeError("Illegal invocation");
+    }
+    order.push("setInterval");
+    intervalMs = ms;
+    onInterval = fn;
+    return 1;
+  }
+
+  function fetchImpl(
+    this: unknown,
+    input: Parameters<typeof fetch>[0],
+    _init?: Parameters<typeof fetch>[1]
+  ): Promise<Response> {
+    if (this !== fakeWindow) {
+      throw new TypeError("Illegal invocation");
+    }
+    order.push("fetch");
+    fetches.push(String(input));
+    return Promise.resolve(new Response(null, { status: 500 }));
+  }
+
+  function clearInterval(this: unknown, _id: number): void {
+    if (this !== fakeWindow) {
+      throw new TypeError("Illegal invocation");
+    }
+  }
+
+  let invoked = 0;
+  function throwingFunction(): never {
+    invoked += 1;
+    throw new Error("Function invoked");
+  }
+
+  const sandbox = {
+    console,
+    TextEncoder,
+    TextDecoder,
+    URL,
+    URLSearchParams,
+    crypto: globalThis.crypto,
+    AbortSignal,
+    queueMicrotask,
+    setTimeout,
+    clearTimeout,
+    performance,
+    atob: (value: string): string => Buffer.from(value, "base64").toString("binary"),
+    btoa: (value: string): string => Buffer.from(value, "binary").toString("base64"),
+    Function: throwingFunction,
+    document
+  };
+  const context = createContext(sandbox);
+  const capture = (win: object): void => {
+    fakeWindow = win;
+  };
+  Object.assign(sandbox, { __capture: capture });
+  runInContext("globalThis.__capture(globalThis); delete globalThis.__capture;", context);
+  if (fakeWindow === null) {
+    throw new Error("vm global was not captured");
+  }
+  Object.assign(sandbox, { setInterval, fetch: fetchImpl, clearInterval });
+
+  const stolenInterval = setInterval;
+  const stolenFetch = fetchImpl;
+  const stolenQuery = document.querySelector;
+  expect(() => {
+    stolenInterval(() => undefined, 1);
+  }).toThrow(TypeError);
+  expect(() => {
+    void stolenFetch("https://atlas.example/chain/export");
+  }).toThrow(TypeError);
+  expect(() => {
+    stolenQuery("#wanderer-shrine");
+  }).toThrow(TypeError);
+
+  runInContext(source, context, { timeout: 5_000 });
+  if (invoked !== 0) {
+    throw new Error("zod called Function");
+  }
+  return {
+    order,
+    fetches,
+    get intervalMs(): number {
+      return intervalMs;
+    },
+    fireInterval(): void {
+      if (onInterval === null) {
+        throw new Error("interval was not scheduled");
+      }
+      onInterval();
+    },
+    show(): void {
+      document.visibilityState = "visible";
+      if (onVisible === null) {
+        throw new Error("visibilitychange listener was not registered");
+      }
+      onVisible();
+    }
+  };
+}
+
+type ShrineVmDocument = {
+  visibilityState: string;
+  currentScript: { dataset: { atlasUrl: string; mount: string } };
+  querySelector(selector: string): ReturnType<typeof shrineElement> | null;
+  createElement(tag: string): ReturnType<typeof shrineElement>;
+  addEventListener(type: string, listener: () => void): void;
+};
+
+function shrineElement(): {
+  textContent: string;
+  setAttribute(): void;
+  appendChild(): void;
+  attachShadow(): ReturnType<typeof shrineElement>;
+} {
+  const node = {
+    textContent: "",
+    setAttribute(): void {
+      return;
+    },
+    appendChild(): void {
+      return;
+    },
+    attachShadow(): ReturnType<typeof shrineElement> {
+      return shrineElement();
+    }
+  };
+  return node;
 }

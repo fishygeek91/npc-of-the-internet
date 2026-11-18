@@ -114,8 +114,10 @@ export function renderShrine(
 }
 
 /**
- * Mount into `config.mount`, paint `checking` first, then refetch on a timer
- * and when the document becomes visible.
+ * Mount into `config.mount`, paint `checking` first, then refetch when the
+ * document becomes visible and on a timer. The visibility listener is
+ * registered before the interval starts, so a timer failure cannot disable
+ * both refresh paths.
  */
 export function mountShrine(options: {
   document: ShrineDocument;
@@ -155,17 +157,17 @@ export function mountShrine(options: {
       });
   };
   tick();
+  options.document.addEventListener("visibilitychange", () => {
+    if (options.document.visibilityState === "visible") {
+      tick();
+    }
+  });
   options.setInterval(() => {
     if (options.document.visibilityState === "hidden") {
       return;
     }
     tick();
   }, SHRINE_REFRESH_MS);
-  options.document.addEventListener("visibilitychange", () => {
-    if (options.document.visibilityState === "visible") {
-      tick();
-    }
-  });
 }
 
 function picked(

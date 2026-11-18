@@ -1,35 +1,18 @@
 /* global process */
 import { readFileSync, statSync, writeFileSync } from "node:fs";
-import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import esbuild from "esbuild";
 
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 /**
- * esbuild is not a declared door-web dependency. Resolve the copy vitest
- * already pulls in (vitest → vite → esbuild). See DEVIATIONS.md and #222.
- * @returns {string} absolute path to esbuild's main module
- */
-export function resolveEsbuildMain() {
-  const require = createRequire(import.meta.url);
-  let vitestPkg;
-  try {
-    vitestPkg = require.resolve("vitest/package.json");
-  } catch {
-    throw new Error("vitest is not installed; run pnpm install before bundling verify.js");
-  }
-  const fromVitest = createRequire(vitestPkg);
-  const vitePkg = fromVitest.resolve("vite/package.json");
-  const fromVite = createRequire(vitePkg);
-  return fromVite.resolve("esbuild/lib/main.js");
-}
-
-/**
  * Bundle one classic-script entry. Minified IIFE, browser condition so
  * multiformats uses sha2-browser.js. The outfile is a single line.
+ * esbuild is a direct devDependency of this package.
  * @param {string} entry file name under src/browser
  * @param {string} fileName file name under public
+ * @param {string} [outfile] absolute path; defaults to public/<fileName>
  * @returns {Promise<{ outfile: string, bytes: number, inputs: string[] }>}
  */
 export async function buildBrowserBundle(
@@ -37,8 +20,6 @@ export async function buildBrowserBundle(
   fileName,
   outfile = join(packageRoot, "public", fileName)
 ) {
-  const require = createRequire(import.meta.url);
-  const esbuild = require(resolveEsbuildMain());
   const result = await esbuild.build({
     absWorkingDir: packageRoot,
     entryPoints: [join(packageRoot, "src", "browser", entry)],
