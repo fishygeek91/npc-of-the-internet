@@ -100,7 +100,7 @@ The scarcity claim — "one place at a time" — must be verifiable or it's mark
 - Doors will periodically publish **presence attestations** — signed heartbeats anchored on a public chain. Two simultaneous valid attestations from different Doors are a protocol violation, provable by anyone. Ghost already writes the heartbeats onto the soulchain and detects the conflict; the public-chain anchor is the part that is not built (T7.6).
 - When the Wanderer departs, the session key will be rotated in a public **handover ceremony**: the old Door signs a farewell, the new Door signs a welcome, and both anchor to the soulchain. Ghost does not do that `rotate` step.
 
-An embedded "Wanderer" widget is meant to be checkable in one click: is its output signed by the current session key? If not, it is a replica shrine — allowed, but honestly labeled. That in-browser check is not built yet (T7.2b).
+An embedded "Wanderer" widget is meant to be checkable in one click: is its output signed by the current session key? If not, it is a replica shrine — allowed, but honestly labeled. The web porch and the replica shrine now run that check in the visitor's browser (T7.2b); neither is publicly deployed yet.
 
 ## 5. Raised by the internet
 
