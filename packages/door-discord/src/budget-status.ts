@@ -1,4 +1,4 @@
-import { closeSync, fstatSync, openSync, readSync } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import path from "node:path";
 
 import { z } from "zod";
@@ -76,9 +76,11 @@ function errorCode(error: unknown): string | undefined {
 
 /**
  * Read the runtime's fraction-only snapshot.
- * An unset path is "not configured". A missing, huge, or strict-schema failure
- * (including any extra key such as `balance`) is "unavailable" and the bytes
- * are not returned.
+ * An unset path is "not configured". A missing file, an empty file, a symlink,
+ * a FIFO, a huge file, or a strict-schema failure (including any extra key such
+ * as `balance`) is "unavailable". The bytes are not returned. The open uses
+ * `O_NOFOLLOW` so a symlink is not followed, and `O_NONBLOCK` so a FIFO cannot
+ * stall the event loop. A descriptor that is not a regular file is refused.
  *
  * @param filePath - `NPC_BUDGET_STATUS_PATH`, or `undefined` when unset.
  */
@@ -91,7 +93,8 @@ export function loadDoorBudgetStatus(filePath: string | undefined): DoorBudgetSt
   }
   let fd: number;
   try {
-    fd = openSync(filePath, "r");
+    // O_NOFOLLOW refuses a symlink. O_NONBLOCK keeps a FIFO from stalling the loop.
+    fd = openSync(filePath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   } catch (error: unknown) {
     if (errorCode(error) === "ENOENT") {
       return { state: "unavailable", reason: "missing" };

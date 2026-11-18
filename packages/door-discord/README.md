@@ -34,7 +34,7 @@ The Wanderer is in one place at a time. The adapter posts in the bound channel w
 | `DISCORD_USER_RATE_PER_MIN` / `DISCORD_USER_BURST` | no | Per-user inbound token bucket |
 | `DISCORD_CHANNEL_RATE_PER_MIN` / `DISCORD_CHANNEL_BURST` | no | Per-channel inbound token bucket |
 | `DISCORD_PRESENCE_NOTICES` | no | `0` disables the arrived / moved-on posts (default `1`) |
-| `NPC_BUDGET_STATUS_PATH` | no | Absolute fraction-only snapshot the runtime publishes. Unset → `budget: not configured`. Not a Door protocol message. |
+| `NPC_BUDGET_STATUS_PATH` | no | Absolute fraction-only snapshot the runtime publishes. Unset → `budget: not configured`. Missing, empty, symlink, or FIFO → `budget: unavailable`. The open uses `O_NOFOLLOW` and `O_NONBLOCK`. Not a Door protocol message. |
 | `DOOR_WITNESS` | no | `off` disables the memory witness |
 | `DOOR_WITNESS_BASE_URL` / `DOOR_WITNESS_MODEL` | no | Witness OpenAI-compatible endpoint + model (fallback `NPC_BRAIN_BASE_URL` / `NPC_BRAIN_MODEL`) |
 | `DOOR_WITNESS_API_KEY` / `DOOR_WITNESS_API_KEY_FILE` | no | Witness API key, inline or file (fallback `NPC_BRAIN_API_KEY` / `NPC_BRAIN_API_KEY_FILE`) |

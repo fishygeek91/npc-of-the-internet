@@ -1,4 +1,14 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  unlink,
+  writeFile
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -8,7 +18,8 @@ import {
   budgetStatusBody,
   createBudgetStatusPublisher,
   writeBudgetStatusFile,
-  type BudgetStatusFile
+  type BudgetStatusFile,
+  type BudgetStatusPublishFailure
 } from "../src/brain/budget-status-file.js";
 import { BrainError } from "../src/brain/errors.js";
 
@@ -60,9 +71,9 @@ describe("budget status file", () => {
       tier: "cheap",
       remainingFraction: "9.99"
     };
-    const errors: string[] = [];
-    const publisher = createBudgetStatusPublisher(filePath, (message) => {
-      errors.push(message);
+    const errors: BudgetStatusPublishFailure[] = [];
+    const publisher = createBudgetStatusPublisher(filePath, (failure) => {
+      errors.push(failure);
     });
     publisher.publish(badFraction);
     const sneaky = {
@@ -76,8 +87,65 @@ describe("budget status file", () => {
     await vi.waitFor(() => {
       expect(errors).toHaveLength(2);
     });
-    expect(errors.join("\n")).not.toContain("9.99");
-    expect(errors.join("\n")).not.toContain(secret);
+    expect(errors).toEqual([
+      { envVar: "NPC_BUDGET_STATUS_PATH", code: "invalid_config" },
+      { envVar: "NPC_BUDGET_STATUS_PATH", code: "invalid_config" }
+    ]);
+    const logged = JSON.stringify(errors);
+    expect(logged).not.toContain("9.99");
+    expect(logged).not.toContain(secret);
+    expect(logged).not.toContain(filePath);
+    await expect(readFile(filePath, "utf8")).rejects.toThrow(/ENOENT/);
+  });
+
+  it("reports a filesystem failure as the env var and an error code, without the path", async () => {
+    dir = await mkdtemp(join(tmpdir(), "npc-budget-status-"));
+    const nested = join(dir, "nested");
+    await mkdir(nested, { mode: 0o500 });
+    const filePath = join(nested, "status.json");
+    const failures: BudgetStatusPublishFailure[] = [];
+    try {
+      const publisher = createBudgetStatusPublisher(filePath, (failure) => {
+        failures.push(failure);
+      });
+      publisher.publish({ configured: false });
+      await vi.waitFor(() => {
+        expect(failures).toHaveLength(1);
+      });
+      expect(failures).toEqual([{ envVar: "NPC_BUDGET_STATUS_PATH", code: "EACCES" }]);
+      expect(JSON.stringify(failures)).not.toContain(filePath);
+      expect(JSON.stringify(failures)).not.toContain(nested);
+      expect(await readdir(nested)).toEqual([]);
+    } finally {
+      await chmod(nested, 0o700);
+    }
+  });
+
+  it("unlinks the temp file when writeFile fails after creating it", async () => {
+    const filePath = await statusPath();
+    let temp = "";
+    const error = new Error("simulated short write");
+    Object.assign(error, { code: "ENOSPC" });
+    await expect(
+      writeBudgetStatusFile(
+        filePath,
+        { configured: false },
+        {
+          mkdir: async (directory, options) => {
+            await mkdir(directory, options);
+          },
+          rename,
+          unlink,
+          writeFile: async (target) => {
+            temp = target;
+            await writeFile(target, "partial", { encoding: "utf8", mode: 0o600 });
+            throw error;
+          }
+        }
+      )
+    ).rejects.toBe(error);
+    expect(temp.endsWith(`.${String(process.pid)}.tmp`)).toBe(true);
+    await expect(readFile(temp, "utf8")).rejects.toThrow(/ENOENT/);
     await expect(readFile(filePath, "utf8")).rejects.toThrow(/ENOENT/);
   });
 
