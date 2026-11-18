@@ -53,6 +53,7 @@ export type HttpDoorConnectionOptions = {
  * Posts JSON to `/door/hello`, `/door/attest`, and `/door/heartbeat`.
  * Verifies Door response signatures per `spec/door/api.md` before returning.
  * Response bodies are capped at {@link MAX_HTTP_BODY_BYTES} before `JSON.parse`.
+ * A body over that cap is `door_unavailable` (503).
  */
 export class HttpDoorConnection implements DoorConnection {
   private readonly baseUrl: string;
@@ -168,9 +169,11 @@ export class HttpDoorConnection implements DoorConnection {
       json = JSON.parse(new TextDecoder().decode(bytes));
     } catch (cause) {
       if (cause instanceof ResponseTooLargeError) {
+        // Spec 413 `payload_too_large` is the Door rejecting our request.
+        // This cap is local: report `door_unavailable` so boot keeps retrying.
         throw DoorError.fromCode(
-          "payload_too_large",
-          `payload_too_large: response body exceeds ${String(cause.maxBytes)} bytes`
+          "door_unavailable",
+          `door unavailable: response body exceeds ${String(cause.maxBytes)} bytes`
         );
       }
       if (isTimeoutError(cause)) {

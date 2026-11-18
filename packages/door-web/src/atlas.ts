@@ -21,6 +21,11 @@ const StateSchema = z.object({
 const CACHE_MS = 30_000;
 const TIMEOUT_MS = 2_000;
 
+/** One whereabouts read, or the overflow failure, held for {@link CACHE_MS}. */
+type WhereaboutsCache =
+  | { at: number; kind: "value"; value: WandererWhereabouts | null }
+  | { at: number; kind: "overflow"; error: WebDoorError };
+
 /**
  * Max `GET /state` response body, in bytes.
  *
@@ -35,10 +40,11 @@ export const ATLAS_STATE_MAX_BYTES = 64 * 1024;
  * Cached reader for atlas-api `GET /state`. At most one request per {@link CACHE_MS}
  * regardless of visitor traffic. Network failures and unusable JSON yield `null`.
  * A body over {@link ATLAS_STATE_MAX_BYTES} throws {@link WebDoorError}
- * (`payload_too_large`) before `JSON.parse` and is not cached.
+ * (`payload_too_large`) before `JSON.parse`. That failure is cached for
+ * {@link CACHE_MS}, the same window as a successful read.
  */
 export class AtlasWhereabouts {
-  private cached: { at: number; value: WandererWhereabouts | null } | null = null;
+  private cached: WhereaboutsCache | null = null;
   private inflight: Promise<WandererWhereabouts | null> | null = null;
 
   constructor(
@@ -50,17 +56,28 @@ export class AtlasWhereabouts {
   /**
    * Latest whereabouts, or `null` when atlas is unreachable or the payload is nonsense.
    * Throws {@link WebDoorError} (`payload_too_large`) when the response exceeds
-   * {@link ATLAS_STATE_MAX_BYTES}.
+   * {@link ATLAS_STATE_MAX_BYTES}. A cached overflow is rethrown until {@link CACHE_MS}
+   * has elapsed, so a misbehaving Atlas is not fetched on every visitor page.
    */
   async get(): Promise<WandererWhereabouts | null> {
     const now = this.nowMs();
-    if (this.cached !== null && now - this.cached.at < CACHE_MS) {
-      return this.cached.value;
+    const cached = this.cached;
+    if (cached !== null && now - cached.at < CACHE_MS) {
+      if (cached.kind === "overflow") {
+        throw cached.error;
+      }
+      return cached.value;
     }
     this.inflight ??= this.fetchState()
       .then((value) => {
-        this.cached = { at: this.nowMs(), value };
+        this.cached = { at: this.nowMs(), kind: "value", value };
         return value;
+      })
+      .catch((error: unknown) => {
+        if (error instanceof WebDoorError && error.code === "payload_too_large") {
+          this.cached = { at: this.nowMs(), kind: "overflow", error };
+        }
+        throw error;
       })
       .finally(() => {
         this.inflight = null;

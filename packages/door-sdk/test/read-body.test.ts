@@ -11,6 +11,29 @@ import { MAX_HTTP_BODY_BYTES } from "../src/transports/http.js";
 
 const CAP = 32;
 
+/**
+ * Body whose reads are exactly `chunks`, in order.
+ * `Content-Length` is set only when `headers` includes it.
+ */
+function streamedResponse(chunks: readonly Uint8Array[], headers?: HeadersInit): Response {
+  let index = 0;
+  const body = new ReadableStream<Uint8Array>({
+    pull(controller: ReadableStreamDefaultController<Uint8Array>): void {
+      const chunk = chunks[index];
+      if (chunk === undefined) {
+        controller.close();
+        return;
+      }
+      index += 1;
+      controller.enqueue(chunk);
+    }
+  });
+  if (headers === undefined) {
+    return new Response(body);
+  }
+  return new Response(body, { headers });
+}
+
 async function withServer(
   onRequest: (req: IncomingMessage, res: ServerResponse) => void,
   run: (baseUrl: string) => Promise<void>
@@ -108,10 +131,52 @@ describe("readBodyCapped", () => {
       }
     );
   });
+
+  it("returns a multi-chunk stream of exactly the cap with no Content-Length", async () => {
+    const half = CAP / 2;
+    const response = streamedResponse([Buffer.alloc(half, 0x61), Buffer.alloc(half, 0x62)]);
+    expect(response.headers.get("content-length")).toBeNull();
+    const bytes = await readBodyCapped(response, CAP);
+    expect(bytes.byteLength).toBe(CAP);
+    expect(bytes[0]).toBe(0x61);
+    expect(bytes[half - 1]).toBe(0x61);
+    expect(bytes[half]).toBe(0x62);
+    expect(bytes[CAP - 1]).toBe(0x62);
+  });
+
+  it("rejects a multi-chunk stream one byte over the cap with no Content-Length", async () => {
+    const abort = new AbortController();
+    const response = streamedResponse([Buffer.alloc(CAP, 0x61), Buffer.alloc(1, 0x62)]);
+    expect(response.headers.get("content-length")).toBeNull();
+    const error = await readBodyCapped(response, CAP, abort).then(
+      () => {
+        throw new Error("expected ResponseTooLargeError");
+      },
+      (caught: unknown) => caught
+    );
+    expect(error).toBeInstanceOf(ResponseTooLargeError);
+    if (!(error instanceof ResponseTooLargeError)) {
+      throw new Error("expected ResponseTooLargeError");
+    }
+    expect(error.maxBytes).toBe(CAP);
+    expect(abort.signal.aborted).toBe(true);
+  });
+
+  it("ignores a non-numeric Content-Length and streams a body of exactly the cap", async () => {
+    const header = `${String(CAP + 1)}bogus`;
+    const response = streamedResponse([Buffer.alloc(CAP / 2, 0x61), Buffer.alloc(CAP / 2, 0x62)], {
+      "content-length": header
+    });
+    expect(response.headers.get("content-length")).toBe(header);
+    const bytes = await readBodyCapped(response, CAP);
+    expect(bytes.byteLength).toBe(CAP);
+    expect(bytes[0]).toBe(0x61);
+    expect(bytes[CAP / 2]).toBe(0x62);
+  });
 });
 
 describe("HttpDoorConnection cap mapping", () => {
-  it("maps ResponseTooLargeError to DoorError payload_too_large", async () => {
+  it("maps ResponseTooLargeError to DoorError door_unavailable", async () => {
     await withServer(
       (_req, res) => {
         res.writeHead(200, { "Content-Length": String(MAX_HTTP_BODY_BYTES + 1) });
@@ -125,7 +190,7 @@ describe("HttpDoorConnection cap mapping", () => {
           })
           .then(
             () => {
-              throw new Error("expected payload_too_large");
+              throw new Error("expected door_unavailable");
             },
             (caught: unknown) => caught
           );
@@ -133,8 +198,11 @@ describe("HttpDoorConnection cap mapping", () => {
         if (!(error instanceof DoorError)) {
           throw new Error("expected DoorError");
         }
-        expect(error.code).toBe("payload_too_large");
-        expect(error.httpStatus).toBe(413);
+        expect(error.code).toBe("door_unavailable");
+        expect(error.httpStatus).toBe(503);
+        expect(error.message).toBe(
+          `door unavailable: response body exceeds ${String(MAX_HTTP_BODY_BYTES)} bytes`
+        );
         expect(error.cause).toBeUndefined();
       }
     );
