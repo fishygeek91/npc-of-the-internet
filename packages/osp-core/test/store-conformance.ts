@@ -257,7 +257,7 @@ export function registerStoreConformance(factory: SoulStoreFactory): void {
 
     if (factory.supportsJsonlLayout) {
       it("persists canonical bytes on disk and reopens cleanly", async () => {
-        let genesisCid = "";
+        let genesisCid: string;
         const store = await factory.open(dir);
         try {
           const genesis = await appendGenesis(store, soul);

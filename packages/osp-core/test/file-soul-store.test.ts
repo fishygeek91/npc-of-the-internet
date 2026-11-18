@@ -340,7 +340,7 @@ describe("FileSoulStore", () => {
 
   it("includes chain verification failures on CorruptionError from loadChain", async () => {
     const store = await FileSoulStore.open(dir);
-    let genesisCid = "";
+    let genesisCid: string;
     try {
       const genesis = await appendGenesis(store, soul);
       genesisCid = genesis.cid;
@@ -402,8 +402,8 @@ describe("FileSoulStore", () => {
 
   it("re-opens a closed store with matching head and iterate order", async () => {
     const door = DOOR;
-    let genesisCid = "";
-    let shardCid = "";
+    let genesisCid: string;
+    let shardCid: string;
     let shardBody: OspRecord["body"] | undefined;
 
     const writer = await FileSoulStore.open(dir, {
@@ -611,7 +611,7 @@ describe("FileSoulStore", () => {
 
   it("retries append after orphan blob left by crash between blob and chain write", async () => {
     const store = await FileSoulStore.open(dir);
-    let memoryCid = "";
+    let memoryCid: string;
     let memoryRecord: OspRecord;
     try {
       const genesis = await appendGenesis(store, soul);
@@ -1059,7 +1059,7 @@ describe("FileSoulStore.openReadOnly", () => {
 
   it("reports verification failure without throwing and still exposes records", async () => {
     const writer = await FileSoulStore.open(dir);
-    let genesisCid = "";
+    let genesisCid: string;
     try {
       const genesis = await appendGenesis(writer, soul);
       genesisCid = genesis.cid;

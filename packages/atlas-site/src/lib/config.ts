@@ -33,7 +33,7 @@ function parseDoorPublicKeys(
     return Object.keys(map).length > 0 ? map : undefined;
   } catch (error) {
     if (error instanceof EncodingError) {
-      throw new Error(`ATLAS_SITE_DOOR_PUBKEYS: ${error.message}`);
+      throw new Error(`ATLAS_SITE_DOOR_PUBKEYS: ${error.message}`, { cause: error });
     }
     throw error;
   }

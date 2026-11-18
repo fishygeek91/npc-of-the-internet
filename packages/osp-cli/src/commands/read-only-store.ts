@@ -24,7 +24,7 @@ export async function openReadOnlyStore(
   doorKeys: readonly string[] = []
 ): Promise<ReadOnlyStoreResult> {
   const resolvedDir = path.resolve(dir);
-  let isDirectory = false;
+  let isDirectory: boolean;
   try {
     isDirectory = existsSync(resolvedDir) && statSync(resolvedDir).isDirectory();
   } catch {

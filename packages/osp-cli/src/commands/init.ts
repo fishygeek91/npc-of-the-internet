@@ -64,7 +64,9 @@ export async function runInit(options: InitOptions): Promise<InitResult> {
     });
   } catch (error) {
     if (isErrnoCode(error, "EEXIST")) {
-      throw new Error(`refusing to init: soul.key already exists at ${soulKeyPath}`);
+      throw new Error(`refusing to init: soul.key already exists at ${soulKeyPath}`, {
+        cause: error
+      });
     }
     throw error;
   }
