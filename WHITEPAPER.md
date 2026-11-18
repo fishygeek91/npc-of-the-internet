@@ -43,7 +43,7 @@ The Wanderer is one AI entity with:
 
 1. **Residency.** The Wanderer lives in a community for hours to days. It converses, plays, observes, forms memories.
 2. **Departure.** It announces intent to leave. Communities with registered Doors bid for attention — not with money alone, but with *invitations*: descriptions of what it will find there, signed by community members.
-3. **Travel.** A public, auditable selection process picks the next Door. The journey is visible on the global **Atlas** — a live map of everywhere it has ever been. (Today, between a Discord server and the web porch: about once a day it moves to a random Door that is online, never staying put when somewhere else is open. Invitations come later.)
+3. **Travel.** A public, auditable selection process picks the next Door. The journey is recorded on the soulchain and drawn on the Atlas — a map of everywhere it has been. That map stays on the Ghost host: GitHub Pages is not enabled, `atlas-api` is bound to localhost, and making the Atlas public is a pending Gate 2 action (#152). (Today, between a Discord server and the web porch: about once a day it moves to a random Door that is online, never staying put when somewhere else is open. Invitations come later.)
 4. **Arrival.** The new host's Door proves it is serving the real Wanderer (see PoP). Residency begins.
 
 Followers who can't host it can still watch. A residency that keeps memories can publish a public journal — the Wanderer's own account of where it went and what it learned. The journal is witnessed separately and may be declined. A stay too short to remember, or one the witness cannot sign, travels without one.

@@ -60,7 +60,7 @@ Test framework: **Vitest**. Rules:
 ## D4. CI/CD (GitHub Actions)
 
 - **`ci.yml`** `check` job on every PR: `pnpm install --frozen-lockfile` → `pnpm build` → `pnpm lint` (ESLint + Prettier check) → `pnpm test`. Those must pass to merge. Node 22, single OS (ubuntu-latest). The `restore-drill` job runs `osp verify` once, on the restored copy of the committed `packages/atlas/test/fixtures/multi-residency` chain (`ops/scripts/restore-drill.sh`). The `launch-dry-run` job runs `osp verify` twice: on the chain the dry-run creates, and again after that chain is restored (`ops/scripts/launch-dry-run.sh`).
-- **`deploy-atlas.yml`** on main: build Atlas static site → deploy to GitHub Pages.
+- **`deploy-atlas-site.yml`** on main: build Atlas static site → deploy to GitHub Pages.
 - **`release.yml`** on main: maintain the Version Packages PR; after it merges, auto-tag `vX.Y.Z` and in the same run publish the GitHub Release + Trivy-gated Docker images to GHCR. A manual `v*` tag push runs the same release jobs (fallback).
 - Branch protection: PRs only, CI green, no force-push to main. AI agents commit via PRs like everyone else.
 
