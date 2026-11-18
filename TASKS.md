@@ -341,6 +341,8 @@ These are sequenced but intentionally coarser; split them into T-numbered subtas
   - Notes: Docs only (`no-changeset`). Two Doors (Discord and the web porch); travel is the residency daemon; memory is the static screen then the Door's witness (T7.4 ensemble still unbuilt). The Atlas site is built and `atlas-api` stays on localhost; GitHub Pages is not enabled; a public Atlas remains Gate 2 (#152). No Atlas code change. A readable snapshot reloads when `chain.jsonl` changes, so a side blob copied in without an append stays invisible to `/journals` and `/chain/export` until `atlas-api` restarts.
 - **Docs ✅ Door wire epoch/seq safe integers** (`spec/door/api.md` bounds Door-wire `epoch` and heartbeat `seq` to 1 ≤ n ≤ 2^53-1; door-sdk test pins that cap; schemas unchanged) — Deps: #172 — Issue: #190 — Agent: Cursor Grok 4.7, 2026-11-18
   - Notes: Option 1 from the approval comment. Zod 4 `.int()` already rejects 2^53; osp-core stays unbounded via `nonnegativeInteger()` so chain verification does not change (DEVIATIONS.md). Spec text + test (`no-changeset`). Changelog cleanup from #187 was dropped.
+- **Ops ✅ Drop stale braces audit ignore** (remove `GHSA-vfj7-8cjw-p6xm` from `ignoreGhsas`; compose secrets comments use `sudo env` for `ghostc`) — Deps: none — Issue: #230, #184
+  - Notes: Agent: Cursor Grok 4.7, 2026-11-18. `pnpm audit --prod` still exits 0; the picomatch ignore stays until #207. The two secrets-overlay comments pass `NPC_COMPOSE_SECRETS` through `sudo env`. No package behavior change (`no-changeset`).
 
 ---
 
