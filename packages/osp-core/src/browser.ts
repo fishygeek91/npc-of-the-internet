@@ -4,7 +4,7 @@
  * Porch pages and replica shrines import this module, not the package root.
  * The root loads `SoulStore` (`node:fs` and other Node built-ins). This
  * module's runtime import graph is limited to canonical JSON, CIDs, Ed25519
- * verify, and `verifyRecords` / `verifyRecord`.
+ * verify, and `ChainVerifier` / `verifyRecords` / `verifyRecord`.
  *
  * Normative contract: `spec/door/web.md`. Chain rules: `spec/osp/records.md`.
  * Signing and hashing stay on `@noble/ed25519`, `@noble/hashes`, and
@@ -12,6 +12,9 @@
  *
  * Not exported here: `SoulStore`, replication, pin manifests, CAR, key
  * generation, and `sign` / `createRecord`. `verifyChain` needs a store.
+ * Keep one {@link ChainVerifier} per page. `evaluate` returns a step; `commit`
+ * admits that record. A prefix followed by its tail matches `verifyRecords`
+ * on the whole chain.
  */
 
 export { canonicalize } from "./canonical.js";
@@ -42,10 +45,11 @@ export type { VerificationReason } from "./errors.js";
 export { corePayload, soulPayload, verifyRecord } from "./record.js";
 export type { VerifyRecordOptions, VerifyRecordResult } from "./record.js";
 
-export { verifyRecords } from "./verify-chain.js";
+export { ChainVerifier, verifyRecords } from "./verify-chain.js";
 export type {
   ChainFailure,
   ChainRule,
+  ChainStep,
   VerifyChainOptions,
   VerifyChainResult
 } from "./verify-chain.js";

@@ -46,13 +46,15 @@ Parsed record CID fields, `soul_pubkey` / `session_pubkey`, `sig`, and `cosigner
 
 ## Browser verification
 
-Import `@npc/osp-core/browser` from a porch page or replica shrine. Do not bundle the package root: that entry loads `SoulStore` (`node:fs` and the other Node stores). The browser subpath exports `verifyRecords`, `verifyRecord`, `verify`, `canonicalize`, `computeCid`, `decodePublicKey`, `decodeSignature`, `parseResidency`, `hashBlobBytes`, `cidMatchesHash`, and `decodeJournalBlob`.
+Import `@npc/osp-core/browser` from a porch page or replica shrine. Do not bundle the package root: that entry loads `SoulStore` (`node:fs` and the other Node stores). The browser subpath exports `ChainVerifier`, `ChainStep`, `verifyRecords`, `verifyRecord`, `verify`, `canonicalize`, `computeCid`, `decodePublicKey`, `decodeSignature`, `parseResidency`, `hashBlobBytes`, `cidMatchesHash`, and `decodeJournalBlob`.
 
 `verify` is strict RFC 8032 via `@noble/ed25519`. CID hashing uses `multiformats` sha2-256; a browser bundle resolves the `browser` export (`crypto.subtle`), not `node:crypto`. The contract for PRESENT / ELSEWHERE, session-key checks, and the shrine embed is `spec/door/web.md`.
 
 ```typescript
-import { verifyRecords, decodePublicKey } from "@npc/osp-core/browser";
+import { ChainVerifier, verifyRecords, decodePublicKey } from "@npc/osp-core/browser";
 ```
+
+Keep one `ChainVerifier` per page. `evaluate` returns a step; call `commit` on that step to admit the record. Callers collect each `step.failures` themselves — `ChainVerifier` has no result method. An empty list with `verifier.head` is `{ valid: true, head }`; a non-empty list is `{ valid: false, failures }`. Feeding a prefix and then the tail that way yields the same result as `verifyRecords` on the full chain. `verifyChain` stays on the package root because it needs a `SoulStore`.
 
 Key generation, `sign`, `createRecord`, pin manifests, and CAR stay on the package root.
 
@@ -63,7 +65,7 @@ Key generation, `sign`, `createRecord`, pin manifests, and CAR stay on the packa
 - PoP: tracks arrival sessions for `bad_session_continuity` and same-epoch multi-door `presence_conflict`.
 - Tombstones (records.md rule 12): `target_cid` must be an earlier record on the chain and `blob_cid` its `text_cid`/`journal_cid` (or an already-tombstoned blob); violations are `bad_tombstone`.
 - Raw records carrying an own `"__proto__"` key anywhere are a `schema_violation` (and `canonicalize` throws `EncodingError`) — such keys would otherwise be silently dropped, making record bytes malleable.
-- Rules are implemented once, in the incremental `ChainVerifier`; `verifyRecords` walks a whole chain with it and every store's `append` evaluates the candidate against the loaded prefix before any durable write.
+- Rules are implemented once, in the incremental `ChainVerifier` (exported from `@npc/osp-core/browser` with `ChainStep`); `verifyRecords` walks a whole chain with it and every store's `append` evaluates the candidate against the loaded prefix before any durable write.
 - `verifyChain(store, opts)` — same rules via `store.iterate()`, then cross-checks `store.head()`. A head mismatch uses rule `forked_head` (message: store head ≠ verified head); duplicate-seq forks also use `forked_head` but originate inside `verifyRecords`.
 - After a mid-chain `schema_violation`, later `seq_gap` / `broken_prev_link` entries may appear as cascade noise; check rule presence rather than assuming a minimal `failures` list.
 | SoulStore | `SoulStore`, `FileSoulStore`, `IpfsSoulStore`, `DualSoulStore`, `HeadInfo`, `AppendResult`, open-option types |
