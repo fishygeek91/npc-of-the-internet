@@ -304,8 +304,13 @@ export class WsDoorSessionServer {
    */
   private handleConnectionSafely(socket: WebSocket, req: IncomingMessage): void {
     // ws emits 'error' for protocol violations (unmasked frames, oversize payloads);
-    // without a listener that is an uncaught exception.
+    // without a listener that is an uncaught exception. A bind rejection has
+    // already called close(4401), which moves the socket to CLOSING. terminate()
+    // there sends RST, and the peer observes 1006 or `error` instead of 4401.
     socket.on("error", () => {
+      if (socket.readyState === WebSocket.CLOSING || socket.readyState === WebSocket.CLOSED) {
+        return;
+      }
       socket.terminate();
     });
     try {

@@ -137,7 +137,9 @@ export class WsDoorSessionClient {
 
   /**
    * Open the session WebSocket with bind query parameters.
-   * Resolves when the socket is open; rejects on fatal bind failure (close code 4401).
+   * Resolves when the socket is still open after the turn `open` fired on.
+   * Rejects on fatal bind failure (close code 4401). An `error` event does not
+   * hide that code: `close` is what settles this promise.
    */
   connect(): Promise<void> {
     if (this.intentionallyClosed) {
@@ -255,8 +257,42 @@ export class WsDoorSessionClient {
         reject(DoorError.fromCode("session_invalid", message));
       };
 
+      // Set when `error` fires before `close`. The close code decides the outcome:
+      // 4401 is a bind rejection even if the socket also errored (ws does both under load).
+      let transportError: Error | undefined;
+
+      const settleTransportFailure = (code: number): void => {
+        settled = true;
+        this.openingSocket = null;
+        this.connectPromise = null;
+        if (transportError !== undefined) {
+          reject(
+            DoorError.fromCode(
+              "door_unavailable",
+              "WebSocket connection error",
+              undefined,
+              transportError
+            )
+          );
+          return;
+        }
+        reject(
+          DoorError.fromCode(
+            "door_unavailable",
+            `connection closed before open (code ${String(code)})`
+          )
+        );
+      };
+
       socket.once("open", () => {
-        queueMicrotask(() => {
+        // A 4401 close frame can already be buffered, or parsed on the next tick
+        // after `open`. A microtask runs before that and would accept a session
+        // the Door has already refused. Wait one turn, then accept only if the
+        // socket is still open and no transport error is pending the close code.
+        setImmediate(() => {
+          if (settled || transportError !== undefined) {
+            return;
+          }
           if (this.intentionallyClosed) {
             settleClosedDuringConnect();
             if (socket.readyState !== WebSocket.CLOSED) {
@@ -283,14 +319,7 @@ export class WsDoorSessionClient {
           if (code === WS_SESSION_BIND_FAILED) {
             settleBindFailure("session binding failed");
           } else {
-            settled = true;
-            this.connectPromise = null;
-            reject(
-              DoorError.fromCode(
-                "door_unavailable",
-                `connection closed before open (code ${String(code)})`
-              )
-            );
+            settleTransportFailure(code);
           }
           return;
         }
@@ -301,14 +330,9 @@ export class WsDoorSessionClient {
       });
 
       socket.on("error", (error) => {
-        if (!settled) {
-          settled = true;
-          this.openingSocket = null;
-          this.connectPromise = null;
-          reject(
-            DoorError.fromCode("door_unavailable", "WebSocket connection error", undefined, error)
-          );
-        }
+        // Do not settle here. `close` follows and carries the code; settling on
+        // `error` first reports door_unavailable for a 4401 bind rejection.
+        transportError = error;
       });
 
       socket.on("message", (data) => {
