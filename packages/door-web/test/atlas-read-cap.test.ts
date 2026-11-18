@@ -75,6 +75,47 @@ describe("AtlasWhereabouts response cap", () => {
     );
   });
 
+  it("caches an oversized response for 30s and fetches again when that window ends", async () => {
+    let hits = 0;
+    let now = 0;
+    await withServer(
+      (_req, res) => {
+        hits += 1;
+        res.writeHead(200, { "Content-Length": String(ATLAS_STATE_MAX_BYTES + 1) });
+        res.flushHeaders();
+      },
+      async (baseUrl) => {
+        const atlas = new AtlasWhereabouts(baseUrl, () => now);
+        const overflow = async (): Promise<unknown> =>
+          atlas.get().then(
+            () => {
+              throw new Error("expected payload_too_large");
+            },
+            (caught: unknown) => caught
+          );
+        const first = await overflow();
+        const second = await overflow();
+        expect(first).toBeInstanceOf(WebDoorError);
+        expect(second).toBe(first);
+        if (!(second instanceof WebDoorError)) {
+          throw new Error("expected WebDoorError");
+        }
+        expect(second.code).toBe("payload_too_large");
+        expect(hits).toBe(1);
+
+        now = 29_999;
+        await overflow();
+        expect(hits).toBe(1);
+
+        now = 30_000;
+        const third = await overflow();
+        expect(third).toBeInstanceOf(WebDoorError);
+        expect(third).not.toBe(first);
+        expect(hits).toBe(2);
+      }
+    );
+  });
+
   it("accepts a state body of exactly ATLAS_STATE_MAX_BYTES", async () => {
     const body = stateAtCap(ATLAS_STATE_MAX_BYTES);
     await withServer(

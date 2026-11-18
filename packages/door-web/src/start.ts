@@ -149,7 +149,7 @@ export async function startWebDoor(options: StartWebDoorOptions): Promise<WebDoo
       atlasUrl: null
     },
     ...(config.atlasApiUrl === undefined ? {} : { atlasUpstream: config.atlasApiUrl }),
-    // get() throws WebDoorError payload_too_large and does not cache it.
+    // get() throws WebDoorError payload_too_large and caches that failure.
     // VisitorSite catches that code and still answers /api/state.
     ...(atlas === undefined ? {} : { whereabouts: () => atlas.get() }),
     relay: (request) => {

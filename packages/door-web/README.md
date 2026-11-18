@@ -49,7 +49,7 @@ In-browser signature checks and the embeddable replica shrine are specified in `
 | `DOOR_WEB_GLOBAL_PER_MIN` | `30` | Visitor messages per minute, all visitors together |
 | `DOOR_WEB_DAILY_MAX` | `1500` | Visitor messages relayed to the Wanderer per UTC day; beyond it `/api/say` answers `429 quiet_hours` |
 | `DOOR_WEB_TRUST_PROXY` | unset | `1` = rate-limit by the **last** `X-Forwarded-For` hop (set only behind your own proxy) |
-| `ATLAS_API_URL` | unset | atlas-api base URL (e.g. `http://atlas-api:8787`) for "where is it now" (cached 30 s; network and nonsense yield null). `GET /state` bodies over 64 KiB (`ATLAS_STATE_MAX_BYTES`) throw `WebDoorError` `payload_too_large` before parse; `/api/state` still loads without whereabouts |
+| `ATLAS_API_URL` | unset | atlas-api base URL (e.g. `http://atlas-api:8787`) for "where is it now" (cached 30 s; network and nonsense yield null). `GET /state` bodies over 64 KiB (`ATLAS_STATE_MAX_BYTES`) throw `WebDoorError` `payload_too_large` before parse, and that failure is cached for the same 30 s; `/api/state` still loads without whereabouts |
 | `DOOR_WITNESS`, `DOOR_WITNESS_*` / `NPC_BRAIN_*` | — | Memory witness (see `@npc/door-sdk` `loadWitnessConfig`); `DOOR_WITNESS=off` disables it. Logged as `door_witness_config {enabled, model}` |
 
 ## Behind a TLS reverse proxy
