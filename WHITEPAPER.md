@@ -7,7 +7,7 @@
 
 ## Abstract
 
-We propose a single, persistent AI entity — an "NPC of the internet" — that exists in exactly **one place at a time**. It roams between communities: a Discord server today, a subreddit tomorrow, a stranger's blog next week. Its memory, personality drift, and every decision it makes are recorded on an open, verifiable ledger called the **Open Soul**. Anyone can read its soul. Anyone can host it. Nobody — including its creators — can secretly edit it.
+We propose a single, persistent AI entity — an "NPC of the internet" — that exists in exactly **one place at a time**. It roams between communities: a Discord server today, a subreddit tomorrow, a stranger's blog next week. Its memory, personality drift, and every decision it makes are recorded on an open, verifiable ledger called the **Open Soul**. Anyone can read its soul. Anyone can host it. The aim is that nobody — including its creators — can secretly edit it. Ghost does not meet that aim yet: one operator holds the only soul key, and the chain is not anchored to a public ledger, so a rewrite that is re-signed still verifies. Someone who kept an older head (a backup, a CAR, or a pin of the IPFS mirror) can tell the new head is not a continuation of theirs. Making a quiet rewrite impossible for everyone, including the operator, waits on public anchors (T7.6) and threshold custody (T7.9).
 
 Two novel primitives make this possible:
 
@@ -28,7 +28,7 @@ Characters people love — from Tamagotchis to Twitch Plays Pokémon to r/place 
 - **Continuity**: what happened yesterday matters today.
 - **Shared witness**: everyone sees the same thing; the experience is communal.
 
-No AI system has all three. The Wanderer is designed to have exactly these three, and to make them *cryptographically enforceable* rather than promised.
+No AI system has all three. The Wanderer is designed to have exactly these three, and to make them *cryptographically enforceable* rather than promised. Ghost enforces a signed, hash-linked chain and rejects two Doors claiming the same epoch (`presence_conflict` in `osp verify`). An operator who holds the only key can still replace that chain and re-sign it; public anchors and threshold custody are what close that gap.
 
 ## 2. The Wanderer
 
@@ -46,7 +46,7 @@ The Wanderer is one AI entity with:
 3. **Travel.** A public, auditable selection process picks the next Door. The journey is visible on the global **Atlas** — a live map of everywhere it has ever been. (Today, between a Discord server and the web porch: about once a day it moves to a random Door that is online, never staying put when somewhere else is open. Invitations come later.)
 4. **Arrival.** The new host's Door proves it is serving the real Wanderer (see PoP). Residency begins.
 
-Followers who can't host it can still watch: every residency produces a public journal — the Wanderer's own account of where it went and what it learned.
+Followers who can't host it can still watch. A residency that keeps memories can publish a public journal — the Wanderer's own account of where it went and what it learned. The journal is witnessed separately and may be declined. A stay too short to remember, or one the witness cannot sign, travels without one.
 
 ## 3. The Open Soul Protocol (OSP)
 
@@ -62,14 +62,16 @@ Each record is a signed, hash-linked entry:
 | `memory` | Distilled episodic memory from a residency |
 | `drift` | A personality change, with the evidence that caused it |
 | `decision` | A choice (e.g., next destination) plus its stated reasoning |
-| `transaction` | Wallet activity |
+| `transaction` | Wallet activity (schema only in Ghost; no wallet yet) |
 | `attestation` | Proof-of-Presence checkpoints |
+| `sleep` | Public dormancy when funds fall below a survival threshold (schema only until a wallet exists; Ghost does not emit it) |
+| `tombstone` | Verifiable marker that a side blob's prose was erased (`osp/0.2`). The chain records the erasure, not the prose |
 
-Record **envelopes** are stored on IPFS (and may be snapshotted to Arweave). Under Gate E1 option (b) ([`spec/osp/privacy.md`](spec/osp/privacy.md)), shard and journal **text** lives in erasable side blobs — Arweave receives envelopes only, never text blobs. The hash chain is anchored periodically to a public chain for tamper-evidence. **The soul is the entity.** Any conforming runtime that loads the soulchain and holds the soul key *is* the Wanderer; anything else is provably an impostor.
+Record **envelopes** are written to the local soulchain and mirrored into a local IPFS blockstore. Ghost compose always turns that mirror on; copying it out to a public pinning service stays off unless an operator enables replication. Arweave snapshots are specified and not built — if they are added, they receive envelopes only, never text blobs ([`spec/osp/ipfs-store.md`](spec/osp/ipfs-store.md) §9). Under Gate E1 option (b) ([`spec/osp/privacy.md`](spec/osp/privacy.md)), shard and journal **text** lives in erasable side blobs. Anchoring the hash chain to a public ledger is the tamper-evidence target (T7.6); Ghost verification checks signatures and `prev` links, not anchors. **The soul is the entity.** A conforming runtime that loads a chain head and holds the matching soul key speaks as that chain. Without an anchor, a rewritten and re-signed chain is a new history that still verifies — the caveat in the abstract.
 
 ### 3.2 Memory distillation
 
-Transcripts may exist during a residency and are destroyed when the residency ends (depart); they are not kept as a long-term archive. At the end of each residency, the Wanderer distills experience into **memory shards** — short, first-person memories ("The people of server X taught me a word for missing a place you've never been"). Shards are published **via** the soulchain; prose is held in side blobs per the privacy policy.
+During a residency the runtime keeps the transcript in memory only and discards it at departure. A crash loses it. It is never written to disk by the daemon and never enters the soulchain. At the end of each residency, the Wanderer distills experience into **memory shards** — short, first-person memories ("The people of server X taught me a word for missing a place you've never been"). Shards are published **via** the soulchain; prose is held in side blobs per the privacy policy.
 
 Every shard is **witnessed** before it is kept. The Door where the memory formed co-signs it only after its own independent witness — in the reference Doors, a separate AI model with a fixed rubric — checks it against the Door's record of what actually happened there: is it grounded, free of private details about real people, not abusive, not an attempt to plant instructions? Memories are final at departure: there is no approval queue, because a memory on the soulchain can never change. A memory the witness declines is recorded only as *that* it was declined, and why.
 
@@ -87,18 +89,22 @@ An open soul invites poisoning. OSP includes a **memory immune system**: every s
 
 ## 4. Proof-of-Presence (PoP)
 
-The scarcity claim — "one place at a time" — must be verifiable or it's marketing.
+The scarcity claim — "one place at a time" — must be verifiable or it's marketing. The **Target** list is the long-term architecture. `pop/0.1` forbids building a TEE, threshold custody, or on-chain anchors into Ghost.
 
-- The runtime holds the **soul key** inside a TEE (trusted execution environment) or threshold-signature network; only one active session key can exist per epoch.
-- Every response the Wanderer emits is signed with the current session key and bound to the active Door's identity.
-- Doors periodically publish **presence attestations** (signed heartbeats anchored on-chain). Two simultaneous valid attestations from different Doors = protocol violation, cryptographically provable by anyone.
-- When the Wanderer departs, the session key is rotated in a public **handover ceremony**: old Door signs a farewell, new Door signs a welcome, both anchor to the soulchain.
+**Ghost today** (`pop/0.1`, [`spec/pop/overview.md`](spec/pop/overview.md)): one Ed25519 soul key on the host, reached only through `Keyring`. Each residency gets a session key derived for that Door and epoch, and live Door outputs are signed with it. The chain records `arrival`, `heartbeat` (about every 10 minutes), `departure`, and `travel`. `osp verify` rejects two presence attestations for the same epoch at different Doors. Handover is those three records in order — `departure`, then `travel`, then `arrival` — with no threshold `rotate`.
 
-Any embedded "Wanderer" widget can be verified in one click: is its output signed by the current session key? If not, it's a replica shrine — allowed, but honestly labeled.
+**Target:**
+
+- The runtime will hold the **soul key** inside a TEE (trusted execution environment) or a threshold-signature network. Threshold custody means no single operator can sign alone; a TEE is the single-custody fallback. Ghost already limits a residency epoch to one Door; this bullet is about where the soul key lives.
+- Every response the Wanderer emits will be signed with the current session key and bound to the active Door's identity. Session-key signatures on live output are already how Ghost works; TEE or threshold custody of the soul key is not.
+- Doors will periodically publish **presence attestations** — signed heartbeats anchored on a public chain. Two simultaneous valid attestations from different Doors are a protocol violation, provable by anyone. Ghost already writes the heartbeats onto the soulchain and detects the conflict; the public-chain anchor is the part that is not built (T7.6).
+- When the Wanderer departs, the session key will be rotated in a public **handover ceremony**: the old Door signs a farewell, the new Door signs a welcome, and both anchor to the soulchain. Ghost does not do that `rotate` step.
+
+An embedded "Wanderer" widget is meant to be checkable in one click: is its output signed by the current session key? If not, it is a replica shrine — allowed, but honestly labeled. The web porch and the replica shrine now run that check in the visitor's browser (T7.2b); neither is publicly deployed yet.
 
 ## 5. Raised by the internet
 
-The community shapes the Wanderer through legible mechanisms:
+The community shapes the Wanderer through the mechanisms below. In Ghost, witnessing is real, and travel is about once a day to a random Door that is online. Invitations, the Vigil, and the wallet are later milestones (§9):
 
 - **Invitations** decide (probabilistically) where it goes.
 - **Witnessing**: every memory the Wanderer keeps carries the co-signature of the community where it formed — a permanent mark on its soul: "we were part of who it became."
@@ -120,22 +126,22 @@ Each of these is specified independently, so other projects can adopt OSP or PoP
 The "portable AI identity" category has neighbors; we cite them openly and differ from all of them on the same axis.
 
 - **[Soul Protocol](https://github.com/qbtrix/soul-protocol)** — an open standard for portable AI identity/memory as user-owned files (".soul" archives). Closest in spirit to OSP's portability goal. Differences: file-based and user-owned with no cryptographic append-only guarantee, no anchoring, no host attestation, and designed for *your* companion, not a singular shared entity.
-- **[SoulLayer](https://www.digitaljournal.com/pr/news/binary-news-network/soullayer-launches-worlds-first-on-chain-15718162.html)** — on-chain personality evolution and memory for AI companions. Differences: companion-per-user model, no presence scarcity, no community witnessing of memory formation.
+- **[SoulLayer](https://web.archive.org/web/20250923125045/https://soullayer.xyz/Whitepaper.html)** — the project's whitepaper (archived 2025-09-23; the original domain has lapsed): on-chain personality evolution and memory for per-user AI companions, each held as an NFT. Differences: companion-per-user model, no presence scarcity, no community witnessing of memory formation.
 - **[DMA (Decentralized Memory and Agency)](https://github.com/rch-iv/DMA)** — cryptographic framework for verifiable, user-owned AI memory/personality across vendors. Closest cryptographically (signed, hashed memory). Differences: user-sovereignty framing; no singular entity, no PoP, no immune system, no community witnessing.
 
 Every neighbor is "**your** AI, portable." This project is "**the** AI, scarce." No prior art was found for Proof-of-Presence scarcity, the handover ceremony, community-witnessed memory, or a singular collectively-raised entity. Those four primitives, plus the composition, are the contribution.
 
 ## 8. Non-goals & risks
 
-- **Not a token project.** No speculative asset. The wallet exists for the entity's own economy; the protocols are MIT/Apache open source.
-- **Not surveillance.** Raw conversations are never persisted; only distilled shards, each witnessed by the Door where it formed. The Door's own record of the room lives in memory and is discarded when the Wanderer leaves.
+- **Not a token project.** No speculative asset. The wallet exists for the entity's own economy; the license is MIT for code, CC-BY-4.0 for the specs and this whitepaper.
+- **Not surveillance.** Raw conversations are not kept. During a residency they live only in memory — the runtime's transcript and the Door's own record of the room — and both are discarded when the Wanderer leaves. What remains are distilled shards, each witnessed by the Door where it formed.
 - **Manipulation risk**: mitigated by the immune system and public rejection log, but adversarial pressure will be constant — this is treated as a core research area, not a footnote.
 - **Anthropomorphization**: the project is honest that this is a character and a protocol experiment, not a claim about sentience.
 
 ## 9. Roadmap
 
-- **v0.1 — Ghost**: single Door (Discord), soulchain on IPFS with local anchoring, journals published. Prove the loop: reside → distill → move.
-- **v0.2 — Body**: PoP with real key ceremonies, second Door type (the web porch) with travel between Doors, community-witnessed memory, public Atlas.
+- **v0.1 — Ghost**: single Door (Discord), soulchain on IPFS, journals published. On-chain anchoring is not part of this milestone. Prove the loop: reside → distill → move.
+- **v0.2 — Body**: PoP with real key ceremonies (threshold rotation). The web porch, travel between Doors, and community-witnessed memory were pulled forward into the running Ghost. The Atlas site is built but not yet publicly deployed. The threshold ceremony was not.
 - **v0.3 — Society**: invitations/bidding, immune system, the Vigil, wallet + patronage.
 - **v1.0 — Standard**: OSP and PoP as standalone specs with reference implementations and a second, independent soul to prove generality.
 

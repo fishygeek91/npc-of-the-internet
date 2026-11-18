@@ -47,8 +47,8 @@ Append-only log. Each record:
 ```json
 {
   "seq": 1042,
-  "prev": "bafy...",            // CID of previous record
-  "type": "memory | drift | decision | transaction | attestation | genesis | sleep",
+  "prev": "bagu...",            // CID of previous record (CIDv1 base32 dag-json)
+  "type": "memory | drift | decision | transaction | attestation | genesis | sleep | tombstone",
   "body": { ... },
   "residency": "door:discord:guild123/epoch:77",
   "cosigners": ["door-key-sig..."],   // Door co-signature: presence attestations, witnessed memories
@@ -122,4 +122,4 @@ Single monorepo — see [ENGINEERING.md](ENGINEERING.md) D1 for the authoritativ
 
 ## v0.1 "Ghost" scope
 
-Deliberately small: one Discord Door, soulchain as signed IPFS log with local file anchoring (no chain yet), single-key custody, manual handover, no wallet, no immune ensemble (static screen only), journals posted to the Atlas as a static site. Everything else is spec'd but stubbed. Goal: the loop *reside → distill → publish → move* running in public.
+Deliberately small: one Discord Door, soulchain as a signed IPFS log (local file store plus IPFS mirror; no on-chain anchor yet), single-key custody, manual handover, no wallet, no immune ensemble (static screen only), journals posted to the Atlas as a static site. Everything else is spec'd but stubbed. Goal: the loop *reside → distill → publish → move* running in public.

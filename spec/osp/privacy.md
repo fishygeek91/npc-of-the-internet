@@ -47,14 +47,14 @@ The project does not intend to build a surveillance archive of private individua
 
 | Data | Retention |
 |------|-----------|
-| Raw residency **transcripts** | May exist on disk **during** a residency. At depart, the transcript is **read once and destroyed** (see ARCHITECTURE Distiller; runtime destroys the source after read). Not stored on the soulchain. |
-| In-process depart retry cache | Lines may remain in process memory only for in-process depart retries; a process crash cannot re-read a destroyed transcript file. |
+| Raw residency **transcripts** | Held in process memory for the residency (`ResidencyTranscript` in the daemon). The daemon never writes them to disk. Depart reads them once and destroys them. A crash drops them. Not stored on the soulchain. `FileTranscriptSource` still exists for tests and deletes a caller-supplied file after read; production depart does not use it. |
+| In-process depart retry cache | Lines may remain in process memory only for in-process depart retries. A crash does not leave a transcript file to re-read. |
 | Distilled **memory shards** / **journals** | Durable outputs. Under `osp/0.1` text is inline on-chain; under `osp/0.2` ([#119](https://github.com/fishygeek91/npc-of-the-internet/issues/119)) text lives in side blobs referenced by the chain. |
 | Soulchain **envelopes** (CIDs, signatures, cosigns, attestations, tombstones) | Append-only; retained indefinitely. |
 
-Defensible phrasing (aligns with ARCHITECTURE and #75 A.4): transcripts are not “never written”; they are **destroyed after the residency ends** (specifically at depart read), not kept as a long-term archive.
+Defensible phrasing (aligned with the daemon and with #75, re-audited after door/0.2): raw conversation is not a durable archive. During a residency it lives in memory and is discarded at depart. The earlier note that a transcript file sits on disk for the residency described the pre-`ResidencyTranscript` path; that is no longer how the daemon works.
 
-**Crash-orphaned transcripts:** destroy runs at depart-read. If the runtime crashes mid-residency, the transcript file can remain on disk until a later successful depart (or indefinitely if that residency never resumes). Operators should treat residual transcript files under the residency data directory as sensitive and delete them on recovery; a startup sweep may be added as ops follow-up (not required for this gate).
+**Crash:** a process restart loses the in-memory transcript. Depart after a restart distills only what was observed since boot. There is no leftover transcript file to sweep.
 
 ---
 

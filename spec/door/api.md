@@ -46,7 +46,7 @@ A Door implements four HTTP/WS paths. `/door/attest` is the single co-signing pa
 
 ### Keys and signatures
 
-All public keys and signatures on the Door wire are **opaque strings** encoding raw Ed25519 material as **base64url** (no padding), matching OSP soulchain encoding in `spec/osp/records.md`. CIDs (when referenced) remain multiformats CID strings (`bafy…`).
+All public keys and signatures on the Door wire are **opaque strings** encoding raw Ed25519 material as **base64url** (no padding), matching OSP soulchain encoding in `spec/osp/records.md`. CIDs (when referenced) remain CIDv1 base32 dag-json strings (`bagu…`), matching `spec/osp/records.md`.
 
 | Field | Role |
 |-------|------|
