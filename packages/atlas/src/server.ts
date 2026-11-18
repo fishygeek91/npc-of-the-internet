@@ -5,6 +5,7 @@ import { createReadStream, existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 
 import cors from "@fastify/cors";
+import type { Cid } from "@npc/osp-core";
 import Fastify, { type FastifyInstance, type FastifyReply } from "fastify";
 
 import { ChainView, type ChainSnapshot, type ChainViewOptions } from "./chain-view.js";
@@ -12,8 +13,11 @@ import type { AtlasConfig } from "./config.js";
 import {
   buildChainExport,
   chainExportEtag,
+  EXPORT_AFTER_UNKNOWN_CODE,
   headerSingle,
   ifNoneMatchSatisfied,
+  indexOfExportedRecord,
+  parseChainExportAfter,
   type ChainExportBody
 } from "./export-chain.js";
 import {
@@ -74,12 +78,15 @@ export async function createAtlasServer(config: AtlasConfig): Promise<FastifyIns
   });
 
   app.get("/chain/export", async (request, reply) => {
+    // Validate `after` before the snapshot so a bad cursor never reaches the chain.
+    const after = parseChainExportAfter(request.query);
     const snap = await chainView.snapshot();
     if (replyIfUnreadable(snap, reply)) {
       return;
     }
 
-    const exported = cachedChainExport(snap, config.doorPublicKeys);
+    const records = await recordsForExport(snap, after);
+    const exported = cachedChainExport(snap, config.doorPublicKeys, after, records);
     void reply.header("ETag", exported.etag).header("Cache-Control", "no-cache");
     if (ifNoneMatchSatisfied(headerSingle(request.headers["if-none-match"]), exported.etag)) {
       void reply.code(304).send();
@@ -232,24 +239,57 @@ type CachedExport = {
 };
 
 /**
- * One encoded body and `ETag` per snapshot object. `ChainView` returns the same
- * object until the chain file changes, so a `304` does not hash the chain again.
- * Door keys are the process config and do not change under a live snapshot.
+ * Encoded bodies and `ETag`s for one snapshot. The full export is keyed by
+ * `""`; each tail is keyed by its `after` CID. `ChainView` returns the same
+ * snapshot object until the chain file changes, so a `304` does not rebuild
+ * the body. Door keys are the process config and do not change under a live snapshot.
  */
-const chainExportCache = new WeakMap<ChainSnapshot, CachedExport>();
+const chainExportCache = new WeakMap<ChainSnapshot, Map<string, CachedExport>>();
 
 function cachedChainExport(
   snapshot: ChainSnapshot,
-  doorPublicKeys: Readonly<Record<string, Uint8Array>> | undefined
+  doorPublicKeys: Readonly<Record<string, Uint8Array>> | undefined,
+  after: Cid | undefined,
+  records: ChainSnapshot["records"]
 ): CachedExport {
-  const hit = chainExportCache.get(snapshot);
+  const key = after ?? "";
+  let byCursor = chainExportCache.get(snapshot);
+  if (byCursor === undefined) {
+    byCursor = new Map();
+    chainExportCache.set(snapshot, byCursor);
+  }
+  const hit = byCursor.get(key);
   if (hit !== undefined) {
     return hit;
   }
-  const body = buildChainExport(snapshot, doorPublicKeys);
-  const entry = { body, etag: chainExportEtag(body) };
-  chainExportCache.set(snapshot, entry);
+  const body = buildChainExport(snapshot, doorPublicKeys, records);
+  const entry = {
+    body,
+    etag: after === undefined ? chainExportEtag(body) : chainExportEtag(body, after)
+  };
+  byCursor.set(key, entry);
   return entry;
+}
+
+/**
+ * Records for this export. No `after` is the full chain. A known CID returns
+ * the records strictly after it (the head's tail is empty). An unknown CID
+ * is {@link EXPORT_AFTER_UNKNOWN_CODE}.
+ *
+ * @throws {AtlasError} 404 `export_after_unknown` when `after` is not on the chain.
+ */
+async function recordsForExport(
+  snap: ChainSnapshot,
+  after: Cid | undefined
+): Promise<ChainSnapshot["records"]> {
+  if (after === undefined) {
+    return snap.records;
+  }
+  const index = await indexOfExportedRecord(snap.records, after);
+  if (index === undefined) {
+    throw new AtlasError(EXPORT_AFTER_UNKNOWN_CODE, "after is not a record on this chain", 404);
+  }
+  return snap.records.slice(index + 1);
 }
 
 /** Parse `page` / `per_page` query strings for paginated journal-style routes. */
