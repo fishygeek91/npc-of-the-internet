@@ -2,7 +2,8 @@ export const packageName = "@npc/door-web";
 
 export { loadWebDoorConfig } from "./config.js";
 export type { WebDoorConfig } from "./config.js";
-export { WebDoorError } from "./errors.js";
+export { WEB_DOOR_ERROR_CODES, WebDoorError } from "./errors.js";
+export type { WebDoorErrorCode } from "./errors.js";
 export { loadDoorKeypairFromPath } from "./load-door-key.js";
 export { DailyBudget, VisitorRateLimiter, VISITOR_RULES } from "./rate-limit.js";
 export type { MsClock, RateDecision, RateRule } from "./rate-limit.js";

@@ -6,6 +6,8 @@ Read-only HTTP API over a soulchain directory. Atlas derives Wanderer presence, 
 
 The Atlas API serves public chain state for the NPC of the Internet site and operators. It opens the soulchain **read-only** via `FileSoulStore.openReadOnly` from `@npc/osp-core`: no `mkdir`, no `.append.lock`, no truncation. A torn trailing `chain.jsonl` line is skipped on read; `verified: false` is returned instead of failing the request.
 
+`AtlasError.code` is the closed set `ATLAS_ERROR_CODES`: `invalid_request`, `invalid_type`, `chain_empty`, `car_not_found`, `manifest_not_found`, `invalid_config`, `internal_error`, `chain_unreadable`.
+
 ## Environment
 
 | Variable | Required | Default | Purpose |

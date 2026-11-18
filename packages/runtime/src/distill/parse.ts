@@ -2,8 +2,6 @@ import { z } from "zod";
 
 import { DistillError } from "./errors.js";
 
-export { countCodePoints } from "@npc/osp-core";
-
 const BrainShardSchema = z
   .object({
     text: z.string(),

@@ -8,6 +8,7 @@ Discord Door adapter: one guild channel becomes a Door. Wraps the `@npc/door-sdk
 - **`loadDiscordDoorConfig(env)`** — Zod-validated env config (inject `env` in tests)
 - **`DiscordGateway`** — thin seam over discord.js (`DiscordJsGateway` in prod; `FakeGateway` in tests)
 - **`formatStatusReply` / `DoorStatusSnapshot`** — the ephemeral `/wanderer status` reply (presence, door id, epoch, session, whether memories are witnessed, and — when `NPC_BUDGET_STATUS_PATH` points at the runtime snapshot — sleeping, chat tier, and remaining fraction). Dollar amounts are not in the reply. Unknown spend is `remaining_fraction: unknown`.
+- **`DiscordDoorError`** — `code` is `invalid_config`, `discord_error`, or `internal_error`.
 
 ## Memory witness
 

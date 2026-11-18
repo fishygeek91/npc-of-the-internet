@@ -1,11 +1,23 @@
 /**
+ * Closed Discord Door `error.code` vocabulary.
+ */
+export const DISCORD_DOOR_ERROR_CODES = [
+  "invalid_config",
+  "discord_error",
+  "internal_error"
+] as const;
+
+/** Machine code for {@link DiscordDoorError}. Same union as {@link DISCORD_DOOR_ERROR_CODES}. */
+export type DiscordDoorErrorCode = (typeof DISCORD_DOOR_ERROR_CODES)[number];
+
+/**
  * Typed error for the Discord Door adapter.
  * Messages may name env vars or Discord identifiers; never include secret values.
  */
 export class DiscordDoorError extends Error {
-  readonly code: string;
+  readonly code: DiscordDoorErrorCode;
 
-  constructor(code: string, message: string, cause?: unknown) {
+  constructor(code: DiscordDoorErrorCode, message: string, cause?: unknown) {
     super(message, cause !== undefined ? { cause } : undefined);
     this.name = "DiscordDoorError";
     this.code = code;

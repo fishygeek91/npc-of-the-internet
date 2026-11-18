@@ -2,7 +2,8 @@ export const packageName = "@npc/door-discord";
 
 export { loadDiscordDoorConfig, doorIdForGuild } from "./config.js";
 export type { DiscordDoorConfig } from "./config.js";
-export { DiscordDoorError, operatorNotice } from "./errors.js";
+export { DISCORD_DOOR_ERROR_CODES, DiscordDoorError, operatorNotice } from "./errors.js";
+export type { DiscordDoorErrorCode } from "./errors.js";
 export { loadDoorKeypairFromPath } from "./load-door-key.js";
 export { DualRateLimiter, TokenBucket } from "./rate-limit.js";
 export type { DualRateLimiterOptions, RateClock } from "./rate-limit.js";
