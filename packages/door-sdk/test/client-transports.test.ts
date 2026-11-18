@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import type { Socket } from "node:net";
 
 import {
   canonicalize,
@@ -28,7 +29,7 @@ import {
 } from "../src/transports/http-client.js";
 import { HttpDoorServer } from "../src/transports/http.js";
 import { InProcessDoorConnection } from "../src/transports/in-process.js";
-import { WsDoorSessionServer } from "../src/transports/ws.js";
+import { WS_SESSION_BIND_FAILED, WsDoorSessionServer } from "../src/transports/ws.js";
 import { WsDoorSessionClient, type WebSocketLike } from "../src/transports/ws-client.js";
 
 const DOOR_ID = "discord:client";
@@ -111,6 +112,148 @@ function sessionBindParams(
     session_pubkey: sessionPubkey,
     session_sig: encodeSignature(sign(payload, session.privateKey))
   };
+}
+
+type RecordedWrite = {
+  corked: boolean;
+  bytes: Buffer;
+};
+
+/**
+ * Record each `socket.write` and whether the socket was corked. A refused bind
+ * must write the 101 response and the 4401 close frame while corked; otherwise
+ * they leave as two packets and `connect()` can resolve before the close.
+ */
+function recordSocketWrites(socket: Socket, into: RecordedWrite[]): void {
+  const originalWrite = socket.write.bind(socket);
+  const recordWrite: Socket["write"] = (chunk, encoding, callback) => {
+    const encodingName = typeof encoding === "string" ? encoding : undefined;
+    const bytes = typeof chunk === "string" ? Buffer.from(chunk, encodingName) : Buffer.from(chunk);
+    into.push({ corked: socket.writableCorked > 0, bytes });
+    if (typeof encoding === "function") {
+      return originalWrite(chunk, encoding);
+    }
+    return originalWrite(chunk, encoding, callback);
+  };
+  socket.write = recordWrite;
+}
+
+type OpenListener = () => void;
+type MessageListener = (data: Buffer | ArrayBuffer | Buffer[]) => void;
+type CloseListener = (code: number, reason: Buffer) => void;
+type ErrorListener = (error: Error) => void;
+type SocketListener = OpenListener | MessageListener | CloseListener | ErrorListener;
+
+function isOpenListener(event: string, _listener: SocketListener): _listener is OpenListener {
+  return event === "open";
+}
+
+function isErrorListener(event: string, _listener: SocketListener): _listener is ErrorListener {
+  return event === "error";
+}
+
+function isCloseListener(event: string, _listener: SocketListener): _listener is CloseListener {
+  return event === "close";
+}
+
+/**
+ * Socket whose test emits `open`, `error`, and `close` in a chosen order.
+ * Used to force the 4401 race without a real network.
+ */
+class ScriptedPeer implements WebSocketLike {
+  private state: number = WebSocket.CONNECTING;
+  private readonly openOnce: OpenListener[] = [];
+  private readonly openOn: OpenListener[] = [];
+  private readonly errorOnce: ErrorListener[] = [];
+  private readonly errorOn: ErrorListener[] = [];
+  private readonly closeOnce: CloseListener[] = [];
+  private readonly closeOn: CloseListener[] = [];
+
+  get readyState(): number {
+    return this.state;
+  }
+
+  send(_data: string): void {
+    // The bind-failure tests never send a frame.
+  }
+
+  close(_code?: number, _reason?: string): void {
+    this.state = WebSocket.CLOSED;
+  }
+
+  on(event: "open", listener: OpenListener): void;
+  on(event: "message", listener: MessageListener): void;
+  on(event: "close", listener: CloseListener): void;
+  on(event: "error", listener: ErrorListener): void;
+  on(event: "open" | "message" | "close" | "error", listener: SocketListener): void {
+    if (isOpenListener(event, listener)) {
+      this.openOn.push(listener);
+      return;
+    }
+    if (isErrorListener(event, listener)) {
+      this.errorOn.push(listener);
+      return;
+    }
+    if (isCloseListener(event, listener)) {
+      this.closeOn.push(listener);
+    }
+  }
+
+  once(event: "open", listener: OpenListener): void;
+  once(event: "close", listener: CloseListener): void;
+  once(event: "error", listener: ErrorListener): void;
+  once(event: "open" | "close" | "error", listener: SocketListener): void {
+    if (isOpenListener(event, listener)) {
+      this.openOnce.push(listener);
+      return;
+    }
+    if (isErrorListener(event, listener)) {
+      this.errorOnce.push(listener);
+      return;
+    }
+    if (isCloseListener(event, listener)) {
+      this.closeOnce.push(listener);
+    }
+  }
+
+  removeAllListeners(event?: string): void {
+    if (event === undefined || event === "open") {
+      this.openOnce.length = 0;
+      this.openOn.length = 0;
+    }
+    if (event === undefined || event === "error") {
+      this.errorOnce.length = 0;
+      this.errorOn.length = 0;
+    }
+    if (event === undefined || event === "close") {
+      this.closeOnce.length = 0;
+      this.closeOn.length = 0;
+    }
+  }
+
+  emitOpen(): void {
+    this.state = WebSocket.OPEN;
+    const pending = this.openOnce.splice(0, this.openOnce.length);
+    for (const listener of [...pending, ...this.openOn]) {
+      listener();
+    }
+  }
+
+  emitError(error: Error): void {
+    const pending = this.errorOnce.splice(0, this.errorOnce.length);
+    for (const listener of [...pending, ...this.errorOn]) {
+      listener(error);
+    }
+  }
+
+  emitClose(code: number): void {
+    this.state = WebSocket.CLOSED;
+    const reason = Buffer.alloc(0);
+    const pending = this.closeOnce.splice(0, this.closeOnce.length);
+    for (const listener of [...pending, ...this.closeOn]) {
+      listener(code, reason);
+    }
+  }
 }
 
 type ClientTestEnv = {
@@ -560,6 +703,7 @@ describe("WsDoorSessionClient", () => {
 
     let connectAttempts = 0;
     let bindFailures = 0;
+    let reconnectSleeps = 0;
     const client = new WsDoorSessionClient({
       wsBaseUrl: env.wsBaseUrl,
       bind: sessionBindParams(generateKeypair(), DOOR_ID, epoch),
@@ -568,8 +712,11 @@ describe("WsDoorSessionClient", () => {
       },
       initialBackoffMs: 20,
       maxBackoffMs: 40,
-      sleep: async () => {
-        await new Promise((resolve) => setTimeout(resolve, 10));
+      // A scheduled reconnect calls sleep immediately. Leave the promise pending
+      // so the attempt cannot be missed between a timer firing and the assert.
+      sleep: () => {
+        reconnectSleeps += 1;
+        return new Promise<void>(() => undefined);
       },
       createWebSocket: (url) => {
         connectAttempts += 1;
@@ -578,11 +725,120 @@ describe("WsDoorSessionClient", () => {
     });
 
     await expect(client.connect()).rejects.toMatchObject({ code: "session_invalid" });
-    await new Promise((resolve) => setTimeout(resolve, 100));
     expect(connectAttempts).toBe(1);
     expect(bindFailures).toBe(1);
+    expect(reconnectSleeps).toBe(0);
     await expect(client.connect()).rejects.toMatchObject({ code: "session_invalid" });
     expect(bindFailures).toBe(1);
+    expect(connectAttempts).toBe(1);
+    await client.close();
+  });
+
+  it("writes the 101 response and close 4401 while the socket is corked", async () => {
+    const writes: RecordedWrite[] = [];
+    env.httpServer.nodeServer.on("connection", (socket) => {
+      recordSocketWrites(socket, writes);
+    });
+    const client = new WsDoorSessionClient({
+      wsBaseUrl: env.wsBaseUrl,
+      bind: sessionBindParams(generateKeypair(), DOOR_ID, EPOCH + 11),
+      createWebSocket: (url) => new WebSocket(url)
+    });
+
+    await expect(client.connect()).rejects.toMatchObject({ code: "session_invalid" });
+    const corked = Buffer.concat(
+      writes.filter((write) => write.corked).map((write) => write.bytes)
+    );
+    // ws may split the close frame across two write() calls. Both must happen
+    // while the socket is still corked, so they leave in the uncork flush.
+    expect(corked.includes("101 Switching Protocols")).toBe(true);
+    expect(corked.includes(Buffer.from([0x88]))).toBe(true);
+    expect(corked.includes(Buffer.from([0x11, 0x31]))).toBe(true);
+    await client.close();
+  });
+
+  it("close code 4401 is a bind failure when error is emitted first", async () => {
+    const peer = new ScriptedPeer();
+    let bindFailures = 0;
+    let reconnectSleeps = 0;
+    const client = new WsDoorSessionClient({
+      wsBaseUrl: "ws://127.0.0.1:9",
+      bind: sessionBindParams(generateKeypair(), DOOR_ID, EPOCH + 11),
+      onBindFailed: () => {
+        bindFailures += 1;
+      },
+      sleep: () => {
+        reconnectSleeps += 1;
+        return new Promise<void>(() => undefined);
+      },
+      createWebSocket: () => peer
+    });
+
+    const pending = client.connect();
+    peer.emitError(new Error("read ECONNRESET"));
+    peer.emitClose(WS_SESSION_BIND_FAILED);
+    await expect(pending).rejects.toMatchObject({ code: "session_invalid" });
+    expect(bindFailures).toBe(1);
+    expect(reconnectSleeps).toBe(0);
+    await client.close();
+  });
+
+  it("close code 4401 after open is a bind failure, not a successful connect", async () => {
+    const peer = new ScriptedPeer();
+    let bindFailures = 0;
+    const client = new WsDoorSessionClient({
+      wsBaseUrl: "ws://127.0.0.1:9",
+      bind: sessionBindParams(generateKeypair(), DOOR_ID, EPOCH + 11),
+      onBindFailed: () => {
+        bindFailures += 1;
+      },
+      sleep: () => new Promise<void>(() => undefined),
+      createWebSocket: () => peer
+    });
+
+    const pending = client.connect();
+    peer.emitOpen();
+    // The Door's 101 and close(4401) are one write, so the close is already
+    // buffered when `open` fires. Deliver it before yielding to the loop.
+    peer.emitClose(WS_SESSION_BIND_FAILED);
+    await expect(pending).rejects.toMatchObject({ code: "session_invalid" });
+    expect(bindFailures).toBe(1);
+    await client.close();
+  });
+
+  it("a transport error with a non-4401 close is still door_unavailable", async () => {
+    const peer = new ScriptedPeer();
+    const client = new WsDoorSessionClient({
+      wsBaseUrl: "ws://127.0.0.1:9",
+      bind: sessionBindParams(generateKeypair(), DOOR_ID, EPOCH + 11),
+      createWebSocket: () => peer
+    });
+
+    const pending = client.connect();
+    peer.emitError(new Error("connect ECONNREFUSED"));
+    peer.emitClose(1006);
+    await expect(pending).rejects.toMatchObject({
+      code: "door_unavailable",
+      message: "WebSocket connection error"
+    });
+    await client.close();
+  });
+
+  it("a non-4401 close after open is door_unavailable, not 'before open'", async () => {
+    const peer = new ScriptedPeer();
+    const client = new WsDoorSessionClient({
+      wsBaseUrl: "ws://127.0.0.1:9",
+      bind: sessionBindParams(generateKeypair(), DOOR_ID, EPOCH + 11),
+      createWebSocket: () => peer
+    });
+
+    const pending = client.connect();
+    peer.emitOpen();
+    peer.emitClose(1006);
+    await expect(pending).rejects.toMatchObject({
+      code: "door_unavailable",
+      message: "connection closed before the session was established (code 1006)"
+    });
     await client.close();
   });
 
