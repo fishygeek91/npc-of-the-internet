@@ -232,6 +232,41 @@ describe("door-sdk schemas", () => {
     ).toThrow();
   });
 
+  it("accepts 2^53-1 and rejects 2^53 for epoch and seq", () => {
+    const maxSafe = Number.MAX_SAFE_INTEGER;
+    const twoTo53 = 2 ** 53;
+    expect(maxSafe).toBe(9_007_199_254_740_991);
+    expect(twoTo53).toBe(9_007_199_254_740_992);
+
+    const heartbeat = {
+      protocol_version: DOOR_PROTOCOL_VERSION,
+      door_id: DOOR_ID,
+      session_pubkey: keys.sessionPubkey,
+      issued_at: ISSUED_AT,
+      sig: encodeSignature(sign(new Uint8Array([1]), generateKeypair().privateKey))
+    };
+
+    expect(
+      HeartbeatRequestSchema.safeParse({ ...heartbeat, epoch: maxSafe, seq: maxSafe }).success
+    ).toBe(true);
+
+    const epochTooBig = HeartbeatRequestSchema.safeParse({
+      ...heartbeat,
+      epoch: twoTo53,
+      seq: 1
+    });
+    expect(epochTooBig.success).toBe(false);
+    expect(epochTooBig.error?.issues.some((issue) => issue.path.includes("epoch"))).toBe(true);
+
+    const seqTooBig = HeartbeatRequestSchema.safeParse({
+      ...heartbeat,
+      epoch: 1,
+      seq: twoTo53
+    });
+    expect(seqTooBig.success).toBe(false);
+    expect(seqTooBig.error?.issues.some((issue) => issue.path.includes("seq"))).toBe(true);
+  });
+
   it("rejects frame text over 4000 chars", () => {
     expect(() =>
       OutboundFrameSchema.parse({
