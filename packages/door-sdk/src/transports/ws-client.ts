@@ -1,3 +1,4 @@
+import process from "node:process";
 import WebSocket from "ws";
 
 import { DoorError } from "../errors.js";
@@ -137,9 +138,10 @@ export class WsDoorSessionClient {
 
   /**
    * Open the session WebSocket with bind query parameters.
-   * Resolves when the socket is still open after the turn `open` fired on.
-   * Rejects on fatal bind failure (close code 4401). An `error` event does not
-   * hide that code: `close` is what settles this promise.
+   * Resolves only if the socket is still open after the upgrade `head` has
+   * been parsed. A refused bind carries close code 4401 in that head, so this
+   * rejects `session_invalid` before the socket is accepted. An `error` event
+   * does not hide that code: `close` is what settles this promise.
    */
   connect(): Promise<void> {
     if (this.intentionallyClosed) {
@@ -260,6 +262,7 @@ export class WsDoorSessionClient {
       // Set when `error` fires before `close`. The close code decides the outcome:
       // 4401 is a bind rejection even if the socket also errored (ws does both under load).
       let transportError: Error | undefined;
+      let sawOpen = false;
 
       const settleTransportFailure = (code: number): void => {
         settled = true;
@@ -276,20 +279,20 @@ export class WsDoorSessionClient {
           );
           return;
         }
-        reject(
-          DoorError.fromCode(
-            "door_unavailable",
-            `connection closed before open (code ${String(code)})`
-          )
-        );
+        const detail = sawOpen
+          ? `connection closed before the session was established (code ${String(code)})`
+          : `connection closed before open (code ${String(code)})`;
+        reject(DoorError.fromCode("door_unavailable", detail));
       };
 
       socket.once("open", () => {
-        // A 4401 close frame can already be buffered, or parsed on the next tick
-        // after `open`. A microtask runs before that and would accept a session
-        // the Door has already refused. Wait one turn, then accept only if the
-        // socket is still open and no transport error is pending the close code.
-        setImmediate(() => {
+        sawOpen = true;
+        // The Door corks a refused bind, so the 4401 close frame is in the
+        // upgrade `head`. ws queues the drain of that head with nextTick
+        // before it emits `open`, and this callback is queued after that
+        // drain. `close` then settles the attempt. This does not wait for
+        // a later socket read.
+        process.nextTick(() => {
           if (settled || transportError !== undefined) {
             return;
           }

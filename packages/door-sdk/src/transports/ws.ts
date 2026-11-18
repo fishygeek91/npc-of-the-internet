@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import type { Socket } from "node:net";
+import process from "node:process";
 import WebSocket, { WebSocketServer } from "ws";
 
 import type { Door } from "../door.js";
@@ -108,9 +109,18 @@ export class WsDoorSessionServer {
         socket.destroy();
       });
       try {
-        const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
-        if (pathname !== "/door/session") {
+        const url = new URL(req.url ?? "/", "http://localhost");
+        if (url.pathname !== "/door/session") {
           socket.destroy();
+          return;
+        }
+
+        // Validate before the handshake completes. A rejection must cork the
+        // raw socket: ws calls setNoDelay() after the 101 write and before
+        // close(4401), so those would otherwise be two packets and the client
+        // can accept `open` before it reads the close.
+        if (this.sessionBindRejection(url) !== null) {
+          this.upgradeRejectedBind(wss, req, socket, head);
           return;
         }
 
@@ -299,14 +309,54 @@ export class WsDoorSessionServer {
   }
 
   /**
+   * Finish the handshake for a bind that {@link sessionBindRejection} already
+   * refused, keeping the 101 response and the 4401 close in one write.
+   */
+  private upgradeRejectedBind(
+    wss: WebSocketServer,
+    req: IncomingMessage,
+    socket: Socket,
+    head: Buffer
+  ): void {
+    socket.cork();
+    let uncorked = false;
+    const uncork = (): void => {
+      if (uncorked) {
+        return;
+      }
+      uncorked = true;
+      socket.uncork();
+    };
+    try {
+      wss.handleUpgrade(req, socket, head, (ws) => {
+        this.handleConnectionSafely(ws, req);
+        // Next tick, not now: every write in this turn (the 101 inside
+        // handleUpgrade and the close frame in the callback) stays buffered
+        // until the callback returns. ws then delivers the close frame to the
+        // client in the upgrade `head`.
+        process.nextTick(uncork);
+      });
+    } catch {
+      uncork();
+      socket.destroy();
+      return;
+    }
+    // handleUpgrade does not call back when it aborts the handshake.
+    process.nextTick(uncork);
+  }
+
+  /**
    * Attach the socket error listener before any check, then run binding. Any
    * unexpected throw terminates only this socket.
    */
   private handleConnectionSafely(socket: WebSocket, req: IncomingMessage): void {
-    // ws emits 'error' for protocol violations (unmasked frames, oversize payloads);
-    // without a listener that is an uncaught exception. A bind rejection has
-    // already called close(4401), which moves the socket to CLOSING. terminate()
-    // there sends RST, and the peer observes 1006 or `error` instead of 4401.
+    // ws emits 'error' for protocol violations (unmasked frames, oversize
+    // payloads → close 1009). Missing a listener is an uncaught exception.
+    // ws sets CLOSING before that 'error', and also before 'error' when a
+    // close is already in progress (including close(4401)). terminate() on a
+    // CLOSING socket sends RST, so the peer would see 1006 instead of 4401
+    // or the spec's 1009, plus it would skip ws's own end() and 30s close
+    // timer. terminate() runs only if 'error' fires while the socket is OPEN.
     socket.on("error", () => {
       if (socket.readyState === WebSocket.CLOSING || socket.readyState === WebSocket.CLOSED) {
         return;
@@ -366,6 +416,24 @@ export class WsDoorSessionServer {
     socket.on("close", () => {
       this.clients.delete(client);
     });
+  }
+
+  /**
+   * Close reason when this request must be refused with 4401, or null when
+   * the query binds to the active session. {@link Door.bindSession} only verifies.
+   */
+  private sessionBindRejection(url: URL): string | null {
+    const bindResult = this.parseBindParams(url.searchParams);
+    if (bindResult.ok === false) {
+      return bindResult.message;
+    }
+    try {
+      this.door.bindSession(bindResult.params);
+      return null;
+    } catch (error) {
+      const code = error instanceof DoorError ? error.code : "internal_error";
+      return `session bind failed: ${code}`;
+    }
   }
 
   private parseBindParams(

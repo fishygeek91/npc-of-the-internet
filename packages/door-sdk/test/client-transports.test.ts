@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import type { Socket } from "node:net";
 
 import {
   canonicalize,
@@ -111,6 +112,30 @@ function sessionBindParams(
     session_pubkey: sessionPubkey,
     session_sig: encodeSignature(sign(payload, session.privateKey))
   };
+}
+
+type RecordedWrite = {
+  corked: boolean;
+  bytes: Buffer;
+};
+
+/**
+ * Record each `socket.write` and whether the socket was corked. A refused bind
+ * must write the 101 response and the 4401 close frame while corked; otherwise
+ * they leave as two packets and `connect()` can resolve before the close.
+ */
+function recordSocketWrites(socket: Socket, into: RecordedWrite[]): void {
+  const originalWrite = socket.write.bind(socket);
+  const recordWrite: Socket["write"] = (chunk, encoding, callback) => {
+    const encodingName = typeof encoding === "string" ? encoding : undefined;
+    const bytes = typeof chunk === "string" ? Buffer.from(chunk, encodingName) : Buffer.from(chunk);
+    into.push({ corked: socket.writableCorked > 0, bytes });
+    if (typeof encoding === "function") {
+      return originalWrite(chunk, encoding);
+    }
+    return originalWrite(chunk, encoding, callback);
+  };
+  socket.write = recordWrite;
 }
 
 type OpenListener = () => void;
@@ -709,6 +734,29 @@ describe("WsDoorSessionClient", () => {
     await client.close();
   });
 
+  it("writes the 101 response and close 4401 while the socket is corked", async () => {
+    const writes: RecordedWrite[] = [];
+    env.httpServer.nodeServer.on("connection", (socket) => {
+      recordSocketWrites(socket, writes);
+    });
+    const client = new WsDoorSessionClient({
+      wsBaseUrl: env.wsBaseUrl,
+      bind: sessionBindParams(generateKeypair(), DOOR_ID, EPOCH + 11),
+      createWebSocket: (url) => new WebSocket(url)
+    });
+
+    await expect(client.connect()).rejects.toMatchObject({ code: "session_invalid" });
+    const corked = Buffer.concat(
+      writes.filter((write) => write.corked).map((write) => write.bytes)
+    );
+    // ws may split the close frame across two write() calls. Both must happen
+    // while the socket is still corked, so they leave in the uncork flush.
+    expect(corked.includes("101 Switching Protocols")).toBe(true);
+    expect(corked.includes(Buffer.from([0x88]))).toBe(true);
+    expect(corked.includes(Buffer.from([0x11, 0x31]))).toBe(true);
+    await client.close();
+  });
+
   it("close code 4401 is a bind failure when error is emitted first", async () => {
     const peer = new ScriptedPeer();
     let bindFailures = 0;
@@ -750,9 +798,8 @@ describe("WsDoorSessionClient", () => {
 
     const pending = client.connect();
     peer.emitOpen();
-    // The pre-fix client accepted the socket on a microtask, before a close
-    // frame queued for the next turn could be observed.
-    await Promise.resolve();
+    // The Door's 101 and close(4401) are one write, so the close is already
+    // buffered when `open` fires. Deliver it before yielding to the loop.
     peer.emitClose(WS_SESSION_BIND_FAILED);
     await expect(pending).rejects.toMatchObject({ code: "session_invalid" });
     expect(bindFailures).toBe(1);
@@ -773,6 +820,24 @@ describe("WsDoorSessionClient", () => {
     await expect(pending).rejects.toMatchObject({
       code: "door_unavailable",
       message: "WebSocket connection error"
+    });
+    await client.close();
+  });
+
+  it("a non-4401 close after open is door_unavailable, not 'before open'", async () => {
+    const peer = new ScriptedPeer();
+    const client = new WsDoorSessionClient({
+      wsBaseUrl: "ws://127.0.0.1:9",
+      bind: sessionBindParams(generateKeypair(), DOOR_ID, EPOCH + 11),
+      createWebSocket: () => peer
+    });
+
+    const pending = client.connect();
+    peer.emitOpen();
+    peer.emitClose(1006);
+    await expect(pending).rejects.toMatchObject({
+      code: "door_unavailable",
+      message: "connection closed before the session was established (code 1006)"
     });
     await client.close();
   });
