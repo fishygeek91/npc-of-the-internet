@@ -91,7 +91,7 @@ One script element plus one config object. Embedders do not install a framework.
 
 `data-atlas-url` is required (absolute `http:` or `https:` URL). It may be an Atlas origin or a porch origin that serves `GET /chain/export` (the web porch proxies that path to its server-side Atlas). A porch origin allows a cross-origin shrine: `OPTIONS /chain/export` is `204` with `Access-Control-Allow-Origin: *`, `Access-Control-Allow-Methods: GET`, `Access-Control-Allow-Headers: If-None-Match`, and `Access-Control-Max-Age`. The `GET` response, including `304` and errors, sends `Access-Control-Allow-Origin: *` and `Access-Control-Expose-Headers: ETag`, and never `Access-Control-Allow-Credentials`. `data-porch-url` is optional and is only a link, shown when the verified presence door is the web porch. `data-mount` defaults to `#wanderer-shrine`.
 
-The same fields MAY be supplied as `globalThis.WANDERER_SHRINE` before the script runs. When both are set, the object wins. The object MAY also pin keys:
+The same fields MAY be supplied as `globalThis.WANDERER_SHRINE` before the script runs. When both are set, the object wins for each field it sets. A field the object omits still comes from `data-*`. The object MAY also pin keys:
 
 | Field | Required | Meaning |
 |-------|----------|---------|

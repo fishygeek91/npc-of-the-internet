@@ -77,6 +77,7 @@ describe("VisitorSite", () => {
       ["/", "text/html"],
       ["/app.js", "text/javascript"],
       ["/verify.js", "text/javascript"],
+      ["/shrine.js", "text/javascript"],
       ["/app.css", "text/css"]
     ] as const) {
       const response = await fetch(`${url}${path}`);
@@ -93,6 +94,9 @@ describe("VisitorSite", () => {
     const script = await fetch(`${url}/verify.js`);
     const etag = script.headers.get("etag");
     expect(etag).toMatch(/^"[A-Za-z0-9_-]+"$/u);
+    const shrine = await fetch(`${url}/shrine.js`);
+    expect(shrine.headers.get("etag")).toMatch(/^"[A-Za-z0-9_-]+"$/u);
+    expect(shrine.headers.get("cross-origin-resource-policy")).toBe("cross-origin");
     const cached = await fetch(`${url}/verify.js`, { headers: { "if-none-match": etag ?? "" } });
     expect(cached.status).toBe(304);
     expect(await cached.text()).toBe("");

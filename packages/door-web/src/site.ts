@@ -49,7 +49,7 @@ export function contentSecurityPolicy(): string {
   );
 }
 
-type StaticAsset = { body: Buffer; type: string; etag: string };
+type StaticAsset = { body: Buffer; type: string; etag: string; corp?: string };
 
 /** Load the browser assets shipped in `public/` (read once at startup). */
 function loadAssets(): Map<string, StaticAsset> {
@@ -58,10 +58,13 @@ function loadAssets(): Map<string, StaticAsset> {
     const digest = createHash("sha256").update(body).digest("base64url");
     return { body, type, etag: `"${digest}"` };
   };
+  const shrine = read("shrine.js", "text/javascript; charset=utf-8");
+  shrine.corp = "cross-origin";
   return new Map<string, StaticAsset>([
     ["/", read("index.html", "text/html; charset=utf-8")],
     ["/app.js", read("app.js", "text/javascript; charset=utf-8")],
     ["/verify.js", read("verify.js", "text/javascript; charset=utf-8")],
+    ["/shrine.js", shrine],
     ["/app.css", read("app.css", "text/css; charset=utf-8")]
   ]);
 }
@@ -609,6 +612,9 @@ export class VisitorSite {
       "Cache-Control": "no-cache",
       ETag: asset.etag
     };
+    if (asset.corp !== undefined) {
+      headers["Cross-Origin-Resource-Policy"] = asset.corp;
+    }
     if (ifNoneMatch(req.headers["if-none-match"], asset.etag)) {
       res.writeHead(304, headers);
       res.end();
