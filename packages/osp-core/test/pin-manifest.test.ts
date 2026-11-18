@@ -13,6 +13,7 @@ import {
   generateKeypair,
   SchemaError,
   signPinManifest,
+  VerificationError,
   verifyPinManifest,
   type OspRecord
 } from "../src/index.js";
@@ -37,6 +38,24 @@ function testRecord(seq: number, prev: string | null, marker: string): OspRecord
 
 async function testCid(seq: number, prev: string | null, marker: string): Promise<string> {
   return computeCid(testRecord(seq, prev, marker));
+}
+
+/**
+ * Assert `pending` rejects with a {@link VerificationError} and the given fields.
+ * `toMatchObject` checks the fields and does not check the class.
+ */
+async function expectVerificationError(
+  pending: Promise<unknown>,
+  expected: { reason: string; message: string }
+): Promise<void> {
+  try {
+    await pending;
+  } catch (error: unknown) {
+    expect(error).toBeInstanceOf(VerificationError);
+    expect(error).toMatchObject(expected);
+    return;
+  }
+  throw new Error("expected VerificationError");
 }
 
 describe("pin manifest", () => {
@@ -138,7 +157,7 @@ describe("pin manifest", () => {
       sig: encodeSignature(sigBytes)
     };
 
-    await expect(verifyPinManifest(tampered, soul.publicKey)).rejects.toMatchObject({
+    await expectVerificationError(verifyPinManifest(tampered, soul.publicKey), {
       reason: "pin_manifest_sig",
       message: "pin manifest soul signature verification failed"
     });

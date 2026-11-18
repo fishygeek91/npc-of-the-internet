@@ -134,7 +134,7 @@ function mapVerifyRecordError(record: OspRecord, error: unknown): ChainFailure {
     };
   }
 
-  // Do not guess a ChainRule for unexpected errors (e.g. EncodingError, CID mismatch).
+  // Do not guess a ChainRule for unexpected errors (e.g. EncodingError).
   if (error instanceof Error) {
     throw error;
   }

@@ -31,6 +31,27 @@ export const SSE_MAX_BUFFERED_BYTES = 64 * 1024;
 /** Hard deadline for receiving a whole `POST /api/say` body (slow-body guard). */
 export const SAY_BODY_TIMEOUT_MS = 5_000;
 
+/**
+ * HTTP `error.code` values the porch writes itself.
+ * A failed Atlas export still forwards the upstream code, which is not in this list.
+ */
+type PorchHttpErrorCode =
+  | "atlas_unconfigured"
+  | "forbidden"
+  | "internal_error"
+  | "invalid_json"
+  | "invalid_name"
+  | "invalid_text"
+  | "method_not_allowed"
+  | "not_found"
+  | "not_here"
+  | "quiet_hours"
+  | "rate_limited"
+  | "request_timeout"
+  | "too_large"
+  | "too_many_listeners"
+  | "unsupported_media_type";
+
 const SECURITY_HEADER_BASE: Readonly<Record<string, string>> = {
   "X-Content-Type-Options": "nosniff",
   "Referrer-Policy": "no-referrer",
@@ -428,7 +449,7 @@ export class VisitorSite {
       res.setHeader("Retry-After", String(seconds));
       this.json(res, 429, {
         error: {
-          code: "quiet_hours",
+          code: "quiet_hours" satisfies PorchHttpErrorCode,
           message:
             "the Wanderer has listened to a lot today and is resting until midnight UTC — " +
             "come back then"
@@ -443,7 +464,10 @@ export class VisitorSite {
       const seconds = Math.ceil(decision.retryAfterMs / 1000);
       res.setHeader("Retry-After", String(seconds));
       this.json(res, 429, {
-        error: { code: "rate_limited", message: "a little slower, please" },
+        error: {
+          code: "rate_limited" satisfies PorchHttpErrorCode,
+          message: "a little slower, please"
+        },
         retry_after_s: seconds
       });
       this.options.logger.debug({ retryAfterS: seconds }, "say_rate_limited");
@@ -519,7 +543,7 @@ export class VisitorSite {
       return Promise.resolve({
         kind: "error",
         status: 503,
-        code: "atlas_unconfigured",
+        code: "atlas_unconfigured" satisfies PorchHttpErrorCode,
         message: "chain export is not configured"
       });
     }
@@ -560,7 +584,7 @@ export class VisitorSite {
 
   private writeChainExport(res: ServerResponse, result: ChainExportResult): void {
     if (result.kind === "error") {
-      this.chainExportError(res, result.status, result.code, result.message);
+      this.forwardChainExportError(res, result.status, result.code, result.message);
       return;
     }
     const headers: Record<string, string> = {
@@ -581,7 +605,25 @@ export class VisitorSite {
     res.end(result.body);
   }
 
+  /**
+   * Write a porch-chosen chain-export error.
+   * Upstream Atlas codes are not in {@link PorchHttpErrorCode}; those go through
+   * {@link forwardChainExportError} unchanged.
+   */
   private chainExportError(
+    res: ServerResponse,
+    status: number,
+    code: PorchHttpErrorCode,
+    message: string
+  ): void {
+    this.forwardChainExportError(res, status, code, message);
+  }
+
+  /**
+   * Write a chain-export error body. `code` is a string because a failed Atlas
+   * response forwards `error.code` as Atlas sent it.
+   */
+  private forwardChainExportError(
     res: ServerResponse,
     status: number,
     code: string,
@@ -629,7 +671,12 @@ export class VisitorSite {
     this.fail(res, 405, "method_not_allowed", "method not allowed");
   }
 
-  private fail(res: ServerResponse, status: number, code: string, message: string): void {
+  private fail(
+    res: ServerResponse,
+    status: number,
+    code: PorchHttpErrorCode,
+    message: string
+  ): void {
     this.json(res, status, { error: { code, message } });
   }
 

@@ -113,6 +113,24 @@ function fromStored(stored: StoredExport, ifNoneMatch: string | undefined): Chai
   };
 }
 
+/**
+ * Codes this proxy emits itself.
+ * An Atlas error body is forwarded with that body's own `error.code`.
+ */
+type ProxyChainExportErrorCode = "atlas_timeout" | "atlas_unreachable" | "payload_too_large";
+
+/**
+ * Build a proxy-chosen chain-export error.
+ * The result `code` is still a string so an Atlas wire code can share the same variant.
+ */
+function proxyChainExportError(
+  status: number,
+  code: ProxyChainExportErrorCode,
+  message: string
+): ChainExportResult {
+  return { kind: "error", status, code, message };
+}
+
 /** A pass-through of a successful Atlas export, or a public error. */
 export type ChainExportResult =
   | {
@@ -166,12 +184,7 @@ export async function proxyChainExport(options: {
     bytes = await readBodyCapped(response, maxBytes, abort);
   } catch (error) {
     if (error instanceof ResponseTooLargeError) {
-      return {
-        kind: "error",
-        status: 502,
-        code: "payload_too_large",
-        message: "atlas export is too large"
-      };
+      return proxyChainExportError(502, "payload_too_large", "atlas export is too large");
     }
     return fetchFailed(error);
   }
@@ -206,14 +219,9 @@ export function requestOrigin(
 function fetchFailed(error: unknown): ChainExportResult {
   const name = error instanceof Error ? error.name : "";
   if (name === "TimeoutError" || name === "AbortError") {
-    return { kind: "error", status: 504, code: "atlas_timeout", message: "atlas export timed out" };
+    return proxyChainExportError(504, "atlas_timeout", "atlas export timed out");
   }
-  return {
-    kind: "error",
-    status: 502,
-    code: "atlas_unreachable",
-    message: "atlas export could not be read"
-  };
+  return proxyChainExportError(502, "atlas_unreachable", "atlas export could not be read");
 }
 
 function publicAtlasError(status: number, bytes: Uint8Array): ChainExportResult {
@@ -238,10 +246,5 @@ function publicAtlasError(status: number, bytes: Uint8Array): ChainExportResult 
   ) {
     return { kind: "error", status, code: payload.error.code, message: payload.error.message };
   }
-  return {
-    kind: "error",
-    status: 502,
-    code: "atlas_unreachable",
-    message: "atlas export could not be read"
-  };
+  return proxyChainExportError(502, "atlas_unreachable", "atlas export could not be read");
 }

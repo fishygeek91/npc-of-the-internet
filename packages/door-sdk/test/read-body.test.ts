@@ -207,4 +207,45 @@ describe("HttpDoorConnection cap mapping", () => {
       }
     );
   });
+
+  it("maps an unrecognized wire error code through HttpDoorConnection", async () => {
+    await withServer(
+      (_req, res) => {
+        res.writeHead(401, { "Content-Type": "application/json" });
+        res.end(
+          JSON.stringify({
+            error: {
+              code: "bogus",
+              message: "bad sig",
+              details: { field: "sig" }
+            }
+          })
+        );
+      },
+      async (baseUrl) => {
+        const error = await new HttpDoorConnection({ baseUrl, timeoutMs: 2_000 })
+          .hello({
+            protocol_version: DOOR_PROTOCOL_VERSION,
+            soul_pubkey: encodePublicKey(generateKeypair().publicKey)
+          })
+          .then(
+            () => {
+              throw new Error("expected door_unavailable");
+            },
+            (caught: unknown) => caught
+          );
+        expect(error).toBeInstanceOf(DoorError);
+        if (!(error instanceof DoorError)) {
+          throw new Error("expected DoorError");
+        }
+        expect(error.code).toBe("door_unavailable");
+        expect(error.message).toBe("bad sig");
+        expect(error.httpStatus).toBe(401);
+        expect(error.details).toEqual({
+          field: "sig",
+          unrecognized_code: "bogus"
+        });
+      }
+    );
+  });
 });
