@@ -43,6 +43,28 @@ describe("build output", () => {
     expect(linkHtml).toContain("click");
   });
 
+  // marked 18 keeps trailing text inside declaration / PI / CDATA tokens.
+  it("escapes HTML declarations and processing instructions, including trailing text", () => {
+    const doctype = renderJournalHtml("<!DOCTYPE html> trailing");
+    expect(doctype).toBe("&lt;!DOCTYPE html&gt; trailing");
+    expect(doctype.toLowerCase()).not.toContain("<!doctype");
+
+    const processingInstruction = renderJournalHtml("<?php echo 1; ?> trailing");
+    expect(processingInstruction).toBe("&lt;?php echo 1; ?&gt; trailing");
+    expect(processingInstruction).not.toContain("<?");
+
+    const cdata = renderJournalHtml("<![CDATA[ x ]]> trailing");
+    expect(cdata).toBe("&lt;![CDATA[ x ]]&gt; trailing");
+    expect(cdata).not.toContain("<![CDATA[");
+  });
+
+  // marked 18 trims blank lines that used to sit between an HTML block and the next paragraph.
+  it("trims blank lines around a block-level script tag without emitting the raw tag", () => {
+    const html = renderJournalHtml("hello\n\n<script>alert(1)</script>\n\nworld");
+    expect(html).toBe("<p>hello</p>\n&lt;script&gt;alert(1)&lt;/script&gt;<p>world</p>\n");
+    expect(html.toLowerCase()).not.toContain("<script");
+  });
+
   it("renders ordinary markdown links and images without throwing", () => {
     const titled = renderJournalHtml('[x](https://example.com "t")');
     expect(titled).toContain('<a href="https://example.com" title="t">x</a>');

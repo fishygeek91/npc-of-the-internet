@@ -1,10 +1,13 @@
 import { readFileSync } from "node:fs";
 
-import { decodeBase64Url, publicKeyFromPrivate, type Ed25519Keypair } from "@npc/osp-core";
+import {
+  parsePrivateKeyBytes,
+  PrivateKeyParseError,
+  publicKeyFromPrivate,
+  type Ed25519Keypair
+} from "@npc/osp-core";
 
 import { WebDoorError } from "./errors.js";
-
-const DOOR_PRIVATE_KEY_LENGTH = 32;
 
 /** Container `npc` uid/gid pinned in ops Dockerfiles (#84). */
 const NPC_CONTAINER_UID_GID = "10001";
@@ -16,38 +19,36 @@ function isPermissionDenied(error: unknown): boolean {
 }
 
 /**
+ * Map a shared parse failure onto this loader's messages. The path stays here;
+ * the parser never sees it and never includes key bytes.
+ */
+function doorKeyParseMessage(path: string, error: PrivateKeyParseError): string {
+  const failure = error.failure;
+  switch (failure.kind) {
+    case "empty":
+      return `door key file at ${path} is empty`;
+    case "invalid_encoding":
+      return `door key file at ${path} must be 32 raw bytes or base64url: ${failure.detail}`;
+    case "bad_length":
+      return (
+        `door key file at ${path} must decode to 32 bytes, got ` + String(failure.decodedLength)
+      );
+  }
+}
+
+/**
  * Parse a door private key file as either raw 32 bytes or base64url-encoded 32 bytes.
  * Error messages name the path and format problem only — never key material.
  */
-function parseDoorPrivateKeyBytes(fileBytes: Buffer, path: string): Uint8Array {
-  if (fileBytes.length === DOOR_PRIVATE_KEY_LENGTH) {
-    return new Uint8Array(fileBytes);
-  }
-
-  const trimmed = fileBytes.toString("utf8").trim();
-  if (trimmed.length === 0) {
-    throw new WebDoorError("invalid_config", `door key file at ${path} is empty`);
-  }
-
-  let decoded: Uint8Array;
+function parseDoorPrivateKeyBytes(fileBytes: Uint8Array, path: string): Uint8Array {
   try {
-    decoded = decodeBase64Url(trimmed);
+    return parsePrivateKeyBytes(fileBytes);
   } catch (error: unknown) {
-    const detail = error instanceof Error ? error.message : "invalid base64url encoding";
-    throw new WebDoorError(
-      "invalid_config",
-      `door key file at ${path} must be ${String(DOOR_PRIVATE_KEY_LENGTH)} raw bytes or base64url: ${detail}`
-    );
+    if (error instanceof PrivateKeyParseError) {
+      throw new WebDoorError("invalid_config", doorKeyParseMessage(path, error));
+    }
+    throw error;
   }
-
-  if (decoded.length !== DOOR_PRIVATE_KEY_LENGTH) {
-    throw new WebDoorError(
-      "invalid_config",
-      `door key file at ${path} must decode to ${String(DOOR_PRIVATE_KEY_LENGTH)} bytes, got ${String(decoded.length)}`
-    );
-  }
-
-  return decoded;
 }
 
 /**

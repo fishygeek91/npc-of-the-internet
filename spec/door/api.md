@@ -438,3 +438,5 @@ A conforming Door needs:
 4. `POST /door/attest` — core binding per `kind`, sign raw `core` bytes; for `memory`, a witness policy fed by the Door's own residency record.
 
 The reference implementation is the `door-sdk` package in the project repository (`Door` + HTTP/WS transports + `createAiWitness`); the Discord and web Doors are thin platform adapters around it.
+
+In-browser checks of these signatures (porch lines and replica shrines) are specified in [`web.md`](web.md). That contract does not change this wire.

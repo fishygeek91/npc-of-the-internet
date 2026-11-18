@@ -27,6 +27,7 @@ export type MigrateChainToV02Result = {
 
 /**
  * Rewrite a CID string through the migration map when present.
+ * Unknown or malformed strings pass through; this does not validate.
  */
 function remapCid(cid: string, cidMap: ReadonlyMap<string, string>): string {
   return cidMap.get(cid) ?? cid;
@@ -39,7 +40,7 @@ async function migrateMemoryBody(
   body: Extract<OspRecord, { type: "memory" }>["body"],
   blobs: Map<string, Uint8Array>,
   cidMap: ReadonlyMap<string, string>
-): Promise<Extract<OspRecord, { type: "memory" }>["body"]> {
+): Promise<CreateRecordFields["body"]> {
   if (body.kind === "rejected") {
     if (body.candidate_cid === undefined) {
       return body;
@@ -70,11 +71,13 @@ async function migrateMemoryBody(
     return { ...body };
   }
   if ("text_cid" in body) {
-    const next: Extract<OspRecord, { type: "memory" }>["body"] = { ...body };
-    if (body.candidate_cid !== undefined && "candidate_cid" in next) {
-      next.candidate_cid = remapCid(body.candidate_cid, cidMap);
+    if (body.candidate_cid === undefined) {
+      return body;
     }
-    return next;
+    return {
+      ...body,
+      candidate_cid: remapCid(body.candidate_cid, cidMap)
+    };
   }
 
   const textBytes = encodeShardTextBlob(body.text);
@@ -141,7 +144,7 @@ export async function migrateChainToV02(
 
   for (const source of options.records) {
     const oldCid = await computeCid(source);
-    let body: OspRecord["body"] = source.body;
+    let body: CreateRecordFields["body"] = source.body;
 
     if (source.type === "memory") {
       body = await migrateMemoryBody(source.body, blobs, cidMap);

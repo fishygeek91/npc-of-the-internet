@@ -1,19 +1,23 @@
+import type { Cid } from "../crypto/cid.js";
 import type { OspRecord } from "../schemas/index.js";
 
 /** CID and sequence number of the current chain head. */
 export type HeadInfo = {
-  cid: string;
+  /** Content id of the head record. */
+  cid: Cid;
   seq: number;
 };
 
 /** Result of a successful append to the soulchain. */
 export type AppendResult = {
-  cid: string;
+  /** Content id of the appended record. */
+  cid: Cid;
 };
 
 /** Result of storing an osp/0.2 side blob (CID is content-derived). */
 export type PutSideBlobResult = {
-  cid: string;
+  /** Content id of the stored bytes. */
+  cid: Cid;
 };
 
 /** Options for opening a file-backed SoulStore (v0.1). */
@@ -58,7 +62,10 @@ export interface SoulStore {
   /** Return the current head, or null if the chain is empty. */
   head(): Promise<HeadInfo | null>;
 
-  /** Fetch a record by CID. */
+  /**
+   * Fetch a record by CID.
+   * Parameter stays `string` (a {@link Cid} is assignable) so callers need not brand first.
+   */
   get(cid: string): Promise<OspRecord>;
 
   /** Iterate all records in chain order from genesis to head. */

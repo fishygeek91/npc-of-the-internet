@@ -5,12 +5,15 @@ export * from "./schemas/index.js";
 export {
   SchemaError,
   VerificationError,
+  VERIFICATION_REASONS,
   EncodingError,
   StorageError,
   CorruptionError,
   ConcurrentAppendError,
   ChainMismatchError
 } from "./errors.js";
+export type { VerificationReason } from "./errors.js";
+export { SHARD_TEXT_MAX_CODE_POINTS, countCodePoints } from "./shard-bounds.js";
 export type {
   HeadInfo,
   AppendResult,
@@ -43,11 +46,22 @@ export { canonicalize } from "./canonical.js";
 export {
   encodeBase64Url,
   decodeBase64Url,
+  asBase64Url,
+  isBase64Url,
   encodePublicKey,
   decodePublicKey,
+  asSoulPublicKey,
+  isSoulPublicKey,
+  SoulPublicKeySchema,
   encodeSignature,
-  decodeSignature
+  decodeSignature,
+  asEd25519Signature,
+  isEd25519Signature,
+  Ed25519SignatureSchema
 } from "./encoding/base64url.js";
+export type { Base64Url, SoulPublicKey, Ed25519Signature } from "./encoding/base64url.js";
+export { parsePrivateKeyBytes, PrivateKeyParseError } from "./encoding/private-key.js";
+export type { PrivateKeyParseFailure } from "./encoding/private-key.js";
 export { generateKeypair, publicKeyFromPrivate, sign, verify } from "./crypto/ed25519.js";
 export type { Ed25519Keypair } from "./crypto/ed25519.js";
 export {
@@ -55,13 +69,24 @@ export {
   CidSchema,
   computeCidFromCanonicalBytes,
   computeCid,
-  isValidCid
+  isValidCid,
+  asCid,
+  parseCid
 } from "./crypto/cid.js";
-export { corePayload, soulPayload, signCore, createRecord, verifyRecord } from "./record.js";
+export type { Cid } from "./crypto/cid.js";
+export {
+  corePayload,
+  soulPayload,
+  signCore,
+  createRecord,
+  createRecordWithSigner,
+  verifyRecord
+} from "./record.js";
 export type {
   CreateRecordFields,
   CreateRecordInput,
   CreateRecordResult,
+  SoulSigner,
   VerifyRecordOptions,
   VerifyRecordResult
 } from "./record.js";

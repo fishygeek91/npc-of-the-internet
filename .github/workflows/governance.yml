@@ -10,7 +10,7 @@ jobs:
   docs-sync:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       - name: Compute changed files
@@ -33,11 +33,9 @@ jobs:
             exit 1
           fi
       - name: "Rule 3: OpenSoul extractability (no inward imports)"
-        run: |
-          if grep -rE "@npc/(runtime|immune|door-sdk|door-discord|door-web|atlas)" packages/osp-core/src packages/osp-cli/src spec/ 2>/dev/null; then
-            echo "::error::osp-core/osp-cli/spec must not depend on other workspace packages (ENGINEERING.md D1 extractability)."
-            exit 1
-          fi
+        run: node scripts/check-extractability.mjs
+      - name: "Rule 3 self-test: extractability checker"
+        run: node --test scripts/check-extractability.test.mjs
       - name: "Rule 4: CHANGELOG.md is generated, not edited"
         run: |
           if grep -q '^CHANGELOG.md$' changed.txt && ! grep -q '^.changeset/' changed.txt; then

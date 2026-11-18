@@ -98,6 +98,30 @@ describe("loadDaemonConfig", () => {
     }
   });
 
+  it("loads treasury-lite tiers without a single-provider key", () => {
+    const env: NodeJS.ProcessEnv = { ...VALID_ENV };
+    delete env.ANTHROPIC_API_KEY;
+    env.NPC_BRAIN_API_KEY = "tier-key";
+    env.NPC_BUDGET_USD = "10";
+    env.NPC_BUDGET_LEDGER_PATH = "/data/runtime/spend.jsonl";
+    env.NPC_BRAIN_TIERS = JSON.stringify([
+      {
+        name: "cheap",
+        baseUrl: "https://example.com/v1",
+        apiKeyEnv: "NPC_BRAIN_API_KEY",
+        model: "tier-cheap",
+        inPricePerMTok: "1",
+        outPricePerMTok: "1"
+      }
+    ]);
+    const config = loadDaemonConfig(env);
+    expect(config.budget?.ledgerPath).toBe("/data/runtime/spend.jsonl");
+    expect(config.budget?.defaultTierName).toBe("cheap");
+    expect(config.budget?.createLedgerIfMissing).toBe(false);
+    expect(config.brain).toBeUndefined();
+    expect(config.brainLimits).toEqual({ maxTokens: 1024, timeoutMs: 60_000 });
+  });
+
   it("loads optional NPC_SOULCHAIN_IPFS_DIR", () => {
     const config = loadDaemonConfig({
       ...VALID_ENV,
@@ -169,6 +193,26 @@ describe("loadDaemonConfig", () => {
       expect(error).toBeInstanceOf(DaemonError);
       if (error instanceof DaemonError) {
         expect(error.envVar).toBe("ATLAS_DOOR_PUBKEYS");
+      }
+    }
+  });
+
+  it("accepts an absolute budget status path and does not echo a relative one", () => {
+    expect(
+      loadDaemonConfig({
+        ...VALID_ENV,
+        NPC_BUDGET_STATUS_PATH: "/data/budget-status/status.json"
+      }).budgetStatusPath
+    ).toBe("/data/budget-status/status.json");
+    const secret = "sk-ant-path-secret";
+    try {
+      loadDaemonConfig({ ...VALID_ENV, NPC_BUDGET_STATUS_PATH: `${secret}/status.json` });
+      expect.unreachable();
+    } catch (error: unknown) {
+      expect(error).toBeInstanceOf(DaemonError);
+      if (error instanceof DaemonError) {
+        expect(error.message).not.toContain(secret);
+        expect(error.envVar).toBe("NPC_BUDGET_STATUS_PATH");
       }
     }
   });

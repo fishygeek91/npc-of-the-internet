@@ -1,5 +1,6 @@
 import { screenText } from "@npc/immune";
 import type { ScreenCategory } from "@npc/immune";
+import { SHARD_TEXT_MAX_CODE_POINTS } from "@npc/osp-core";
 import type { Brain, BrainMessage } from "../brain/types.js";
 import { DISTILLER_RETRY } from "../prompts/distiller/retry.js";
 import { DISTILLER_SYSTEM } from "../prompts/distiller/system.js";
@@ -8,12 +9,14 @@ import { parseBrainShards } from "./parse.js";
 import type { CandidateShard, DistillOptions, TranscriptLine, TranscriptSource } from "./types.js";
 
 const MIN_SHARDS = 1;
+/** Distill keeps at most this many shards. Not an OSP wire bound. */
 const MAX_SHARDS = 20;
 /**
- * Max shard length in UTF-16 code units (`String.length`). Stricter than the side-blob
- * limit of 500 code points, so every shard that passes here encodes as a shard blob.
+ * Max shard length in UTF-16 code units (`String.length`). The ceiling is
+ * {@link SHARD_TEXT_MAX_CODE_POINTS}: a UTF-16 length is never smaller than the
+ * code-point length, so every shard that passes here encodes as a shard blob.
  */
-const MAX_SHARD_UTF16_UNITS = 500;
+const MAX_SHARD_UTF16_UNITS = SHARD_TEXT_MAX_CODE_POINTS;
 
 type ParsedShard = { text: string; tags?: string[] };
 

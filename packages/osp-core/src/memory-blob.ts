@@ -2,17 +2,12 @@ import { CID } from "multiformats/cid";
 import { sha256 } from "multiformats/hashes/sha2";
 
 import { canonicalize } from "./canonical.js";
-import { computeCidFromCanonicalBytes } from "./crypto/cid.js";
-import { decodeBase64Url, encodeBase64Url } from "./encoding/base64url.js";
+import { computeCidFromCanonicalBytes, type Cid } from "./crypto/cid.js";
+import { decodeBase64Url, encodeBase64Url, type Base64Url } from "./encoding/base64url.js";
 import { EncodingError, SchemaError } from "./errors.js";
+import { countCodePoints, SHARD_TEXT_MAX_CODE_POINTS } from "./shard-bounds.js";
 
-const MEMORY_TEXT_MAX_CODE_POINTS = 500;
 const SHA256_DIGEST_LENGTH = 32;
-
-/** Count Unicode code points in a string (not UTF-16 code units). */
-function countCodePoints(text: string): number {
-  return [...text].length;
-}
 
 /**
  * Encode memory or journal prose as side-blob bytes.
@@ -58,14 +53,14 @@ export function decodeMemoryTextBlob(
   return parsed;
 }
 
-/** Encode shard text (≤500 Unicode code points) as side-blob bytes. */
+/** Encode shard text (≤ {@link SHARD_TEXT_MAX_CODE_POINTS} Unicode code points) as side-blob bytes. */
 export function encodeShardTextBlob(text: string): Uint8Array {
-  return encodeMemoryTextBlob(text, { maxCodePoints: MEMORY_TEXT_MAX_CODE_POINTS });
+  return encodeMemoryTextBlob(text, { maxCodePoints: SHARD_TEXT_MAX_CODE_POINTS });
 }
 
-/** Decode shard text side-blob bytes (enforces ≤500 Unicode code points). */
+/** Decode shard text side-blob bytes (enforces ≤ {@link SHARD_TEXT_MAX_CODE_POINTS} Unicode code points). */
 export function decodeShardTextBlob(bytes: Uint8Array): string {
-  return decodeMemoryTextBlob(bytes, { maxCodePoints: MEMORY_TEXT_MAX_CODE_POINTS });
+  return decodeMemoryTextBlob(bytes, { maxCodePoints: SHARD_TEXT_MAX_CODE_POINTS });
 }
 
 /** Encode journal markdown as side-blob bytes (no length cap). */
@@ -79,7 +74,7 @@ export function decodeJournalBlob(bytes: Uint8Array): string {
 }
 
 /** Base64url of the raw sha2-256 digest of `blobBytes`. */
-export async function hashBlobBytes(blobBytes: Uint8Array): Promise<string> {
+export async function hashBlobBytes(blobBytes: Uint8Array): Promise<Base64Url> {
   const digest = await sha256.digest(blobBytes);
   return encodeBase64Url(digest.digest);
 }
@@ -128,8 +123,8 @@ export function assertCidMatchesHash(cid: string, hash: string, fieldPrefix: str
  * Compute CID + content hash for side-blob bytes (dag-json sha2-256 / base64url digest).
  */
 export async function contentAddressSideBlob(blobBytes: Uint8Array): Promise<{
-  cid: string;
-  hash: string;
+  cid: Cid;
+  hash: Base64Url;
 }> {
   const cid = await computeCidFromCanonicalBytes(blobBytes);
   const hash = await hashBlobBytes(blobBytes);

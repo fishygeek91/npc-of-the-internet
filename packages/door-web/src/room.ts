@@ -1,5 +1,13 @@
+import type { OutboundProof } from "./browser/proof.js";
+
 /** Who said a room line. */
 export type RoomAuthorKind = "visitor" | "wanderer" | "system";
+
+/** One Wanderer reaction, with the signed outbound frame that produced it. */
+export type RoomReaction = {
+  emoji: string;
+  proof: OutboundProof;
+};
 
 /** One line in the shared room, as served to browsers. */
 export type RoomMessage = {
@@ -11,13 +19,21 @@ export type RoomMessage = {
   text: string;
   /** `id` of the room message this one answers (Wanderer replies). */
   reply_to?: string;
+  /**
+   * Signed outbound frame for a Wanderer line. Absent for visitors and system
+   * notices, which must not be treated as verified speech.
+   */
+  proof?: OutboundProof;
   /** Distinct reaction emoji the Wanderer left on this message. */
-  reactions: string[];
+  reactions: RoomReaction[];
 };
+
+export type { OutboundProof } from "./browser/proof.js";
 
 /** Events a room emits to its listeners (the SSE fan-out). */
 export type RoomEvent =
-  { type: "message"; message: RoomMessage } | { type: "reaction"; target: string; emoji: string };
+  | { type: "message"; message: RoomMessage }
+  | { type: "reaction"; target: string; emoji: string; proof: OutboundProof };
 
 /** Lines kept in memory. */
 export const ROOM_CAPACITY = 200;
@@ -51,28 +67,46 @@ export class Room {
     return stored;
   }
 
-  /** Record a reaction on a message still in the ring; false when unknown. */
-  react(target: string, emoji: string): boolean {
+  /** Record a reaction on a message still in the ring; false when unknown or full. */
+  react(target: string, emoji: string, proof: OutboundProof): boolean {
     const message = this.messages.find((candidate) => candidate.id === target);
     if (message === undefined) {
       return false;
     }
-    if (!message.reactions.includes(emoji)) {
+    if (!message.reactions.some((reaction) => reaction.emoji === emoji)) {
       if (message.reactions.length >= MAX_REACTIONS) {
         return false;
       }
-      message.reactions.push(emoji);
+      message.reactions.push({ emoji, proof });
     }
-    this.emit({ type: "reaction", target, emoji });
+    this.emit({ type: "reaction", target, emoji, proof });
     return true;
   }
 
   /** The last `limit` lines, oldest first. */
   recent(limit: number): RoomMessage[] {
-    return this.messages.slice(-limit).map((message) => ({
-      ...message,
-      reactions: [...message.reactions]
-    }));
+    return this.messages.slice(-limit).map((message) => {
+      const copy: RoomMessage = {
+        id: message.id,
+        at: message.at,
+        from: message.from,
+        text: message.text,
+        reactions: message.reactions.map((reaction) => ({
+          emoji: reaction.emoji,
+          proof: reaction.proof
+        }))
+      };
+      if (message.name !== undefined) {
+        copy.name = message.name;
+      }
+      if (message.reply_to !== undefined) {
+        copy.reply_to = message.reply_to;
+      }
+      if (message.proof !== undefined) {
+        copy.proof = message.proof;
+      }
+      return copy;
+    });
   }
 
   private emit(event: RoomEvent): void {

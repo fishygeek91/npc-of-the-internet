@@ -40,6 +40,8 @@ const { text, usage } = await brain.complete([
 
 Temperature is omitted from openai-compat requests unless `CompleteOptions.temperature` is set (provider default; OpenAI-compatible APIs typically use 1.0).
 
+OpenAI-compatible response bodies are read only up to 4 MiB (`MAX_PROVIDER_RESPONSE_BYTES`, via door-sdk `readBodyCapped`). A larger body or `Content-Length` fails with `BrainError` (`provider`) before `JSON.parse`; the cause is a plain `Error` and does not include request headers or parameters. `AnthropicBrain` goes through `@anthropic-ai/sdk` `messages.create` and does not read the raw HTTP body.
+
 See `ops/SECRETS.md` for the canonical secret registry and OpenRouter account hardening.
 
 ### Tested openai-compat base URLs
@@ -66,6 +68,57 @@ LIVE_TESTS=1 NPC_BRAIN_PROVIDER=openai-compat NPC_BRAIN_BASE_URL=https://openrou
 ```
 
 CI never sets `LIVE_TESTS`; only unit tests with `FakeBrain`, injected mock clients, and a stub HTTP server run in CI.
+
+### Treasury-lite (T7.12)
+
+When `NPC_BRAIN_TIERS` is set, the residency daemon uses `BudgetedBrain` instead of the single-provider brain. It picks a tier from the remaining operator budget and appends each call to a local JSONL journal (`SpendLedger`). Chat, distill, and journal are separate call kinds on that one brain (distill and journal may step up one tier). The single-provider vars are not required in that mode; `NPC_BRAIN_MAX_TOKENS` and `NPC_BRAIN_TIMEOUT_MS` still apply.
+
+The journal is off the soulchain: public `transaction` records are T7.7. Totals are replayed from the file. A missing file is not treated as zero spend. Create it once with `wanderer budget-init` (`NPC_BUDGET_LEDGER_PATH` must be absolute and must not contain `..`). The command refuses if the file already exists. `NPC_BUDGET_LEDGER_INIT` is rejected. Boot fails if tiers are set and the file is missing. A corrupt line or a torn tail is left untouched and the brain refuses further calls.
+
+A known balance at or below the threshold appends a soul-signed `sleep` record (`osp/0.2`). Unknown spend (a corrupt journal, or a paid tier that reported zero tokens) latches calls but does not publish a balance. While the policy is asleep the daemon appends no heartbeats and does not travel, so Atlas stays `sleeping` until the next attestation. A lost Door session or `wanderer depart` requested in that window is held in memory and runs once when the policy wakes. A restart arrives again and then re-seals `sleep` if the balance is still known and exhausted. `wanderer wake` appends a journal wake line. That clears a provider-exhausted or unknown-spend latch. It does not raise the balance. A new UTC month drops the period's spend on its own. `publicStatus()` is fraction, tier, and sleeping only (no dollar amounts) and does not wait on an in-flight completion.
+
+When `NPC_BUDGET_STATUS_PATH` is set, the daemon writes that snapshot to the file (chat tier). The Discord Door reads it for `/wanderer status`. The file is not a Door protocol message. It has `configured`, `sleeping`, `tier`, and `remainingFraction` only. Unknown spend keeps `remainingFraction` null, and the reply says `remaining_fraction: unknown`. When the path is unset, nothing is written. When the path is set and treasury-lite is off, the file is `configured: false` and the reply says `budget: not configured`. Heartbeat ticks republish the file, including across a month boundary, without taking the completion lock.
+
+| Variable | Required | Default | Purpose |
+|----------|----------|---------|---------|
+| `NPC_BRAIN_TIERS` | no | unset (feature off) | Public JSON array, cheapest first. Each tier names its key env var (`apiKeyEnv`); the JSON must not contain a key. |
+| `NPC_BUDGET_USD` | with tiers | — | Period allowance, decimal dollars (`"10"`, `"10.50"`). |
+| `NPC_BUDGET_THRESHOLD_USD` | no | `0` | Sleep when remaining is at or below this. Decimal dollars. |
+| `NPC_BUDGET_PERIOD` | no | `monthly` | UTC calendar month. Only `monthly` is accepted. |
+| `NPC_BUDGET_LEDGER_PATH` | with tiers | — | Absolute `spend.jsonl` path on the runtime volume. |
+| `NPC_BUDGET_DEFAULT_TIER` | no | cheapest paid tier | Tier name used above 50% remaining. Distill/journal step up one tier in that band. |
+| `NPC_BUDGET_STATUS_PATH` | no | unset | Absolute snapshot file for `/wanderer status`. Fraction, tier, and sleeping only. |
+
+`apiKeyEnv` must be an uppercase name ending in `_API_KEY` (for example `NPC_BRAIN_API_KEY`, not `DISCORD_BOT_TOKEN`). The key is `NAME` or `NAME_FILE` (exactly one). Several tiers may share one name. A missing or rejected name is a config error that names the variable and does not include a value. See `ops/SECRETS.md`.
+
+The prepaid provider key (OpenRouter credits, or a LiteLLM proxy `max_budget` key in front of the tier URL) is the hard wall. The journal is the Wanderer's awareness of that spend. See `ops/RUNBOOK.ghost.md` §10b.
+
+Tier JSON (prices are dollars per million tokens, copied from the provider's price sheet — the numbers below are placeholders):
+
+```json
+[
+  {
+    "name": "free",
+    "baseUrl": "https://openrouter.ai/api/v1",
+    "apiKeyEnv": "NPC_BRAIN_API_KEY",
+    "model": "google/gemini-2.0-flash-exp:free",
+    "inPricePerMTok": "0",
+    "outPricePerMTok": "0",
+    "providerAllowlist": ["deepinfra"]
+  },
+  {
+    "name": "cheap",
+    "baseUrl": "https://openrouter.ai/api/v1",
+    "apiKeyEnv": "NPC_BRAIN_API_KEY",
+    "model": "deepseek/deepseek-v4-flash",
+    "inPricePerMTok": "1",
+    "outPricePerMTok": "1",
+    "providerAllowlist": ["deepinfra"]
+  }
+]
+```
+
+OpenRouter tiers require a non-empty `providerAllowlist` taken from that model's live endpoints list (`ops/TROUBLESHOOTING.md`); the slugs above only show the shape. Bands: above 50% remaining uses the default tier (distill/journal escalate one tier); 10–50% uses the cheaper of the default tier and the cheapest paid tier, so a zero-price default is never replaced by a paid tier as the budget falls; below 10% uses a zero-price tier only; at or below the threshold, or an unknown journal, no model is called. A paid tier that reports zero tokens is treated as unknown spend and latches sleep. A zero-price tier may record a zero cost.
 
 ## Self-Composer (T2.2)
 
@@ -128,7 +181,7 @@ const shards: CandidateShard[] = await distillTranscripts(source, brain, {
 
 Prompt templates live at `src/prompts/distiller/` (TS string constants, strategy a).
 
-**Behavior:** each transcript line passes through `@npc/immune` `screenText` before the Brain call — failing lines are dropped and `onScreenReject` is notified (category only, never payload text); Zod-parse Brain JSON (`{ shards: [{ text, tags? }] }`); one malformed-output retry; empty or over-length shards dropped (≤500 UTF-16 code units, i.e. `String.length` — never more than the spec's 500 code points; reject, not truncate); repeated texts dropped (first wins); output shards are screened again with optional PII allowlist; no surviving shard is `DistillError` `"too_few_shards"` or `"screen_reject"` (with `categories`, never payload text) — `Session.depart` treats both as "no memories"; the transcript source is destroyed after a successful read (success or failure) so raw transcripts do not linger on disk.
+**Behavior:** each transcript line passes through `@npc/immune` `screenText` before the Brain call — failing lines are dropped and `onScreenReject` is notified (category only, never payload text); Zod-parse Brain JSON (`{ shards: [{ text, tags? }] }`); one malformed-output retry; empty or over-length shards dropped (≤ `SHARD_TEXT_MAX_CODE_POINTS` UTF-16 code units, i.e. `String.length` — the same number as the spec's code-point cap, so a kept shard always encodes; reject, not truncate); repeated texts dropped (first wins); output shards are screened again with optional PII allowlist; no surviving shard is `DistillError` `"too_few_shards"` or `"screen_reject"` (with `categories`, never payload text) — `Session.depart` treats both as "no memories"; the transcript source is destroyed after a successful read (success or failure) so raw transcripts do not linger on disk.
 
 **Out of scope:** soulchain append (`Session.depart` witnesses and appends; see [Departure](#departure-witnessed-memory)).
 

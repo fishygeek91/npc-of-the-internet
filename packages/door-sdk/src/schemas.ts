@@ -69,7 +69,7 @@ export type Capability = z.infer<typeof CapabilitySchema>;
 const DoorErrorObjectSchema = z.object({
   code: z.string().min(1),
   message: z.string().min(1),
-  details: z.record(z.unknown()).optional()
+  details: z.record(z.string(), z.unknown()).optional()
 });
 
 /** HTTP / WebSocket error body shape. */

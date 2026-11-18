@@ -2,7 +2,9 @@ import {
   computeCid,
   decodeJournalBlob,
   parseResidency as parseOspResidency,
-  type OspRecord
+  RECORD_TYPES,
+  type OspRecord,
+  type RecordType
 } from "@npc/osp-core";
 
 import { AtlasError } from "./errors.js";
@@ -81,19 +83,6 @@ export type JournalsResponse = {
   total: number;
   verified: boolean;
 };
-
-const RECORD_TYPES = [
-  "genesis",
-  "memory",
-  "drift",
-  "decision",
-  "transaction",
-  "attestation",
-  "sleep",
-  "tombstone"
-] as const;
-
-type RecordType = (typeof RECORD_TYPES)[number];
 
 function isRecordType(value: string): value is RecordType {
   return (RECORD_TYPES as readonly string[]).includes(value);
@@ -198,7 +187,11 @@ export function parseResidency(residency: string): { door_id: string; epoch: num
 /**
  * Derive Wanderer presence state from chain records.
  * Scans newest to oldest: a `sleep` record before any attestation means sleeping
- * (do not fake presence after the soul has recorded sleep). When present, `since` is
+ * (do not fake presence after the soul has recorded sleep). A later attestation,
+ * including a heartbeat, clears that. The runtime withholds heartbeats and travel
+ * while the budget policy is asleep so this stays sleeping until the next
+ * attestation after wake. A boot while asleep appends a new arrival and then
+ * another sleep; sleeping is the state once that sleep is newest. When present, `since` is
  * the start of the uninterrupted stay at the current Door (see {@link findStaySince});
  * otherwise it is the time of the deciding record.
  */

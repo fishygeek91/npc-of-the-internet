@@ -41,7 +41,7 @@ A Door restart supersedes the open residency without a departure, and the Wander
 
 **Torn-tail policy:** incomplete last line is ignored; intact prefix remains readable; `verified` is `false` when chain verification fails.
 
-**CORS:** `@fastify/cors` with `origin: true` and `methods: ["GET"]` (for door-web and other browser clients).
+**CORS:** `@fastify/cors` with `origin: true`, `methods: ["GET"]`, and `ETag` exposed (`Access-Control-Expose-Headers`) so a page on another origin can send `If-None-Match` (for door-web and replica shrines).
 
 **Unreadable chain:** `503` with `{ error: { code: "chain_unreadable", message: "chain is unreadable" } }`. Detail (including filesystem paths) is logged server-side only. Unreadable snapshots are not cached, so repairing `blobs/` recovers on the next request without an append/restart.
 
@@ -52,6 +52,14 @@ All successful responses include `verified: boolean` where applicable.
 ### `GET /state`
 
 Wanderer presence snapshot.
+
+### `GET /chain/export`
+
+Full chain for in-browser verification (`spec/door/web.md`). Not a summary.
+
+Returns `{ records, doorPublicKeys, blobs }`. `records` are the full signed bodies in chain order, so an `osp/0.1` shard's inline `text` is included (`GET /records` serves summaries instead). `doorPublicKeys` is door id → base64url **public** key (the `ATLAS_DOOR_PUBKEYS` set; private keys are not a field). `blobs` is journal side-blob CID → base64url bytes; shard `text_cid` blobs are omitted, and so is any CID named by a tombstone `blob_cid`. Missing CIDs are unavailable, not erased. There is no `verified` field.
+
+`200` includes `ETag` and `Cache-Control: no-cache`. `If-None-Match` of that tag (or `*`) returns `304` with an empty body. `503 chain_unreadable` uses the same error object as the other routes.
 
 ### `GET /chain/head`
 
@@ -126,4 +134,4 @@ Output: `test/fixtures/multi-residency/` (an `osp/0.2` chain with side blobs) pl
 pnpm --filter @npc/atlas test
 ```
 
-Coverage includes read-only guarantees, lock coexistence, state branches, torn-tail handling, reload after append, pagination, journals ordering (journal records and legacy shard journals), residency counts and travel, erased journal markers, and leak safety for shard text.
+Coverage includes read-only guarantees, lock coexistence, state branches, torn-tail handling, reload after append, pagination, journals ordering (journal records and legacy shard journals), residency counts and travel, erased journal markers, leak safety for shard text, and `GET /chain/export` (public keys only, journal blobs, `ETag`).

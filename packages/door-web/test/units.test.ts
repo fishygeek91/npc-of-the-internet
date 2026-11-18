@@ -323,10 +323,23 @@ describe("Room", () => {
     }
     expect(room.recent(1000)).toHaveLength(ROOM_CAPACITY);
     expect(room.recent(1)[0]?.id).toBe(`m${String(ROOM_CAPACITY + 4)}`);
-    expect(room.react("m0", "👋")).toBe(false);
-    expect(room.react("m10", "👋")).toBe(true);
-    expect(room.react("m10", "👋")).toBe(true);
-    expect(room.recent(1000).find((message) => message.id === "m10")?.reactions).toEqual(["👋"]);
+    const proof = {
+      signed: {
+        type: "outbound" as const,
+        door_id: "web:test",
+        epoch: 1,
+        msg_id: "r",
+        issued_at: "t",
+        body: { reaction: { emoji: "👋", target_msg_id: "m10" } }
+      },
+      sig: "sig"
+    };
+    expect(room.react("m0", "👋", proof)).toBe(false);
+    expect(room.react("m10", "👋", proof)).toBe(true);
+    expect(room.react("m10", "👋", proof)).toBe(true);
+    expect(room.recent(1000).find((message) => message.id === "m10")?.reactions).toEqual([
+      { emoji: "👋", proof }
+    ]);
     expect(seen.filter((type) => type === "reaction")).toHaveLength(2);
   });
 });

@@ -6,16 +6,55 @@ OSP soulchain primitives: Zod record schemas, canonical JSON, Ed25519 signing, C
 
 | Area | Exports |
 |------|---------|
-| Schemas | `RecordSchema`, body schemas (`GenesisBodySchema`, …), `OspRecord` types, `RESIDENCY_RE`, `parseResidency` |
+| Schemas | `RecordSchema`, body schemas (`GenesisBodySchema`, …), `OspRecord` types, `RECORD_TYPES`, `RecordType`, `RESIDENCY_RE`, `parseResidency`, `isResidency`, `asResidency`, `makeResidency` |
 | Canonical JSON | `canonicalize` — sorted keys, no whitespace (UTF-16 code-unit order) |
-| Encoding | `encodeBase64Url`, `decodeBase64Url`, `encodePublicKey`, `decodePublicKey`, `encodeSignature`, `decodeSignature` |
-| Ed25519 | `generateKeypair`, `sign`, `verify` |
-| CIDs | `computeCid`, `computeCidFromCanonicalBytes` — dag-json codec + sha2-256 → CIDv1 base32 strings (typically `bagu…`, not `bafy…` which is dag-pb) |
-| Records | `createRecord`, `verifyRecord`, `signCore`, `corePayload`, `soulPayload` |
+| Encoding | `encodeBase64Url`, `decodeBase64Url`, `asBase64Url`, `isBase64Url`, `encodePublicKey`, `decodePublicKey`, `asSoulPublicKey`, `isSoulPublicKey`, `SoulPublicKeySchema`, `encodeSignature`, `decodeSignature`, `asEd25519Signature`, `isEd25519Signature`, `Ed25519SignatureSchema`, `parsePrivateKeyBytes` |
+| Ed25519 | `generateKeypair`, `publicKeyFromPrivate`, `sign`, `verify` (raw `Uint8Array` keys and signatures) |
+| CIDs | `computeCid`, `computeCidFromCanonicalBytes`, `asCid`, `parseCid`, `isValidCid` — dag-json codec + sha2-256 → CIDv1 base32 strings (typically `bagu…`, not `bafy…` which is dag-pb) |
+| Brands | `Cid`, `SoulPublicKey`, `Ed25519Signature`, `Base64Url`, `Residency` — see below |
+| Records | `createRecord`, `createRecordWithSigner`, `verifyRecord`, `signCore`, `corePayload`, `soulPayload` |
+| Shard text | `SHARD_TEXT_MAX_CODE_POINTS` (500), `countCodePoints` — one length for schema and side-blob encoding |
 | Door keys | `parseDoorPublicKeyBinding`, `parseDoorPublicKeyMap`, `hasDoorPublicKeys` — `doorId=base64url` bindings |
 | Chain verify | `verifyRecords`, `verifyChain`, `ChainRule`, `ChainFailure`, `VerifyChainResult`, `VerifyChainOptions` |
 | Pin manifest | `buildUnsignedPinManifest`, `signPinManifest`, `verifyPinManifest`, `encodePinManifest`, `decodePinManifest`, `computeManifestCid`, `listRecordCidsFromIpfsDir`, `buildAndSignPinManifestForIpfsDir` |
 | CAR | `exportSoulchainCar`, `importSoulchainCar` |
+| Browser | `@npc/osp-core/browser` — see below. Not re-exported from the package root. |
+
+`createRecord` signs with a soul private key. `createRecordWithSigner(fields, signSoul)` is the same sealer with a synchronous soul signer (`(bytes: Uint8Array) => Uint8Array`). Both default `spec` to `OSP_SPEC` (`osp/0.1`).
+
+`RECORD_TYPES` is every envelope `type` (including `tombstone`), in schema order. `RecordType` is that union (`OspRecord["type"]`).
+
+`parsePrivateKeyBytes` reads private-key file bytes: exactly 32 raw bytes, otherwise trimmed UTF-8 that is unpadded base64url for 32 bytes. It throws `PrivateKeyParseError` (an `EncodingError`) and does not take a path or include key bytes. `publicKeyFromPrivate` is the Ed25519 public-key derivation callers should use.
+
+### Branded wire strings
+
+`Cid`, `SoulPublicKey`, `Ed25519Signature`, `Base64Url`, and `Residency` are Zod output brands (`schema.brand<"Name">()`, direction `"out"`). The brand is erased at runtime: record bytes, base64url text, and `spec/osp/schema/*.json` stay the same. A plain `string` is not assignable to a brand. A brand is assignable to `string`.
+
+Crypto functions keep raw bytes. `sign`, `verify`, `decodePublicKey`, `decodeSignature`, `VerifyRecordOptions.soulPublicKey`, and door-key maps take `Uint8Array`. `encodePublicKey`, `encodeSignature`, and `encodeBase64Url` are the crossings back to wire brands. `SoulPublicKey` is every 32-byte Ed25519 wire key (soul, session, and Door) — it stops those strings being passed where a CID or signature is required, and it does not distinguish key roles.
+
+| Brand | Produced by | Checked by |
+|-------|-------------|------------|
+| `Cid` | `computeCid`, `computeCidFromCanonicalBytes`, `CidSchema` parse | `asCid`, `parseCid`, `isValidCid` |
+| `SoulPublicKey` | `encodePublicKey`, `SoulPublicKeySchema` parse | `asSoulPublicKey`, `isSoulPublicKey`, `decodePublicKey` |
+| `Ed25519Signature` | `encodeSignature`, `signCore`, `Ed25519SignatureSchema` parse | `asEd25519Signature`, `isEd25519Signature`, `decodeSignature` |
+| `Base64Url` | `encodeBase64Url` (empty string encodes zero bytes) | `asBase64Url`, `isBase64Url` (`decodeBase64Url` also rejects empty input) |
+| `Residency` | `makeResidency({ doorId, epoch })` | `asResidency`, `isResidency`, `parseResidency` |
+
+`makeResidency({ doorId, epoch })` takes the `platform:id` door id `parseResidency` returns (`discord:guild123`) and builds `door:<doorId>/epoch:<n>`. `makeResidency(parseResidency(value))` round-trips. `OspRecord.residency` stays `string | null` because genesis and tombstones require null; brand it with `asResidency` when the value is non-null.
+
+Parsed record CID fields, `soul_pubkey` / `session_pubkey`, `sig`, and `cosigners` are branded outputs. `CreateRecordFields` (and `SoulStore.get`, `expectedCid`, replication journal entries) still accept plain `string`, so a brand or an unbranded string can be passed in. `HeadInfo.cid`, `AppendResult.cid`, and `PutSideBlobResult.cid` are `Cid`. `createRecord` / `verifyRecord` return `cid: Cid`.
+
+## Browser verification
+
+Import `@npc/osp-core/browser` from a porch page or replica shrine. Do not bundle the package root: that entry loads `SoulStore` (`node:fs` and the other Node stores). The browser subpath exports `verifyRecords`, `verifyRecord`, `verify`, `canonicalize`, `computeCid`, `decodePublicKey`, `decodeSignature`, `parseResidency`, `hashBlobBytes`, `cidMatchesHash`, and `decodeJournalBlob`.
+
+`verify` is strict RFC 8032 via `@noble/ed25519`. CID hashing uses `multiformats` sha2-256; a browser bundle resolves the `browser` export (`crypto.subtle`), not `node:crypto`. The contract for PRESENT / ELSEWHERE, session-key checks, and the shrine embed is `spec/door/web.md`.
+
+```typescript
+import { verifyRecords, decodePublicKey } from "@npc/osp-core/browser";
+```
+
+Key generation, `sign`, `createRecord`, pin manifests, and CAR stay on the package root.
 
 ## Chain verification
 
@@ -29,7 +68,7 @@ OSP soulchain primitives: Zod record schemas, canonical JSON, Ed25519 signing, C
 - After a mid-chain `schema_violation`, later `seq_gap` / `broken_prev_link` entries may appear as cascade noise; check rule presence rather than assuming a minimal `failures` list.
 | SoulStore | `SoulStore`, `FileSoulStore`, `IpfsSoulStore`, `DualSoulStore`, `HeadInfo`, `AppendResult`, open-option types |
 | Replication | `enqueueReplication`, `ackReplication`, `readReplicationJournal`, `recoverReplicationJournal`, `listPendingReplication`, `listUnackedForTarget`, enqueue/ack types |
-| Errors | `SchemaError`, `VerificationError`, `EncodingError`, `StorageError`, `CorruptionError`, `ConcurrentAppendError`, `ChainMismatchError` |
+| Errors | `SchemaError`, `VerificationError` (`reason`: `VERIFICATION_REASONS`), `EncodingError`, `PrivateKeyParseError`, `StorageError`, `CorruptionError`, `ConcurrentAppendError`, `ChainMismatchError` |
 
 ## SoulStore
 
@@ -47,7 +86,9 @@ OSP soulchain primitives: Zod record schemas, canonical JSON, Ed25519 signing, C
 
 **Canonical bytes:** only canonical JSON (from `canonicalize`) is written to `chain.jsonl` and blob files; CIDs are computed from those bytes.
 
-**Append verification:** `append` runs the full chain rules (mixed spec, drift evidence, tombstone references, PoP continuity/conflicts, signatures, cosigners) for the candidate against the loaded chain **before** writing anything, so an append can never brick the next open. Structural rule failures throw `ChainMismatchError`; other chain-rule failures throw `VerificationError` (`append rejected: <rule> …`); per-record signature/schema errors keep their original types.
+**Append verification:** `append` runs the full chain rules (mixed spec, drift evidence, tombstone references, PoP continuity/conflicts, signatures, cosigners) for the candidate against the loaded chain **before** writing anything, so an append can never brick the next open. Structural rule failures throw `ChainMismatchError`; other chain-rule failures throw `VerificationError` with `reason: "append_rejected"` (`append rejected: <rule> …`); per-record signature/schema errors keep their original types.
+
+`VerificationError.reason` is `soul_sig`, `cosigner`, `missing_door_keys`, `cid_mismatch`, `pin_manifest_sig`, or `append_rejected`. Chain verification maps `soul_sig` to `bad_soul_sig` and `cosigner` / `missing_door_keys` to `missing_cosigner`. It rethrows `cid_mismatch` (that check compares a caller-supplied CID; it is not a chain rule). The human-readable `message` is unchanged and is what failure text copies.
 
 **Blob writes:** temp file → fsync → rename → directory fsync. A pre-existing blob whose bytes do not hash to its CID (torn by a crash) is replaced atomically; an existing identical blob is fsynced before returning.
 

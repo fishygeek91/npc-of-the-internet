@@ -32,11 +32,17 @@ export type {
 } from "./residency/control-dir.js";
 export {
   consumeDepartRequest,
+  consumeWakeRequest,
   DEPART_REQUEST_FILE,
   requestDaemonDepart,
+  requestDaemonWake,
+  WAKE_REQUEST_FILE,
   watchControlDir,
-  writeDepartRequest
+  writeDepartRequest,
+  writeWakeRequest
 } from "./residency/control-dir.js";
+export { appendSleepRecord } from "./residency/sleep-record.js";
+export type { SleepAppendResult } from "./residency/sleep-record.js";
 
 export type {
   BrainConfig,
@@ -44,10 +50,10 @@ export type {
   OpenAICompatBrainConfig,
   FakeBrainConfig
 } from "./brain/config.js";
-export { loadBrainConfig, isOpenRouterBaseUrl } from "./brain/config.js";
+export { loadBrainConfig, loadBrainLimits, isOpenRouterBaseUrl } from "./brain/config.js";
 export { AnthropicBrain } from "./brain/anthropic-brain.js";
 export type { AnthropicBrainOptions, AnthropicMessagesClient } from "./brain/anthropic-brain.js";
-export { OpenAICompatBrain } from "./brain/openai-compat-brain.js";
+export { OpenAICompatBrain, MAX_PROVIDER_RESPONSE_BYTES } from "./brain/openai-compat-brain.js";
 export type { OpenAICompatBrainOptions, SleepFn, RandomFn } from "./brain/openai-compat-brain.js";
 export { createBrain } from "./brain/create-brain.js";
 export { BrainError, brainErrorLogFields } from "./brain/errors.js";
@@ -62,6 +68,45 @@ export type {
   CompleteOptions
 } from "./brain/types.js";
 export { ZERO_BRAIN_USAGE } from "./brain/types.js";
+export type {
+  BudgetConfig,
+  BudgetSleepReason,
+  BudgetState,
+  BudgetTierConfig,
+  CallKind,
+  ContextSignals,
+  PricedTier,
+  TierChoice
+} from "./brain/budget-policy.js";
+export {
+  CONSERVE_REMAINING_PERCENT,
+  HEALTHY_REMAINING_PERCENT,
+  chooseTier,
+  estimateCostMicros,
+  formatDecimalMicros,
+  loadBudgetConfig,
+  monthlyPeriodStart,
+  nextMonthlyPeriodStart,
+  parseDecimalMicros,
+  tierToOpenAICompatConfig
+} from "./brain/budget-policy.js";
+export type {
+  LedgerEvent,
+  LedgerUntrustedReason,
+  SpendLedgerOptions,
+  SpendView
+} from "./brain/spend-ledger.js";
+export { SpendLedger, initSpendLedgerFile } from "./brain/spend-ledger.js";
+export type {
+  BudgetedBrainOptions,
+  BudgetPublicStatus,
+  IsoClock,
+  SleepRecordDraft,
+  WakeReason
+} from "./brain/budgeted-brain.js";
+export { BudgetedBrain, BudgetError } from "./brain/budgeted-brain.js";
+export { openBudgetedBrain } from "./brain/open-budgeted-brain.js";
+export type { OpenBudgetedBrainOptions } from "./brain/open-budgeted-brain.js";
 export { ComposeError } from "./compose/errors.js";
 export { composeSelf } from "./compose/compose-self.js";
 export type { ComposedSelf, ComposeSelfOptions, MemoryIndexEntry } from "./compose/compose-self.js";

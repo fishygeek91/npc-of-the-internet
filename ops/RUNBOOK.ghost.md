@@ -280,8 +280,49 @@ is mandatory.)
 
 ### 5c. Copy the keys from your Mac
 
-On your **Mac** (assuming your local `soul.key` / `door.key` exist — generate
-them per the repo's ops/SECRETS.md if not):
+> **Where keys come from (there is no keygen script):**
+>
+> - **`soul.key` is created only by `osp init`** during the genesis ceremony —
+>   [`LAUNCH.md`](LAUNCH.md) §2. It generates `soul.key`, `chain.jsonl`, and
+>   `blobs/` together and prints the soul public key to set as `SOUL_PUBLIC_KEY`.
+>   Never create the production soul key with `openssl rand` / `/dev/urandom`
+>   (smoke tests only; [`RUNBOOK.md`](RUNBOOK.md) §1.2).
+> - **`door.key`** is an independent Ed25519 seed — 32 raw bytes is valid:
+>   `openssl rand -out door.key 32` ([`LAUNCH.md`](LAUNCH.md) §1 Option A), or
+>   the programmatic Option B. The finished `ATLAS_DOOR_PUBKEYS` value is
+>   printed by the helper in [`LAUNCH.md`](LAUNCH.md) §1 ("Derive
+>   `ATLAS_DOOR_PUBKEYS` from an existing door private key file"): it prints
+>   `discord:<guild>=<pubkey>,web:home=<pubkey>`. `node ops/scripts/preflight-keys.mjs door <path>`
+>   prints only the raw public key (build `@npc/osp-core` first), not that
+>   binding string.
+>
+> **VPS prerequisites for the commands in this runbook** (not just Docker):
+> Node ≥ 22 (root `package.json` `engines`; CI is Node 22) and `pnpm`. Install
+> Node system-wide — NodeSource, or the official tarball so `node` is on
+> `/usr/bin` — because `sudo` uses a `secure_path` that does not include nvm or
+> other user-local installs. Ubuntu 24.04's apt package `nodejs` is v18, which
+> is older than `engines`. Build
+> the packages preflight and `osp init` import:
+> `pnpm install --frozen-lockfile && pnpm --filter @npc/osp-core --filter @npc/osp-cli build`.
+> `ghostc` runs preflight before every mutating command. Preflight dies without
+> `node` on `PATH` and without `packages/osp-core/dist/index.js` (it derives
+> pubkeys from the key files). `key-backup.sh` needs `age`
+> (`sudo apt install -y age`). After this section hands `keys/` to uid 10001
+> with mode 0700/0600, the login user can no longer read them. Preflight then
+> exits `SOUL_KEY_HOST_PATH not readable: <path>` and does not mention
+> ownership; `key-backup.sh` exits `SOUL_KEY_HOST_PATH missing/unreadable`.
+> After §5d, `rclone.conf` is unreadable for the same reason (`rclone.conf not
+> readable`). Run `ghostc` and the backup scripts via `sudo`, for example
+> `alias ghostc='sudo bash ~/npc/ops/scripts/ghostc.sh'` (the same alias §7
+> writes into `~/.bashrc`). sudo drops your shell's environment; pass variables
+> explicitly with `sudo env VAR=value bash ~/npc/ops/scripts/ghostc.sh …`.
+> File modes use `sudo find`, not `chmod …/*`: the
+> login shell expands `*` before `sudo`, and it cannot list a 0700 directory
+> owned by 10001.
+
+On your **Mac** (if you ran the genesis ceremony locally; if you ran it on the
+server per [`LAUNCH.md`](LAUNCH.md), skip the `scp` and `install` the staged
+keys into place instead):
 
 ```bash
 scp /path/to/soul.key ghost:/var/lib/npc-ghost/keys/soul.key
@@ -292,8 +333,8 @@ Back on the server, hand ownership to the container user and restrict them:
 
 ```bash
 sudo chown -R 10001:10001 /var/lib/npc-ghost/keys
-chmod 700 /var/lib/npc-ghost/keys
-chmod 600 /var/lib/npc-ghost/keys/*
+sudo chmod 700 /var/lib/npc-ghost/keys
+sudo find /var/lib/npc-ghost/keys -type f -exec chmod 600 {} +
 ```
 
 **Encrypted offsite key backup (required):** configure `AGE_RECIPIENT` and a
@@ -301,11 +342,12 @@ chmod 600 /var/lib/npc-ghost/keys/*
 bucket from the chain remote), then on the host (never in the backup sidecar):
 
 ```bash
-bash ops/scripts/key-backup.sh
-# Offline fixture proof (CI / first setup):
+sudo bash ops/scripts/key-backup.sh
+# Offline fixture proof (CI / first setup) — throwaway keys, not the host files:
 bash ops/scripts/key-backup-drill.sh
-# Live verify against host keys + remote latest/ (needs AGE_IDENTITY_PATH):
-NPC_KEY_DRILL_LIVE=1 bash ops/scripts/key-backup-drill.sh
+# Live verify against host keys + remote latest/ (needs AGE_IDENTITY_PATH).
+# sudo so the drill can read the uid-10001 key files:
+sudo env NPC_KEY_DRILL_LIVE=1 bash ops/scripts/key-backup-drill.sh
 ```
 
 Keep the age identity (`AGE_IDENTITY_PATH`) offline (USB / password manager),
@@ -322,7 +364,7 @@ scp /path/to/new-soul.key ghost:~/soul.key.new
 # On server:
 sudo mv ~/soul.key.new /var/lib/npc-ghost/keys/soul.key
 sudo chown 10001:10001 /var/lib/npc-ghost/keys/soul.key
-chmod 600 /var/lib/npc-ghost/keys/soul.key
+sudo chmod 600 /var/lib/npc-ghost/keys/soul.key
 ```
 
 Same pattern for `door.key`. Restart affected services after rotation
@@ -346,16 +388,17 @@ Walk-through for B2: `n` (new remote) → name it `ghost-remote` → storage typ
 ```bash
 cp ~/.config/rclone/rclone.conf /var/lib/npc-ghost/rclone/rclone.conf
 sudo chown -R 10001:10001 /var/lib/npc-ghost/rclone
-chmod 700 /var/lib/npc-ghost/rclone
-chmod 600 /var/lib/npc-ghost/rclone/rclone.conf
+sudo chmod 700 /var/lib/npc-ghost/rclone
+sudo chmod 600 /var/lib/npc-ghost/rclone/rclone.conf
 ```
 
 Or, if you copied keys and rclone config in one session:
 
 ```bash
 sudo chown -R 10001:10001 /var/lib/npc-ghost/keys /var/lib/npc-ghost/rclone
-chmod 700 /var/lib/npc-ghost/keys /var/lib/npc-ghost/rclone
-chmod 600 /var/lib/npc-ghost/keys/* /var/lib/npc-ghost/rclone/rclone.conf
+sudo chmod 700 /var/lib/npc-ghost/keys /var/lib/npc-ghost/rclone
+sudo find /var/lib/npc-ghost/keys -type f -exec chmod 600 {} +
+sudo find /var/lib/npc-ghost/rclone -type f -exec chmod 600 {} +
 ```
 
 Test it:
@@ -440,13 +483,14 @@ docker compose --env-file ops/.env -f ops/compose.ghost.yml up -d
 That's a lot to type; make an alias. Add to `~/.bashrc` on the server:
 
 ```bash
-echo "alias ghostc='bash ~/npc/ops/scripts/ghostc.sh'" >> ~/.bashrc
+echo "alias ghostc='sudo bash ~/npc/ops/scripts/ghostc.sh'" >> ~/.bashrc
 source ~/.bashrc
 ```
 
 `ghostc` runs `ops/scripts/preflight.sh` before mutating compose commands
 (`up`, `restart`, …). Read-only helpers (`ps`, `logs`, `config`) skip preflight;
-set `NPC_SKIP_PREFLIGHT=1` only when deliberately debugging a failed preflight.
+use `sudo env NPC_SKIP_PREFLIGHT=1 bash ~/npc/ops/scripts/ghostc.sh …` only when
+deliberately debugging a failed preflight.
 
 From now on: `ghostc up -d`, `ghostc ps`, `ghostc logs -f runtime`, etc.
 
@@ -613,9 +657,11 @@ wait a minute, `ssh ghost`, `ghostc ps`.
 **Monthly:** `sudo apt update && sudo apt upgrade -y`, reboot if
 `/var/run/reboot-required` exists.
 
-**Monitoring on the cheap:** point a free uptime checker at Discord-side
-behavior, or (post-Gate 2) at the tunnel URL. Until then,
-`ghostc ps` when you think of it.
+**Monitoring:** `bash ops/scripts/watchdog.sh` prints checks and does not page
+Discord. `NPC_WATCHDOG_LIVE=1` pages Discord only when `DISCORD_OPERATOR_WEBHOOK`
+is an https Discord webhook; otherwise the run exits 2 before probes. Names in
+[`SECRETS.md`](SECRETS.md), rules in [`AI-OPERATOR.md`](AI-OPERATOR.md). Do not
+install a timer until a human approves operator alerting. Fallback: `ghostc ps`.
 
 **Residency cycles** run on their own: about once a day the Wanderer distills its
 stay, the Door's AI witness checks each memory (no human review), and it travels to a
@@ -647,6 +693,23 @@ Ghost compose ships with **dual-write paths and Atlas CAR hooks disabled by defa
 6. Verify Atlas serves the CAR: `curl -s http://127.0.0.1:8787/soulchain/manifest` and download `/soulchain-latest.car` via SSH tunnel.
 
 An **empty target list with `NPC_REPLICATION_ENABLED=1`** is valid — the drain runs as a no-op (useful for staging manifest/CAR publishing without push).
+
+---
+
+## 10b. Funding the Wanderer (treasury-lite)
+
+The in-process journal is how the Wanderer knows it is spending. The prepaid key is the hard wall: a bug in the journal cannot draw more than that key allows.
+
+1. Put credits on the provider account the tier key uses (OpenRouter credits are the Ghost path), or point `baseUrl` at a LiteLLM proxy whose key has `max_budget`.
+2. Pick tier prices from that provider's price sheet. The numbers in the runtime README are placeholders.
+3. On the runtime host, once: `wanderer budget-init` with `NPC_BUDGET_LEDGER_PATH` absolute (compose: a path on the runtime volume, for example `/data/runtime/spend.jsonl`). The command refuses if the file exists. Do not set `NPC_BUDGET_LEDGER_INIT`.
+4. Set `NPC_BRAIN_TIERS`, `NPC_BUDGET_USD`, and the ledger path. `apiKeyEnv` must end in `_API_KEY` and should be the prepaid key already mounted for the Brain (`NPC_BRAIN_API_KEY` or `NPC_BRAIN_API_KEY_FILE`).
+5. Restart runtime. If the journal file is missing, boot fails and names `wanderer budget-init`. Logs otherwise show `budget_enabled`. A known balance at or below the threshold appends `sleep` and stops heartbeats and travel. Atlas then reports `sleeping`. A process restart while asleep appends a new arrival and then seals `sleep` again.
+6. To wake a provider-exhausted or unknown-spend latch: `wanderer wake`. That does not add money. Raise `NPC_BUDGET_USD` and restart, or wait for the next UTC month, when the balance itself is the reason. The next heartbeat after the policy is awake is the public wake.
+7. `wanderer depart` while asleep does not travel immediately. The daemon holds that one cycle and runs it when the policy wakes. A Door that restarts during sleep is held the same way, then the residency moves on after wake.
+8. Ghost compose shares `/data/budget-status/status.json` (`NPC_BUDGET_STATUS_PATH`). In Discord, an operator's `/wanderer status` adds `sleeping`, `tier`, and `remaining_fraction`. It does not show dollar amounts. Unknown spend is `remaining_fraction: unknown`. Treasury left off is `budget: not configured`. A missing or rejected file is `budget: unavailable`. The web porch does not show the fraction; Atlas still shows `sleeping` from the chain.
+
+A corrupt line, or a paid call that reported zero tokens, refuses further model calls and does not publish a dollar balance. The daemon still boots in the corrupt case.
 
 ---
 

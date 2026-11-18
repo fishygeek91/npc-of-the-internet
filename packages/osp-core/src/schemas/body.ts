@@ -1,9 +1,11 @@
 import { z } from "zod";
 
 import { CidSchema } from "../crypto/cid.js";
-import { decodeBase64Url, decodePublicKey } from "../encoding/base64url.js";
+import { SoulPublicKeySchema, decodeBase64Url } from "../encoding/base64url.js";
 import { EncodingError } from "../errors.js";
 import { cidMatchesHash } from "../memory-blob.js";
+import { countCodePoints, SHARD_TEXT_MAX_CODE_POINTS } from "../shard-bounds.js";
+import { nonnegativeInteger } from "./nonnegative-integer.js";
 
 /** Historical OSP spec version (inline memory text). */
 export const OSP_SPEC_V01 = "osp/0.1" as const;
@@ -32,45 +34,13 @@ export const IsoUtcTimestampSchema = z
 /** PoP spec version literal for attestation bodies. */
 export const POP_VERSION = "pop/0.1" as const;
 
-const MEMORY_TEXT_MAX_CODE_POINTS = 500;
 const SHA256_DIGEST_LENGTH = 32;
 
-/** Count Unicode code points in a string (not UTF-16 code units). */
-function countCodePoints(text: string): number {
-  return [...text].length;
-}
-
-/** Validates that a string decodes to a 32-byte Ed25519 public key. */
-function validatePublicKeyString(
-  value: string,
-  ctx: z.RefinementCtx,
-  path: (string | number)[]
-): void {
-  try {
-    decodePublicKey(value);
-  } catch (error) {
-    if (error instanceof EncodingError) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: error.message,
-        path
-      });
-      return;
-    }
-    throw error;
-  }
-}
-
-/** Zod string schema for a base64url-encoded 32-byte Ed25519 public key. */
-const PublicKeyStringSchema = z.string().superRefine((value, ctx) => {
-  validatePublicKeyString(value, ctx, []);
-});
-
-/** Memory shard/candidate text: max 500 Unicode code points. */
+/** Memory shard/candidate text: max {@link SHARD_TEXT_MAX_CODE_POINTS} Unicode code points. */
 const MemoryTextSchema = z
   .string()
-  .refine((text) => countCodePoints(text) <= MEMORY_TEXT_MAX_CODE_POINTS, {
-    message: `text must be at most ${MEMORY_TEXT_MAX_CODE_POINTS} Unicode code points`
+  .refine((text) => countCodePoints(text) <= SHARD_TEXT_MAX_CODE_POINTS, {
+    message: `text must be at most ${String(SHARD_TEXT_MAX_CODE_POINTS)} Unicode code points`
   });
 
 /**
@@ -109,7 +79,7 @@ export const TombstoneReasonSchema = z.enum([
 export const GenesisBodySchema = z
   .object({
     charter: z.string(),
-    soul_pubkey: PublicKeyStringSchema,
+    soul_pubkey: SoulPublicKeySchema,
     created_at: IsoUtcTimestampSchema,
     fork_point: CidSchema.optional(),
     fork_reason: z.string().optional()
@@ -321,8 +291,8 @@ export const ArrivalBodySchema = z
     kind: z.literal("arrival"),
     pop_version: z.literal(POP_VERSION),
     door_id: z.string(),
-    epoch: z.number().int().nonnegative(),
-    session_pubkey: PublicKeyStringSchema,
+    epoch: nonnegativeInteger(),
+    session_pubkey: SoulPublicKeySchema,
     at: IsoUtcTimestampSchema
   })
   .strict();
@@ -333,8 +303,8 @@ export const HeartbeatBodySchema = z
     kind: z.literal("heartbeat"),
     pop_version: z.literal(POP_VERSION),
     door_id: z.string(),
-    epoch: z.number().int().nonnegative(),
-    session_pubkey: PublicKeyStringSchema,
+    epoch: nonnegativeInteger(),
+    session_pubkey: SoulPublicKeySchema,
     at: IsoUtcTimestampSchema
   })
   .strict();
@@ -345,7 +315,7 @@ export const DepartureBodySchema = z
     kind: z.literal("departure"),
     pop_version: z.literal(POP_VERSION),
     door_id: z.string(),
-    epoch: z.number().int().nonnegative(),
+    epoch: nonnegativeInteger(),
     at: IsoUtcTimestampSchema
   })
   .strict();
@@ -356,7 +326,7 @@ export const TravelBodySchema = z
     kind: z.literal("travel"),
     pop_version: z.literal(POP_VERSION),
     from_door_id: z.string(),
-    from_epoch: z.number().int().nonnegative(),
+    from_epoch: nonnegativeInteger(),
     to_door_id: z.string().optional(),
     at: IsoUtcTimestampSchema
   })
@@ -369,8 +339,8 @@ export const HandoverBodySchema = z
     pop_version: z.literal(POP_VERSION),
     depart_door_id: z.string(),
     arrive_door_id: z.string(),
-    depart_epoch: z.number().int().nonnegative(),
-    arrive_epoch: z.number().int().nonnegative(),
+    depart_epoch: nonnegativeInteger(),
+    arrive_epoch: nonnegativeInteger(),
     depart_attestation: z.string().optional(),
     rotate_attestation: z.string().optional(),
     arrive_attestation: z.string().optional(),

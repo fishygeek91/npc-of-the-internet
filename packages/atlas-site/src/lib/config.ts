@@ -5,7 +5,7 @@ import { decodePublicKey, EncodingError, parseDoorPublicKeyMap } from "@npc/osp-
 import { z } from "zod";
 
 const fixtureMetaSchema = z.object({
-  doorPublicKeys: z.record(z.string().min(1)).optional()
+  doorPublicKeys: z.record(z.string(), z.string().min(1)).optional()
 });
 
 const atlasSiteConfigSchema = z.object({

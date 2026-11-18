@@ -93,29 +93,36 @@ function collectGenesisFailures(record: OspRecord, isFirstRecord: boolean): Chai
   return failures;
 }
 
-/** Map {@link verifyRecord} errors to chain-level failure rules. */
+/**
+ * Map {@link verifyRecord} errors to chain-level failure rules.
+ *
+ * Classification uses {@link VerificationError.reason}, not the message text.
+ * Messages are copied onto the failure unchanged.
+ */
 function mapVerifyRecordError(record: OspRecord, error: unknown): ChainFailure {
   if (error instanceof VerificationError) {
-    if (error.message === "soul signature verification failed") {
-      return {
-        seq: record.seq,
-        rule: "bad_soul_sig",
-        message: error.message
-      };
-    }
-
-    if (
-      error.message === "doorPublicKeys required when cosigners are present" ||
-      error.message === "cosigners require a non-null residency to resolve Door public key" ||
-      error.message === "residency must match door:<platform>:<door-id>/epoch:<n>" ||
-      error.message.startsWith("no doorPublicKeys entry for residency Door") ||
-      error.message.startsWith("cosigner signature at index")
-    ) {
-      return {
-        seq: record.seq,
-        rule: "missing_cosigner",
-        message: error.message
-      };
+    switch (error.reason) {
+      case "soul_sig":
+        return {
+          seq: record.seq,
+          rule: "bad_soul_sig",
+          message: error.message
+        };
+      case "missing_door_keys":
+      case "cosigner":
+        return {
+          seq: record.seq,
+          rule: "missing_cosigner",
+          message: error.message
+        };
+      case "cid_mismatch":
+      case "pin_manifest_sig":
+      case "append_rejected":
+        // CID mismatch is a caller-supplied expectedCid check, not a ChainRule.
+        // Pin-manifest and append reasons are not produced by verifyRecord.
+        throw error;
+      default:
+        return unexpectedVerificationReason(error.reason);
     }
   }
 
@@ -592,7 +599,7 @@ export async function verifyRecordsWithState(
 export function appendRejectionError(failures: readonly ChainFailure[]): Error {
   const first = failures[0];
   if (first === undefined) {
-    return new VerificationError("append rejected by chain verification");
+    return new VerificationError("append rejected by chain verification", "append_rejected");
   }
   const message = `append rejected: ${first.rule} at seq ${first.seq}: ${first.message}`;
   switch (first.rule) {
@@ -601,9 +608,27 @@ export function appendRejectionError(failures: readonly ChainFailure[]): Error {
     case "forked_head":
     case "bad_genesis":
       return new ChainMismatchError(message);
+    case "bad_soul_sig":
+    case "schema_violation":
+    case "missing_cosigner":
+    case "bad_drift_evidence":
+    case "bad_tombstone":
+    case "bad_session_continuity":
+    case "presence_conflict":
+      return new VerificationError(message, "append_rejected");
     default:
-      return new VerificationError(message);
+      return unexpectedChainRule(first.rule);
   }
+}
+
+/** Compile-time exhaustiveness for {@link VerificationError.reason}. */
+function unexpectedVerificationReason(reason: never): never {
+  throw new Error(`unhandled verification reason: ${String(reason)}`);
+}
+
+/** Compile-time exhaustiveness for {@link ChainRule} in append rejection. */
+function unexpectedChainRule(rule: never): never {
+  throw new Error(`unhandled chain rule: ${String(rule)}`);
 }
 
 /** CorruptionError describing the first chain-verification failure found when a store opens. */

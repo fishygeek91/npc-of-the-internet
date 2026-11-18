@@ -62,7 +62,7 @@ Keys appear sorted here for readability; on the wire they must follow [canonical
 | `decision` | Committed choice with pre-stated reasoning | Spec'd; Navigator selection deferred to v0.3+ |
 | `transaction` | Public wallet movement | **Stub — unused in Ghost** (no wallet) |
 | `attestation` | Proof-of-Presence checkpoints (`arrival`, `heartbeat`, `departure`, `travel`) | Required — residency lifecycle |
-| `sleep` | Public dormancy when survival threshold unmet | **Stub — unused in Ghost** (no wallet/Treasury) |
+| `sleep` | Public dormancy when survival threshold unmet | Treasury-lite emits it when the known balance is at or below the threshold (no wallet) |
 | `tombstone` | Verifiable erasure marker for a side blob (`osp/0.2`) | Required for erasure path under `osp/0.2` |
 
 ---
@@ -343,9 +343,13 @@ Public dormancy when funds fall below survival threshold. Emitted by Treasury.
 | `threshold` | string | yes | Survival threshold from charter. |
 | `as_of` | string | yes | ISO 8601 UTC timestamp. |
 
-### v0.1 Ghost stub
+### Ghost
 
-**No `sleep` records are emitted in Ghost** (no wallet). Schema defined for forward compatibility.
+Treasury-lite (no wallet) emits `sleep` when the budget policy is sleeping and the remaining balance is known. `reason` is that policy reason, for example `balance_below_threshold` or `provider_exhausted`. The body schema is unchanged. Unknown spend does not emit `sleep`: `balance` would be a guess.
+
+Atlas reports `sleeping` while this record is newer than every attestation. A later attestation, including a heartbeat, is the existing public wake. There is no wake record type. While the policy is asleep the runtime appends no heartbeat and does not start a residency cycle, so it does not depart or travel to another Door. A cycle requested in that window (a lost Door session, or an operator depart) is remembered in process memory and runs once when the policy wakes, unless another cycle has already started and ended that residency. A restart does not need that memory.
+
+A boot while asleep still appends its `arrival` and then re-seals `sleep`. A session cannot start without an arrival, and that arrival would otherwise clear public sleep. Atlas can report `present` for the moment between those two appends. Once the new `sleep` is newest, Atlas reports `sleeping` again.
 
 ---
 

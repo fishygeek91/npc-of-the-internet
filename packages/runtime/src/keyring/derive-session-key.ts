@@ -1,10 +1,8 @@
-import * as ed from "@noble/ed25519";
-import { hkdf } from "@noble/hashes/hkdf";
-import { sha512 } from "@noble/hashes/sha512";
+import { hkdf } from "@noble/hashes/hkdf.js";
+import { sha512 } from "@noble/hashes/sha2.js";
+import { publicKeyFromPrivate } from "@npc/osp-core";
 
 import { KeyringError } from "./errors.js";
-
-ed.etc.sha512Sync = (...messages: Uint8Array[]) => sha512(ed.etc.concatBytes(...messages));
 
 /** HKDF salt for PoP session-key derivation (`pop/0.1`). */
 export const SESSION_KEY_DERIVATION_SALT = new TextEncoder().encode("npc-pop/0.1/session-key");
@@ -30,7 +28,7 @@ export function buildSessionKeyInfo(doorId: string, epoch: number): Uint8Array {
 
 /**
  * Derive a deterministic Ed25519 session keypair from soul material, door id, and epoch.
- * Algorithm: HKDF-SHA-512 (32-byte OKM) → Ed25519 seed → public key via `@noble/ed25519`.
+ * Algorithm: HKDF-SHA-512 (32-byte OKM) → Ed25519 seed → public key via `publicKeyFromPrivate`.
  */
 export function deriveSessionKeyMaterial(
   soulPrivateKey: Uint8Array,
@@ -51,6 +49,6 @@ export function deriveSessionKeyMaterial(
     info,
     SOUL_PRIVATE_KEY_LENGTH
   );
-  const publicKey = ed.getPublicKey(privateKey);
+  const publicKey = publicKeyFromPrivate(privateKey);
   return { privateKey, publicKey };
 }

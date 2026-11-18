@@ -1,7 +1,9 @@
 import { EncodingError, parseDoorPublicKeyMap } from "@npc/osp-core";
 import { z } from "zod";
 
-import { loadBrainConfig, type BrainConfig } from "./brain/config.js";
+import { loadBudgetConfig, type BudgetConfig } from "./brain/budget-policy.js";
+import { readBudgetStatusPath } from "./brain/budget-status-file.js";
+import { loadBrainConfig, loadBrainLimits, type BrainConfig } from "./brain/config.js";
 import { BrainError } from "./brain/errors.js";
 import { DaemonError } from "./daemon-errors.js";
 import { loadReplicationConfig, type ReplicationConfig } from "./replication/config.js";
@@ -13,14 +15,35 @@ const daemonConfigSchema = z.object({
   soulKeyPath: z.string().min(1),
   soulchainDir: z.string().min(1),
   soulchainIpfsDir: z.string().min(1).optional(),
-  doorUrls: z.array(z.string().url()).min(1),
+  doorUrls: z.array(z.url()).min(1),
   preferredDoorId: z.string().min(1).optional(),
   doorPublicKeys: z
     .record(z.string(), z.instanceof(Uint8Array))
     .refine((map) => Object.keys(map).length >= 1, {
       message: "doorPublicKeys must contain at least one entry"
     }),
-  brain: z.custom<BrainConfig>(),
+  /**
+   * Single-provider brain. Absent when `NPC_BRAIN_TIERS` is set: that path must
+   * not carry a fake provider a later caller could construct.
+   */
+  brain: z.custom<BrainConfig>().optional(),
+  /**
+   * Shared token cap and timeout. With tiers this is the only limit object;
+   * it is not a model and it is never passed to a provider.
+   */
+  brainLimits: z
+    .object({
+      maxTokens: z.number().int().positive(),
+      timeoutMs: z.number().int().positive()
+    })
+    .optional(),
+  /** Set when `NPC_BRAIN_TIERS` is configured. Absent leaves the single-provider brain. */
+  budget: z.custom<BudgetConfig>().optional(),
+  /**
+   * Absolute fraction-only snapshot path (`NPC_BUDGET_STATUS_PATH`).
+   * Absent when unset. The Door reads this file; it is not a wire message.
+   */
+  budgetStatusPath: z.string().min(1).optional(),
   readyFilePath: z.string().min(1),
   replication: z.custom<ReplicationConfig>(),
   attentionMode: z.enum(["selective", "always"]),
@@ -132,7 +155,8 @@ function parseDoorPublicKeys(value: string): Readonly<Record<string, Uint8Array>
  * Brain vars via {@link loadBrainConfig}.
  * Optional: `CURRENT_DOOR_ID` (boot preference when the chain names no last Door),
  * `NPC_RUNTIME_READY_FILE` (defaults to `/tmp/npc-runtime.ready`), `NPC_ATTENTION_MODE`
- * (`selective` default | `always`), and the residency lifecycle vars of
+ * (`selective` default | `always`), `NPC_BUDGET_STATUS_PATH` (absolute snapshot
+ * file for `/wanderer status`), and the residency lifecycle vars of
  * {@link loadResidencyConfig}.
  */
 export function loadDaemonConfig(env: NodeJS.ProcessEnv = process.env): DaemonConfig {
@@ -144,9 +168,17 @@ export function loadDaemonConfig(env: NodeJS.ProcessEnv = process.env): DaemonCo
   const doorPublicKeysRaw = requireEnv(env, "ATLAS_DOOR_PUBKEYS");
   const doorPublicKeys = parseDoorPublicKeys(doorPublicKeysRaw);
 
-  let brain: BrainConfig;
+  let budget: BudgetConfig | undefined;
+  let brain: BrainConfig | undefined;
+  let brainLimits: { maxTokens: number; timeoutMs: number } | undefined;
+  let budgetStatusPath: string | undefined;
   try {
-    brain = loadBrainConfig(env);
+    brainLimits = loadBrainLimits(env);
+    budget = loadBudgetConfig(env);
+    budgetStatusPath = readBudgetStatusPath(env);
+    if (budget === undefined) {
+      brain = loadBrainConfig(env);
+    }
   } catch (error) {
     if (error instanceof BrainError) {
       throw new DaemonError(error.message, "invalid_config", error.envVar);
@@ -184,7 +216,10 @@ export function loadDaemonConfig(env: NodeJS.ProcessEnv = process.env): DaemonCo
     doorUrls,
     preferredDoorId,
     doorPublicKeys,
-    brain,
+    ...(brain !== undefined ? { brain } : {}),
+    ...(brainLimits !== undefined ? { brainLimits } : {}),
+    ...(budget !== undefined ? { budget } : {}),
+    ...(budgetStatusPath !== undefined ? { budgetStatusPath } : {}),
     readyFilePath,
     replication,
     attentionMode,

@@ -2,6 +2,8 @@
 
 Environment variable names and purposes only. **Never commit values.**
 
+`NPC_BRAIN_TIERS` is public configuration, not a secret. It lists tier names, models, prices, and the *name* of each tier's key variable (`apiKeyEnv`). `apiKeyEnv` must end in `_API_KEY`, so the public list cannot name `DISCORD_BOT_TOKEN` or `STORACHA_TOKEN`. It must not contain a key value. Each referenced variable follows the same rule as the keys below: exactly one of `NAME` or `NAME_FILE` (for example `NPC_BRAIN_API_KEY` / `NPC_BRAIN_API_KEY_FILE`, including the compose file-mount overlay). Those named variables are secrets. Budget settings (`NPC_BUDGET_*`) are documented in `packages/runtime/README.md`. When `NPC_BRAIN_TIERS` is set, the daemon uses it and does not require the single-provider key. Create the journal with `wanderer budget-init`; do not set `NPC_BUDGET_LEDGER_INIT`.
+
 | Name | Purpose |
 |------|---------|
 | `ANTHROPIC_API_KEY` | Anthropic API key for `AnthropicBrain`. Required when `NPC_BRAIN_PROVIDER` is unset or `anthropic`. Exactly one of this or `ANTHROPIC_API_KEY_FILE`. |
@@ -21,6 +23,7 @@ Environment variable names and purposes only. **Never commit values.**
 | `NPC_RESIDENCY_MAX_MS` | Travel once the live residency is older than this (checked every minute). Default `86400000` (daily); `0` = only on operator request; otherwise `≥ 3600000`. |
 | `NPC_RESIDENCY_MIN_LINES` | A timer-triggered departure forms memories only when the stay's transcript holds at least this many lines (default `10`); a quieter stay still travels, without memories. Operator-requested departures need one line. |
 | `NPC_CONTROL_DIR` | Directory the daemon polls for `wanderer depart` requests (default `/tmp/npc-control`; Ghost compose pins it on the `/tmp` tmpfs). |
+| `NPC_BUDGET_STATUS_PATH` | Absolute path of the fraction-only budget snapshot (public config, not a secret). Ghost compose sets `/data/budget-status/status.json` on runtime (read-write) and door-discord (read-only). The file has sleeping, tier, and remaining fraction — no dollar amounts. |
 | `NPC_JOURNAL_DIR` | Directory for residency journal markdown files written at departure (default `/data/published/journals`; Ghost compose pins it on the `published` volume). |
 | `NPC_IMAGE_TAG` | Docker image tag for all Ghost stack services (default: `latest`). Set to `local` when using locally built images. |
 | `NPC_CONTAINER_UID` | Container user id for `npc` in all Ghost images (fixed `10001`). Host `keys/` and `rclone/` bind mounts must be owned by this uid. Not a secret — documented constant. |
@@ -63,7 +66,7 @@ Environment variable names and purposes only. **Never commit values.**
 | `DOOR_WEB_GLOBAL_PER_MIN` | Visitor messages per minute for all door-web visitors together (default `30`). |
 | `DOOR_WEB_MAX_CLIENTS` | Max concurrent door-web SSE streams (default `200`). |
 | `DOOR_WEB_DAILY_MAX` | Visitor messages relayed to the Wanderer per UTC day (default `1500`; bounds LLM cost — beyond it the porch answers `quiet_hours`). |
-| `ATLAS_API_URL` | atlas-api base URL door-web uses to show where the Wanderer is while away (compose pins `http://atlas-api:8787`). |
+| `ATLAS_API_URL` | atlas-api base URL door-web uses server-side (whereabouts, and the `GET /chain/export` pass-through). Compose pins `http://atlas-api:8787`. Browsers are not given this value; making Atlas public is a Gate 2 action. |
 | `WEB_DOMAIN` | Public hostname for the web Door (compose profile `public`: Caddy serves `https://$WEB_DOMAIN` → door-web). Needs a DNS A/AAAA record and ports 80/443 open. Public config. |
 | `NPC_RUNTIME_READY_FILE` | Path written when the residency WebSocket is live (default `/tmp/npc-runtime.ready`). Used by compose healthcheck; optional override. |
 | `NPC_REPLICATION_ENABLED` | Set to `1` or `true` to enable outbound IPFS replication drain in runtime. Default unset (disabled). Empty target set is safe — no push until targets are configured. Gate 2 before live tokens. |
@@ -95,6 +98,8 @@ Environment variable names and purposes only. **Never commit values.**
 | `KEY_BACKUP_RCLONE_CONFIG` | Optional path to a separate `rclone.conf` (different B2 app key) for key backup. |
 | `NPC_KEY_DRILL_LIVE` | Set to `1` to force live key-backup drill (decrypt remote `latest/` and cmp host keys). Set to `0` to force offline fixture mode even if `AGE_IDENTITY_PATH` is set. |
 | `NPC_COMPOSE_SECRETS` | `1`: `ghostc` also loads `ops/compose.secrets.yml` (production openai-compat: bind-mounts `NPC_BRAIN_API_KEY_HOST_PATH` into runtime and both Doors' witnesses, + `DISCORD_BOT_TOKEN_HOST_PATH`). `anthropic`: loads `ops/compose.secrets.anthropic.yml` (`ANTHROPIC_API_KEY_HOST_PATH` + `DISCORD_BOT_TOKEN_HOST_PATH`). Each overlay fails fast if one of its host paths is unset. |
+| `DISCORD_OPERATOR_WEBHOOK` | Discord incoming-webhook URL for operator alerts from `ops/scripts/watchdog.sh`. Host-only. When `NPC_WATCHDOG_LIVE=1`, the script checks this before any probe and exits 2 if it is unset or not `https://discord.com/api/webhooks/…` or `https://discordapp.com/api/webhooks/…`, even on a healthy run. A valid webhook is POSTed only when an alert exists; the URL is given to curl on stdin and is never printed. Not a GitHub Actions secret; `.github/workflows/ops-drill.yml` does not receive it. |
+| `NPC_WATCHDOG_LIVE` | Set to exactly `1` to let the watchdog page Discord. A missing or non-Discord webhook then exits 2 before probes. When the webhook is valid and probe files are unset, the script runs `ghostc ps` and `df` on this machine. Any other value is a dry-run. Not a secret. |
 
 ## OpenRouter account hardening
 

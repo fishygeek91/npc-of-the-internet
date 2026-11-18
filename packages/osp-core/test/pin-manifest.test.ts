@@ -14,7 +14,6 @@ import {
   SchemaError,
   signPinManifest,
   verifyPinManifest,
-  VerificationError,
   type OspRecord
 } from "../src/index.js";
 
@@ -139,7 +138,39 @@ describe("pin manifest", () => {
       sig: encodeSignature(sigBytes)
     };
 
-    await expect(verifyPinManifest(tampered, soul.publicKey)).rejects.toThrow(VerificationError);
+    await expect(verifyPinManifest(tampered, soul.publicKey)).rejects.toMatchObject({
+      reason: "pin_manifest_sig",
+      message: "pin manifest soul signature verification failed"
+    });
+  });
+
+  it("rejects a short manifest signature with the decoder SchemaError", async () => {
+    const soul = generateKeypair();
+    const genesisCid = await testCid(0, null, "bad-sig");
+    const signed = signPinManifest(
+      buildUnsignedPinManifest({
+        headCid: genesisCid,
+        genesisCid,
+        recordCids: [genesisCid],
+        seq: 0,
+        generatedAt: "2026-07-28T00:00:00Z"
+      }),
+      soul.privateKey
+    );
+    const dagJson = decode(encodePinManifest(signed)) as Record<string, unknown>;
+    dagJson.sig = "AAAA";
+
+    expect(() => decodePinManifest(encode(dagJson))).toThrow(SchemaError);
+    try {
+      decodePinManifest(encode(dagJson));
+      expect.fail("expected SchemaError");
+    } catch (error: unknown) {
+      expect(error).toBeInstanceOf(SchemaError);
+      if (!(error instanceof SchemaError)) {
+        throw error;
+      }
+      expect(error.message).toBe("signature must decode to exactly 64 bytes, got 3");
+    }
   });
 
   it("rejects decoded manifest when head or seq disagree with records", async () => {

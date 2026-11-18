@@ -1,12 +1,8 @@
-import * as ed from "@noble/ed25519";
-import { sha512 } from "@noble/hashes/sha512";
-import { sign } from "@npc/osp-core";
+import { publicKeyFromPrivate, sign } from "@npc/osp-core";
 
 import { deriveSessionKeyMaterial } from "./derive-session-key.js";
 import { KeyringError } from "./errors.js";
 import type { Keyring, SessionSigner } from "./types.js";
-
-ed.etc.sha512Sync = (...messages: Uint8Array[]) => sha512(ed.etc.concatBytes(...messages));
 
 const SOUL_PRIVATE_KEY_LENGTH = 32;
 
@@ -24,7 +20,7 @@ export class SingleKeyKeyring implements Keyring {
       );
     }
     this.soulPrivateKey = soulPrivateKey;
-    this.soulPublicKey = ed.getPublicKey(soulPrivateKey);
+    this.soulPublicKey = publicKeyFromPrivate(soulPrivateKey);
   }
 
   signWithSoulKey(payload: Uint8Array): Uint8Array {

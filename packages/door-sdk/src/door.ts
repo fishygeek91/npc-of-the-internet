@@ -7,6 +7,7 @@ import {
   encodePublicKey,
   encodeShardTextBlob,
   hashBlobBytes,
+  SHARD_TEXT_MAX_CODE_POINTS,
   verify,
   type Ed25519Keypair
 } from "@npc/osp-core";
@@ -871,7 +872,7 @@ export class Door {
     } catch {
       throw DoorError.fromCode(
         "core_invalid",
-        "core_invalid: memory core must be a shard or journal body (and shard text ≤ 500 code points)"
+        `core_invalid: memory core must be a shard or journal body (and shard text ≤ ${String(SHARD_TEXT_MAX_CODE_POINTS)} code points)`
       );
     }
     const expectedHash = await hashBlobBytes(blob);

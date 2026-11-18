@@ -4,8 +4,15 @@ import { canonicalize } from "../src/canonical.js";
 import { computeCidFromCanonicalBytes } from "../src/crypto/cid.js";
 import { generateKeypair, sign } from "../src/crypto/ed25519.js";
 import { encodePublicKey, encodeSignature } from "../src/index.js";
-import { createRecord, signCore, soulPayload, verifyRecord } from "../src/record.js";
-import { SchemaError, VerificationError } from "../src/errors.js";
+import {
+  createRecord,
+  createRecordWithSigner,
+  signCore,
+  soulPayload,
+  verifyRecord
+} from "../src/record.js";
+import { OSP_SPEC, OSP_SPEC_V02 } from "../src/schemas/body.js";
+import { SchemaError } from "../src/errors.js";
 
 const PREV_CID = "bagu" + "a".repeat(57);
 const DOOR_ID = "discord:g";
@@ -363,7 +370,10 @@ describe("tamper detection", () => {
         soulPublicKey: soulKeys.publicKey,
         expectedCid: cid
       })
-    ).rejects.toThrow(VerificationError);
+    ).rejects.toMatchObject({
+      reason: "soul_sig",
+      message: "soul signature verification failed"
+    });
   });
 
   it("rejects tampered sig string", async () => {
@@ -387,9 +397,12 @@ describe("tamper detection", () => {
       sig: record.sig.slice(0, 4) + (record.sig[4] === "A" ? "B" : "A") + record.sig.slice(5)
     };
 
-    await expect(verifyRecord(tampered, { soulPublicKey: soulKeys.publicKey })).rejects.toThrow(
-      VerificationError
-    );
+    await expect(
+      verifyRecord(tampered, { soulPublicKey: soulKeys.publicKey })
+    ).rejects.toMatchObject({
+      reason: "soul_sig",
+      message: "soul signature verification failed"
+    });
   });
 
   it("rejects tampered body text", async () => {
@@ -416,9 +429,12 @@ describe("tamper detection", () => {
       }
     };
 
-    await expect(verifyRecord(tampered, { soulPublicKey: soulKeys.publicKey })).rejects.toThrow(
-      VerificationError
-    );
+    await expect(
+      verifyRecord(tampered, { soulPublicKey: soulKeys.publicKey })
+    ).rejects.toMatchObject({
+      reason: "soul_sig",
+      message: "soul signature verification failed"
+    });
   });
 
   it("computes a different CID for tampered canonical bytes", async () => {
@@ -485,7 +501,10 @@ describe("cosigner scope", () => {
         soulPublicKey: soulKeys.publicKey,
         doorPublicKeys: doorPublicKeysForResidency(DOOR_ID, doorKeys.publicKey)
       })
-    ).rejects.toThrow(VerificationError);
+    ).rejects.toMatchObject({
+      reason: "cosigner",
+      message: "cosigner signature at index 0 failed verification over core bytes"
+    });
   });
 
   it("accepts Door signature over core bytes", async () => {
@@ -576,7 +595,8 @@ describe("cosigner scope", () => {
       })
     ).rejects.toMatchObject({
       name: "VerificationError",
-      message: expect.stringMatching(/cosigner signature/)
+      reason: "cosigner",
+      message: expect.stringMatching(/cosigner signature at index 0 failed verification/)
     });
   });
 });
@@ -614,9 +634,71 @@ describe("verifyRecord edge cases", () => {
       soulPrivateKey: soulKeys.privateKey
     });
 
-    await expect(verifyRecord(record, { soulPublicKey: soulKeys.publicKey })).rejects.toThrow(
-      VerificationError
+    await expect(verifyRecord(record, { soulPublicKey: soulKeys.publicKey })).rejects.toMatchObject(
+      {
+        reason: "missing_door_keys",
+        message: "doorPublicKeys required when cosigners are present"
+      }
     );
+  });
+
+  it("reports a missing Door key by discriminant and door id", async () => {
+    const soulKeys = generateKeypair();
+    const doorKeys = generateKeypair();
+    const fields = {
+      seq: 1,
+      prev: PREV_CID,
+      type: "memory" as const,
+      body: {
+        kind: "shard" as const,
+        text: "Needs this Door's key.",
+        distilled_at: "2026-01-02T00:00:00.000Z"
+      },
+      residency: RESIDENCY
+    };
+    const cosig = signCore(fields, doorKeys.privateKey);
+    const { record } = await createRecord({
+      ...fields,
+      cosigners: [cosig],
+      soulPrivateKey: soulKeys.privateKey
+    });
+
+    await expect(
+      verifyRecord(record, {
+        soulPublicKey: soulKeys.publicKey,
+        doorPublicKeys: { [OTHER_DOOR_ID]: doorKeys.publicKey }
+      })
+    ).rejects.toMatchObject({
+      reason: "missing_door_keys",
+      message: `no doorPublicKeys entry for residency Door "${DOOR_ID}"`
+    });
+  });
+
+  it("reports cid_mismatch when expectedCid does not match", async () => {
+    const soulKeys = generateKeypair();
+    const { record, cid } = await createRecord({
+      seq: 1,
+      prev: PREV_CID,
+      type: "memory",
+      body: {
+        kind: "candidate",
+        text: "CID expectation.",
+        proposed_at: "2026-01-02T00:00:00.000Z"
+      },
+      residency: RESIDENCY,
+      cosigners: [],
+      soulPrivateKey: soulKeys.privateKey
+    });
+
+    await expect(
+      verifyRecord(record, {
+        soulPublicKey: soulKeys.publicKey,
+        expectedCid: PREV_CID
+      })
+    ).rejects.toMatchObject({
+      reason: "cid_mismatch",
+      message: `expected CID ${PREV_CID} but computed ${cid}`
+    });
   });
 
   it("rejects records with an extra top-level field", async () => {
@@ -638,5 +720,114 @@ describe("verifyRecord edge cases", () => {
     await expect(
       verifyRecord({ ...record, note: "injected" }, { soulPublicKey: soulKeys.publicKey })
     ).rejects.toThrow(SchemaError);
+  });
+});
+
+describe("createRecordWithSigner", () => {
+  const decisionBody = {
+    decision: "extend_residency",
+    reasoning: "The door still has stories to tell.",
+    decided_at: "2026-01-03T01:00:00.000Z"
+  };
+
+  function decisionFields(cosigners: string[]): {
+    seq: number;
+    prev: string;
+    type: "decision";
+    body: typeof decisionBody;
+    residency: string;
+    cosigners: string[];
+  } {
+    return {
+      seq: 5,
+      prev: PREV_CID,
+      type: "decision",
+      body: decisionBody,
+      residency: RESIDENCY,
+      cosigners
+    };
+  }
+
+  /** Two real Door signatures, deliberately not in ascending order. */
+  function unsortedCosigners(spec?: typeof OSP_SPEC | typeof OSP_SPEC_V02): string[] {
+    const envelope = {
+      seq: 5,
+      prev: PREV_CID,
+      type: "decision" as const,
+      body: decisionBody,
+      residency: RESIDENCY,
+      ...(spec === undefined ? {} : { spec })
+    };
+    const left = signCore(envelope, generateKeypair().privateKey);
+    const right = signCore(envelope, generateKeypair().privateKey);
+    if (left === right) {
+      throw new Error("expected distinct cosigner signatures");
+    }
+    return left < right ? [right, left] : [left, right];
+  }
+
+  async function rejectedMessage(promise: Promise<unknown>): Promise<string> {
+    try {
+      await promise;
+    } catch (error) {
+      expect(error).toBeInstanceOf(SchemaError);
+      if (error instanceof SchemaError) {
+        return error.message;
+      }
+    }
+    throw new Error("expected SchemaError");
+  }
+
+  async function expectByteIdentical(
+    spec: typeof OSP_SPEC | typeof OSP_SPEC_V02 | undefined,
+    cosigners: string[]
+  ): Promise<void> {
+    const soul = generateKeypair();
+    const fields = decisionFields(cosigners);
+    const withSpec = spec === undefined ? fields : { ...fields, spec };
+    const direct = await createRecord({ ...withSpec, soulPrivateKey: soul.privateKey });
+    const shared = await createRecordWithSigner(withSpec, (bytes) => sign(bytes, soul.privateKey));
+
+    expect(shared.cid).toBe(direct.cid);
+    expect(shared.record).toEqual(direct.record);
+    expect(canonicalize(shared.record)).toEqual(canonicalize(direct.record));
+    expect(shared.record.spec).toBe(spec ?? OSP_SPEC);
+    expect(shared.record.cosigners).toEqual([...cosigners].sort());
+  }
+
+  it("matches createRecord bytes and CID for the default spec", async () => {
+    const cosigners = unsortedCosigners();
+    expect(cosigners.join()).not.toBe([...cosigners].sort().join());
+    await expectByteIdentical(undefined, cosigners);
+  });
+
+  it("matches createRecord bytes and CID for explicit OSP_SPEC_V02", async () => {
+    const cosigners = unsortedCosigners(OSP_SPEC_V02);
+    expect(cosigners.join()).not.toBe([...cosigners].sort().join());
+    await expectByteIdentical(OSP_SPEC_V02, cosigners);
+  });
+
+  it("throws SchemaError with the same message as createRecord", async () => {
+    const soul = generateKeypair();
+    const fields = {
+      seq: -1,
+      prev: null,
+      type: "genesis" as const,
+      body: {
+        charter: "# Wanderer",
+        soul_pubkey: encodePublicKey(soul.publicKey),
+        created_at: "2026-01-01T00:00:00.000Z"
+      },
+      residency: null,
+      cosigners: [] as string[]
+    };
+    const directMessage = await rejectedMessage(
+      createRecord({ ...fields, soulPrivateKey: soul.privateKey })
+    );
+    const sharedMessage = await rejectedMessage(
+      createRecordWithSigner(fields, (bytes) => sign(bytes, soul.privateKey))
+    );
+    expect(sharedMessage).toBe(directMessage);
+    expect(sharedMessage.length).toBeGreaterThan(0);
   });
 });

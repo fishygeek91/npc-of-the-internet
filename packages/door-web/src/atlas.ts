@@ -1,4 +1,7 @@
+import { readBodyCapped, ResponseTooLargeError } from "@npc/door-sdk";
 import { z } from "zod";
+
+import { WebDoorError } from "./errors.js";
 
 /** Where the Wanderer is now, per atlas-api `GET /state` (subset). */
 export type WandererWhereabouts = {
@@ -19,8 +22,20 @@ const CACHE_MS = 30_000;
 const TIMEOUT_MS = 2_000;
 
 /**
- * Cached, failure-tolerant reader for atlas-api `GET /state`. At most one request per
- * {@link CACHE_MS} regardless of visitor traffic; any failure yields `null`.
+ * Max `GET /state` response body, in bytes.
+ *
+ * Atlas whereabouts is a handful of short fields (`status`, `door_id`, `epoch`,
+ * `since`, `last_record_at`, `verified`) — a few hundred bytes. 64 KiB leaves
+ * headroom for extra whitespace or a future field and still bounds memory
+ * before Zod parses an operator-configured Atlas.
+ */
+export const ATLAS_STATE_MAX_BYTES = 64 * 1024;
+
+/**
+ * Cached reader for atlas-api `GET /state`. At most one request per {@link CACHE_MS}
+ * regardless of visitor traffic. Network failures and unusable JSON yield `null`.
+ * A body over {@link ATLAS_STATE_MAX_BYTES} throws {@link WebDoorError}
+ * (`payload_too_large`) before `JSON.parse` and is not cached.
  */
 export class AtlasWhereabouts {
   private cached: { at: number; value: WandererWhereabouts | null } | null = null;
@@ -32,40 +47,62 @@ export class AtlasWhereabouts {
     private readonly fetchImpl: typeof fetch = fetch
   ) {}
 
-  /** Latest whereabouts, or `null` when atlas is unreachable or answers nonsense. */
+  /**
+   * Latest whereabouts, or `null` when atlas is unreachable or the payload is nonsense.
+   * Throws {@link WebDoorError} (`payload_too_large`) when the response exceeds
+   * {@link ATLAS_STATE_MAX_BYTES}.
+   */
   async get(): Promise<WandererWhereabouts | null> {
     const now = this.nowMs();
     if (this.cached !== null && now - this.cached.at < CACHE_MS) {
       return this.cached.value;
     }
-    this.inflight ??= this.fetchState().then((value) => {
-      this.cached = { at: this.nowMs(), value };
-      this.inflight = null;
-      return value;
-    });
+    this.inflight ??= this.fetchState()
+      .then((value) => {
+        this.cached = { at: this.nowMs(), value };
+        return value;
+      })
+      .finally(() => {
+        this.inflight = null;
+      });
     return this.inflight;
   }
 
   private async fetchState(): Promise<WandererWhereabouts | null> {
+    const capAbort = new AbortController();
+    let response: Response;
     try {
-      const response = await this.fetchImpl(`${this.baseUrl}/state`, {
-        signal: AbortSignal.timeout(TIMEOUT_MS),
+      response = await this.fetchImpl(`${this.baseUrl}/state`, {
+        signal: AbortSignal.any([AbortSignal.timeout(TIMEOUT_MS), capAbort.signal]),
         headers: { accept: "application/json" }
       });
-      if (!response.ok) {
-        return null;
-      }
-      const parsed = StateSchema.safeParse(await response.json());
-      if (!parsed.success) {
-        return null;
-      }
-      return {
-        status: parsed.data.status,
-        door_id: parsed.data.door_id,
-        since: parsed.data.since ?? parsed.data.last_record_at
-      };
     } catch {
       return null;
     }
+    let json: unknown;
+    try {
+      const bytes = await readBodyCapped(response, ATLAS_STATE_MAX_BYTES, capAbort);
+      if (!response.ok) {
+        return null;
+      }
+      json = JSON.parse(new TextDecoder().decode(bytes));
+    } catch (error) {
+      if (error instanceof ResponseTooLargeError) {
+        throw new WebDoorError(
+          "payload_too_large",
+          `atlas response exceeds ${String(error.maxBytes)} bytes`
+        );
+      }
+      return null;
+    }
+    const parsed = StateSchema.safeParse(json);
+    if (!parsed.success) {
+      return null;
+    }
+    return {
+      status: parsed.data.status,
+      door_id: parsed.data.door_id,
+      since: parsed.data.since ?? parsed.data.last_record_at
+    };
   }
 }

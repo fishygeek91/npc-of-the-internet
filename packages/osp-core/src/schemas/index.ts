@@ -35,8 +35,14 @@ export {
   RecordSchemaBase,
   RecordSchema,
   RESIDENCY_RE,
-  parseResidency
+  parseResidency,
+  isResidency,
+  asResidency,
+  makeResidency
 } from "./envelope.js";
+export type { Residency } from "./envelope.js";
+export { RECORD_TYPES } from "./record-types.js";
+export type { RecordType } from "./record-types.js";
 
 import type { z } from "zod";
 

@@ -7,6 +7,10 @@ lifecycle (depart / re-arrive). Referenced by
 **What this is not:** VPS provisioning, hardening, or `ghostc` host setup — see
 [`RUNBOOK.ghost.md`](RUNBOOK.ghost.md).
 
+**AI operator:** script index, dry-run defaults, and the Gate 2 list are in
+[`AI-OPERATOR.md`](AI-OPERATOR.md). Host checks without paging Discord:
+`bash ops/scripts/watchdog.sh`.
+
 Single-VPS Docker Compose stack for the NPC of the Internet Ghost deployment. All commands assume the repository root as the current working directory unless noted.
 
 ## Architecture
@@ -316,6 +320,11 @@ The 2026-10 osp-core hardening (strict tombstone rule 12, `"__proto__"` key reje
 
 ### 4.4 Bump image tag and deploy
 
+Scripted deploy with verify and rollback is not in this tree yet
+([T7.13b](https://github.com/fishygeek91/npc-of-the-internet/issues/182)). Until
+that script lands, this section is the only upgrade path, and only after Gate 2
+approval. Do not invent a second procedure.
+
 After §4.1–4.3 establish a verifying baseline, deploy the new release:
 
 1. Bump `NPC_IMAGE_TAG` in `ops/.env` to the release tag (for example `v0.2.2`). Pin a tag; avoid `latest` in production.
@@ -365,6 +374,9 @@ The repository ships a self-contained drill that needs no network. It seeds a fi
 ```bash
 bash ops/scripts/restore-drill.sh
 ```
+
+GitHub runs this same offline drill at 16:00 UTC on the 1st
+(`.github/workflows/ops-drill.yml`). That run does not pull the production remote.
 
 This must pass on a machine with `rclone` and `pnpm` installed. Use it to validate your toolchain before attempting a production restore.
 
@@ -669,7 +681,7 @@ binding**: its co-signatures stay on the chain and must keep verifying.
 ### 7.7 Web Door and public HTTPS
 
 door-web is the Ghost's second Door: a public room while the Wanderer is there; otherwise it
-says where the Wanderer is now (via `ATLAS_API_URL` → atlas-api). Its Door protocol (9091)
+says where the Wanderer is now (via `ATLAS_API_URL` → atlas-api, server-side only). Visitors fetch the porch's own `GET /chain/export`; do not publish atlas-api (that is Gate 2). Its Door protocol (9091)
 stays internal; the visitor site is published on `127.0.0.1:8080` only:
 
 ```bash

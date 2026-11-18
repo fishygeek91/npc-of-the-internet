@@ -11,7 +11,6 @@ import {
   encodeShardTextBlob,
   OSP_SPEC_V02,
   signCore,
-  generateKeypair,
   encodePublicKey,
   FileSoulStore,
   verifyRecords,
@@ -20,8 +19,22 @@ import {
   type OspRecord,
   type SoulStore,
   type HeadInfo,
-  type AppendResult
+  type AppendResult,
+  type ChainRule
 } from "../src/index.js";
+import {
+  DOOR,
+  EXTRA_DOOR,
+  OTHER_DOOR,
+  OTHER_SESSION,
+  SESSION,
+  SOUL
+} from "./helpers/fixed-keys.js";
+
+/** Replayable keys. Failing cases use these instead of a fresh generateKeypair(). */
+const soul = SOUL;
+const door = DOOR;
+const session = SESSION;
 
 const RESIDENCY = "door:discord:g/epoch:1";
 const DOOR_ID = "discord:g";
@@ -239,25 +252,20 @@ async function createValidMiniChain(
   return { genesis, arrival, shard, drift };
 }
 
-function expectInvalid(result: Awaited<ReturnType<typeof verifyRecords>>, rule: string): void {
+/**
+ * Assert the chain is invalid and `rule` is the first failure.
+ * Later cascade rules stay in the assertion message.
+ */
+function expectInvalid(result: Awaited<ReturnType<typeof verifyRecords>>, rule: ChainRule): void {
   expect(result.valid).toBe(false);
   if (result.valid) {
     return;
   }
-  expect(result.failures.some((failure) => failure.rule === rule)).toBe(true);
+  const rules = result.failures.map((failure) => `${failure.rule}@${String(failure.seq)}`);
+  expect(result.failures[0]?.rule, rules.join(", ")).toBe(rule);
 }
 
 describe("verifyRecords", () => {
-  let soul: Ed25519Keypair;
-  let door: Ed25519Keypair;
-  let session: Ed25519Keypair;
-
-  beforeEach(() => {
-    soul = generateKeypair();
-    door = generateKeypair();
-    session = generateKeypair();
-  });
-
   it("accepts an empty chain with null head", async () => {
     const result = await verifyRecords([]);
     expect(result).toEqual({ valid: true, head: null });
@@ -338,9 +346,9 @@ describe("verifyRecords", () => {
   });
 
   it("rejects missing_cosigner when the door key is unknown", async () => {
-    const unknownDoor = generateKeypair();
+    const unknownDoor = OTHER_DOOR;
     const chain = await createValidMiniChain(soul, unknownDoor, session);
-    const otherDoor = generateKeypair();
+    const otherDoor = EXTRA_DOOR;
 
     const records = [
       chain.genesis.record,
@@ -381,7 +389,7 @@ describe("verifyRecords", () => {
 
   it("rejects bad_session_continuity when heartbeat session_pubkey differs from arrival", async () => {
     const chain = await createValidMiniChain(soul, door, session);
-    const otherSession = generateKeypair();
+    const otherSession = OTHER_SESSION;
     const heartbeat = await createHeartbeatRecord(soul, door, otherSession, 4, chain.drift.cid);
     const records = [
       chain.genesis.record,
@@ -397,7 +405,7 @@ describe("verifyRecords", () => {
 
   it("rejects presence_conflict when two arrivals share an epoch at different Doors", async () => {
     const genesis = await createGenesisRecord(soul);
-    const otherDoor = generateKeypair();
+    const otherDoor = OTHER_DOOR;
     const arrivalG = await createArrivalRecord(soul, door, session, 1, genesis.cid);
     const arrivalH = await createArrivalForDoor(
       soul,
@@ -420,7 +428,7 @@ describe("verifyRecords", () => {
 
   it("rejects presence_conflict when epoch is reused after departure at a different Door", async () => {
     const genesis = await createGenesisRecord(soul);
-    const otherDoor = generateKeypair();
+    const otherDoor = OTHER_DOOR;
     const arrivalA = await createArrivalRecord(soul, door, session, 1, genesis.cid);
     const departure = await createDepartureRecord(soul, door, 2, arrivalA.cid);
     const arrivalB = await createArrivalForDoor(
@@ -445,7 +453,7 @@ describe("verifyRecords", () => {
 
   it("rejects bad_session_continuity when heartbeat follows a newer-epoch arrival", async () => {
     const genesis = await createGenesisRecord(soul);
-    const otherDoor = generateKeypair();
+    const otherDoor = OTHER_DOOR;
     const arrivalA = await createArrivalRecord(soul, door, session, 1, genesis.cid);
     const arrivalB = await createArrivalForDoor(
       soul,
@@ -479,15 +487,9 @@ describe("verifyRecords", () => {
 
 describe("verifyChain", () => {
   let dir: string;
-  let soul: Ed25519Keypair;
-  let door: Ed25519Keypair;
-  let session: Ed25519Keypair;
 
   beforeEach(async () => {
     dir = await makeTempDir();
-    soul = generateKeypair();
-    door = generateKeypair();
-    session = generateKeypair();
   });
 
   afterEach(async () => {
@@ -542,16 +544,6 @@ describe("verifyChain", () => {
 });
 
 describe("verifyRecords tombstone rule 12 (bad_tombstone)", () => {
-  let soul: Ed25519Keypair;
-  let door: Ed25519Keypair;
-  let session: Ed25519Keypair;
-
-  beforeEach(() => {
-    soul = generateKeypair();
-    door = generateKeypair();
-    session = generateKeypair();
-  });
-
   /** osp/0.2 genesis → arrival → shard (text blob) prefix. */
   async function v02Prefix() {
     const genesis = await createRecord({
@@ -651,7 +643,9 @@ describe("verifyRecords tombstone rule 12 (bad_tombstone)", () => {
     });
     expect(result.valid).toBe(false);
     if (!result.valid) {
-      expect(result.failures.some((failure) => failure.rule === "bad_tombstone")).toBe(true);
+      const rules = result.failures.map((failure) => failure.rule);
+      expect(rules[0]).toBe("bad_tombstone");
+      expect(rules).toEqual(["bad_tombstone"]);
     }
   });
 
@@ -685,7 +679,6 @@ describe("verifyRecords tombstone rule 12 (bad_tombstone)", () => {
 
 describe('verifyRecords rejects own "__proto__" keys (schema_violation)', () => {
   it("does not let an extra __proto__ key ride along on otherwise valid bytes (review F5)", async () => {
-    const soul = generateKeypair();
     const genesis = await createGenesisRecord(soul);
     const decision = await createRecord({
       seq: 1,
@@ -713,7 +706,6 @@ describe('verifyRecords rejects own "__proto__" keys (schema_violation)', () => 
   });
 
   it("rejects a nested own __proto__ inside free-form inputs values", async () => {
-    const soul = generateKeypair();
     const genesis = await createGenesisRecord(soul);
     const decision = await createRecord({
       seq: 1,
