@@ -94,9 +94,6 @@ importers:
 
   packages/door-discord:
     dependencies:
-      '@noble/ed25519':
-        specifier: ^2.2.3
-        version: 2.3.0
       '@noble/hashes':
         specifier: ^2.3.0
         version: 2.3.0
@@ -116,6 +113,9 @@ importers:
         specifier: ^4.6.6
         version: 4.6.7
     devDependencies:
+      '@noble/ed25519':
+        specifier: ^2.2.3
+        version: 2.3.0
       '@npc/runtime':
         specifier: workspace:*
         version: link:../runtime
@@ -258,9 +258,6 @@ importers:
       '@anthropic-ai/sdk':
         specifier: ^0.116.0
         version: 0.116.0(zod@4.6.7)
-      '@noble/ed25519':
-        specifier: ^2.2.3
-        version: 2.3.0
       '@noble/hashes':
         specifier: ^2.3.0
         version: 2.3.0
@@ -280,6 +277,9 @@ importers:
         specifier: ^4.6.6
         version: 4.6.7
     devDependencies:
+      '@noble/ed25519':
+        specifier: ^2.2.3
+        version: 2.3.0
       '@types/node':
         specifier: ^22
         version: 22.20.1

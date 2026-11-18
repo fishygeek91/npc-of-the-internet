@@ -17,6 +17,38 @@ const repoRoot = join(scriptDir, "../..");
 const ospCoreEntry = join(repoRoot, "packages/osp-core/dist/index.js");
 const ospRequire = createRequire(ospCoreEntry);
 
+/** Same text for a missing dist and for a dist that predates the parser export. */
+const BUILD_HINT =
+  "preflight-keys: build @npc/osp-core first (pnpm --filter @npc/osp-core build)\n";
+
+/**
+ * Tell the operator to rebuild osp-core, then stop.
+ * @returns {never}
+ */
+function writeBuildHint() {
+  process.stderr.write(BUILD_HINT);
+  process.exit(2);
+}
+
+/**
+ * A dist built before `parsePrivateKeyBytes` still loads. That must use the
+ * build hint, not `ospCore.parsePrivateKeyBytes is not a function`.
+ *
+ * @param {object | null | undefined} loaded
+ * @returns {boolean}
+ */
+function ospCoreExportsReady(loaded) {
+  if (loaded === null || loaded === undefined || typeof loaded !== "object") {
+    return false;
+  }
+  return (
+    typeof loaded.parsePrivateKeyBytes === "function" &&
+    typeof loaded.publicKeyFromPrivate === "function" &&
+    typeof loaded.encodePublicKey === "function" &&
+    typeof loaded.PrivateKeyParseError === "function"
+  );
+}
+
 /**
  * @type {{
  *   encodePublicKey: (key: Uint8Array) => string,
@@ -35,10 +67,11 @@ let ospCore;
 try {
   ospCore = ospRequire(ospCoreEntry);
 } catch {
-  process.stderr.write(
-    "preflight-keys: build @npc/osp-core first (pnpm --filter @npc/osp-core build)\n"
-  );
-  process.exit(2);
+  writeBuildHint();
+}
+
+if (!ospCoreExportsReady(ospCore)) {
+  writeBuildHint();
 }
 
 const KEY_LEN = 32;
