@@ -4,6 +4,11 @@
  * Every split index stops after the prefix, checks that result (and the
  * verifier's head and tombstoned blobs), then feeds a fresh JSON copy of
  * the tail. Signatures are real Ed25519 from the fixed test keys — never mocked.
+ * The fixed-key chains hold no tombstones; the tombstone vectors
+ * (`valid-tombstone-after-shard`, `bad-tombstone-*`) put a shard in the prefix
+ * and its tombstone in the tail at split 3. A dedicated case asserts that
+ * `valid-tombstone-after-shard` has a non-empty prefix tombstone set at some
+ * split, so the tombstone check cannot go vacuous unnoticed.
  */
 import { readFileSync } from "node:fs";
 import path from "node:path";
@@ -251,6 +256,18 @@ function freshRecords(records: readonly unknown[]): unknown[] {
   return parsed;
 }
 
+/** Outcome of one split: the final result and how many blobs the prefix had tombstoned. */
+type SplitOutcome = {
+  result: VerifyChainResult;
+  prefixTombstoneCount: number;
+};
+
+/** Outcome of every split: the one-shot result and each split's prefix tombstone count. */
+type AllSplitsOutcome = {
+  whole: VerifyChainResult;
+  prefixTombstoneCounts: number[];
+};
+
 /**
  * Admit the prefix, check it, then admit a fresh copy of the tail.
  * Failing records are still committed, which is what {@link verifyRecords} does.
@@ -259,7 +276,7 @@ async function verifySplit(
   records: readonly unknown[],
   splitAt: number,
   options: VerifyChainOptions
-): Promise<VerifyChainResult> {
+): Promise<SplitOutcome> {
   const verifier = new ChainVerifier(options);
   const failures: ChainFailure[] = [];
   const prefix = records.slice(0, splitAt);
@@ -272,29 +289,33 @@ async function verifySplit(
   const label = `split ${String(splitAt)} prefix`;
   expect(resultSoFar(failures, verifier.head), label).toEqual(await verifyRecords(prefix, options));
   expect(verifier.head, `${label} head`).toEqual(await admittedHead(prefix));
-  expect(sortedIds(verifier.tombstonedBlobCids()), `${label} tombstones`).toEqual(
-    sortedIds(tombstoneBlobCids(prefix))
-  );
+  const prefixTombstones = sortedIds(verifier.tombstonedBlobCids());
+  expect(prefixTombstones, `${label} tombstones`).toEqual(sortedIds(tombstoneBlobCids(prefix)));
 
   for (const raw of freshRecords(records.slice(splitAt))) {
     const step = await verifier.evaluate(raw);
     failures.push(...step.failures);
     step.commit();
   }
-  return resultSoFar(failures, verifier.head);
+  return {
+    result: resultSoFar(failures, verifier.head),
+    prefixTombstoneCount: prefixTombstones.length
+  };
 }
 
 /** Every prefix length `0..records.length` must match one-shot verification. */
 async function expectEverySplitMatches(
   records: readonly unknown[],
   options: VerifyChainOptions
-): Promise<VerifyChainResult> {
+): Promise<AllSplitsOutcome> {
   const whole = await verifyRecords(records, options);
+  const prefixTombstoneCounts: number[] = [];
   for (let splitAt = 0; splitAt <= records.length; splitAt += 1) {
     const split = await verifySplit(records, splitAt, options);
-    expect(split, `split ${String(splitAt)} of ${String(records.length)}`).toEqual(whole);
+    expect(split.result, `split ${String(splitAt)} of ${String(records.length)}`).toEqual(whole);
+    prefixTombstoneCounts.push(split.prefixTombstoneCount);
   }
-  return whole;
+  return { whole, prefixTombstoneCounts };
 }
 
 type LoadedVector = {
@@ -332,7 +353,7 @@ describe("ChainVerifier split equals verifyRecords", () => {
   it("matches a valid fixed-key chain at every index", async () => {
     const records = await buildChain(false);
     expect(records.length).toBeGreaterThan(1);
-    const whole = await expectEverySplitMatches(records, doorOptions());
+    const { whole } = await expectEverySplitMatches(records, doorOptions());
     expect(whole.valid).toBe(true);
     if (!whole.valid) {
       throw new Error("fixed-key chain must verify");
@@ -342,7 +363,7 @@ describe("ChainVerifier split equals verifyRecords", () => {
 
   it("matches when the tail prev link is re-signed against an earlier record", async () => {
     const records = await buildChain(true);
-    const whole = await expectEverySplitMatches(records, doorOptions());
+    const { whole } = await expectEverySplitMatches(records, doorOptions());
     if (whole.valid) {
       throw new Error("broken prev chain must fail");
     }
@@ -358,7 +379,7 @@ describe("ChainVerifier split equals verifyRecords", () => {
     const records = await chainWithMiddleBrokenPrev();
     const middleSeq = 3;
     expect(records.length).toBeGreaterThan(middleSeq + 1);
-    const whole = await expectEverySplitMatches(records, doorOptions());
+    const { whole } = await expectEverySplitMatches(records, doorOptions());
     if (whole.valid) {
       throw new Error("middle broken prev must fail");
     }
@@ -376,7 +397,7 @@ describe("ChainVerifier split equals verifyRecords", () => {
 
   it("matches when the tail soul signature is a flipped real signature", async () => {
     const records = flipLastSoulSignature(await buildChain(false));
-    const whole = await expectEverySplitMatches(records, doorOptions());
+    const { whole } = await expectEverySplitMatches(records, doorOptions());
     if (whole.valid) {
       throw new Error("flipped signature must fail");
     }
@@ -386,22 +407,36 @@ describe("ChainVerifier split equals verifyRecords", () => {
     ).toBe(true);
   });
 
-  it.each(["valid-mini-chain.json", "broken-prev-link.json", "bad-soul-sig.json"])(
-    "matches fixture %s at every index",
-    async (filename) => {
-      const vector = loadVector(filename);
-      expect(vector.records.length).toBeGreaterThan(1);
-      const whole = await expectEverySplitMatches(vector.records, {
-        doorPublicKeys: vector.doorPublicKeys
-      });
-      if (vector.expected === "valid") {
-        expect(whole.valid, filename).toBe(true);
-        return;
-      }
-      if (whole.valid) {
-        throw new Error(`${filename}: expected ${vector.expected}`);
-      }
-      expect(whole.failures[0]?.rule, filename).toBe(vector.expected);
+  it.each([
+    "valid-mini-chain.json",
+    "broken-prev-link.json",
+    "bad-soul-sig.json",
+    "valid-tombstone-after-shard.json",
+    "bad-tombstone-blob-mismatch.json",
+    "bad-tombstone-missing-target.json"
+  ])("matches fixture %s at every index", async (filename) => {
+    const vector = loadVector(filename);
+    expect(vector.records.length).toBeGreaterThan(1);
+    const { whole } = await expectEverySplitMatches(vector.records, {
+      doorPublicKeys: vector.doorPublicKeys
+    });
+    if (vector.expected === "valid") {
+      expect(whole.valid, filename).toBe(true);
+      return;
     }
-  );
+    if (whole.valid) {
+      throw new Error(`${filename}: expected ${vector.expected}`);
+    }
+    expect(whole.failures[0]?.rule, filename).toBe(vector.expected);
+  });
+
+  it("checks a non-empty tombstone set at some split of valid-tombstone-after-shard", async () => {
+    const vector = loadVector("valid-tombstone-after-shard.json");
+    expect(vector.expected).toBe("valid");
+    const { whole, prefixTombstoneCounts } = await expectEverySplitMatches(vector.records, {
+      doorPublicKeys: vector.doorPublicKeys
+    });
+    expect(whole.valid).toBe(true);
+    expect(prefixTombstoneCounts.some((count) => count > 0)).toBe(true);
+  });
 });
