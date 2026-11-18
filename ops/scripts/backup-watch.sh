@@ -638,7 +638,10 @@ upload_cycle() {
     else
       log "Copying chain.jsonl → ${remote_chain} (history snapshot not due)"
     fi
-    if ! rclone copyto "$snap" "$remote_chain" "${history_args[@]}" "${RCLONE_ARGS[@]}"; then
+    # bash 3.2 (macOS /bin/bash) with `set -u` errors on "${empty[@]}".
+    # history_args is empty whenever a snapshot is not due. The `+` form
+    # expands to nothing in that case and to the flags otherwise.
+    if ! rclone copyto "$snap" "$remote_chain" ${history_args[@]+"${history_args[@]}"} "${RCLONE_ARGS[@]}"; then
       log "ERROR: chain.jsonl upload failed"
       mark_failed "$cycle_sig" "$full"
       return 1
@@ -722,11 +725,15 @@ locked_sync() {
     return $?
   fi
   # mkdir-lock fallback (no flock): owner pid inside; stale once that pid is gone.
+  # An ownerless directory is the gap between mkdir and the pid file, including
+  # a TERM/SIGSTOP in that gap. Reclaim after 5s, not 30s, so a restart's
+  # startup copy is not stuck for the whole grace. cleanup removes the
+  # directory on the way out; this bound covers a holder that never got to.
   local dir="${LOCK_FILE}.d" owner waited=0 me="${BASHPID:-$$}"
   until mkdir "$dir" 2>/dev/null; do
     owner="$(cat "${dir}/pid" 2>/dev/null || true)"
     if { [[ -n "$owner" ]] && ! kill -0 "$owner" 2>/dev/null; } \
-      || { [[ -z "$owner" ]] && (( waited >= 30 )); }; then
+      || { [[ -z "$owner" ]] && (( waited >= 5 )); }; then
       rm -rf "$dir"
       continue
     fi
@@ -856,6 +863,10 @@ cleanup() {
       kill "$child" 2>/dev/null || true
     fi
   done < <(descendants "$$")
+  # mkdir-lock (no flock): a TERM between mkdir and `rm -rf` leaves the
+  # directory behind. The next start would wait out the ownerless grace
+  # before its startup copy. The children that could recreate it are gone.
+  rm -rf "${LOCK_FILE}.d"
 }
 trap cleanup EXIT
 trap 'exit 143' TERM INT

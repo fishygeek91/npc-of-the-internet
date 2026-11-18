@@ -220,7 +220,8 @@ leaked_pids() {
   for env_file in /proc/[0-9]*/environ; do
     pid="${env_file#/proc/}"
     pid="${pid%/environ}"
-    [[ "$pid" == "$$" || "$pid" == "$BASHPID" ]] && continue
+    # BASHPID is bash 4+. macOS /bin/bash is 3.2 and leaves it unset under `set -u`.
+    [[ "$pid" == "$$" || "$pid" == "${BASHPID:-}" ]] && continue
     if { tr '\0' '\n' <"$env_file"; } 2>/dev/null | grep -qx "BUDGET_TEST_MARK=${MARK}"; then
       echo "$pid"
     fi
@@ -401,8 +402,13 @@ grep -n '^delete ' "$ARGS_LOG" | head -1 | grep -q -- '--files-from' || die "del
 del_line="$(grep -n '^delete ' "$ARGS_LOG" | head -1 | cut -d: -f1)"
 chain_line="$(grep -n '^copyto ' "$ARGS_LOG" | head -1 | cut -d: -f1)"
 (( chain_line < del_line )) || die "erasure delete must run after the tombstone-bearing chain upload"
-grep -q "did not match the strict shape" "${TMP}/watch.log" || die "malformed tombstone not reported"
-grep -q "is a chain record CID; refusing" "${TMP}/watch.log" || die "record-CID tombstone not refused"
+# The blob delete and the chain match can both land before these warnings.
+# A poll can snapshot the chain after the valid tombstone (so the remote blob
+# is already gone) and upload the rest of the append on a later cycle: copyto
+# makes the chains match, and only then does tombstoned_cids log the malformed
+# line and the record-CID refusal. Poll the log; do not check it once.
+wait_until 10 "malformed tombstone not reported" grep -q "did not match the strict shape" "${TMP}/watch.log"
+wait_until 10 "record-CID tombstone not refused" grep -q "is a chain record CID; refusing" "${TMP}/watch.log"
 log "PASS tombstone deletes exactly the tombstoned blob (malformed/record-CID refused)"
 
 # --- 9b. identical prose re-appended (same CID, records.md rule 12) uploads again ---
@@ -460,11 +466,19 @@ stop_watch
 log "PASS full rescans keep the revived blob (no delete)"
 
 # --- 13. a deferral never outlives BACKUP_HEARTBEAT_DEFER_SEC (periodic flush) ---
-last_log_has() { tail -n 3 "${TMP}/watch.log" | grep -q "$1"; }
+# The chains already match from the previous watcher, and watch.log still ends
+# with that watcher's "Sync complete" until this one flushes a line. Anchor on
+# bytes written after start_watch so the deferral clock starts at this upload.
+log_bytes() { wc -c <"${TMP}/watch.log" | tr -d ' '; }
+# No pipe: `set -o pipefail` makes `tail | grep -q` exit 141 when grep closes early.
+log_since_has() {
+  grep -q "$2" <<<"$(tail -c +"$(( $1 + 1 ))" "${TMP}/watch.log" 2>/dev/null || true)"
+}
 : >"$CALLS"
+restart_at="$(log_bytes)"
 start_watch 3600 3600 8 3600
-wait_until 15 "restart sync (defer phase)" remote_chain_matches
-wait_until 5 "restart sync settled" last_log_has "Sync complete"
+wait_until 20 "restart sync settled" log_since_has "$restart_at" "Sync complete"
+wait_until 5 "restart sync (defer phase)" remote_chain_matches
 t_upload="$(date +%s)"
 sleep 1
 quiet="$(calls)"
