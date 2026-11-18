@@ -94,15 +94,16 @@ function parsePrivateKeyFile(fileBytes, path) {
     }
     const failure = error.failure;
     if (failure.kind === "empty") {
-      throw new Error(`key file at ${path} is empty`);
+      throw new Error(`key file at ${path} is empty`, { cause: error });
     }
     if (failure.kind === "bad_length") {
       throw new Error(
-        `key file at ${path} must decode to ${String(KEY_LEN)} bytes, got ${String(failure.decodedLength)}`
+        `key file at ${path} must decode to ${String(KEY_LEN)} bytes, got ${String(failure.decodedLength)}`,
+        { cause: error }
       );
     }
     if (failure.kind === "invalid_encoding") {
-      throw new Error(failure.detail ?? "invalid base64url encoding");
+      throw new Error(failure.detail ?? "invalid base64url encoding", { cause: error });
     }
     throw error;
   }

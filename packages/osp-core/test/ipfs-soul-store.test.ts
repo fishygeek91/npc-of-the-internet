@@ -102,7 +102,7 @@ describe("IpfsSoulStore", () => {
 
   it("garbage-collects orphaned block temp files older than an hour on writable open only", async () => {
     const store = await IpfsSoulStore.open(dir);
-    let genesisCid = "";
+    let genesisCid: string;
     try {
       genesisCid = (await store.append((await createGenesisRecord(soul)).record)).cid;
     } finally {
@@ -280,7 +280,7 @@ describe("IpfsSoulStore", () => {
 
   it("openWithRecovery advances HEAD when block and seq-index exist but HEAD is stale", async () => {
     const store = await IpfsSoulStore.open(dir);
-    let memoryCid = "";
+    let memoryCid: string;
     let memoryRecord: OspRecord;
     try {
       const genesis = await appendGenesis(store, soul);
@@ -343,7 +343,7 @@ describe("IpfsSoulStore", () => {
   });
 
   it("reopens cleanly after append round-trip", async () => {
-    let genesisCid = "";
+    let genesisCid: string;
     const store = await IpfsSoulStore.open(dir);
     try {
       const genesis = await appendGenesis(store, soul);
@@ -416,7 +416,7 @@ describe("IpfsSoulStore", () => {
   });
 
   it("open rejects a HEAD whose CID disagrees with the seq-index at the same seq", async () => {
-    let genesisCid = "";
+    let genesisCid: string;
     const store = await IpfsSoulStore.open(dir);
     try {
       genesisCid = (await appendGenesis(store, soul)).cid;
@@ -439,7 +439,7 @@ describe("IpfsSoulStore", () => {
   });
 
   it("openWithRecovery verifies the indexed chain BEFORE advancing a stale HEAD", async () => {
-    let genesisCid = "";
+    let genesisCid: string;
     const store = await IpfsSoulStore.open(dir);
     try {
       genesisCid = (await appendGenesis(store, soul)).cid;

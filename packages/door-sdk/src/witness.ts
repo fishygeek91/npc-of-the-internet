@@ -181,15 +181,17 @@ export function openAiCompatComplete(settings: OpenAiCompatSettings): CompleteFn
       body: JSON.stringify(body),
       signal: AbortSignal.any([AbortSignal.timeout(settings.timeoutMs ?? 60_000), capAbort.signal])
     });
-    let bytes: Uint8Array;
+    let bytes: Uint8Array | undefined;
     try {
       bytes = await readBodyCapped(response, MAX_WITNESS_RESPONSE_BYTES, capAbort);
     } catch (error) {
-      if (error instanceof ResponseTooLargeError) {
-        // No cause: a socket error can mention the request URL or headers.
-        throw new Error("witness model response exceeds cap");
+      if (!(error instanceof ResponseTooLargeError)) {
+        throw error;
       }
-      throw error;
+    }
+    if (bytes === undefined) {
+      // Fresh error, not `cause`: a socket error can mention the request URL or headers.
+      throw new Error("witness model response exceeds cap");
     }
     if (!response.ok) {
       // Never echo the response body: providers sometimes reflect request headers.

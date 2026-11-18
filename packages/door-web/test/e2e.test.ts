@@ -98,7 +98,7 @@ describe("website Door end to end (real Door, HTTP/WS servers, WS session client
     expect(handle.isPresent()).toBe(false);
 
     const inbound: InboundFrame[] = [];
-    let client = await connectWanderer(handle, session, inbound);
+    const client = await connectWanderer(handle, session, inbound);
     expect(await events.next("presence")).toMatchObject({ present: true });
 
     // Visitor → Wanderer.
@@ -178,7 +178,7 @@ describe("website Door end to end (real Door, HTTP/WS servers, WS session client
     // Runtime socket drops → absent; reconnects → present again.
     await client.close();
     expect(await events.next("presence")).toMatchObject({ present: false });
-    client = await connectWanderer(handle, session, inbound);
+    await connectWanderer(handle, session, inbound);
     expect(await events.next("presence")).toMatchObject({ present: true });
 
     // Departure (session-signed): a notice, absence, and visitors are turned away.

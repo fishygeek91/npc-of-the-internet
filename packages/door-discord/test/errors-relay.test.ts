@@ -40,7 +40,6 @@ describe("error surfacing", () => {
     const timer = new FakeTimer();
     const config = await testConfig();
     const store = await genesisStore();
-    let session: Session | null = null;
 
     const handle = await startDiscordDoor({
       config,
@@ -54,7 +53,7 @@ describe("error surfacing", () => {
       }
     });
 
-    session = await Session.start({
+    const session = await Session.start({
       store,
       door: handle.connection,
       doorId: doorIdForGuild(GUILD_ID),

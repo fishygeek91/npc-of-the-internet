@@ -285,8 +285,8 @@ describe("DualSoulStore", () => {
     const session = generateKeypair();
     const doorPublicKeys = { "discord:g": door.publicKey };
     const dual = await DualSoulStore.open(fileDir, ipfsDir, { doorPublicKeys });
-    let blobCid = "";
-    let blobBytes = new Uint8Array();
+    let blobCid: string;
+    let blobBytes: Uint8Array;
     try {
       const genesis = await createRecord({
         spec: OSP_SPEC_V02,
@@ -392,7 +392,7 @@ describe("DualSoulStore", () => {
     const blob = await contentAddressSideBlob(blobBytes);
 
     let dual = await DualSoulStore.open(fileDir, ipfsDir, { doorPublicKeys });
-    let liveCid = "";
+    let liveCid: string;
     try {
       const genesis = await createRecord({
         spec: OSP_SPEC_V02,
