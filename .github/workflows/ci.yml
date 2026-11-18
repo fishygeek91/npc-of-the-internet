@@ -24,6 +24,8 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
+      - name: Preflight key helper (#197)
+        run: bash ops/scripts/preflight-keys-ci.sh
       - run: pnpm lint
       - run: pnpm test
 
@@ -199,6 +201,8 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y shellcheck
       - name: Shellcheck watchdog (T7.13)
         run: shellcheck ops/scripts/watchdog.sh ops/scripts/watchdog-fixture-test.sh
+      - name: Shellcheck preflight-keys helper (#197)
+        run: shellcheck ops/scripts/preflight-keys-ci.sh
       - name: Watchdog fixture dry-run
         run: bash ops/scripts/watchdog-fixture-test.sh
 
