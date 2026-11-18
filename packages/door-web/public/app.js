@@ -141,11 +141,13 @@
       }
       return;
     }
-    const className = kind === "failed" ? "verify-label" : "epoch-label";
+    let className = "epoch-label epoch-checking";
     let text = "checking";
     if (kind === "failed") {
+      className = "verify-label";
       text = "verification failed";
     } else if (kind === "earlier") {
+      className = "epoch-label epoch-earlier";
       text = "earlier visit";
     }
     if (!label) {
@@ -177,10 +179,25 @@
     }
   }
 
-  /** Refetches that finished after this line was first shown. */
+  /** Refetches that finished after this line or reaction was first shown. */
   function completionsAfter(id) {
     const seen = seenSerial.get(id);
     return seen === undefined ? 0 : refreshSerial - seen;
+  }
+
+  /** Drop a line and any reaction chips that were tracked for it. */
+  function forgetSeen(id) {
+    const prefix = `${id}\u0000`;
+    for (const key of [...seenSerial.keys()]) {
+      if (key === id || key.startsWith(prefix)) {
+        seenSerial.delete(key);
+      }
+    }
+  }
+
+  /** One chip on one message. The separator cannot appear in an id. */
+  function reactionKey(targetId, emoji) {
+    return `${targetId}\u0000${emoji}`;
   }
 
   /**
@@ -271,7 +288,58 @@
         return true;
       }
     }
+    for (const entry of state.byId.values()) {
+      const message = entry.message;
+      if (!message || typeof message.id !== "string" || !Array.isArray(message.reactions)) {
+        continue;
+      }
+      for (const reaction of message.reactions) {
+        if (!reaction || typeof reaction !== "object" || typeof reaction.emoji !== "string") {
+          continue;
+        }
+        const key = reactionKey(message.id, reaction.emoji);
+        if (!seenSerial.has(key) || completionsAfter(key) >= REFRESH_MAX_COMPLETIONS) {
+          continue;
+        }
+        if (state.hold.phase === "verified") {
+          if (
+            typeof api.verifyReaction === "function" &&
+            api.verifyReaction(state.hold, message.id, reaction) === "checking"
+          ) {
+            return true;
+          }
+          continue;
+        }
+        if (state.hold.phase === "failed" || state.hold.phase === "checking") {
+          return true;
+        }
+      }
+    }
     return false;
+  }
+
+  /**
+   * A newer-epoch chip stays `checking` until the same refetch budget as a line.
+   * A past epoch is `earlier`, never an unmarked live chip.
+   */
+  function reactionVerdict(targetId, emoji, verdict) {
+    const key = reactionKey(targetId, emoji);
+    if (state.hold.phase === "verified" && verdict === "checking") {
+      if (!seenSerial.has(key)) {
+        seenSerial.set(key, refreshSerial);
+        armSoon();
+      }
+      return completionsAfter(key) >= REFRESH_MAX_COMPLETIONS ? "failed" : "checking";
+    }
+    if (
+      verdict === "failed" &&
+      seenSerial.has(key) &&
+      completionsAfter(key) < REFRESH_MAX_COMPLETIONS &&
+      (state.hold.phase === "failed" || state.hold.phase === "checking")
+    ) {
+      return "checking";
+    }
+    return verdict;
   }
 
   function renderReactions(node, targetId, reactions) {
@@ -294,12 +362,19 @@
       const chip = el("span", "reaction");
       chip.appendChild(document.createTextNode(emoji));
       if (reaction && typeof reaction === "object" && reaction.proof) {
-        const verdict = api
+        const raw = api
           ? api.verifyReaction(state.hold, targetId, reaction)
           : holdVerdict(state.hold);
+        const verdict = reactionVerdict(targetId, emoji, raw);
         if (verdict === "failed") {
           chip.classList.add("reaction-failed");
           chip.appendChild(el("span", "verify-label", "verification failed"));
+        } else if (verdict === "checking") {
+          chip.classList.add("reaction-checking");
+          chip.appendChild(el("span", "epoch-label epoch-checking", "checking"));
+        } else if (verdict === "earlier") {
+          chip.classList.add("reaction-earlier");
+          chip.appendChild(el("span", "epoch-label epoch-earlier", "earlier visit"));
         }
       }
       names.push(emoji);
@@ -358,7 +433,7 @@
       for (const [id, entry] of state.byId) {
         if (entry.node === first) {
           state.byId.delete(id);
-          seenSerial.delete(id);
+          forgetSeen(id);
           break;
         }
       }

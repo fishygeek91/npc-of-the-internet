@@ -264,6 +264,8 @@ describe("porch line verification", () => {
     expect(lineAwaitsEpoch(stale, { from: "wanderer", text: "Nope", proof: again })).toBe(false);
     expect(wanderer(stale, again, "Nope")).toBe("failed");
     expect(wanderer(stale, speak(next, 9, OTHER_DOOR, "Nope"), "Nope")).toBe("failed");
+    const forged = chip(generateKeypair(), 999999);
+    expect(verifyReaction(stale, "web-1", { emoji: "👍", proof: forged })).toBe("checking");
 
     const current = await holdOf(closers, soul, door, session, (chain) =>
       arrive(chain, soul, door, next, DOOR_ID, 2, "2026-01-05T00:00:00.000Z")
@@ -345,12 +347,12 @@ function speak(
   );
 }
 
-function chip(session: Ed25519Keypair): OutboundProof {
+function chip(session: Ed25519Keypair, epoch = 1): OutboundProof {
   return proofFrom(
     signedOutbound({
       session,
       doorId: DOOR_ID,
-      epoch: 1,
+      epoch,
       msgId: "out-r",
       body: { channel_id: "porch", reaction: { emoji: "👍", target_msg_id: "web-1" } }
     })
