@@ -84,4 +84,4 @@ Set a wrong soul pin and reload. The badge stays `ELSEWHERE` with `verification 
 </script>
 ```
 
-Remove that script and reload to see the verified badge again. Pointing `data-atlas-url` at `http://127.0.0.1:9` (nothing listening) is the failed-fetch case: same label, no journals.
+Remove that script and reload to see the verified badge again. Pointing `data-atlas-url` at `http://127.0.0.1:59999` (nothing listening) is the failed-fetch case: same label, no journals.
