@@ -117,6 +117,48 @@ describe("check-extractability", () => {
     });
   }
 
+  it("flags a bare-path dependency value with no file: prefix", () => {
+    const result = runTree((root) => {
+      write(
+        root,
+        "packages/osp-core/package.json",
+        '{"name":"@npc/osp-core","dependencies":{"helper":"../runtime"}}\n'
+      );
+    });
+    assert.equal(result.status, 1, result.stdout);
+    assert.match(result.stdout, /\.\.\/runtime disallowed package\.json dependency/);
+  });
+
+  it("does not flag a bare path that stays inside the package", () => {
+    pass((root) => {
+      write(
+        root,
+        "packages/osp-core/package.json",
+        '{"name":"@npc/osp-core","dependencies":{"helper":"./src"}}\n'
+      );
+    });
+  });
+
+  it("does not fail closed on a JSX closing tag and still sees a later import", () => {
+    pass((root) => {
+      write(
+        root,
+        "packages/osp-core/src/view.tsx",
+        "const re = 1 < /a/;\nexport const view = <section></section>;\nconst fragment = <></>;\n"
+      );
+    });
+    const result = runTree((root) => {
+      write(
+        root,
+        "packages/osp-core/src/view.tsx",
+        "export const view = <section></section>;\n" + npc
+      );
+    });
+    assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
+    assert.match(result.stdout, runtime);
+    assert.doesNotMatch(result.stdout, /unterminated regex/);
+  });
+
   it("flags optionalDependencies, @npc specs, and file or link paths", () => {
     const result = runTree((root) => {
       write(

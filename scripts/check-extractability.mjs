@@ -4,10 +4,15 @@
  * Extraction boundary for osp-core, osp-cli, and spec/ (ENGINEERING.md D1).
  * osp-core: no @npc/*. osp-cli: only @npc/osp-core. spec/: no @npc/*.
  * Relative, absolute, and file: specifiers must stay inside that root.
+ * A package.json value that is a bare path (`../pkg`, `/abs`) is checked like file:.
  * Comments, strings, and regex literals are not code, except template `${...}`.
+ * A JSX closing tag (`</div>`, `</>`) is not a regex.
  * Unterminated string, template, block comment, or regex fails closed.
  * .md and .json are not scanned. Also missed: `${}` specifiers, symlinks,
  * package-root config, JSDoc import(), and workspace:* on a non-@npc key.
+ * Known limit: after ), a braceless if whose condition is a regex, or a regex in statement position, is read as division and can hide a following import.
+ * Known limit: require.resolve, import.meta.resolve, and vi.mock strings that name an @npc package are not detected.
+ * Known limit: division after a keyword-named property (x.return / 2) or a TypeScript non-null assertion (count! / total) can fail closed as an unterminated regex.
  * Usage: node scripts/check-extractability.mjs [repoRoot]
  */
 import { existsSync, readdirSync, readFileSync } from "node:fs";
@@ -218,6 +223,54 @@ function skipRegex(cursor) {
   }
   fail(cursor, "regex", startLine);
 }
+function isJsxSpace(char) {
+  return char === " " || char === "\t" || char === "\r" || char === "\n" || char === "\f";
+}
+/**
+ * When the cursor is on `/` after `<`, consume a JSX closing tag (`</div>`, `</>`).
+ * Returns false without moving when the `/` is a regex (`a < /b/`).
+ */
+function skipJsxClosingTag(cursor) {
+  if (cursor.source[cursor.i] !== "/") return false;
+  const savedI = cursor.i;
+  const savedLine = cursor.line;
+  advance(cursor, 1);
+  while (isJsxSpace(cursor.source[cursor.i] ?? "")) advance(cursor, 1);
+  if ((cursor.source[cursor.i] ?? "") !== ">") {
+    if (!isIdentStart(cursor.source[cursor.i] ?? "")) {
+      cursor.i = savedI;
+      cursor.line = savedLine;
+      return false;
+    }
+    advance(cursor, 1);
+    while (cursor.i < cursor.n) {
+      const char = cursor.source[cursor.i] ?? "";
+      if (isIdentPart(char) || char === "-") {
+        advance(cursor, 1);
+        continue;
+      }
+      if (char === "." || char === ":") {
+        advance(cursor, 1);
+        if (!isIdentStart(cursor.source[cursor.i] ?? "")) {
+          cursor.i = savedI;
+          cursor.line = savedLine;
+          return false;
+        }
+        advance(cursor, 1);
+        continue;
+      }
+      break;
+    }
+    while (isJsxSpace(cursor.source[cursor.i] ?? "")) advance(cursor, 1);
+    if ((cursor.source[cursor.i] ?? "") !== ">") {
+      cursor.i = savedI;
+      cursor.line = savedLine;
+      return false;
+    }
+  }
+  advance(cursor, 1);
+  return true;
+}
 function takeTripleSlash(cursor, found) {
   let end = cursor.i;
   while (end < cursor.n && cursor.source[end] !== "\n") end += 1;
@@ -248,6 +301,10 @@ function scanCode(cursor, found, stopOnBrace) {
         continue;
       }
       if (canStartRegex(prev)) {
+        if (prev === "<" && skipJsxClosingTag(cursor)) {
+          prev = ">";
+          continue;
+        }
         skipRegex(cursor);
         prev = "re";
         continue;
@@ -377,16 +434,33 @@ function lineOfDependency(text, section, dep) {
   }
   return 1;
 }
+function pathEscapesBoundary(spec, boundary) {
+  const target = spec.startsWith("/") ? resolve(spec) : resolve(boundary, spec);
+  const rel = relative(boundary, target);
+  return rel.startsWith("..") || isAbsolute(rel);
+}
+function bareDepPath(version) {
+  if (
+    version.startsWith("./") ||
+    version.startsWith("../") ||
+    version === "." ||
+    version === ".." ||
+    version.startsWith("/")
+  ) {
+    return version;
+  }
+  return null;
+}
 function depEscapes(version, boundary) {
+  const bare = bareDepPath(version);
+  if (bare !== null) return pathEscapesBoundary(bare, boundary);
   const cut = version.indexOf(":");
   if (cut < 1) return false;
   const scheme = version.slice(0, cut);
   if (scheme !== "file" && scheme !== "link" && scheme !== "workspace") return false;
   const spec = version.slice(cut + 1);
   if (scheme === "workspace" && !spec.startsWith(".") && !spec.startsWith("/")) return false;
-  const target = spec.startsWith("/") ? resolve(spec) : resolve(boundary, spec);
-  const rel = relative(boundary, target);
-  return rel.startsWith("..") || isAbsolute(rel);
+  return pathEscapesBoundary(spec, boundary);
 }
 function checkManifest(boundary, rootRel, allowed, violations) {
   const manifestPath = join(boundary, "package.json");
