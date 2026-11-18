@@ -110,12 +110,12 @@ The badge text is exactly `PRESENT` or `ELSEWHERE` (uppercase, real text, not on
 | Condition | Badge | Also shown |
 |-----------|-------|------------|
 | `verifyRecords` valid, pinned soul key matches when set, and presence (below) is present | `PRESENT` | Optional quieter door id. Journals that pass the journal rules. |
-| Chain valid, presence is traveling, sleeping, or has no attestation | `ELSEWHERE` | Optional quieter word `traveling` or `sleeping`. Verified journals may still show. |
+| Chain valid, presence is traveling or sleeping, including a chain with no attestation (Atlas `GET /state` reports that as sleeping) | `ELSEWHERE` | The quieter word `traveling` or `sleeping`. Verified journals may still show. |
 | Fetch failed, chain invalid, pin mismatch, or verification not finished | `ELSEWHERE` | The words `verification failed` once the attempt finished, or `checking` while it has not. No verified journals. |
 
 `PRESENT` is forbidden until a completed `verifyRecords` call returned valid. A loading shrine is `ELSEWHERE` / `checking`, never a flash of `PRESENT`. Sleeping and traveling are both `ELSEWHERE`; the quieter word MUST NOT replace the badge.
 
-Presence uses the verified records only, with the same scan as Atlas `GET /state`: newest `sleep` before any later attestation means sleeping; otherwise the newest `arrival` or `heartbeat` means present at that `door_id` and epoch; `departure`, `travel`, or `handover` means traveling. An invalid chain is not scanned for presence.
+Presence uses the verified records only, with the same scan as Atlas `GET /state`: newest `sleep` before any later attestation means sleeping; otherwise the newest `arrival` or `heartbeat` means present at that `door_id` and epoch; `departure`, `travel`, or `handover` means traveling. A chain with no attestation is sleeping. An invalid chain is not scanned for presence.
 
 The widget renders inside a closed shadow root so page CSS cannot hide the badge while leaving journals visible. Hiding the host element hides the whole shrine (it cannot show journals alone). The shrine refetches `GET /chain/export` when the document becomes visible and at least every 60 seconds while it is open, so a departure does not stay `PRESENT` after the Atlas is reachable. Those refetches SHOULD send `If-None-Match` and keep the last verified snapshot on `304`.
 
