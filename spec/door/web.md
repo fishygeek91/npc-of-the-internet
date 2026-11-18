@@ -42,7 +42,7 @@ Cryptography is `@noble/ed25519`, `@noble/hashes`, and `multiformats` only. The 
 | Record `sig` | Genesis `body.soul_pubkey` | The soul key signed the soul payload (envelope including `cosigners`, excluding `sig`). |
 | Each `cosigners[]` entry | Door public key for `parseResidency(residency).doorId` | That Door signed `core` (envelope excluding `cosigners` and `sig`). |
 | Arrival `body.session_pubkey` | (no separate signature) | The session key is authentic only because the arrival record itself verifies under the soul key and that Door's key. |
-| Outbound `/door/session` frame `sig` | The open arrival's `session_pubkey` for this porch and `signed.epoch` (see [Porch lines](#porch-lines)) | The session key signed the canonical frame with `sig` omitted (`spec/door/api.md`). |
+| Outbound `/door/session` frame `sig` | The arrival `session_pubkey` for this porch and `signed.epoch` (see [Porch lines](#porch-lines)) | The session key signed the canonical frame with `sig` omitted (`spec/door/api.md`). The open epoch is live speech. A past epoch is an earlier visit. |
 | Heartbeat `body.session_pubkey` | Must equal the open arrival's session key | A different key is `bad_session_continuity`. The chain is then not verified. |
 
 **Chain of trust.** Genesis names the soul key. The soul key signs the arrival record, which publishes exactly one session public key for `(door_id, epoch)`. Later heartbeats must repeat that key. Outbound porch lines verify under it. A signature from any other key fails, even if the bytes are otherwise well formed. v0.1 has no second session key and no rotation: a later arrival is a new epoch, and a second arrival for the same epoch is `presence_conflict`.
@@ -142,7 +142,8 @@ The following MUST NOT appear as verified Wanderer speech, a verified journal, o
 - Journal prose whose blob was not checked, or whose hash does not match.
 - Tombstoned prose.
 - Shard `text`, visitor chat, or system notices ("has arrived" / "has moved on").
-- Any line while the state is `checking` or `verification failed`.
+- Any line while the state is `checking` or `verification failed`, including a line whose epoch is newer than the verified snapshot and still `checking`.
+- A past-epoch line as live speech. It may appear as verified only with the visible mark `earlier visit`.
 
 Unverified journals are omitted. They are not shown in a "failed" style that could be mistaken for the journal. A failed chain shows the badge and `verification failed` only.
 
@@ -158,11 +159,15 @@ The porch already knows whether a session socket is bound. That flag is not a si
 | `sig` | Base64url session-key signature over those canonical bytes. |
 | `text` | The words on screen. MUST equal `signed.body.text` when text is shown. |
 
-Before the line may be marked verified, the browser has a valid chain (soul pin matched) and `signed.door_id` equals this porch's configured door id. The session key is the open arrival for that door and for `signed.epoch`. Open is the same newest-first scan as Atlas `GET /state` and the shrine badge: a `sleep` newer than every attestation means sleeping and no line verifies; `departure`, `travel`, or `handover` means traveling and no line verifies; otherwise the newest `arrival` or `heartbeat` is present at that door and epoch. A newer arrival supersedes older epochs. The key is that arrival's `session_pubkey` (a heartbeat does not publish a second key). `verify(canonicalize(signed), sig, session_pubkey)` must be true over the original `signed` object, including fields a schema does not name. A reaction is verified only when `signed.body.reaction` is that emoji and target. A wrong session key, a wrong door, a departed, superseded, or sleeping epoch, a tampered byte, a malformed proof, or a text that does not match `signed.body.text` is a failed line. A malformed proof is `failed`. It does not throw.
+Before the line may be marked verified, the browser has a valid chain (soul pin matched) and `signed.door_id` equals this porch's configured door id. The session key is the arrival `session_pubkey` for this porch and `signed.epoch`, authenticated because that arrival record is on the verified chain. A heartbeat does not publish a second key. `verify(canonicalize(signed), sig, session_pubkey)` must be true over the original `signed` object, including fields a schema does not name. A reaction uses the same epoch rule and is verified only when `signed.body.reaction` is that emoji and target.
+
+The open epoch is the same newest-first scan as Atlas `GET /state` and the shrine badge: a `sleep` newer than every attestation means sleeping; `departure`, `travel`, or `handover` means traveling; otherwise the newest `arrival` or `heartbeat` is present at that door and epoch. The open epoch renders as live speech. A past epoch at this porch, including one that has departed, slept, or been superseded, renders as verified and is visibly marked `earlier visit`. It MUST NOT use the live-speech treatment.
+
+A line whose `signed.epoch` is greater than every epoch in the verified snapshot is `checking`, not failed. The page schedules one debounced refetch when it shows such a line, and when it shows the arrival notice `The Wanderer has arrived.`. It may label that line `verification failed` only after a refetch that completed after the line was shown, and after one or two further short retries, still finds no arrival for this porch and that epoch. A line for an epoch the snapshot already covers, with no arrival at this porch, fails without that wait. A wrong session key, a wrong door, a tampered byte, a malformed proof, or a text that does not match `signed.body.text` is a failed line. A malformed proof is `failed`. It does not throw.
 
 The porch sends `If-None-Match` only while it still holds a verified export. A failed fetch, a failed verification, or a `304` that does not follow a verified snapshot drops that cache (no ETag and no verified snapshot). The next request is a full GET. A `304` after a verified snapshot reuses it, including when the Wanderer is sleeping or away and no line verifies. A failed fetch does not keep the previous snapshot as verified speech.
 
-A failed Wanderer line stays on screen (it is not dropped) with the visible label `verification failed`. It MUST NOT use the verified-speech treatment. Visitor lines and system notices have no session signature and MUST NOT use that treatment either.
+A failed Wanderer line stays on screen (it is not dropped) with the visible label `verification failed`. It MUST NOT use the verified-speech treatment. A past-epoch line stays on screen with the visible label `earlier visit` and MUST NOT use the live-speech treatment. Visitor lines and system notices have no session signature and MUST NOT use either treatment.
 
 The porch page pins `soulPublicKey` and the door public keys needed to verify the chain. `atlasUrl` is the porch's own origin when `ATLAS_API_URL` is set: the browser fetches `GET /chain/export` from the porch. The porch asks Atlas for the full export, one request at a time, and reuses a successful response for a few seconds. A visitor `If-None-Match` that matches that ETag is a local `304`. An Atlas error is not reused. The browser is never given the server-side Atlas URL. It does not ask the visitor to trust the server's "this is the Wanderer" bit.
 

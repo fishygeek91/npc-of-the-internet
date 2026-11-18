@@ -1,4 +1,4 @@
-/* global document, window, fetch, location, EventSource, localStorage, setTimeout, setInterval */
+/* global document, window, fetch, location, EventSource, localStorage, setTimeout, clearTimeout, setInterval */
 // The Wanderer's web Door — vanilla browser client. All visitor and Wanderer text is
 // rendered with textContent only, never parsed as HTML.
 "use strict";
@@ -36,6 +36,18 @@
     cache: null,
     refreshing: false
   };
+
+  // One debounced refetch for an arrival and for a newer epoch, then two
+  // retries. 2600ms steps outlast the porch's 5s export cache. Completions
+  // are a counter, not Date.now(), so a refetch counts only after the line.
+  const REFRESH_DEBOUNCE_MS = 300;
+  const REFRESH_RETRY_MS = 2600;
+  const REFRESH_MAX_COMPLETIONS = 3;
+  let refreshSerial = 0;
+  let refreshTimer = null;
+  let refreshKind = "";
+  let refreshAgain = false;
+  const seenSerial = new Map();
 
   function loadName() {
     try {
@@ -114,11 +126,34 @@
 
   function lineLabel(node) {
     for (const child of node.children) {
-      if (child.classList.contains("verify-label")) {
+      if (child.classList.contains("verify-label") || child.classList.contains("epoch-label")) {
         return child;
       }
     }
     return null;
+  }
+
+  function setLineMark(node, kind) {
+    const label = lineLabel(node);
+    if (kind === "none") {
+      if (label) {
+        label.remove();
+      }
+      return;
+    }
+    const className = kind === "failed" ? "verify-label" : "epoch-label";
+    let text = "checking";
+    if (kind === "failed") {
+      text = "verification failed";
+    } else if (kind === "earlier") {
+      text = "earlier visit";
+    }
+    if (!label) {
+      node.appendChild(el("p", className, text));
+      return;
+    }
+    label.className = className;
+    label.textContent = text;
   }
 
   function paintVerdict(node, message) {
@@ -126,17 +161,117 @@
     let verdict = "plain";
     if (message.from === "wanderer") {
       verdict = api ? api.verifyText(state.hold, message) : holdVerdict(state.hold);
+      verdict = awaitingVerdict(message, verdict);
     }
     node.classList.toggle("msg-wanderer", verdict === "verified");
     node.classList.toggle("msg-unverified", verdict === "failed");
-    const label = lineLabel(node);
+    node.classList.toggle("msg-earlier", verdict === "earlier");
     if (verdict === "failed") {
-      if (!label) {
-        node.appendChild(el("p", "verify-label", "verification failed"));
-      }
-    } else if (label) {
-      label.remove();
+      setLineMark(node, "failed");
+    } else if (verdict === "earlier") {
+      setLineMark(node, "earlier");
+    } else if (verdict === "checking") {
+      setLineMark(node, "checking");
+    } else {
+      setLineMark(node, "none");
     }
+  }
+
+  /** Refetches that finished after this line was first shown. */
+  function completionsAfter(id) {
+    const seen = seenSerial.get(id);
+    return seen === undefined ? 0 : refreshSerial - seen;
+  }
+
+  /**
+   * A newer epoch stays `checking` until a refetch that finished after the
+   * line was shown, plus two short retries, still has no arrival.
+   * Timers are bare calls so `this` stays the page.
+   */
+  function awaitingVerdict(message, verdict) {
+    const api = globalThis.WandererVerify;
+    if (!api || typeof message.id !== "string") {
+      return verdict;
+    }
+    const awaits =
+      typeof api.lineAwaitsEpoch === "function" && api.lineAwaitsEpoch(state.hold, message);
+    if (awaits) {
+      if (!seenSerial.has(message.id)) {
+        seenSerial.set(message.id, refreshSerial);
+        armSoon();
+      }
+      return completionsAfter(message.id) >= REFRESH_MAX_COMPLETIONS ? "failed" : "checking";
+    }
+    if (
+      verdict === "failed" &&
+      seenSerial.has(message.id) &&
+      completionsAfter(message.id) < REFRESH_MAX_COMPLETIONS &&
+      (state.hold.phase === "failed" || state.hold.phase === "checking")
+    ) {
+      return "checking";
+    }
+    return verdict;
+  }
+
+  function clearRefreshTimer() {
+    if (refreshTimer !== null) {
+      clearTimeout(refreshTimer);
+      refreshTimer = null;
+      refreshKind = "";
+    }
+  }
+
+  /** Collapse arrival notices and newer lines into one short refetch. */
+  function armSoon() {
+    if (state.refreshing) {
+      refreshAgain = true;
+      return;
+    }
+    if (refreshTimer !== null && refreshKind === "soon") {
+      return;
+    }
+    clearRefreshTimer();
+    refreshKind = "soon";
+    refreshTimer = setTimeout(fireRefresh, REFRESH_DEBOUNCE_MS);
+  }
+
+  /** One more look after a post-arrival refetch still missed the epoch. */
+  function armRetry() {
+    if (state.refreshing || refreshTimer !== null) {
+      return;
+    }
+    refreshKind = "retry";
+    refreshTimer = setTimeout(fireRefresh, REFRESH_RETRY_MS);
+  }
+
+  function fireRefresh() {
+    refreshTimer = null;
+    refreshKind = "";
+    void refreshChain();
+  }
+
+  /** True when a tracked line may not be labeled failed yet. */
+  function needsRetry() {
+    const api = globalThis.WandererVerify;
+    if (!api) {
+      return false;
+    }
+    for (const entry of state.byId.values()) {
+      const message = entry.message;
+      if (!message || typeof message.id !== "string" || !seenSerial.has(message.id)) {
+        continue;
+      }
+      if (completionsAfter(message.id) >= REFRESH_MAX_COMPLETIONS) {
+        continue;
+      }
+      if (typeof api.lineAwaitsEpoch === "function" && api.lineAwaitsEpoch(state.hold, message)) {
+        return true;
+      }
+      if (state.hold.phase === "failed" || state.hold.phase === "checking") {
+        return true;
+      }
+    }
+    return false;
   }
 
   function renderReactions(node, targetId, reactions) {
@@ -223,6 +358,7 @@
       for (const [id, entry] of state.byId) {
         if (entry.node === first) {
           state.byId.delete(id);
+          seenSerial.delete(id);
           break;
         }
       }
@@ -327,7 +463,11 @@
       void loadState();
     });
     source.addEventListener("message", (event) => {
-      addMessage(parse(event));
+      const data = parse(event);
+      addMessage(data);
+      if (data && data.from === "system" && data.text === "The Wanderer has arrived.") {
+        armSoon();
+      }
     });
     source.addEventListener("reaction", (event) => {
       const data = parse(event);
@@ -435,6 +575,7 @@
   });
   async function refreshChain() {
     if (state.refreshing) {
+      refreshAgain = true;
       return;
     }
     state.refreshing = true;
@@ -460,7 +601,14 @@
       failChain();
     } finally {
       state.refreshing = false;
+      refreshSerial += 1;
       repaint();
+      if (refreshAgain) {
+        refreshAgain = false;
+        armSoon();
+      } else if (needsRetry()) {
+        armRetry();
+      }
     }
   }
 

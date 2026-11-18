@@ -111,6 +111,8 @@ describe("VisitorSite", () => {
     const { url } = await start();
     const script = await (await fetch(`${url}/app.js`)).text();
     expect(script).toContain("verification failed");
+    expect(script).toContain("earlier visit");
+    expect(script).toContain("The Wanderer has arrived.");
     expect(script).toContain('visibilityState === "hidden"');
     expect(script).toContain("location.origin");
     expect(script).not.toMatch(/innerHTML|outerHTML|insertAdjacentHTML|document\.write/u);
