@@ -122,4 +122,4 @@ Single monorepo — see [ENGINEERING.md](ENGINEERING.md) D1 for the authoritativ
 
 ## v0.1 "Ghost" scope
 
-Deliberately small: one Discord Door, soulchain as a signed IPFS log (local file store plus IPFS mirror; no on-chain anchor yet), single-key custody, manual handover, no wallet, no immune ensemble (static screen only), journals posted to the Atlas as a static site. Everything else is spec'd but stubbed. Goal: the loop *reside → distill → publish → move* running in public.
+Deliberately small: two Doors (Discord and the web porch), soulchain as a signed IPFS log (local file store plus IPFS mirror; no on-chain anchor yet), single-key custody, travel by the residency daemon (about once a day, or `wanderer depart` / SIGUSR2), no wallet, static screen then the Door's witness (the verifier ensemble, T7.4, is still unbuilt), journals on the Atlas site and on `atlas-api` bound to localhost. GitHub Pages is not enabled; making the Atlas public is a pending Gate 2 action (#152). Everything else is spec'd but stubbed. Goal: the loop *reside → distill → publish → move* running on the Ghost host.

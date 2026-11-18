@@ -444,6 +444,8 @@ docker compose --env-file ops/.env -f ops/compose.ghost.yml up -d
 curl -sS http://127.0.0.1:8787/state
 ```
 
+After restoring a side blob without a chain append, restart `atlas-api` (`docker compose --env-file ops/.env -f ops/compose.ghost.yml restart atlas-api`) so `/journals` and `/chain/export` pick it up.
+
 ---
 
 ## 6. Crash recovery
