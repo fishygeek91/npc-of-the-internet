@@ -265,9 +265,9 @@ async function bootResidency(ctx: {
   const brain = opened.chat;
   const budgeted = opened.budgeted;
   if (config.budgetStatusPath !== undefined) {
-    const publisher = createBudgetStatusPublisher(config.budgetStatusPath, (message) => {
-      // Message only. The snapshot (fraction included) is not logged.
-      logger.warn({ err: message }, "budget_status_publish_failed");
+    const publisher = createBudgetStatusPublisher(config.budgetStatusPath, (failure) => {
+      // Env var and error code only. The path and the snapshot are not logged.
+      logger.warn({ envVar: failure.envVar, code: failure.code }, "budget_status_publish_failed");
     });
     publishBudget = (): void => {
       publisher.publish(budgetStatusBody(budgeted?.publicStatus()));

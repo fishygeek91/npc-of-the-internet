@@ -1,4 +1,5 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -103,10 +104,32 @@ describe("loadDoorBudgetStatus", () => {
     expect(dollars).toContain("budget: unavailable");
     expect(dollars).not.toContain("9.99");
 
+    await writeFile(path, "");
+    const empty = loadDoorBudgetStatus(path);
+    expect(empty).toEqual({ state: "unavailable", reason: "invalid" });
+    expect(formatStatusReply({ ...presence, budget: empty })).toContain("budget: unavailable");
+
     expect(loadDoorBudgetStatus(undefined)).toEqual({ state: "not_configured" });
     expect(formatStatusReply({ ...presence, budget: { state: "not_configured" } })).toContain(
       "budget: not configured"
     );
+  });
+
+  it("does not follow a symlink to a readable snapshot", async () => {
+    const path = await filePath();
+    const real = join(dir, "real.json");
+    await writeFile(real, `${JSON.stringify({ configured: false })}\n`);
+    await symlink(real, path);
+    expect(loadDoorBudgetStatus(real)).toEqual({ state: "not_configured" });
+    expect(loadDoorBudgetStatus(path)).toEqual({ state: "unavailable", reason: "read_failed" });
+  });
+
+  it("does not block when the snapshot path is a FIFO", async () => {
+    const path = await filePath();
+    execFileSync("mkfifo", [path]);
+    const started = Date.now();
+    expect(loadDoorBudgetStatus(path)).toEqual({ state: "unavailable", reason: "invalid" });
+    expect(Date.now() - started).toBeLessThan(1_000);
   });
 
   it("replies from the snapshot file on /wanderer status", async () => {
