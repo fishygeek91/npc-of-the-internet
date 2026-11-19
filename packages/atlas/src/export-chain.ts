@@ -14,11 +14,7 @@ import { z } from "zod";
 import type { ChainSnapshot } from "./chain-view.js";
 import { AtlasError } from "./errors.js";
 
-/**
- * `error.code` when `GET /chain/export?after=` names a CID that is not a
- * record on the chain. The HTTP status is 404. Clients drop their chain and
- * fetch the full export once (`spec/door/web.md`).
- */
+/** 404 `error.code` when `after` is not a record. Clients drop state and full-GET once. */
 export const EXPORT_AFTER_UNKNOWN_CODE = "export_after_unknown";
 
 /** Query boundary for `GET /chain/export`. Unknown keys are ignored. */
@@ -35,21 +31,14 @@ export type ChainExportBody = {
   records: OspRecord[];
   /** Door id → base64url Ed25519 public key from `ATLAS_DOOR_PUBKEYS`. */
   doorPublicKeys: Record<string, string>;
-  /**
-   * Journal side-blob CID → base64url bytes. Shard `text_cid` blobs are omitted.
-   * A CID named by any tombstone `blob_cid` on the whole chain is omitted.
-   * A missing CID is unavailable, not erased.
-   */
+  /** Journal CID → base64url bytes. Shard text and tombstoned CIDs are omitted. */
   blobs: Record<string, string>;
 };
 
 /**
- * Read `after` from a `GET /chain/export` query object.
- *
- * Absent means the full export. When present, the value must already be a
- * bagu CID (`CidSchema`, the anchored `CID_RE`). It is not trimmed or rewritten.
- * A rejection is `invalid_request` (400) and the message does not include the
- * value. This function never returns a value that failed that check.
+ * Read `after` from the export query. Absent means the full export. A present
+ * value must already be a bagu CID: it is not trimmed or rewritten. Rejection
+ * is `invalid_request` (400) and does not echo the value.
  *
  * @throws {AtlasError} `invalid_request` when `after` is present and not a CID.
  */
@@ -65,13 +54,9 @@ export function parseChainExportAfter(query: unknown): Cid | undefined {
 const recordCidCache = new WeakMap<readonly OspRecord[], readonly Cid[]>();
 
 /**
- * Position of the record whose CID is `after`, or `undefined` when `after`
- * is not a record CID on `records`.
- *
- * `after` is compared to computed record CIDs only. It is never used as a
- * filesystem path. CIDs are cached on the `records` array so a later tail
- * against the same snapshot does not hash the chain again. The current head
- * is checked before that walk, so a caught-up refetch hashes one record.
+ * Index of the record whose CID is `after`, or `undefined` when it is absent.
+ * Compared to computed record CIDs only, never a path. CIDs are cached on the
+ * array; the head is checked first so a caught-up refetch hashes one record.
  */
 export async function indexOfExportedRecord(
   records: readonly OspRecord[],
@@ -98,15 +83,10 @@ export async function indexOfExportedRecord(
 }
 
 /**
- * Build the public export from a snapshot and the configured door public keys.
- * Those keys come only from `ATLAS_DOOR_PUBKEYS`. `encodePublicKey` rejects a
- * value that is not 32 bytes and names the length, not the key bytes.
- *
- * `records` defaults to the whole snapshot. A tail passes the records strictly
- * after the cursor. Journal blobs are collected from `records` only.
- * Tombstoned CIDs are taken from the whole snapshot, so a tail omits the same
- * erased journals as the full export. A tombstone included in `records` still
- * carries `body.blob_cid`; that field is the drop signal.
+ * Public export. Door keys come only from `ATLAS_DOOR_PUBKEYS`. `records`
+ * defaults to the snapshot; a tail passes the records after the cursor.
+ * Journal blobs come from that slice. Tombstoned CIDs come from the whole
+ * snapshot. A tombstone in `records` still carries `body.blob_cid`.
  */
 export function buildChainExport(
   snapshot: ChainSnapshot,
@@ -121,14 +101,9 @@ export function buildChainExport(
 }
 
 /**
- * Strong `ETag` for a successful export. Any change to records, door public
- * keys, or included journal blobs changes the tag.
- *
- * Pass `after` for a tail. The cursor is part of the preimage, so two tails
- * do not share a tag when their bodies match (two empty tails, one per head).
- * Omit it for the full export: that tag stays a hash of the body alone.
- * A new head changes every earlier tail's body, so the same `after` also
- * changes tag when the chain grows.
+ * Strong ETag. The full export hashes the body alone. A tail hashes
+ * `{ after, body }`, so matching bodies do not share a tag, and the same
+ * `after` changes tag when the chain grows.
  */
 export function chainExportEtag(body: ChainExportBody, after?: string): string {
   const preimage = after === undefined ? body : { after, body };
