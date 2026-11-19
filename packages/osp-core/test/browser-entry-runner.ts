@@ -6,33 +6,22 @@
  * the negative control: it must reach `node:fs`, or the walker is blind.
  * Then `verifyRecords` runs every `spec/osp/vectors/` file while a resolve
  * hook rejects Node built-ins. sha2-256 is `multiformats` `sha2-browser.js`.
+ * `BROWSER_OK` reports `hook=on` when `module.registerHooks` installed that
+ * guard (Node 22.15+) and `hook=off` when the runtime guard is absent.
  */
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import * as nodeModule from "node:module";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import ts from "typescript";
 
 import type { ChainRule, VerifyChainResult } from "../src/browser.js";
 import { exactFailureRules, sameChainRules } from "./exact-failure-rules.js";
+import { runtimeSpecifiers } from "./helpers/import-specifiers.js";
+import { collectBodyContentHashes, parseVectorFile } from "./helpers/vectors.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const srcDir = path.resolve(here, "../src");
 const vectorsDir = path.resolve(here, "../../../spec/osp/vectors");
-
-const CHAIN_RULES: readonly ChainRule[] = [
-  "bad_soul_sig",
-  "broken_prev_link",
-  "seq_gap",
-  "schema_violation",
-  "missing_cosigner",
-  "forked_head",
-  "bad_genesis",
-  "bad_drift_evidence",
-  "bad_tombstone",
-  "bad_session_continuity",
-  "presence_conflict"
-];
 
 const REQUIRED_VECTORS: Readonly<Record<string, "valid" | ChainRule>> = {
   "valid-mini-chain.json": "valid",
@@ -47,6 +36,10 @@ const FORBIDDEN_DIRS = ["store", "car", "manifest", "replication"];
 type BuiltinHit = { specifier: string; from: string };
 type Graph = { files: string[]; builtins: BuiltinHit[] };
 
+/**
+ * True when a resolve-hook parent URL is part of the browser verification graph.
+ * Builtins loaded from this runner, or from Node itself, stay allowed.
+ */
 function parentInBrowserGraph(parent: string | undefined): boolean {
   if (parent === undefined || parent.length === 0) {
     return false;
@@ -59,11 +52,16 @@ function parentInBrowserGraph(parent: string | undefined): boolean {
   );
 }
 
-/** `registerHooks` is Node 22.15+. The static walk is the proof on older 22. */
-function installBuiltinGuard(): void {
+/**
+ * Install a resolve hook that rejects Node built-ins loaded from the browser graph.
+ *
+ * @returns Whether `module.registerHooks` exists (Node 22.15+). Older 22.x
+ *   installs nothing; the static walk is the only guard, reported as `hook=off`.
+ */
+function installBuiltinGuard(): boolean {
   const registerHooks: unknown = Reflect.get(nodeModule, "registerHooks");
   if (typeof registerHooks !== "function") {
-    return;
+    return false;
   }
   const hooks = {
     resolve(
@@ -79,82 +77,10 @@ function installBuiltinGuard(): void {
     }
   };
   registerHooks(hooks);
+  return true;
 }
 
-installBuiltinGuard();
-
-function specifierText(node: ts.ImportDeclaration | ts.ExportDeclaration): string | null {
-  const specifier = node.moduleSpecifier;
-  if (specifier === undefined || !ts.isStringLiteral(specifier)) {
-    return null;
-  }
-  return specifier.text;
-}
-
-/** True for `import type` / `export type` and named lists that are all `type`. */
-function isTypeOnly(node: ts.ImportDeclaration | ts.ExportDeclaration): boolean {
-  if (ts.isImportDeclaration(node)) {
-    const clause = node.importClause;
-    if (clause === undefined) {
-      return false;
-    }
-    if (clause.isTypeOnly || clause.name !== undefined) {
-      return clause.isTypeOnly;
-    }
-    const bindings = clause.namedBindings;
-    if (bindings === undefined) {
-      return true;
-    }
-    if (ts.isNamespaceImport(bindings)) {
-      return false;
-    }
-    return bindings.elements.every((element) => element.isTypeOnly);
-  }
-  if (node.isTypeOnly) {
-    return true;
-  }
-  if (node.exportClause !== undefined && ts.isNamedExports(node.exportClause)) {
-    return node.exportClause.elements.every((element) => element.isTypeOnly);
-  }
-  return false;
-}
-
-function pushLiteral(specifiers: string[], node: ts.Node): void {
-  if (!ts.isCallExpression(node)) {
-    return;
-  }
-  const first = node.arguments[0];
-  const dynamic = node.expression.kind === ts.SyntaxKind.ImportKeyword;
-  const required = ts.isIdentifier(node.expression) && node.expression.text === "require";
-  if ((dynamic || required) && first !== undefined && ts.isStringLiteral(first)) {
-    specifiers.push(first.text);
-  }
-}
-
-/** Runtime specifiers. Type-only imports are not reachable in the bundle. */
-function runtimeSpecifiers(fileName: string, source: string): string[] {
-  const scriptKind = fileName.endsWith(".ts") ? ts.ScriptKind.TS : ts.ScriptKind.JS;
-  const sourceFile = ts.createSourceFile(
-    fileName,
-    source,
-    ts.ScriptTarget.Latest,
-    true,
-    scriptKind
-  );
-  const specifiers: string[] = [];
-  const visit = (node: ts.Node): void => {
-    if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && !isTypeOnly(node)) {
-      const specifier = specifierText(node);
-      if (specifier !== null) {
-        specifiers.push(specifier);
-      }
-    }
-    pushLiteral(specifiers, node);
-    ts.forEachChild(node, visit);
-  };
-  visit(sourceFile);
-  return specifiers;
-}
+const builtinGuardActive = installBuiltinGuard();
 
 /** `.js` specifiers in `src/` are `.ts` on disk. Dependencies are real `.js`. */
 function resolveRelative(specifier: string, parentFile: string): string {
@@ -171,6 +97,11 @@ function resolveRelative(specifier: string, parentFile: string): string {
   throw new Error(`unresolved "${specifier}" from ${parentFile}`);
 }
 
+/**
+ * Resolve a non-relative specifier from `parentFile`.
+ * Throws when the resolved URL is a `node:` built-in. The walk records those
+ * specifiers itself and does not call this function for them.
+ */
 function resolveSpecifier(specifier: string, parentFile: string): string {
   if (specifier.startsWith(".")) {
     return resolveRelative(specifier, parentFile);
@@ -215,6 +146,10 @@ function walk(entryFile: string, followPackages: boolean): Graph {
   return { files, builtins };
 }
 
+/**
+ * Fail unless the browser graph is free of Node built-ins, stores, and Node sha2,
+ * and it resolved `sha2-browser.js` plus `@noble/ed25519`.
+ */
 function assertBrowserGraph(graph: Graph): void {
   if (graph.builtins.length > 0) {
     const lines = graph.builtins
@@ -250,82 +185,12 @@ function assertBrowserGraph(graph: Graph): void {
   }
 }
 
+/** True when the package-root control reached `node:fs` (the walker is not blind). */
 function foundNodeFs(graph: Graph): boolean {
   return graph.builtins.some(
     (hit) =>
       hit.specifier === "node:fs" || hit.specifier === "fs" || hit.specifier.startsWith("node:fs/")
   );
-}
-
-type VectorFile = {
-  expected: "valid" | ChainRule;
-  doorPublicKeys: Record<string, string>;
-  records: unknown[];
-  blobs?: Record<string, string>;
-};
-
-function isChainRule(value: string): value is ChainRule {
-  return CHAIN_RULES.some((rule) => rule === value);
-}
-
-function stringMap(value: unknown, filename: string, label: string): Record<string, string> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new Error(`${filename}: ${label} must be an object`);
-  }
-  const map: Record<string, string> = {};
-  for (const [key, encoded] of Object.entries(value)) {
-    if (typeof encoded !== "string") {
-      throw new Error(`${filename}: ${label}.${key} must be a string`);
-    }
-    map[key] = encoded;
-  }
-  return map;
-}
-
-function parseVector(raw: string, filename: string): VectorFile {
-  const parsed: unknown = JSON.parse(raw);
-  if (typeof parsed !== "object" || parsed === null) {
-    throw new Error(`${filename}: vector root must be an object`);
-  }
-  const expectedRaw: unknown = Reflect.get(parsed, "expected");
-  const recordsRaw: unknown = Reflect.get(parsed, "records");
-  if (!Array.isArray(recordsRaw)) {
-    throw new Error(`${filename}: records must be an array`);
-  }
-  const doorPublicKeys = stringMap(
-    Reflect.get(parsed, "doorPublicKeys"),
-    filename,
-    "doorPublicKeys"
-  );
-  const blobsRaw: unknown = Reflect.get(parsed, "blobs");
-  const blobs = blobsRaw === undefined ? undefined : stringMap(blobsRaw, filename, "blobs");
-  if (expectedRaw === "valid") {
-    return { expected: "valid", doorPublicKeys, records: recordsRaw, blobs };
-  }
-  if (typeof expectedRaw !== "string" || !isChainRule(expectedRaw)) {
-    throw new Error(`${filename}: expected must be "valid" or a ChainRule`);
-  }
-  return { expected: expectedRaw, doorPublicKeys, records: recordsRaw, blobs };
-}
-
-function bodyHashes(records: readonly unknown[]): Set<string> {
-  const hashes = new Set<string>();
-  for (const record of records) {
-    if (typeof record !== "object" || record === null || Reflect.get(record, "type") !== "memory") {
-      continue;
-    }
-    const body: unknown = Reflect.get(record, "body");
-    if (typeof body !== "object" || body === null) {
-      continue;
-    }
-    for (const key of ["text_hash", "journal_hash"]) {
-      const hash: unknown = Reflect.get(body, key);
-      if (typeof hash === "string") {
-        hashes.add(hash);
-      }
-    }
-  }
-  return hashes;
 }
 
 type ReportedCase = {
@@ -341,6 +206,10 @@ function failurePairs(result: VerifyChainResult): ReportedCase["pairs"] {
   return result.failures.map((failure) => ({ rule: failure.rule, seq: failure.seq }));
 }
 
+/**
+ * Verify every committed vector through `@npc/osp-core/browser`.
+ * `cases` is the full rule/seq list, including valid files (an empty list).
+ */
 async function runVectors(): Promise<{
   positive: number;
   negative: number;
@@ -358,14 +227,14 @@ async function runVectors(): Promise<{
   let positive = 0;
   let negative = 0;
   for (const filename of files) {
-    const vector = parseVector(readFileSync(path.join(vectorsDir, filename), "utf8"), filename);
+    const vector = parseVectorFile(readFileSync(path.join(vectorsDir, filename), "utf8"), filename);
     seen.set(filename, vector.expected);
     const doorPublicKeys: Record<string, Uint8Array> = {};
     for (const [doorId, encoded] of Object.entries(vector.doorPublicKeys)) {
       doorPublicKeys[doorId] = browser.decodePublicKey(encoded);
     }
     if (vector.blobs !== undefined) {
-      const hashes = bodyHashes(vector.records);
+      const hashes = collectBodyContentHashes(vector.records);
       for (const [cid, encoded] of Object.entries(vector.blobs)) {
         const hash = await browser.hashBlobBytes(browser.decodeBase64Url(encoded));
         if (!browser.cidMatchesHash(cid, hash) || !hashes.has(hash)) {
@@ -412,8 +281,9 @@ async function main(): Promise<void> {
     throw new Error("negative control failed: package root did not reach node:fs");
   }
   const counts = await runVectors();
+  const hook = builtinGuardActive ? "on" : "off";
   process.stdout.write(
-    `BROWSER_OK files=${String(browserGraph.files.length)} positive=${String(counts.positive)} negative=${String(counts.negative)} rootBuiltins=${String(rootGraph.builtins.length)}\n`
+    `BROWSER_OK files=${String(browserGraph.files.length)} positive=${String(counts.positive)} negative=${String(counts.negative)} rootBuiltins=${String(rootGraph.builtins.length)} hook=${hook}\n`
   );
   process.stdout.write(`BROWSER_CASES ${JSON.stringify(counts.cases)}\n`);
 }

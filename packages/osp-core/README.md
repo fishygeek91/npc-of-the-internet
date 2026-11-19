@@ -20,6 +20,8 @@ OSP soulchain primitives: Zod record schemas, canonical JSON, Ed25519 signing, C
 | CAR | `exportSoulchainCar`, `importSoulchainCar` |
 | Browser | `@npc/osp-core/browser` — see below. Not re-exported from the package root. |
 
+The root export (`.`) lists `types`, then `import`, then `default`. Both JavaScript conditions point at `dist/index.js`. `./package.json` is exported so tools can read this manifest. `@npc/osp-core/browser` lists `browser`, `import`, and `default` after `types`.
+
 `createRecord` signs with a soul private key. `createRecordWithSigner(fields, signSoul)` is the same sealer with a synchronous soul signer (`(bytes: Uint8Array) => Uint8Array`). Both default `spec` to `OSP_SPEC` (`osp/0.1`).
 
 `RECORD_TYPES` is every envelope `type` (including `tombstone`), in schema order. `RecordType` is that union (`OspRecord["type"]`).
