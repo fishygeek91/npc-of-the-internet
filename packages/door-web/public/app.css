@@ -151,8 +151,31 @@ body.present .dot {
   margin: 6px 0 0;
 }
 
-.reaction-failed .verify-label {
-  margin-left: 0.4rem;
+.epoch-label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  margin: 6px 0 0;
+}
+
+.epoch-checking {
+  color: var(--away);
+  font-style: italic;
+}
+
+.epoch-earlier {
+  color: var(--muted);
+}
+
+.msg-earlier {
+  border-style: dashed;
+  border-color: var(--away);
+}
+
+.reaction-failed .verify-label,
+.reaction-checking .epoch-label,
+.reaction-earlier .epoch-label {
+  margin: 0 0 0 0.4rem;
+  font-size: 0.75rem;
 }
 
 .msg-system {

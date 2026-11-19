@@ -13,8 +13,12 @@ import { readProof, roomIdFor, type ProofBytes } from "./proof.js";
 /** Visible label for a Wanderer line the browser did not accept. */
 export const VERIFICATION_FAILED_LABEL = "verification failed";
 
-/** How the page should treat one line. `plain` is visitor or system text. */
-export type LineVerdict = "checking" | "verified" | "failed" | "plain";
+/**
+ * How the page should treat one line. `plain` is visitor or system text.
+ * `verified` is live speech of the open epoch. `earlier` is a verified past
+ * epoch, shown as an earlier visit and never as live speech.
+ */
+export type LineVerdict = "checking" | "verified" | "earlier" | "failed" | "plain";
 
 /** Pins the porch serves from its own origin. Public keys only. */
 export type PorchPins = {
@@ -35,12 +39,24 @@ export type OpenResidency = {
 };
 
 /**
- * Chain the page is allowed to trust for the open session key.
+ * Chain the page is allowed to trust for session keys at this porch.
  * `open` is null when the chain is valid but the Wanderer is sleeping,
- * traveling, or present at another Door — no line verifies.
+ * traveling, or present at another Door. Past arrivals in `arrivals` still
+ * verify lines from those epochs. `epochCeiling` is the highest epoch on any
+ * verified attestation, or 0 when the chain has none.
  */
 export type ChainHold =
-  { phase: "checking" } | { phase: "failed" } | { phase: "verified"; open: OpenResidency | null };
+  | { phase: "checking" }
+  | { phase: "failed" }
+  | {
+      phase: "verified";
+      /** This porch's door id. Lines for any other door fail. */
+      doorId: string;
+      open: OpenResidency | null;
+      /** Every arrival at this porch, authenticated by the verified chain. */
+      arrivals: readonly OpenResidency[];
+      epochCeiling: number;
+    };
 
 /**
  * Last export fetch. `etag` is set only while `hold` is verified, so a
@@ -158,13 +174,21 @@ export async function fetchChain(
 
   return {
     etag,
-    hold: { phase: "verified", open: openPorchArrival(records, pins.doorId) }
+    hold: {
+      phase: "verified",
+      doorId: pins.doorId,
+      open: openPorchArrival(records, pins.doorId),
+      arrivals: porchArrivals(records, pins.doorId),
+      epochCeiling: chainEpochCeiling(records)
+    }
   };
 }
 
 /**
  * Verdict for a room line. Wanderer text must match the original
- * `signed.body.text` and the open arrival's signature. A bad proof is `failed`.
+ * `signed.body.text` and the arrival `session_pubkey` for `signed.epoch` at
+ * this porch. The open epoch is `verified` (live). A past epoch is `earlier`.
+ * An epoch newer than the snapshot is `checking`. A bad proof is `failed`.
  */
 export function verifyText(
   hold: ChainHold,
@@ -187,7 +211,35 @@ export function verifyText(
   if (text === null || text !== message.text) {
     return "failed";
   }
-  return signatureOk(hold.open, proof) ? "verified" : "failed";
+  return verdictForEpoch(hold, proof);
+}
+
+/**
+ * True when a well-formed Wanderer line for this porch names an epoch the
+ * verified snapshot has not reached yet. The page keeps that line `checking`
+ * and refetches. A wrong door, a text mismatch, or a malformed proof is not
+ * waiting on a refetch.
+ */
+export function lineAwaitsEpoch(
+  hold: ChainHold,
+  message: { from: string; text: string; proof?: unknown }
+): boolean {
+  if (message.from !== "wanderer" || hold.phase !== "verified") {
+    return false;
+  }
+  const proof = readProof(message.proof);
+  if (proof === null) {
+    return false;
+  }
+  const text = signedText(proof.signed);
+  if (text === null || text !== message.text) {
+    return false;
+  }
+  const place = signedPlace(proof.signed);
+  if (place === null || place.doorId !== hold.doorId) {
+    return false;
+  }
+  return place.epoch > hold.epochCeiling && findArrival(hold.arrivals, place.epoch) === undefined;
 }
 
 /**
@@ -217,7 +269,7 @@ export function verifyReaction(
   if (roomIdFor(place.epoch, signed.targetMsgId) !== targetId) {
     return "failed";
   }
-  return signatureOk(hold.open, proof) ? "verified" : "failed";
+  return verdictForEpoch(hold, proof);
 }
 
 /**
@@ -314,6 +366,99 @@ function decodeDoorKeys(encoded: ReadonlyMap<string, string>): Record<string, Ui
   return decoded;
 }
 
+/** Every arrival at this porch, in chain order. The chain authenticated each key. */
+function porchArrivals(records: readonly OspRecord[], porchDoorId: string): OpenResidency[] {
+  const arrivals: OpenResidency[] = [];
+  for (const record of records) {
+    if (record.type !== "attestation" || record.body.kind !== "arrival") {
+      continue;
+    }
+    if (record.body.door_id !== porchDoorId) {
+      continue;
+    }
+    arrivals.push({
+      doorId: porchDoorId,
+      epoch: record.body.epoch,
+      sessionPubkey: record.body.session_pubkey
+    });
+  }
+  return arrivals;
+}
+
+/**
+ * Highest epoch named by a verified attestation, or 0.
+ * A line with a greater epoch is newer than this snapshot.
+ */
+function chainEpochCeiling(records: readonly OspRecord[]): number {
+  let ceiling = 0;
+  for (const record of records) {
+    if (record.type !== "attestation") {
+      continue;
+    }
+    for (const epoch of attestationEpochs(record.body)) {
+      if (epoch > ceiling) {
+        ceiling = epoch;
+      }
+    }
+  }
+  return ceiling;
+}
+
+/** Epoch numbers an attestation publishes. Travel and handover use their own fields. */
+function attestationEpochs(
+  body: Extract<OspRecord, { type: "attestation" }>["body"]
+): readonly number[] {
+  switch (body.kind) {
+    case "arrival":
+    case "heartbeat":
+    case "departure":
+      return [body.epoch];
+    case "travel":
+      return [body.from_epoch];
+    case "handover":
+      return [body.depart_epoch, body.arrive_epoch];
+    default: {
+      const unexpected: never = body;
+      throw new Error(`unexpected attestation ${String(unexpected)}`);
+    }
+  }
+}
+
+/** Arrival for `epoch` at this porch, or null when the snapshot has none. */
+function findArrival(arrivals: readonly OpenResidency[], epoch: number): OpenResidency | undefined {
+  for (const arrival of arrivals) {
+    if (arrival.epoch === epoch) {
+      return arrival;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Live, earlier, checking, or failed for one proof against a verified hold.
+ * The session key is that epoch's arrival, not whichever stay is open now.
+ */
+function verdictForEpoch(
+  hold: Extract<ChainHold, { phase: "verified" }>,
+  proof: ProofBytes
+): Exclude<LineVerdict, "plain"> {
+  const place = signedPlace(proof.signed);
+  if (place === null || place.doorId !== hold.doorId) {
+    return "failed";
+  }
+  const arrival = findArrival(hold.arrivals, place.epoch);
+  if (arrival === undefined) {
+    return place.epoch > hold.epochCeiling ? "checking" : "failed";
+  }
+  if (!signatureOk(arrival.sessionPubkey, proof, place)) {
+    return "failed";
+  }
+  if (hold.open !== null && hold.open.epoch === place.epoch && hold.open.doorId === place.doorId) {
+    return "verified";
+  }
+  return "earlier";
+}
+
 /** Arrival `session_pubkey` for this door and epoch, or null. */
 function arrivalFor(
   records: readonly OspRecord[],
@@ -376,20 +521,24 @@ function signedPlace(signed: Record<string, unknown>): { doorId: string; epoch: 
   return { doorId, epoch };
 }
 
-/** True when the open arrival signed `proof`. A bad signature is false, not a throw. */
-function signatureOk(open: OpenResidency | null, proof: ProofBytes): boolean {
-  if (open === null || typeof proof.sig !== "string") {
+/** True when `sessionPubkey` signed `proof` for this door and epoch. A bad signature is false. */
+function signatureOk(
+  sessionPubkey: string,
+  proof: ProofBytes,
+  expected: { doorId: string; epoch: number }
+): boolean {
+  if (typeof proof.sig !== "string") {
     return false;
   }
   const place = signedPlace(proof.signed);
-  if (place === null || place.doorId !== open.doorId || place.epoch !== open.epoch) {
+  if (place === null || place.doorId !== expected.doorId || place.epoch !== expected.epoch) {
     return false;
   }
   try {
     return verify(
       canonicalize(proof.signed),
       decodeSignature(proof.sig),
-      decodePublicKey(open.sessionPubkey)
+      decodePublicKey(sessionPubkey)
     );
   } catch {
     return false;

@@ -19,6 +19,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { OutboundProof } from "../src/browser/proof.js";
 import {
   fetchChain,
+  lineAwaitsEpoch,
   verifyReaction,
   verifyText,
   type ChainHold,
@@ -55,7 +56,7 @@ describe("porch line verification", () => {
     };
     expect(wanderer(hold, tampered, "Hellp")).toBe("failed");
     expect(wanderer(hold, hello, "Hello!")).toBe("failed");
-    expect(wanderer(hold, speak(session, 2, DOOR_ID, "Later"), "Later")).toBe("failed");
+    expect(wanderer(hold, speak(session, 2, DOOR_ID, "Later"), "Later")).toBe("checking");
 
     const loose = {
       type: "outbound" as const,
@@ -187,7 +188,7 @@ describe("porch line verification", () => {
     expect(seen).toEqual(["", '"chain"', ""]);
   });
 
-  it("fails lines from a closed, sleeping, superseded, or other-door epoch", async () => {
+  it("marks a closed, sleeping, or superseded stay as an earlier visit and fails another door", async () => {
     const soul = generateKeypair();
     const door = generateKeypair();
     const session = generateKeypair();
@@ -196,11 +197,11 @@ describe("porch line verification", () => {
       const closed = await holdOf(closers, soul, door, session, (chain) =>
         closeStay(chain, soul, door, kind)
       );
-      expect(wanderer(closed, hello)).toBe("failed");
+      expect(wanderer(closed, hello)).toBe("earlier");
     }
 
     const sleeping = await holdOf(closers, soul, door, session, (chain) => doSleep(chain, soul));
-    expect(wanderer(sleeping, hello)).toBe("failed");
+    expect(wanderer(sleeping, hello)).toBe("earlier");
 
     const awake = await holdOf(closers, soul, door, session, async (chain) => {
       await doSleep(chain, soul);
@@ -223,7 +224,7 @@ describe("porch line verification", () => {
     const newer = await holdOf(closers, soul, door, session, (chain) =>
       arrive(chain, soul, door, next, DOOR_ID, 2, "2026-01-05T00:00:00.000Z")
     );
-    expect(wanderer(newer, hello)).toBe("failed");
+    expect(wanderer(newer, hello)).toBe("earlier");
     expect(wanderer(newer, speak(next, 2))).toBe("verified");
 
     const otherDoor = generateKeypair();
@@ -248,7 +249,60 @@ describe("porch line verification", () => {
       { ...keyMap(door), [OTHER_DOOR]: encodePublicKey(otherDoor.publicKey) }
     );
     expect(wanderer(elsewhere, speak(otherSession, 2, OTHER_DOOR))).toBe("failed");
-    expect(wanderer(elsewhere, hello)).toBe("failed");
+    expect(wanderer(elsewhere, hello)).toBe("earlier");
+  });
+
+  it("checks a newer epoch until its arrival is on the chain, then verifies it", async () => {
+    const soul = generateKeypair();
+    const door = generateKeypair();
+    const session = generateKeypair();
+    const next = generateKeypair();
+    const again = speak(next, 2, DOOR_ID, "Again");
+    const stale = await holdOf(closers, soul, door, session, async () => undefined);
+    expect(wanderer(stale, again, "Again")).toBe("checking");
+    expect(lineAwaitsEpoch(stale, { from: "wanderer", text: "Again", proof: again })).toBe(true);
+    expect(lineAwaitsEpoch(stale, { from: "wanderer", text: "Nope", proof: again })).toBe(false);
+    expect(wanderer(stale, again, "Nope")).toBe("failed");
+    expect(wanderer(stale, speak(next, 9, OTHER_DOOR, "Nope"), "Nope")).toBe("failed");
+    const forged = chip(generateKeypair(), 999999);
+    expect(verifyReaction(stale, "web-1", { emoji: "👍", proof: forged })).toBe("checking");
+
+    const current = await holdOf(closers, soul, door, session, (chain) =>
+      arrive(chain, soul, door, next, DOOR_ID, 2, "2026-01-05T00:00:00.000Z")
+    );
+    expect(wanderer(current, again, "Again")).toBe("verified");
+    expect(wanderer(current, speak(session))).toBe("earlier");
+    const hello = speak(session);
+    const tampered: OutboundProof = {
+      signed: { ...hello.signed, body: { text: "Hellp", channel_id: "porch" } },
+      sig: hello.sig
+    };
+    expect(wanderer(current, tampered, "Hellp")).toBe("failed");
+    expect(wanderer(current, speak(generateKeypair()))).toBe("failed");
+    expect(verifyReaction(current, "web-1", { emoji: "👍", proof: chip(session) })).toBe("earlier");
+
+    const otherDoor = generateKeypair();
+    const elsewhere = await holdOf(
+      closers,
+      soul,
+      door,
+      session,
+      async (chain) => {
+        await closeStay(chain, soul, door, "departure");
+        await arrive(
+          chain,
+          soul,
+          otherDoor,
+          generateKeypair(),
+          OTHER_DOOR,
+          2,
+          "2026-01-06T00:00:00.000Z"
+        );
+      },
+      { ...keyMap(door), [OTHER_DOOR]: encodePublicKey(otherDoor.publicKey) }
+    );
+    expect(wanderer(elsewhere, speak(next, 2))).toBe("failed");
+    expect(wanderer(elsewhere, speak(next, 3, DOOR_ID, "Soon"), "Soon")).toBe("checking");
   });
 });
 
@@ -293,12 +347,12 @@ function speak(
   );
 }
 
-function chip(session: Ed25519Keypair): OutboundProof {
+function chip(session: Ed25519Keypair, epoch = 1): OutboundProof {
   return proofFrom(
     signedOutbound({
       session,
       doorId: DOOR_ID,
-      epoch: 1,
+      epoch,
       msgId: "out-r",
       body: { channel_id: "porch", reaction: { emoji: "👍", target_msg_id: "web-1" } }
     })
