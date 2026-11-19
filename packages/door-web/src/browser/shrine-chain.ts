@@ -5,6 +5,7 @@ import {
   decodePublicKey,
   hashBlobBytes,
   RecordSchema,
+  scanPresence,
   verifyRecords,
   type OspRecord
 } from "@npc/osp-core/browser";
@@ -150,29 +151,15 @@ function snapshotOf(
   };
 }
 
+/** Badge presence. Same newest-first scan as Atlas `GET /state`. */
 function presenceOf(
   records: readonly OspRecord[]
 ): { kind: "present"; doorId: string } | { kind: "traveling" | "sleeping" } {
-  for (let index = records.length - 1; index >= 0; index -= 1) {
-    const record = records[index];
-    if (record === undefined) {
-      continue;
-    }
-    if (record.type === "sleep") {
-      return { kind: "sleeping" };
-    }
-    if (record.type !== "attestation") {
-      continue;
-    }
-    const body = record.body;
-    if (body.kind === "arrival" || body.kind === "heartbeat") {
-      return { kind: "present", doorId: body.door_id };
-    }
-    if (body.kind === "departure" || body.kind === "travel" || body.kind === "handover") {
-      return { kind: "traveling" };
-    }
+  const presence = scanPresence(records);
+  if (presence.status === "present") {
+    return { kind: "present", doorId: presence.doorId };
   }
-  return { kind: "sleeping" };
+  return { kind: presence.status };
 }
 
 async function journalsOf(

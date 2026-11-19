@@ -1,8 +1,10 @@
 import { z } from "zod";
 
 /**
- * Unsigned outbound frame carried to the page (`spec/door/web.md`).
- * `canonicalize` of this object is what `sig` covers.
+ * Informational shape of an unsigned outbound frame (`spec/door/web.md`).
+ * `canonicalize` of the original object is what `sig` covers, including fields
+ * this type does not name. Not a parser: {@link OutboundProofSchema} and
+ * {@link readProof} are the boundary for untrusted input.
  */
 export type OutboundSigned = {
   type: "outbound";
@@ -18,7 +20,11 @@ export type OutboundSigned = {
   };
 };
 
-/** Session-key signature over {@link OutboundSigned}. */
+/**
+ * Informational shape of a session-key signature over {@link OutboundSigned}.
+ * Not a parser: {@link OutboundProofSchema} and {@link readProof} are the
+ * boundary for untrusted input.
+ */
 export type OutboundProof = {
   signed: OutboundSigned;
   sig: string;
@@ -72,7 +78,7 @@ export function readProof(value: unknown): ProofBytes | null {
       return null;
     }
     const signed = value["signed"];
-    if (!isRecord(signed) || typeof parsed.data.sig !== "string") {
+    if (!isRecord(signed)) {
       return null;
     }
     return { signed, sig: parsed.data.sig };

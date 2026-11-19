@@ -124,6 +124,8 @@ export type {
   VerifyChainResult,
   VerifyChainOptions
 } from "./verify-chain.js";
+export { arrivalForEpoch, arrivalsForDoor, scanPresence } from "./presence.js";
+export type { EpochArrival, PresenceScan } from "./presence.js";
 export {
   OSP_PIN_MANIFEST_VERSION,
   buildUnsignedPinManifest,

@@ -4,7 +4,9 @@
  * Porch pages and replica shrines import this module, not the package root.
  * The root loads `SoulStore` (`node:fs` and other Node built-ins). This
  * module's runtime import graph is limited to canonical JSON, CIDs, Ed25519
- * verify, and `ChainVerifier` / `verifyRecords` / `verifyRecord`.
+ * verify, `ChainVerifier` / `verifyRecords` / `verifyRecord`, and the presence
+ * scan (`scanPresence`, `arrivalForEpoch`, `arrivalsForDoor`). The scan module
+ * has no runtime imports.
  *
  * Normative contract: `spec/door/web.md`. Chain rules: `spec/osp/records.md`.
  * Signing and hashing stay on `@noble/ed25519`, `@noble/hashes`, and
@@ -63,3 +65,6 @@ export {
   decodeMemoryTextBlob,
   hashBlobBytes
 } from "./memory-blob.js";
+
+export { arrivalForEpoch, arrivalsForDoor, scanPresence } from "./presence.js";
+export type { EpochArrival, PresenceScan } from "./presence.js";
