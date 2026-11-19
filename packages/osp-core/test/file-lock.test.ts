@@ -22,10 +22,33 @@ function ourStartedAt(): number {
  * instance and nonce registry). Resolves once the worker holds the lock; the returned
  * function makes the worker release it and exit.
  */
-async function holdLockInWorker(lockPath: string): Promise<() => Promise<void>> {
+/**
+ * URL of tsx's ESM register entry.
+ *
+ * `require.resolve("tsx/esm/api")` follows the `require` export, which is the CJS
+ * bundle. tsx 4.23.15's CJS `register()` then loads `./esm/index.mjs` beside that
+ * bundle, and that file is not published. The sibling `index.mjs` registers.
+ */
+function tsxEsmApiHref(): string {
   const require = createRequire(import.meta.url);
+  const resolved = require.resolve("tsx/esm/api");
+  const cjsSuffix = `${path.sep}index.cjs`;
+  const mjsSuffix = `${path.sep}index.mjs`;
+  let esmPath: string | undefined;
+  if (resolved.endsWith(mjsSuffix)) {
+    esmPath = resolved;
+  } else if (resolved.endsWith(cjsSuffix)) {
+    esmPath = `${resolved.slice(0, -"cjs".length)}mjs`;
+  }
+  if (esmPath === undefined) {
+    throw new Error(`unexpected tsx/esm/api resolution: ${resolved}`);
+  }
+  return pathToFileURL(esmPath).href;
+}
+
+async function holdLockInWorker(lockPath: string): Promise<() => Promise<void>> {
   const workerData = {
-    tsxApi: pathToFileURL(require.resolve("tsx/esm/api")).href,
+    tsxApi: tsxEsmApiHref(),
     mod: new URL("../src/store/file-lock.ts", import.meta.url).href,
     lockPath
   };
