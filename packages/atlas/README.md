@@ -6,7 +6,7 @@ Read-only HTTP API over a soulchain directory. Atlas derives Wanderer presence, 
 
 The Atlas API serves public chain state for the NPC of the Internet site and operators. It opens the soulchain **read-only** via `FileSoulStore.openReadOnly` from `@npc/osp-core`: no `mkdir`, no `.append.lock`, no truncation. A torn trailing `chain.jsonl` line is skipped on read; `verified: false` is returned instead of failing the request.
 
-`AtlasError.code` is the closed set `ATLAS_ERROR_CODES`: `invalid_request`, `invalid_type`, `chain_empty`, `car_not_found`, `manifest_not_found`, `invalid_config`, `internal_error`, `chain_unreadable`.
+`AtlasError.code` is the closed set `ATLAS_ERROR_CODES`: `invalid_request`, `invalid_type`, `chain_empty`, `car_not_found`, `manifest_not_found`, `export_after_unknown`, `invalid_config`, `internal_error`, `chain_unreadable`.
 
 ## Environment
 
@@ -59,9 +59,11 @@ Wanderer presence snapshot.
 
 Full chain for in-browser verification (`spec/door/web.md`). Not a summary.
 
-Returns `{ records, doorPublicKeys, blobs }`. `records` are the full signed bodies in chain order, so an `osp/0.1` shard's inline `text` is included (`GET /records` serves summaries instead). `doorPublicKeys` is door id → base64url **public** key (the `ATLAS_DOOR_PUBKEYS` set; private keys are not a field). `blobs` is journal side-blob CID → base64url bytes; shard `text_cid` blobs are omitted, and so is any CID named by a tombstone `blob_cid`. Missing CIDs are unavailable, not erased. There is no `verified` field.
+Returns `{ records, doorPublicKeys, blobs }`. `records` are the full signed bodies in chain order, so an `osp/0.1` shard's inline `text` is included (`GET /records` serves summaries instead). `doorPublicKeys` is door id → base64url **public** key (the `ATLAS_DOOR_PUBKEYS` set; private keys are not a field). `blobs` is journal side-blob CID → base64url bytes; shard `text_cid` blobs are omitted, and so is any CID named by a tombstone `blob_cid` anywhere on the chain. Missing CIDs are unavailable, not erased. There is no `verified` field.
 
-`200` includes `ETag` and `Cache-Control: no-cache`. `If-None-Match` of that tag (or `*`) returns `304` with an empty body. `503 chain_unreadable` uses the same error object as the other routes.
+`?after=<cid>` returns the same shape for the records strictly after that CID (the cursor itself is not included) and the journal blobs those records reference. `after` must be a bagu CID (`CidSchema`). Anything else is `400` `invalid_request`. A CID that is not a record on the chain is `404` `export_after_unknown` (`EXPORT_AFTER_UNKNOWN_CODE`); the client drops its chain and fetches the full export once. `after` equal to the head is `200` with `records: []` and `blobs: {}`. A tombstone in the tail still carries `body.blob_cid`, which is the blob the client drops. The bytes stay out of `blobs`. See `spec/door/web.md`.
+
+`200` includes `ETag` and `Cache-Control: no-cache`. A tail's `ETag` is not the full export's tag and differs for each `after` value. `If-None-Match` of that tag (or `*`, or the same tag as a weak validator) returns `304` with an empty body. A tag from a different `after`, or from the full export, does not. `503 chain_unreadable` uses the same error object as the other routes.
 
 ### `GET /chain/head`
 
@@ -136,4 +138,4 @@ Output: `test/fixtures/multi-residency/` (an `osp/0.2` chain with side blobs) pl
 pnpm --filter @npc/atlas test
 ```
 
-Coverage includes read-only guarantees, lock coexistence, state branches, torn-tail handling, reload after append, pagination, journals ordering (journal records and legacy shard journals), residency counts and travel, erased journal markers, leak safety for shard text, and `GET /chain/export` (public keys only, journal blobs, `ETag`).
+Coverage includes read-only guarantees, lock coexistence, state branches, torn-tail handling, reload after append, pagination, journals ordering (journal records and legacy shard journals), residency counts and travel, erased journal markers, leak safety for shard text, and `GET /chain/export` (public keys only, journal blobs, tail `after`, `ETag`).

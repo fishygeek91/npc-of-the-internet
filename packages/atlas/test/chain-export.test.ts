@@ -11,13 +11,19 @@ import {
   FileSoulStore,
   OSP_SPEC_V02
 } from "@npc/osp-core";
+import type { FastifyInstance } from "fastify";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { ifNoneMatchSatisfied } from "../src/export-chain.js";
-import { createAtlasServer } from "../src/server.js";
+import {
+  CHAIN_EXPORT_TAIL_CACHE_ENTRIES,
+  chainExportTailCacheSize,
+  createAtlasServer
+} from "../src/server.js";
 import {
   createArrivalRecord,
   createGenesisRecord,
+  createHeartbeatRecord,
   createJournalRecord,
   createTombstoneRecord,
   DEFAULT_DOOR,
@@ -47,6 +53,7 @@ const FIXTURE_PRIVATE_KEYS = [
 
 type ExportRecord = {
   seq: number;
+  prev: string | null;
   type: string;
   sig: string;
   body: {
@@ -54,6 +61,7 @@ type ExportRecord = {
     kind?: string;
     text_cid?: string;
     journal_cid?: string;
+    blob_cid?: string;
     text?: string;
     journal?: string;
   };
@@ -110,6 +118,37 @@ function readExport(payload: unknown): ExportBody {
     throw new Error("chain export body is missing records, doorPublicKeys, or blobs");
   }
   return payload;
+}
+
+function headerEtag(headers: { etag?: string | string[] | number | undefined }): string {
+  const etag = headers.etag;
+  if (typeof etag !== "string" || !/^"[A-Za-z0-9_-]+"$/u.test(etag)) {
+    throw new Error("export response is missing a strong ETag");
+  }
+  return etag;
+}
+
+function journalProse(encoded: string): string {
+  const prose: unknown = JSON.parse(new TextDecoder().decode(decodeBase64Url(encoded)));
+  if (typeof prose !== "string") {
+    throw new Error("journal blob is not a string");
+  }
+  return prose;
+}
+
+const INVALID_AFTER = { error: { code: "invalid_request", message: "after must be a CID" } };
+const UNKNOWN_AFTER = {
+  error: { code: "export_after_unknown", message: "after is not a record on this chain" }
+};
+
+/** `GET /chain/export`, with an optional cursor and `If-None-Match`. */
+async function getExport(app: FastifyInstance, after?: string, ifNoneMatch?: string) {
+  const url =
+    after === undefined ? "/chain/export" : `/chain/export?after=${encodeURIComponent(after)}`;
+  if (ifNoneMatch === undefined) {
+    return app.inject({ method: "GET", url });
+  }
+  return app.inject({ method: "GET", url, headers: { "if-none-match": ifNoneMatch } });
 }
 
 describe("GET /chain/export", () => {
@@ -414,13 +453,284 @@ describe("GET /chain/export", () => {
       await app.close();
     }
   });
+
+  it("returns the tail after genesis, a middle record, and the head", async () => {
+    const prose = "TAIL_JOURNAL_PROSE";
+    const dir = await makeTempDir("atlas-export-after-");
+    const written = await writeJournalChain(dir, prose);
+    const app = await createAtlasServer({
+      chainDir: dir,
+      port: 8787,
+      doorPublicKeys: fixtureDoorPublicKeys()
+    });
+    try {
+      const fullResponse = await getExport(app);
+      const fullBody = readExport(fullResponse.json());
+      const afterGenesis = await getExport(app, written.genesisCid);
+      expect(afterGenesis.statusCode).toBe(200);
+      expect(afterGenesis.headers["cache-control"]).toBe("no-cache");
+      const genesisTail = readExport(afterGenesis.json());
+      expect(genesisTail.doorPublicKeys).toEqual(fullBody.doorPublicKeys);
+      expect(genesisTail.records.map((record) => record.seq)).toEqual([1, 2]);
+      expect(genesisTail.records[0]).toMatchObject({
+        prev: written.genesisCid,
+        seq: 1,
+        type: "attestation"
+      });
+      expect(genesisTail.records[1]).toMatchObject({
+        prev: written.arrivalCid,
+        seq: 2,
+        type: "memory",
+        body: { journal_cid: written.journalCid }
+      });
+      const encoded = genesisTail.blobs[written.journalCid];
+      if (typeof encoded !== "string") {
+        throw new Error("journal blob missing from the genesis tail");
+      }
+      expect(journalProse(encoded)).toBe(prose);
+
+      const afterMiddle = await getExport(app, written.arrivalCid);
+      expect(afterMiddle.statusCode).toBe(200);
+      const middleTail = readExport(afterMiddle.json());
+      expect(middleTail.records).toHaveLength(1);
+      expect(middleTail.records[0]).toMatchObject({
+        prev: written.arrivalCid,
+        seq: 2,
+        body: { journal_cid: written.journalCid }
+      });
+      expect(typeof middleTail.blobs[written.journalCid]).toBe("string");
+
+      const afterHead = await getExport(app, written.recordCid);
+      expect(afterHead.statusCode).toBe(200);
+      const headTail = readExport(afterHead.json());
+      expect(headTail.records).toEqual([]);
+      expect(headTail.blobs).toEqual({});
+      expect(headTail.doorPublicKeys).toEqual(fullBody.doorPublicKeys);
+      expect(afterHead.body.includes(prose)).toBe(false);
+
+      const fullTag = headerEtag(fullResponse.headers);
+      const genesisTag = headerEtag(afterGenesis.headers);
+      const middleTag = headerEtag(afterMiddle.headers);
+      const headTag = headerEtag(afterHead.headers);
+      expect(new Set([fullTag, genesisTag, middleTag, headTag]).size).toBe(4);
+      const cached = await getExport(app, written.arrivalCid, middleTag);
+      expect(cached.statusCode).toBe(304);
+      expect(cached.body).toBe("");
+      expect(cached.headers.etag).toBe(middleTag);
+      expect((await getExport(app, written.arrivalCid, `W/${middleTag}`)).statusCode).toBe(304);
+      expect((await getExport(app, written.recordCid, "*")).statusCode).toBe(304);
+      expect((await getExport(app, written.arrivalCid, fullTag)).statusCode).toBe(200);
+      expect((await getExport(app, written.genesisCid, middleTag)).statusCode).toBe(200);
+
+      for (const cid of [written.journalCid, `bagu${"a".repeat(57)}`]) {
+        const missing = await getExport(app, cid);
+        expect(missing.statusCode, cid).toBe(404);
+        expect(missing.json(), cid).toEqual(UNKNOWN_AFTER);
+      }
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("rejects a malformed after with 400 invalid_request", async () => {
+    const app = await createAtlasServer({
+      chainDir: join(await makeTempDir("atlas-export-after-bad-"), "absent"),
+      port: 8787
+    });
+    try {
+      const badValues = [
+        "",
+        "../etc/passwd",
+        "bagu",
+        `bagu${"A".repeat(57)}`,
+        `bagu${"Z".repeat(57)}`,
+        `bagu${"a".repeat(20)}/${"a".repeat(36)}`,
+        ` bagu${"a".repeat(57)}`
+      ];
+      for (const value of badValues) {
+        const response = await getExport(app, value);
+        expect(response.statusCode, value).toBe(400);
+        expect(response.json(), value).toEqual(INVALID_AFTER);
+      }
+      const duplicate = await app.inject({
+        method: "GET",
+        url: `/chain/export?after=bagu${"a".repeat(57)}&after=bagu${"b".repeat(57)}`
+      });
+      expect(duplicate.statusCode).toBe(400);
+      expect(duplicate.json()).toEqual(INVALID_AFTER);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("names a tail tombstone's blob_cid and does not return that blob", async () => {
+    const prose = "TAIL_TOMBSTONE_PROSE";
+    const dir = await makeTempDir("atlas-export-after-tomb-");
+    const written = await writeJournalChain(dir, prose);
+    const keys = fixtureDoorPublicKeys();
+    const store = await FileSoulStore.open(dir, { doorPublicKeys: keys });
+    try {
+      const tombstone = await createTombstoneRecord(
+        DEFAULT_SOUL,
+        3,
+        written.recordCid,
+        written.recordCid,
+        written.journalCid,
+        "2026-01-03T00:00:00.000Z"
+      );
+      await store.append(tombstone.record);
+    } finally {
+      await store.close();
+    }
+    const app = await createAtlasServer({ chainDir: dir, port: 8787, doorPublicKeys: keys });
+    try {
+      const withJournal = await getExport(app, written.arrivalCid);
+      expect(withJournal.statusCode).toBe(200);
+      const both = readExport(withJournal.json());
+      expect(both.records.map((record) => record.type)).toEqual(["memory", "tombstone"]);
+      expect(both.records[1]).toMatchObject({ body: { blob_cid: written.journalCid } });
+      expect(both.blobs[written.journalCid]).toBeUndefined();
+      expect(withJournal.body.includes(prose)).toBe(false);
+
+      const onlyTombstone = await getExport(app, written.recordCid);
+      const tail = readExport(onlyTombstone.json());
+      expect(tail.records[0]).toMatchObject({
+        prev: written.recordCid,
+        type: "tombstone",
+        body: { blob_cid: written.journalCid }
+      });
+      expect(tail.blobs).toEqual({});
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("changes the ETag for the same after when the chain grows", async () => {
+    const dir = await makeTempDir("atlas-export-grow-");
+    const written = await writeJournalChain(dir, "GROW_ETAG_PROSE");
+    const keys = fixtureDoorPublicKeys();
+    const app = await createAtlasServer({ chainDir: dir, port: 8787, doorPublicKeys: keys });
+    try {
+      const before = await getExport(app, written.genesisCid);
+      const beforeTag = headerEtag(before.headers);
+      const store = await FileSoulStore.open(dir, { doorPublicKeys: keys });
+      try {
+        const heartbeat = await createHeartbeatRecord(
+          DEFAULT_SOUL,
+          DEFAULT_DOOR,
+          DEFAULT_SESSION,
+          3,
+          written.recordCid,
+          DEFAULT_DOOR_ID,
+          1,
+          DEFAULT_RESIDENCY,
+          "2026-01-02T03:00:00.000Z",
+          OSP_SPEC_V02
+        );
+        await store.append(heartbeat.record);
+      } finally {
+        await store.close();
+      }
+      const after = await getExport(app, written.genesisCid);
+      expect(headerEtag(after.headers)).not.toBe(beforeTag);
+      expect(readExport(after.json()).records.map((record) => record.seq)).toEqual([1, 2, 3]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("keeps at most the tail-cache limit and still serves evicted cursors", async () => {
+    const dir = await makeTempDir("atlas-export-lru-");
+    const cids = await writeCursorChain(dir, CHAIN_EXPORT_TAIL_CACHE_ENTRIES);
+    const app = await createAtlasServer({
+      chainDir: dir,
+      port: 8787,
+      doorPublicKeys: fixtureDoorPublicKeys()
+    });
+    try {
+      const saved: Array<{ etag: string; seqs: number[] }> = [];
+      for (const cid of cids) {
+        const response = await getExport(app, cid);
+        expect(response.statusCode).toBe(200);
+        saved.push({
+          etag: headerEtag(response.headers),
+          seqs: readExport(response.json()).records.map((record) => record.seq)
+        });
+        expect(chainExportTailCacheSize(app)).toBeLessThanOrEqual(CHAIN_EXPORT_TAIL_CACHE_ENTRIES);
+      }
+      expect(cids.length).toBeGreaterThan(CHAIN_EXPORT_TAIL_CACHE_ENTRIES);
+      expect(chainExportTailCacheSize(app)).toBe(CHAIN_EXPORT_TAIL_CACHE_ENTRIES);
+      for (const index of [0, cids.length - 1]) {
+        const cid = cids[index];
+        const prior = saved[index];
+        if (cid === undefined || prior === undefined) {
+          throw new Error("missing cached cursor");
+        }
+        const again = await getExport(app, cid);
+        expect(headerEtag(again.headers)).toBe(prior.etag);
+        expect(readExport(again.json()).records.map((record) => record.seq)).toEqual(prior.seqs);
+        expect(chainExportTailCacheSize(app)).toBeLessThanOrEqual(CHAIN_EXPORT_TAIL_CACHE_ENTRIES);
+      }
+    } finally {
+      await app.close();
+    }
+  });
 });
+
+/** Genesis, arrival, then `extraHeartbeats` heartbeats. Returns every record CID. */
+async function writeCursorChain(dir: string, extraHeartbeats: number): Promise<string[]> {
+  const store = await FileSoulStore.open(dir, { doorPublicKeys: fixtureDoorPublicKeys() });
+  try {
+    const cids: string[] = [];
+    const genesis = await createGenesisRecord(DEFAULT_SOUL);
+    await store.append(genesis.record);
+    cids.push(genesis.cid);
+    const arrival = await createArrivalRecord(
+      DEFAULT_SOUL,
+      DEFAULT_DOOR,
+      DEFAULT_SESSION,
+      1,
+      genesis.cid,
+      DEFAULT_DOOR_ID,
+      1,
+      DEFAULT_RESIDENCY,
+      "2026-01-02T00:00:00.000Z"
+    );
+    await store.append(arrival.record);
+    cids.push(arrival.cid);
+    let prev = arrival.cid;
+    for (let index = 0; index < extraHeartbeats; index += 1) {
+      const heartbeat = await createHeartbeatRecord(
+        DEFAULT_SOUL,
+        DEFAULT_DOOR,
+        DEFAULT_SESSION,
+        index + 2,
+        prev,
+        DEFAULT_DOOR_ID,
+        1,
+        DEFAULT_RESIDENCY,
+        `2026-01-02T00:00:${String(index).padStart(2, "0")}.000Z`
+      );
+      await store.append(heartbeat.record);
+      cids.push(heartbeat.cid);
+      prev = heartbeat.cid;
+    }
+    return cids;
+  } finally {
+    await store.close();
+  }
+}
 
 /** Genesis, arrival, and one journal blob still stored under `blobs/`. */
 async function writeJournalChain(
   dir: string,
   prose: string
-): Promise<{ journalCid: string; recordCid: string }> {
+): Promise<{
+  genesisCid: string;
+  arrivalCid: string;
+  journalCid: string;
+  recordCid: string;
+}> {
   const store = await FileSoulStore.open(dir, { doorPublicKeys: fixtureDoorPublicKeys() });
   try {
     const genesis = await createGenesisRecord(DEFAULT_SOUL, OSP_SPEC_V02);
@@ -451,7 +761,12 @@ async function writeJournalChain(
       "2026-01-02T02:00:00.000Z"
     );
     await store.append(journal.record);
-    return { journalCid: address.cid, recordCid: journal.cid };
+    return {
+      genesisCid: genesis.cid,
+      arrivalCid: arrival.cid,
+      journalCid: address.cid,
+      recordCid: journal.cid
+    };
   } finally {
     await store.close();
   }

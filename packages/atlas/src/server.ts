@@ -5,6 +5,7 @@ import { createReadStream, existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 
 import cors from "@fastify/cors";
+import type { Cid } from "@npc/osp-core";
 import Fastify, { type FastifyInstance, type FastifyReply } from "fastify";
 
 import { ChainView, type ChainSnapshot, type ChainViewOptions } from "./chain-view.js";
@@ -12,8 +13,11 @@ import type { AtlasConfig } from "./config.js";
 import {
   buildChainExport,
   chainExportEtag,
+  EXPORT_AFTER_UNKNOWN_CODE,
   headerSingle,
   ifNoneMatchSatisfied,
+  indexOfExportedRecord,
+  parseChainExportAfter,
   type ChainExportBody
 } from "./export-chain.js";
 import {
@@ -73,13 +77,25 @@ export async function createAtlasServer(config: AtlasConfig): Promise<FastifyIns
     void reply.send(deriveState(snap.records, snap.verified));
   });
 
+  let servedSnapshot: ChainSnapshot | undefined;
+  tailCacheSizeByApp.set(app, () => {
+    if (servedSnapshot === undefined) {
+      return 0;
+    }
+    return chainExportCache.get(servedSnapshot)?.tails.size ?? 0;
+  });
+
   app.get("/chain/export", async (request, reply) => {
+    // Validate `after` before the snapshot so a bad cursor never reaches the chain.
+    const after = parseChainExportAfter(request.query);
     const snap = await chainView.snapshot();
     if (replyIfUnreadable(snap, reply)) {
       return;
     }
 
-    const exported = cachedChainExport(snap, config.doorPublicKeys);
+    servedSnapshot = snap;
+    const records = await recordsForExport(snap, after);
+    const exported = cachedChainExport(snap, config.doorPublicKeys, after, records);
     void reply.header("ETag", exported.etag).header("Cache-Control", "no-cache");
     if (ifNoneMatchSatisfied(headerSingle(request.headers["if-none-match"]), exported.etag)) {
       void reply.code(304).send();
@@ -231,25 +247,104 @@ type CachedExport = {
   etag: string;
 };
 
+type SnapshotExportCache = {
+  full: CachedExport | undefined;
+  /** `after` CID → tail. Insertion order is least- to most-recently used. */
+  tails: Map<string, CachedExport>;
+};
+
 /**
- * One encoded body and `ETag` per snapshot object. `ChainView` returns the same
- * object until the chain file changes, so a `304` does not hash the chain again.
- * Door keys are the process config and do not change under a live snapshot.
+ * Tail LRU size per snapshot. Record CIDs are public, so an unbounded map of
+ * `?after=` bodies is O(n²) record references plus a base64 copy of each journal
+ * blob. The full export is cached separately. A new snapshot drops the map.
  */
-const chainExportCache = new WeakMap<ChainSnapshot, CachedExport>();
+export const CHAIN_EXPORT_TAIL_CACHE_ENTRIES = 16;
+
+/** Full export plus the tail LRU. The snapshot object is stable until the chain file changes. */
+const chainExportCache = new WeakMap<ChainSnapshot, SnapshotExportCache>();
+
+const tailCacheSizeByApp = new WeakMap<FastifyInstance, () => number>();
+
+/** Tail bodies this server holds for the snapshot it last served. Test hook. */
+export function chainExportTailCacheSize(app: FastifyInstance): number {
+  return tailCacheSizeByApp.get(app)?.() ?? 0;
+}
+
+function exportsForSnapshot(snapshot: ChainSnapshot): SnapshotExportCache {
+  const existing = chainExportCache.get(snapshot);
+  if (existing !== undefined) {
+    return existing;
+  }
+  const created: SnapshotExportCache = { full: undefined, tails: new Map() };
+  chainExportCache.set(snapshot, created);
+  return created;
+}
+
+/** Move `cid` to most-recently used and evict the oldest tails past the cap. */
+function rememberTail(tails: Map<string, CachedExport>, cid: string, entry: CachedExport): void {
+  tails.delete(cid);
+  tails.set(cid, entry);
+  while (tails.size > CHAIN_EXPORT_TAIL_CACHE_ENTRIES) {
+    const oldest = tails.keys().next();
+    if (oldest.done === true) {
+      return;
+    }
+    tails.delete(oldest.value);
+  }
+}
 
 function cachedChainExport(
   snapshot: ChainSnapshot,
-  doorPublicKeys: Readonly<Record<string, Uint8Array>> | undefined
+  doorPublicKeys: Readonly<Record<string, Uint8Array>> | undefined,
+  after: Cid | undefined,
+  records: ChainSnapshot["records"]
 ): CachedExport {
-  const hit = chainExportCache.get(snapshot);
+  const cache = exportsForSnapshot(snapshot);
+  if (after === undefined) {
+    if (cache.full !== undefined) {
+      return cache.full;
+    }
+    const entry = encodeCachedExport(snapshot, doorPublicKeys, records, after);
+    cache.full = entry;
+    return entry;
+  }
+  const hit = cache.tails.get(after);
   if (hit !== undefined) {
+    rememberTail(cache.tails, after, hit);
     return hit;
   }
-  const body = buildChainExport(snapshot, doorPublicKeys);
-  const entry = { body, etag: chainExportEtag(body) };
-  chainExportCache.set(snapshot, entry);
+  const entry = encodeCachedExport(snapshot, doorPublicKeys, records, after);
+  rememberTail(cache.tails, after, entry);
   return entry;
+}
+
+function encodeCachedExport(
+  snapshot: ChainSnapshot,
+  doorPublicKeys: Readonly<Record<string, Uint8Array>> | undefined,
+  records: ChainSnapshot["records"],
+  after: Cid | undefined
+): CachedExport {
+  const body = buildChainExport(snapshot, doorPublicKeys, records);
+  return { body, etag: chainExportEtag(body, after) };
+}
+
+/**
+ * Full chain, or the records strictly after a known CID. The head's tail is empty.
+ *
+ * @throws {AtlasError} 404 `export_after_unknown` when `after` is not on the chain.
+ */
+async function recordsForExport(
+  snap: ChainSnapshot,
+  after: Cid | undefined
+): Promise<ChainSnapshot["records"]> {
+  if (after === undefined) {
+    return snap.records;
+  }
+  const index = await indexOfExportedRecord(snap.records, after);
+  if (index === undefined) {
+    throw new AtlasError(EXPORT_AFTER_UNKNOWN_CODE, "after is not a record on this chain", 404);
+  }
+  return snap.records.slice(index + 1);
 }
 
 /** Parse `page` / `per_page` query strings for paginated journal-style routes. */

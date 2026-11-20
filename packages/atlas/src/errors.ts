@@ -8,6 +8,7 @@ export const ATLAS_ERROR_CODES = [
   "chain_empty",
   "car_not_found",
   "manifest_not_found",
+  "export_after_unknown",
   "invalid_config",
   "internal_error",
   "chain_unreadable"

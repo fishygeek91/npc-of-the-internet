@@ -31,7 +31,12 @@ export {
   type StateResponse,
   type WandererStatus
 } from "./derive.js";
-export { buildChainExport, chainExportEtag, type ChainExportBody } from "./export-chain.js";
+export {
+  buildChainExport,
+  chainExportEtag,
+  EXPORT_AFTER_UNKNOWN_CODE,
+  type ChainExportBody
+} from "./export-chain.js";
 export { ATLAS_ERROR_CODES, AtlasError, atlasErrorToBody } from "./errors.js";
 export type { AtlasErrorCode } from "./errors.js";
 export { createAtlasServer, registerShutdownSignals, type ShutdownProcess } from "./server.js";

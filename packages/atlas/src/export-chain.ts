@@ -1,48 +1,113 @@
 import { createHash } from "node:crypto";
 
-import { canonicalize, encodeBase64Url, encodePublicKey, type OspRecord } from "@npc/osp-core";
+import {
+  canonicalize,
+  CidSchema,
+  computeCid,
+  encodeBase64Url,
+  encodePublicKey,
+  type Cid,
+  type OspRecord
+} from "@npc/osp-core";
+import { z } from "zod";
 
 import type { ChainSnapshot } from "./chain-view.js";
+import { AtlasError } from "./errors.js";
+
+/** 404 `error.code` when `after` is not a record. Clients drop state and full-GET once. */
+export const EXPORT_AFTER_UNKNOWN_CODE = "export_after_unknown";
+
+/** Query boundary for `GET /chain/export`. Unknown keys are ignored. */
+const chainExportQuerySchema = z.object({
+  after: CidSchema.optional()
+});
 
 /**
  * `GET /chain/export` body (`spec/door/web.md`).
  * `verified` is intentionally absent: the browser verifies the records itself.
  */
 export type ChainExportBody = {
-  /** Full OSP records in chain order. */
+  /** OSP records in chain order: the full chain, or the tail after `after`. */
   records: OspRecord[];
   /** Door id → base64url Ed25519 public key from `ATLAS_DOOR_PUBKEYS`. */
   doorPublicKeys: Record<string, string>;
-  /**
-   * Journal side-blob CID → base64url bytes. Shard `text_cid` blobs are omitted.
-   * A CID named by any tombstone `blob_cid` is omitted. A missing CID is unavailable, not erased.
-   */
+  /** Journal CID → base64url bytes. Shard text and tombstoned CIDs are omitted. */
   blobs: Record<string, string>;
 };
 
 /**
- * Build the public export from a snapshot and the configured door public keys.
- * Those keys come only from `ATLAS_DOOR_PUBKEYS`. `encodePublicKey` rejects a
- * value that is not 32 bytes and names the length, not the key bytes.
+ * Read `after` from the export query. Absent means the full export. A present
+ * value must already be a bagu CID: it is not trimmed or rewritten. Rejection
+ * is `invalid_request` (400) and does not echo the value.
+ *
+ * @throws {AtlasError} `invalid_request` when `after` is present and not a CID.
+ */
+export function parseChainExportAfter(query: unknown): Cid | undefined {
+  const parsed = chainExportQuerySchema.safeParse(query);
+  if (!parsed.success) {
+    throw new AtlasError("invalid_request", "after must be a CID", 400);
+  }
+  return parsed.data.after;
+}
+
+/** Record CIDs for one snapshot `records` array. The array identity is the key. */
+const recordCidCache = new WeakMap<readonly OspRecord[], readonly Cid[]>();
+
+/**
+ * Index of the record whose CID is `after`, or `undefined` when it is absent.
+ * Compared to computed record CIDs only, never a path. CIDs are cached on the
+ * array; the head is checked first so a caught-up refetch hashes one record.
+ */
+export async function indexOfExportedRecord(
+  records: readonly OspRecord[],
+  after: Cid
+): Promise<number | undefined> {
+  const cached = recordCidCache.get(records);
+  if (cached !== undefined) {
+    const found = cached.indexOf(after);
+    return found < 0 ? undefined : found;
+  }
+
+  const last = records.length > 0 ? records[records.length - 1] : undefined;
+  if (last !== undefined && (await computeCid(last)) === after) {
+    return records.length - 1;
+  }
+
+  const cids: Cid[] = [];
+  for (const record of records) {
+    cids.push(await computeCid(record));
+  }
+  recordCidCache.set(records, cids);
+  const found = cids.indexOf(after);
+  return found < 0 ? undefined : found;
+}
+
+/**
+ * Public export. Door keys come only from `ATLAS_DOOR_PUBKEYS`. `records`
+ * defaults to the snapshot; a tail passes the records after the cursor.
+ * Journal blobs come from that slice. Tombstoned CIDs come from the whole
+ * snapshot. A tombstone in `records` still carries `body.blob_cid`.
  */
 export function buildChainExport(
   snapshot: ChainSnapshot,
-  doorPublicKeys: Readonly<Record<string, Uint8Array>> | undefined
+  doorPublicKeys: Readonly<Record<string, Uint8Array>> | undefined,
+  records: readonly OspRecord[] = snapshot.records
 ): ChainExportBody {
-  const records = [...snapshot.records];
   return {
-    records,
+    records: [...records],
     doorPublicKeys: encodeDoorPublicKeys(doorPublicKeys),
-    blobs: encodeJournalBlobs(records, snapshot.sideBlobs)
+    blobs: encodeJournalBlobs(records, snapshot.sideBlobs, tombstonedBlobCids(snapshot.records))
   };
 }
 
 /**
- * Strong `ETag` for a successful export. Any change to records, door public
- * keys, or included journal blobs changes the tag.
+ * Strong ETag. The full export hashes the body alone. A tail hashes
+ * `{ after, body }`, so matching bodies do not share a tag, and the same
+ * `after` changes tag when the chain grows.
  */
-export function chainExportEtag(body: ChainExportBody): string {
-  const digest = createHash("sha256").update(canonicalize(body)).digest("base64url");
+export function chainExportEtag(body: ChainExportBody, after?: string): string {
+  const preimage = after === undefined ? body : { after, body };
+  const digest = createHash("sha256").update(canonicalize(preimage)).digest("base64url");
   return `"${digest}"`;
 }
 
@@ -98,19 +163,19 @@ function encodeDoorPublicKeys(
 }
 
 /**
- * Journal blobs only. Shard text stays out of this response so the export is
- * not a residency transcript (`spec/door/web.md`). Tombstoned CIDs are omitted
- * even when the bytes are still in the snapshot, matching `/journals`.
+ * Journal blobs referenced by `records`. Shard text stays out of this response
+ * so the export is not a residency transcript (`spec/door/web.md`).
+ * `erased` is the tombstone set for the whole chain, matching `/journals`.
  */
 function encodeJournalBlobs(
   records: readonly OspRecord[],
-  sideBlobs: ReadonlyMap<string, Uint8Array> | undefined
+  sideBlobs: ReadonlyMap<string, Uint8Array> | undefined,
+  erased: ReadonlySet<string>
 ): Record<string, string> {
   const blobs: Record<string, string> = {};
   if (sideBlobs === undefined) {
     return blobs;
   }
-  const erased = tombstonedBlobCids(records);
   const cids = new Set<string>();
   for (const record of records) {
     const cid = journalCidOf(record);
