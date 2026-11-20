@@ -1,5 +1,38 @@
 # @npc/door-discord
 
+## 0.7.0
+
+### Minor Changes
+
+- 484ca8e: Show sleeping, chat tier, and remaining fraction on Discord `/wanderer status` from a fraction-only snapshot of `publicStatus`. Dollar amounts stay out of that reply, and unknown spend stays `unknown`.
+
+### Patch Changes
+
+- 6340352: Security dependency floors — fastify ≥5.12.6, fast-uri ≥4.2.3, undici ≥6.29.1 and ≥8.12.2, astro ^7.4.7, astro's zod ≥4.6.6; Zod 3 advisory GHSA-mrhx-c7xc-m3w5 ignored pending migration (DEVIATIONS.md).
+- 090c000: Budget status publish failures log the env var and an error code, a failed write removes its temp file, and the Door opens the snapshot without following a symlink or blocking on a FIFO.
+- 1c8322d: Shutdown still exits when stop fails, later resources still close, HTTP 500 bodies stay generic, transcript errors omit filesystem paths, and Brain logs record only reason and numeric status.
+- d9f4e49: Move `@noble/ed25519` to devDependencies. Production code signs through `@npc/osp-core`. Scripts and test helpers still import it directly.
+- 9ec50dc: Import SHA-512 and HKDF from @noble/hashes 2 (`sha2.js`, `hkdf.js`). Digest bytes, signatures, and session keys stay the same.
+- 61d581b: Private-key files are parsed once in osp-core (`parsePrivateKeyBytes`); soul and Door loaders and the preflight helper use that parser and `publicKeyFromPrivate`.
+- Updated dependencies [64d4fbe]
+- Updated dependencies [1163862]
+- Updated dependencies [1949894]
+- Updated dependencies [7c32264]
+- Updated dependencies [f94b184]
+- Updated dependencies [4080601]
+- Updated dependencies [1c8322d]
+- Updated dependencies [9ec50dc]
+- Updated dependencies [99ce3e7]
+- Updated dependencies [858f873]
+- Updated dependencies [70e1219]
+- Updated dependencies [61d581b]
+- Updated dependencies [a614d25]
+- Updated dependencies [1f4e7c4]
+- Updated dependencies [8056980]
+- Updated dependencies [6fbf2b1]
+  - @npc/osp-core@0.7.0
+  - @npc/door-sdk@0.7.0
+
 ## 0.6.0
 
 ### Minor Changes

@@ -1,5 +1,31 @@
 # @npc/atlas
 
+## 0.7.0
+
+### Minor Changes
+
+- fc78fff: Atlas serves `GET /chain/export` so a browser can verify the soulchain: full records in order, door public keys only, and journal blobs. Tombstoned journal blobs are omitted. Responses carry an `ETag` for revalidation.
+- 97f3162: `GET /chain/export` accepts `after`, a record CID, and returns the records after it plus the journal blobs they reference. An unknown CID is `export_after_unknown`. Each tail has its own ETag.
+- 70e1219: Atlas `GET /state`, the porch, and the shrine badge share one presence scan (`scanPresence`) and the per-epoch arrival lookup (`arrivalForEpoch`). A porch line still checks the arrival `session_pubkey` for its own epoch.
+
+### Patch Changes
+
+- 6340352: Security dependency floors — fastify ≥5.12.6, fast-uri ≥4.2.3, undici ≥6.29.1 and ≥8.12.2, astro ^7.4.7, astro's zod ≥4.6.6; Zod 3 advisory GHSA-mrhx-c7xc-m3w5 ignored pending migration (DEVIATIONS.md).
+- 858f873: Record type names come from one `RECORD_TYPES` list. The Atlas site type filter includes tombstone when the chain has a tombstone record.
+- Updated dependencies [64d4fbe]
+- Updated dependencies [1163862]
+- Updated dependencies [1949894]
+- Updated dependencies [9ec50dc]
+- Updated dependencies [99ce3e7]
+- Updated dependencies [858f873]
+- Updated dependencies [70e1219]
+- Updated dependencies [61d581b]
+- Updated dependencies [a614d25]
+- Updated dependencies [1f4e7c4]
+- Updated dependencies [8056980]
+- Updated dependencies [6fbf2b1]
+  - @npc/osp-core@0.7.0
+
 ## 0.6.0
 
 ### Minor Changes

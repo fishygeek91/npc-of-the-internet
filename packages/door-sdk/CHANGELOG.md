@@ -1,5 +1,29 @@
 # @npc/door-sdk
 
+## 0.7.0
+
+### Patch Changes
+
+- 7c32264: An oversized Atlas whereabouts response is remembered for 30 seconds, and a Door HTTP response over the client read cap is reported as door_unavailable.
+- f94b184: Cap Door HTTP and WebSocket client reads, Atlas whereabouts fetches, and OpenAI-compatible model responses (the Wanderer's Brain and the Door memory witness) before JSON parsing.
+- 4080601: A Door WebSocket bind rejection (close code 4401) stays a fatal session failure when the socket also emits `error`. The server sends the 101 response and that close frame in one write, and it no longer aborts the close handshake.
+- 1c8322d: Shutdown still exits when stop fails, later resources still close, HTTP 500 bodies stay generic, transcript errors omit filesystem paths, and Brain logs record only reason and numeric status.
+- 1f4e7c4: Verification and Door errors carry exhaustive discriminants (`VerificationError.reason`, `DoorError.code`). Shard text length is one shared constant. Known messages and chain-rule ids are unchanged. An unrecognized Door wire `error.code` becomes `door_unavailable` with `details.unrecognized_code`; the message and HTTP status are kept.
+- 6fbf2b1: Finish the Zod 4 migration for the remaining packages and report "Expected integer" for a non-integer seq or epoch. Parsed config and protocol values are unchanged.
+- Updated dependencies [64d4fbe]
+- Updated dependencies [1163862]
+- Updated dependencies [1949894]
+- Updated dependencies [9ec50dc]
+- Updated dependencies [99ce3e7]
+- Updated dependencies [858f873]
+- Updated dependencies [70e1219]
+- Updated dependencies [61d581b]
+- Updated dependencies [a614d25]
+- Updated dependencies [1f4e7c4]
+- Updated dependencies [8056980]
+- Updated dependencies [6fbf2b1]
+  - @npc/osp-core@0.7.0
+
 ## 0.6.0
 
 ### Minor Changes
