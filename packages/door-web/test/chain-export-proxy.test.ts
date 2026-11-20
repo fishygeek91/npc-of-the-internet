@@ -2,6 +2,10 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import {
+  CHAIN_EXPORT_TAIL_CACHE_ENTRIES,
+  CHAIN_EXPORT_TAIL_LOADS
+} from "../src/chain-export-proxy.js";
 import { Room } from "../src/room.js";
 import { VisitorSite, type VisitorSiteOptions } from "../src/site.js";
 import { silentLogger } from "./helpers.js";
@@ -217,7 +221,267 @@ describe("GET /chain/export proxy", () => {
       error: { code: "payload_too_large", message: "atlas export is too large" }
     });
   });
+
+  it("rejects an after that is not a CID and does not fetch Atlas", async () => {
+    let calls = 0;
+    const atlasFetch: typeof fetch = function (this: void) {
+      if (this !== undefined) {
+        throw new TypeError("Illegal invocation");
+      }
+      calls += 1;
+      return Promise.resolve(new Response("{}", { status: 200 }));
+    };
+    const atlas = await listen((_req, res) => {
+      calls += 1;
+      res.writeHead(200);
+      res.end("{}");
+    });
+    closers.push(atlas.close);
+    const site = await openSite(sites, atlas.url, { atlasFetch });
+    const cid = fakeCid(1);
+    const queries = [
+      "after=nope",
+      `after=${cid.toUpperCase()}`,
+      `after=%20${cid}`,
+      `after=${cid}%20`,
+      "after=",
+      `after=${cid}&after=${fakeCid(2)}`,
+      "after=../secret",
+      "after=%"
+    ];
+    for (const query of queries) {
+      const response = await fetch(`${site}/chain/export?${query}`);
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({
+        error: { code: "invalid_request", message: "after must be a CID" }
+      });
+      expect(response.headers.get("access-control-allow-origin")).toBe("*");
+      expect(response.headers.get("access-control-expose-headers")).toBe("ETag");
+      expect(response.headers.get("access-control-allow-credentials")).toBeNull();
+    }
+    expect(calls).toBe(0);
+  });
+
+  it("caches each after, forwards a valid CID, and passes export_after_unknown through", async () => {
+    const calls = new Map<string, number>();
+    const atlasFetch: typeof fetch = function (this: void, input: RequestInfo | URL) {
+      if (this !== undefined) {
+        throw new TypeError("Illegal invocation");
+      }
+      const url = String(input);
+      const cursor = new URL(url).searchParams.get("after") ?? "full";
+      calls.set(cursor, (calls.get(cursor) ?? 0) + 1);
+      if (cursor === fakeCid(9)) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              error: {
+                code: "export_after_unknown",
+                message: "after is not a record on this chain"
+              }
+            }),
+            { status: 404, headers: { "content-type": "application/json" } }
+          )
+        );
+      }
+      return Promise.resolve(
+        new Response(JSON.stringify({ cursor }), {
+          status: 200,
+          headers: { etag: `"${cursor}"`, "cache-control": "no-cache" }
+        })
+      );
+    };
+    let now = 1_000;
+    const atlas = await listen((_req, res) => {
+      res.writeHead(500);
+      res.end();
+    });
+    closers.push(atlas.close);
+    const site = await openSite(sites, atlas.url, {
+      atlasFetch,
+      exportNow: () => now,
+      exportCacheTtlMs: 5_000
+    });
+    const cid = fakeCid(4);
+    const forwarded = await fetch(`${site}/chain/export?after=${cid}&unused=1`);
+    expect(forwarded.status).toBe(200);
+    expect(calls.get(cid)).toBe(1);
+    expect(await forwarded.json()).toEqual({ cursor: cid });
+    const repeat = await fetch(`${site}/chain/export?after=${cid}`);
+    expect(repeat.status).toBe(200);
+    expect(calls.get(cid)).toBe(1);
+    const full = await fetch(`${site}/chain/export`);
+    expect(full.status).toBe(200);
+    expect(calls.get("full")).toBe(1);
+    const again = await fetch(`${site}/chain/export`);
+    expect(again.status).toBe(200);
+    expect(calls.get("full")).toBe(1);
+    for (let index = 0; index < CHAIN_EXPORT_TAIL_CACHE_ENTRIES + 1; index += 1) {
+      const response = await fetch(`${site}/chain/export?after=${fakeCid(20 + index)}`);
+      expect(response.status).toBe(200);
+    }
+    const oldest = fakeCid(20);
+    const newest = fakeCid(20 + CHAIN_EXPORT_TAIL_CACHE_ENTRIES);
+    expect(calls.get(oldest)).toBe(1);
+    expect(calls.get(newest)).toBe(1);
+    const kept = await fetch(`${site}/chain/export?after=${newest}`, {
+      headers: { "if-none-match": `"${oldest}"` }
+    });
+    expect(kept.status).toBe(200);
+    expect(calls.get(newest)).toBe(1);
+    const freshOldest = await fetch(`${site}/chain/export?after=${oldest}`);
+    expect(freshOldest.status).toBe(200);
+    expect(calls.get(oldest)).toBe(2);
+    expect(calls.get("full")).toBe(1);
+    now += 10_000;
+    const unknown = fakeCid(9);
+    const missing = await fetch(`${site}/chain/export?after=${unknown}`);
+    expect(missing.status).toBe(404);
+    expect(await missing.json()).toEqual({
+      error: { code: "export_after_unknown", message: "after is not a record on this chain" }
+    });
+    expect(missing.headers.get("access-control-allow-origin")).toBe("*");
+    expect(missing.headers.get("access-control-expose-headers")).toBe("ETag");
+    const missingAgain = await fetch(`${site}/chain/export?after=${unknown}`);
+    expect(missingAgain.status).toBe(404);
+    expect(calls.get(unknown)).toBe(2);
+  });
+
+  it("applies the byte cap to a tail and keeps CORS", async () => {
+    const seen: string[] = [];
+    const fat = await listen((req, res) => {
+      seen.push(req.url ?? "");
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ records: ["x".repeat(80)] }));
+    });
+    closers.push(fat.close);
+    const site = await openSite(sites, fat.url, { exportMaxBytes: 32 });
+    const cid = fakeCid(3);
+    const over = await fetch(`${site}/chain/export?after=${cid}`);
+    expect(over.status).toBe(502);
+    expect(await over.json()).toEqual({
+      error: { code: "payload_too_large", message: "atlas export is too large" }
+    });
+    expect(over.headers.get("access-control-allow-origin")).toBe("*");
+    expect(over.headers.get("access-control-expose-headers")).toBe("ETag");
+    expect(over.headers.get("access-control-allow-credentials")).toBeNull();
+    expect(seen).toEqual([`/chain/export?after=${cid}`]);
+  });
+
+  it("caps concurrent tail loads and drops tail bytes when the lifetime ends", async () => {
+    const payload = `{"ok":true,"pad":"${"x".repeat(64)}"}`;
+    const bodyBytes = Buffer.byteLength(payload);
+    const releases = new Map<string, () => void>();
+    let inflight = 0;
+    let maxInflight = 0;
+    let hold = true;
+    const calls: string[] = [];
+    const atlasFetch: typeof fetch = function (this: void, input: RequestInfo | URL) {
+      if (this !== undefined) {
+        throw new TypeError("Illegal invocation");
+      }
+      const after = new URL(String(input)).searchParams.get("after");
+      if (after === null) {
+        throw new Error("expected a tail");
+      }
+      calls.push(after);
+      inflight += 1;
+      if (inflight > maxInflight) {
+        maxInflight = inflight;
+      }
+      const finish = (): Response => {
+        inflight -= 1;
+        return new Response(payload, {
+          status: 200,
+          headers: { etag: '"tail"', "cache-control": "no-cache" }
+        });
+      };
+      if (!hold) {
+        return Promise.resolve(finish());
+      }
+      return new Promise((resolve) => {
+        releases.set(after, () => {
+          resolve(finish());
+        });
+      });
+    };
+    let now = 0;
+    const siteUrl = await openSite(sites, "http://atlas.example", {
+      atlasFetch,
+      exportNow: () => now,
+      exportCacheTtlMs: 5_000,
+      exportTailCacheBytes: bodyBytes
+    });
+    const porch = sites[sites.length - 1];
+    if (porch === undefined) {
+      throw new Error("missing porch");
+    }
+    const cursors = Array.from({ length: 20 }, (_unused, index) => fakeCid(index + 1));
+    let busy = 0;
+    let markBusy: () => void = () => undefined;
+    const busyEnough = new Promise<void>((resolve) => {
+      markBusy = resolve;
+    });
+    const pending = cursors.map(async (cid) => {
+      const response = await fetch(`${siteUrl}/chain/export?after=${cid}`);
+      if (response.status === 503) {
+        expect(response.headers.get("retry-after")).toBe("1");
+        expect(response.headers.get("access-control-allow-origin")).toBe("*");
+        expect(response.headers.get("access-control-expose-headers")).toBe("ETag");
+        expect(response.headers.get("access-control-allow-credentials")).toBeNull();
+        expect(await response.json()).toEqual({
+          error: { code: "atlas_busy", message: "chain export is busy" }
+        });
+        busy += 1;
+        if (busy === cursors.length - CHAIN_EXPORT_TAIL_LOADS) {
+          markBusy();
+        }
+        return "busy" as const;
+      }
+      expect(response.status).toBe(200);
+      await response.arrayBuffer();
+      return "ok" as const;
+    });
+    await busyEnough;
+    expect(maxInflight).toBe(CHAIN_EXPORT_TAIL_LOADS);
+    expect(inflight).toBe(CHAIN_EXPORT_TAIL_LOADS);
+    expect(calls).toHaveLength(CHAIN_EXPORT_TAIL_LOADS);
+    for (const release of releases.values()) {
+      release();
+    }
+    const outcomes = await Promise.all(pending);
+    expect(outcomes.filter((outcome) => outcome === "ok")).toHaveLength(CHAIN_EXPORT_TAIL_LOADS);
+    expect(outcomes.filter((outcome) => outcome === "busy")).toHaveLength(
+      cursors.length - CHAIN_EXPORT_TAIL_LOADS
+    );
+    expect(porch.tailCacheBytes()).toBe(bodyBytes);
+    const older = calls[0];
+    if (older === undefined) {
+      throw new Error("missing older tail");
+    }
+    now = 5_000;
+    expect(porch.tailCacheBytes()).toBe(0);
+    expect(calls).toHaveLength(CHAIN_EXPORT_TAIL_LOADS);
+    hold = false;
+    const refreshed = await fetch(`${siteUrl}/chain/export?after=${older}`);
+    expect(refreshed.status).toBe(200);
+    expect(calls.filter((cursor) => cursor === older)).toHaveLength(2);
+    expect(porch.tailCacheBytes()).toBeLessThanOrEqual(bodyBytes);
+    expect(maxInflight).toBeLessThanOrEqual(CHAIN_EXPORT_TAIL_LOADS);
+  });
 });
+
+const CID_ALPHABET = "abcdefghijklmnopqrstuvwxyz234567";
+
+function fakeCid(n: number): string {
+  let rest = "";
+  let value = n;
+  for (let index = 0; index < 57; index += 1) {
+    rest = `${CID_ALPHABET.charAt(value % 32)}${rest}`;
+    value = Math.floor(value / 32);
+  }
+  return `bagu${rest}`;
+}
 
 async function openSite(
   sites: VisitorSite[],

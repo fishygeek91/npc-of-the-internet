@@ -6,9 +6,13 @@ import type { Logger } from "pino";
 
 import type { WandererWhereabouts } from "./atlas.js";
 import {
-  ChainExportGate,
+  ChainExportCache,
   CHAIN_EXPORT_CACHE_TTL_MS,
+  CHAIN_EXPORT_TAIL_CACHE_BYTES,
+  CHAIN_EXPORT_TAIL_CACHE_ENTRIES,
+  CHAIN_EXPORT_TAIL_LOADS,
   ifNoneMatchSatisfied,
+  parsePorchExportAfter,
   proxyChainExport,
   requestOrigin,
   type ChainExportResult
@@ -38,6 +42,7 @@ export const SAY_BODY_TIMEOUT_MS = 5_000;
 type PorchHttpErrorCode =
   | "atlas_unconfigured"
   | "forbidden"
+  | "invalid_request"
   | "internal_error"
   | "invalid_json"
   | "invalid_name"
@@ -137,6 +142,10 @@ export type VisitorSiteOptions = {
   exportCacheTtlMs?: number;
   /** Clock for the export cache. Defaults to `Date.now`. */
   exportNow?: () => number;
+  /** Tail-cache byte budget. Default twice the 8 MiB response cap. */
+  exportTailCacheBytes?: number;
+  /** Concurrent upstream tail loads. Default {@link CHAIN_EXPORT_TAIL_LOADS}. */
+  exportTailLoadLimit?: number;
   /** Deliver a visitor message to the Wanderer; return false when it is not here. */
   relay: (request: RelayRequest) => boolean;
   maxClients: number;
@@ -164,7 +173,7 @@ export class VisitorSite {
   private readonly daily: DailyBudget;
   private readonly ids: VisitorIds;
   private readonly clients = new Set<SseClient>();
-  private readonly exportGate: ChainExportGate;
+  private readonly exportCache: ChainExportCache;
   private server: Server | null = null;
   private heartbeat: NodeJS.Timeout | null = null;
   private unsubscribe: (() => void) | null = null;
@@ -177,11 +186,22 @@ export class VisitorSite {
     });
     this.daily = new DailyBudget(options.dailyMax, options.clock);
     this.ids = new VisitorIds(options.clock);
-    this.exportGate = new ChainExportGate(
-      () => this.loadChainExport(),
+    this.exportCache = new ChainExportCache(
+      (after) => this.loadChainExport(after),
       options.exportCacheTtlMs ?? CHAIN_EXPORT_CACHE_TTL_MS,
-      options.exportNow ?? Date.now
+      options.exportNow ?? Date.now,
+      CHAIN_EXPORT_TAIL_CACHE_ENTRIES,
+      options.exportTailCacheBytes ?? CHAIN_EXPORT_TAIL_CACHE_BYTES,
+      options.exportTailLoadLimit ?? CHAIN_EXPORT_TAIL_LOADS
     );
+  }
+
+  /**
+   * Bytes of tail bodies still inside the cache lifetime.
+   * Expired bodies are released by this read.
+   */
+  tailCacheBytes(): number {
+    return this.exportCache.cachedTailBytes();
   }
 
   /** Start listening; resolves with the bound address. */
@@ -537,7 +557,7 @@ export class VisitorSite {
     return requestOrigin(req.headers.host, proto, this.options.trustProxy);
   }
 
-  private loadChainExport(): Promise<ChainExportResult> {
+  private loadChainExport(after: string | undefined): Promise<ChainExportResult> {
     const upstream = this.options.atlasUpstream;
     if (upstream === undefined) {
       return Promise.resolve({
@@ -549,6 +569,7 @@ export class VisitorSite {
     }
     return proxyChainExport({
       upstream,
+      ...(after === undefined ? {} : { after }),
       ...(this.options.atlasFetch === undefined ? {} : { fetchImpl: this.options.atlasFetch }),
       ...(this.options.exportTimeoutMs === undefined
         ? {}
@@ -560,13 +581,18 @@ export class VisitorSite {
   }
 
   private async handleChainExport(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const parsed = parsePorchExportAfter(req.url ?? "/");
+    if (!parsed.ok) {
+      this.chainExportError(res, 400, "invalid_request", "after must be a CID");
+      return;
+    }
     if (this.options.atlasUpstream === undefined) {
       this.chainExportError(res, 503, "atlas_unconfigured", "chain export is not configured");
       return;
     }
     const match = req.headers["if-none-match"];
     const ifNoneMatch = Array.isArray(match) ? match.join(", ") : match;
-    const result = await this.exportGate.read(ifNoneMatch);
+    const result = await this.exportCache.read(parsed.after, ifNoneMatch);
     this.writeChainExport(res, result);
   }
 
@@ -584,7 +610,13 @@ export class VisitorSite {
 
   private writeChainExport(res: ServerResponse, result: ChainExportResult): void {
     if (result.kind === "error") {
-      this.forwardChainExportError(res, result.status, result.code, result.message);
+      this.forwardChainExportError(
+        res,
+        result.status,
+        result.code,
+        result.message,
+        result.retryAfter
+      );
       return;
     }
     const headers: Record<string, string> = {
@@ -627,18 +659,23 @@ export class VisitorSite {
     res: ServerResponse,
     status: number,
     code: string,
-    message: string
+    message: string,
+    retryAfter?: number
   ): void {
     if (res.headersSent) {
       res.end();
       return;
     }
-    res.writeHead(status, {
+    const headers: Record<string, string> = {
       ...this.securityHeaders(),
       ...chainExportCors(),
       "Content-Type": "application/json; charset=utf-8",
       "Cache-Control": "no-store"
-    });
+    };
+    if (retryAfter !== undefined) {
+      headers["Retry-After"] = String(retryAfter);
+    }
+    res.writeHead(status, headers);
     res.end(JSON.stringify({ error: { code, message } }));
   }
 
