@@ -12,6 +12,15 @@ import {
  */
 export const CHAIN_VERIFY_CHUNK_MS = 50;
 
+/**
+ * How long a worker may stay silent before the page terminates it.
+ * The page then verifies that chain in main-thread chunks.
+ */
+export const WORKER_REPLY_MS = 120_000;
+
+/** Cancel a one-shot registered with {@link VerifyHooks.schedule}. */
+export type CancelSchedule = () => void;
+
 /** Atlas 404 `error.code` for an `after` CID that is not on the chain. */
 const EXPORT_AFTER_UNKNOWN = "export_after_unknown";
 
@@ -65,6 +74,11 @@ export type VerifyHooks = {
   /** Worker script text. Null skips the worker and verifies in chunks. */
   bundleSource: string | null;
   createVerifier: (options: VerifyChainOptions) => ChainVerifier;
+  /**
+   * Run `fire` once after `ms` on the page clock.
+   * A worker reply that misses {@link WORKER_REPLY_MS} is abandoned.
+   */
+  schedule: (ms: number, fire: () => void) => CancelSchedule;
 };
 
 /** Door keys ready for `ChainVerifier`, plus a stable signature for later tails. */
@@ -806,15 +820,17 @@ export function verifyHooks(
   fetchImpl: PageFetch,
   extras: Partial<VerifyHooks> | undefined
 ): VerifyHooks {
+  const schedule = extras?.schedule ?? windowSchedule;
   return {
     fetch: extras?.fetch ?? fetchImpl,
     now: extras?.now ?? windowNow,
     yield: extras?.yield ?? windowYield,
     createObjectURL: extras?.createObjectURL ?? windowCreateObjectURL,
     revokeObjectURL: extras?.revokeObjectURL ?? windowRevokeObjectURL,
-    createWorker: extras?.createWorker ?? windowCreateWorker,
+    createWorker: extras?.createWorker ?? ((src) => windowCreateWorker(src, schedule)),
     bundleSource: extras?.bundleSource ?? null,
-    createVerifier: extras?.createVerifier ?? ((options) => new ChainVerifier(options))
+    createVerifier: extras?.createVerifier ?? ((options) => new ChainVerifier(options)),
+    schedule
   };
 }
 
@@ -882,33 +898,82 @@ type PageWorker = {
   onerror: (() => void) | null;
 };
 
-function windowCreateWorker(src: string): VerifyWorker {
-  const ctor = readWorkerCtor(globalThis);
-  if (ctor === null) {
-    throw new Error("Worker is unavailable");
-  }
-  const worker = new ctor(src);
+/**
+ * Post one verify job and settle on the worker's reply.
+ * `schedule` bounds the wait: after {@link WORKER_REPLY_MS} with no reply the
+ * worker is terminated and the promise rejects, so the page can verify in chunks.
+ */
+export function createVerifyWorker(
+  worker: PageWorker,
+  schedule: VerifyHooks["schedule"]
+): VerifyWorker {
   return {
     run(request) {
       return new Promise((resolve, reject) => {
-        worker.onmessage = (event) => {
-          const reply = readReply(event.data, request.id);
-          if (reply === null) {
-            reject(new Error("worker reply was not a verify result"));
+        let settled = false;
+        const cancel = schedule(WORKER_REPLY_MS, () => {
+          if (settled) {
             return;
           }
-          resolve(reply);
+          settled = true;
+          try {
+            worker.terminate();
+          } catch {
+            // The worker may already be stopped.
+          }
+          reject(new Error("worker reply timed out"));
+        });
+        const finish = (settle: () => void): void => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          cancel();
+          settle();
+        };
+        worker.onmessage = (event) => {
+          finish(() => {
+            const reply = readReply(event.data, request.id);
+            if (reply === null) {
+              reject(new Error("worker reply was not a verify result"));
+              return;
+            }
+            resolve(reply);
+          });
         };
         worker.onerror = () => {
-          reject(new Error("worker failed"));
+          finish(() => {
+            reject(new Error("worker failed"));
+          });
         };
-        worker.postMessage(request);
+        try {
+          worker.postMessage(request);
+        } catch (error: unknown) {
+          finish(() => {
+            reject(error instanceof Error ? error : new Error("worker failed"));
+          });
+        }
       });
     },
     terminate() {
       worker.terminate();
     }
   };
+}
+
+function windowSchedule(ms: number, fire: () => void): CancelSchedule {
+  const handle = globalThis.setTimeout(fire, ms);
+  return () => {
+    globalThis.clearTimeout(handle);
+  };
+}
+
+function windowCreateWorker(src: string, schedule: VerifyHooks["schedule"]): VerifyWorker {
+  const ctor = readWorkerCtor(globalThis);
+  if (ctor === null) {
+    throw new Error("Worker is unavailable");
+  }
+  return createVerifyWorker(new ctor(src), schedule);
 }
 
 function readWorkerCtor(host: object): (new (scriptUrl: string) => PageWorker) | null {

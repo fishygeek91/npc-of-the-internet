@@ -89,7 +89,7 @@ A shrine is not a Door. It MUST NOT offer chat, `POST /api/say`, attest, heartbe
 
 ### Embed
 
-One script element plus one config object. Embedders do not install a framework. The script is classic (a `src` URL), fetches only the configured Atlas (and does not load other scripts), and mounts into one element. `GET /shrine.js` sends `Access-Control-Allow-Origin: *` and does not send `Access-Control-Allow-Credentials`. It is a public script fetched without credentials, so a page on another origin can read it and run that text as the blob worker. No other static asset sends that header. The porch page's content security policy is unchanged.
+One script element plus one config object. Embedders do not install a framework. The script is classic (a `src` URL). It fetches the configured Atlas and, once, its own script URL to build the verify worker; it does not load other scripts. It mounts into one element. `GET /shrine.js` sends `Access-Control-Allow-Origin: *` and does not send `Access-Control-Allow-Credentials`. It is a public script fetched without credentials, so a page on another origin can read it and run that text as the blob worker. No other static asset sends that header. The porch page's content security policy is unchanged.
 
 ```html
 <script

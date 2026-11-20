@@ -7,11 +7,13 @@ import {
   type OspRecord
 } from "@npc/osp-core";
 import { ChainVerifier, type ChainStep, type VerifyChainOptions } from "@npc/osp-core/browser";
-import { beforeAll, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import {
   CHAIN_VERIFY_CHUNK_MS,
+  createVerifyWorker,
   feedVerifier,
+  WORKER_REPLY_MS,
   type VerifyHooks,
   type VerifyWorker,
   type WorkerVerifyReply
@@ -28,60 +30,11 @@ import {
 const ATTESTATIONS = 20_000;
 
 describe("chunked verify stays on a time budget", () => {
-  let records: OspRecord[] = [];
-  let soulKey = "";
-  let doorKey = "";
-
-  beforeAll(async () => {
-    const soul = generateKeypair();
-    const door = generateKeypair();
-    const session = generateKeypair();
-    const sessionPubkey = encodePublicKey(session.publicKey);
-    const chain: ChainCursor = { records: [], prev: null, seq: 0 };
-    await appendRecord(chain, soul, null, {
-      type: "genesis",
-      body: {
-        charter: "# Wanderer\n\nI travel.",
-        soul_pubkey: encodePublicKey(soul.publicKey),
-        created_at: "2026-01-01T00:00:00.000Z"
-      },
-      residency: null
-    });
-    await appendRecord(chain, soul, door, {
-      type: "attestation",
-      body: {
-        kind: "arrival",
-        pop_version: POP_VERSION,
-        door_id: DOOR_ID,
-        epoch: 1,
-        session_pubkey: sessionPubkey,
-        at: stamp(0)
-      },
-      residency: RESIDENCY
-    });
-    for (let index = 1; index < ATTESTATIONS; index += 1) {
-      await appendRecord(chain, soul, door, {
-        type: "attestation",
-        body: {
-          kind: "heartbeat",
-          pop_version: POP_VERSION,
-          door_id: DOOR_ID,
-          epoch: 1,
-          session_pubkey: sessionPubkey,
-          at: stamp(index)
-        },
-        residency: RESIDENCY
-      });
-    }
-    records = chain.records;
-    soulKey = encodePublicKey(soul.publicKey);
-    doorKey = encodePublicKey(door.publicKey);
-  }, 180_000);
-
-  it("yields while parsing, verifying, and feeding presence for a 20k chain", async () => {
+  it("yields while verifying a 20k chain", async () => {
+    const built = await buildChain(ATTESTATIONS - 1);
     const served = await serveHandledExport(() => ({
       status: 200,
-      body: { records, doorPublicKeys: { [DOOR_ID]: doorKey }, blobs: {} }
+      body: { records: built.records, doorPublicKeys: { [DOOR_ID]: built.doorKey }, blobs: {} }
     }));
     let time = 0;
     let suspended = false;
@@ -89,9 +42,9 @@ describe("chunked verify stays on a time budget", () => {
     const marks: number[] = [0];
     const loaded = await fetchChain(
       {
-        soulPublicKey: soulKey,
+        soulPublicKey: built.soulKey,
         doorId: DOOR_ID,
-        doorPublicKey: doorKey,
+        doorPublicKey: built.doorKey,
         atlasUrl: served.url
       },
       null,
@@ -123,27 +76,9 @@ describe("chunked verify stays on a time budget", () => {
     );
     await served.close();
     pushMark(marks, time);
-    const clientRecords = loaded.client?.records ?? [];
-    let ceiling = 0;
-    let presenceChunk = time;
-    for (const record of clientRecords) {
-      time += 10;
-      if (record.type === "attestation") {
-        const epoch = attestationEpoch(record);
-        if (epoch > ceiling) {
-          ceiling = epoch;
-        }
-      }
-      if (time - presenceChunk >= CHAIN_VERIFY_CHUNK_MS) {
-        pushMark(marks, time);
-        presenceChunk = time;
-      }
-    }
-    pushMark(marks, time);
     expect(loaded.hold.phase).toBe("verified");
     expect(loaded.client?.head?.seq).toBe(ATTESTATIONS);
-    expect(clientRecords).toHaveLength(ATTESTATIONS + 1);
-    expect(ceiling).toBe(1);
+    expect(loaded.client?.records).toHaveLength(ATTESTATIONS + 1);
     expect(ranDuringSuspend).toBe(false);
     expect(marks.length).toBeGreaterThan(2);
     assertBudget(marks);
@@ -163,7 +98,7 @@ describe("chunked verify stays on a time budget", () => {
   }, 180_000);
 
   it("parses a worker reply on the chunk clock and calls the worker", async () => {
-    const built = await shortChain(12);
+    const built = await buildChain(12);
     const proven = await feedVerifier(
       new ChainVerifier({ doorPublicKeys: { [DOOR_ID]: built.doorBytes } }),
       built.records,
@@ -225,7 +160,7 @@ describe("chunked verify stays on a time budget", () => {
   });
 
   it("verifies in chunks when constructing the worker throws", async () => {
-    const built = await shortChain(3);
+    const built = await buildChain(3);
     const served = await serveHandledExport(() => ({
       status: 200,
       body: { records: built.records, doorPublicKeys: { [DOOR_ID]: built.doorKey }, blobs: {} }
@@ -284,6 +219,104 @@ describe("chunked verify stays on a time budget", () => {
     expect(loaded.hold.phase).toBe("verified");
     expect(loaded.client?.worker).toBeNull();
     expect(loaded.client?.head?.seq).toBe(built.records.length - 1);
+  });
+
+  it("verifies in chunks when the worker never replies", async () => {
+    const built = await buildChain(1);
+    const served = await serveHandledExport(() => ({
+      status: 200,
+      body: { records: built.records, doorPublicKeys: { [DOOR_ID]: built.doorKey }, blobs: {} }
+    }));
+    let terminated = 0;
+    let armed: { ms: number; fire: () => void } | null = null;
+    let posted: () => void = () => {
+      throw new Error("worker posted before the test was listening");
+    };
+    const postedOnce = new Promise<void>((resolve) => {
+      posted = resolve;
+    });
+    const pageWorker = {
+      onmessage: null as ((event: { data: unknown }) => void) | null,
+      onerror: null as (() => void) | null,
+      postMessage(this: unknown) {
+        if (this !== pageWorker) {
+          throw new TypeError("Illegal invocation");
+        }
+        posted();
+      },
+      terminate(this: unknown) {
+        if (this !== pageWorker) {
+          throw new TypeError("Illegal invocation");
+        }
+        terminated += 1;
+      }
+    };
+    function schedule(ms: number, fire: () => void): () => void {
+      armed = { ms, fire };
+      return () => {
+        armed = null;
+      };
+    }
+    const loaded = fetchChain(
+      {
+        soulPublicKey: built.soulKey,
+        doorId: DOOR_ID,
+        doorPublicKey: built.doorKey,
+        atlasUrl: served.url
+      },
+      null,
+      function bareFetch(this: void, url: string, init?: RequestInit) {
+        if (this !== undefined) {
+          throw new TypeError("Illegal invocation");
+        }
+        return fetch(url, init);
+      },
+      {
+        now(this: void) {
+          if (this !== undefined) {
+            throw new TypeError("Illegal invocation");
+          }
+          return 0;
+        },
+        yield(this: void) {
+          if (this !== undefined) {
+            throw new TypeError("Illegal invocation");
+          }
+          return Promise.resolve();
+        },
+        bundleSource: "onmessage = function () {};",
+        createObjectURL(this: void) {
+          if (this !== undefined) {
+            throw new TypeError("Illegal invocation");
+          }
+          return "blob:timeout-test";
+        },
+        revokeObjectURL(this: void) {
+          if (this !== undefined) {
+            throw new TypeError("Illegal invocation");
+          }
+        },
+        createWorker(this: void) {
+          if (this !== undefined) {
+            throw new TypeError("Illegal invocation");
+          }
+          return createVerifyWorker(pageWorker, schedule);
+        },
+        schedule
+      } satisfies Partial<VerifyHooks>
+    );
+    await postedOnce;
+    if (armed === null) {
+      throw new Error("worker did not arm a reply bound");
+    }
+    expect(armed.ms).toBe(WORKER_REPLY_MS);
+    armed.fire();
+    const result = await loaded;
+    await served.close();
+    expect(terminated).toBeGreaterThan(0);
+    expect(result.hold.phase).toBe("verified");
+    expect(result.client?.worker).toBeNull();
+    expect(result.client?.head?.seq).toBe(built.records.length - 1);
   });
 });
 
@@ -415,17 +448,6 @@ function pushMark(marks: number[], time: number): void {
   }
 }
 
-function attestationEpoch(record: OspRecord): number {
-  if (record.type !== "attestation") {
-    return 0;
-  }
-  const body = record.body;
-  if (body.kind === "arrival" || body.kind === "heartbeat" || body.kind === "departure") {
-    return body.epoch;
-  }
-  return 0;
-}
-
 function stamp(index: number): string {
   const hour = Math.floor(index / 3600);
   const minute = Math.floor((index % 3600) / 60);
@@ -437,7 +459,7 @@ function pad(value: number): string {
   return String(value).padStart(2, "0");
 }
 
-async function shortChain(extraHeartbeats: number): Promise<{
+async function buildChain(heartbeats: number): Promise<{
   records: OspRecord[];
   soulKey: string;
   doorKey: string;
@@ -468,7 +490,7 @@ async function shortChain(extraHeartbeats: number): Promise<{
     },
     residency: RESIDENCY
   });
-  for (let index = 0; index < extraHeartbeats; index += 1) {
+  for (let index = 0; index < heartbeats; index += 1) {
     await appendRecord(chain, soul, door, {
       type: "attestation",
       body: {
