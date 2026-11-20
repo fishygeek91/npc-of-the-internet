@@ -17,6 +17,23 @@ import { exactFailureRules } from "./exact-failure-rules.js";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const vectorsDir = path.resolve(here, "../../../spec/osp/vectors");
 
+/**
+ * `module.registerHooks` shipped in Node 22.15. Later majors have it too.
+ * The child uses `process.execPath`, so this process's version is the child's.
+ */
+function nodeHasRegisterHooks(version: string): boolean {
+  const match = /^(\d+)\.(\d+)\./.exec(version);
+  if (match === null) {
+    return false;
+  }
+  const major = Number(match[1]);
+  const minor = Number(match[2]);
+  if (!Number.isInteger(major) || !Number.isInteger(minor)) {
+    return false;
+  }
+  return major > 22 || (major === 22 && minor >= 15);
+}
+
 type FailurePair = { rule: string; seq: number };
 
 type BrowserCase = { file: string; pairs: FailurePair[] };
@@ -108,23 +125,38 @@ describe("@npc/osp-core/browser", () => {
       ["--conditions=browser", "--import", "tsx", runner],
       {
         cwd: path.resolve(here, ".."),
-        encoding: "utf8"
+        encoding: "utf8",
+        timeout: 50_000,
+        killSignal: "SIGTERM"
       }
     );
-    const detail = `${result.stdout}\n${result.stderr}`;
+    const stdout = typeof result.stdout === "string" ? result.stdout : "";
+    const stderr = typeof result.stderr === "string" ? result.stderr : "";
+    const detail = `${stdout}\n${stderr}`;
+    expect(result.error, detail).toBeUndefined();
     expect(result.status, detail).toBe(0);
-    const match = /BROWSER_OK files=(\d+) positive=(\d+) negative=(\d+)/.exec(result.stdout);
+    const match =
+      /BROWSER_OK files=(\d+) positive=(\d+) negative=(\d+) rootBuiltins=(\d+) hook=(on|off)/.exec(
+        stdout
+      );
     if (match === null) {
       throw new Error(`runner did not report BROWSER_OK\n${detail}`);
     }
     const files = Number(match[1]);
     const positive = Number(match[2]);
     const negative = Number(match[3]);
+    const hook = match[5];
     expect(files).toBeGreaterThan(10);
     expect(positive).toBeGreaterThan(0);
     expect(negative).toBeGreaterThan(0);
+    if (hook !== "on" && hook !== "off") {
+      throw new Error(`runner did not report hook\n${detail}`);
+    }
+    if (nodeHasRegisterHooks(process.versions.node)) {
+      expect(hook, detail).toBe("on");
+    }
 
-    const browserCases = parseBrowserCases(result.stdout);
+    const browserCases = parseBrowserCases(stdout);
     const nodeCases = await nodeFailureCases();
     expect(browserCases).toEqual(nodeCases);
   }, 60_000);
