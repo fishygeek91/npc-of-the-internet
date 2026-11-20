@@ -1,4 +1,6 @@
 import "./jitless.js";
+import { installChainWorker, isDedicatedWorker } from "./chain-worker.js";
+import { rememberPageScript } from "./incremental-chain.js";
 import {
   mountShrine,
   readShrineConfig,
@@ -125,6 +127,12 @@ function isDocument(value: unknown): value is Page["document"] {
 
 /**
  * Classic-script entry for the replica shrine. Bundled to `public/shrine.js`.
- * Reads `globalThis.WANDERER_SHRINE` or the script's `data-*` attributes.
+ * The same file is the blob worker. On a page it reads `globalThis.WANDERER_SHRINE`
+ * or the script's `data-*` attributes.
  */
-bootShrine(globalThis);
+if (isDedicatedWorker(globalThis)) {
+  installChainWorker(globalThis);
+} else {
+  rememberPageScript(globalThis);
+  bootShrine(globalThis);
+}

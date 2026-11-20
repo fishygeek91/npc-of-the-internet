@@ -25,6 +25,8 @@ describe("porch verify.js bundle", () => {
       expect(text).not.toContain("node:fs");
       expect(text).not.toContain("node:crypto");
       expect(text).not.toContain("eval(");
+      expect(text).toContain("createObjectURL");
+      expect(text).toContain("Worker");
       expect(zodParsesWithoutFunction(text)).toBe("failed");
     } finally {
       await rm(dir, { recursive: true, force: true });
@@ -46,6 +48,8 @@ describe("porch verify.js bundle", () => {
       expect(built.inputs.some((path: string) => path.includes("node:"))).toBe(false);
       expect(text).not.toContain("node:fs");
       expect(text).not.toContain("eval(");
+      expect(text).toContain("createObjectURL");
+      expect(text).toContain("Worker");
       expect(await shrineParsesWithoutFunction(text)).toBe(0);
     } finally {
       await rm(dir, { recursive: true, force: true });
