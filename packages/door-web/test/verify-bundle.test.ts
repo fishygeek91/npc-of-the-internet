@@ -3,20 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createContext, runInContext } from "node:vm";
 
-import {
-  decodeBase64Url,
-  decodePublicKey,
-  encodeBase64Url,
-  encodePublicKey,
-  generateKeypair,
-  POP_VERSION,
-  type OspRecord
-} from "@npc/osp-core";
+import { decodeBase64Url, encodeBase64Url, type OspRecord } from "@npc/osp-core";
 import { describe, expect, it } from "vitest";
 
 import { SHRINE_REFRESH_MS } from "../src/browser/shrine.js";
 import { buildPorchBundle, buildShrineBundle } from "../scripts/bundle-browser.mjs";
-import { appendRecord, DOOR_ID, RESIDENCY, type ChainCursor } from "./shrine-fixture.js";
+import { buildChain, DOOR_ID } from "./shrine-fixture.js";
 
 describe("porch verify.js bundle", () => {
   it("matches the committed file and does not reach Node or eval", async () => {
@@ -91,7 +83,8 @@ describe("porch verify.js bundle", () => {
   });
 
   it("answers a reset and a forged signature from the built worker bundles", async () => {
-    const chain = await workerChain();
+    const built = await buildChain(1);
+    const chain = { records: built.records, keys: { [DOOR_ID]: [...built.doorBytes] } };
     const forged = chain.records.slice();
     const last = forged[forged.length - 1];
     if (last === undefined) {
@@ -611,51 +604,4 @@ function forgeSignature(record: OspRecord): OspRecord {
   }
   bytes[index] = current ^ 0xff;
   return { ...record, sig: encodeBase64Url(bytes) };
-}
-
-async function workerChain(): Promise<{
-  records: OspRecord[];
-  keys: Record<string, number[]>;
-}> {
-  const soul = generateKeypair();
-  const door = generateKeypair();
-  const session = encodePublicKey(generateKeypair().publicKey);
-  const chain: ChainCursor = { records: [], prev: null, seq: 0 };
-  await appendRecord(chain, soul, null, {
-    type: "genesis",
-    body: {
-      charter: "# Wanderer\n\nI travel.",
-      soul_pubkey: encodePublicKey(soul.publicKey),
-      created_at: "2026-01-01T00:00:00.000Z"
-    },
-    residency: null
-  });
-  await appendRecord(chain, soul, door, {
-    type: "attestation",
-    body: {
-      kind: "arrival",
-      pop_version: POP_VERSION,
-      door_id: DOOR_ID,
-      epoch: 1,
-      session_pubkey: session,
-      at: "2026-01-02T00:00:00.000Z"
-    },
-    residency: RESIDENCY
-  });
-  await appendRecord(chain, soul, door, {
-    type: "attestation",
-    body: {
-      kind: "heartbeat",
-      pop_version: POP_VERSION,
-      door_id: DOOR_ID,
-      epoch: 1,
-      session_pubkey: session,
-      at: "2026-01-02T00:00:01.000Z"
-    },
-    residency: RESIDENCY
-  });
-  return {
-    records: chain.records,
-    keys: { [DOOR_ID]: [...decodePublicKey(encodePublicKey(door.publicKey))] }
-  };
 }

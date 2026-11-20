@@ -1,84 +1,52 @@
-import {
-  decodeBase64Url,
-  decodePublicKey,
-  encodeBase64Url,
-  encodePublicKey,
-  generateKeypair,
-  POP_VERSION
-} from "@npc/osp-core";
+import { decodeBase64Url, encodeBase64Url, POP_VERSION } from "@npc/osp-core";
 import { describe, expect, it } from "vitest";
 
 import { installChainWorker } from "../src/browser/chain-worker.js";
 import type { WorkerVerifyReply } from "../src/browser/incremental-chain.js";
-import { appendRecord, DOOR_ID, RESIDENCY, type ChainCursor } from "./shrine-fixture.js";
+import {
+  appendRecord,
+  buildChain,
+  DOOR_ID,
+  RESIDENCY,
+  type ChainCursor
+} from "./shrine-fixture.js";
 
 describe("installChainWorker", () => {
   it("resets, continues a tail, and drops the verifier when a signature is bad", async () => {
-    const soul = generateKeypair();
-    const door = generateKeypair();
-    const session = encodePublicKey(generateKeypair().publicKey);
-    const chain: ChainCursor = { records: [], prev: null, seq: 0 };
-    await appendRecord(chain, soul, null, {
-      type: "genesis",
-      body: {
-        charter: "# Wanderer\n\nI travel.",
-        soul_pubkey: encodePublicKey(soul.publicKey),
-        created_at: "2026-01-01T00:00:00.000Z"
-      },
-      residency: null
-    });
-    await appendRecord(chain, soul, door, {
-      type: "attestation",
-      body: {
-        kind: "arrival",
-        pop_version: POP_VERSION,
-        door_id: DOOR_ID,
-        epoch: 1,
-        session_pubkey: session,
-        at: "2026-01-02T00:00:00.000Z"
-      },
-      residency: RESIDENCY
-    });
-    const prefix = chain.records.slice();
-    await appendRecord(chain, soul, door, {
-      type: "attestation",
-      body: {
-        kind: "heartbeat",
-        pop_version: POP_VERSION,
-        door_id: DOOR_ID,
-        epoch: 1,
-        session_pubkey: session,
-        at: "2026-01-02T00:00:01.000Z"
-      },
-      residency: RESIDENCY
-    });
-    const tail = chain.records[chain.records.length - 1];
-    const atTail: ChainCursor = {
-      records: chain.records.slice(),
-      prev: chain.prev,
-      seq: chain.seq
+    const built = await buildChain(1);
+    const prefix = built.records.slice(0, built.records.length - 1);
+    const tail = built.records[built.records.length - 1];
+    const chain: ChainCursor = {
+      records: built.records.slice(),
+      prev: built.prev,
+      seq: built.seq
     };
-    await appendRecord(chain, soul, door, {
+    const atTail: ChainCursor = {
+      records: built.records.slice(),
+      prev: built.prev,
+      seq: built.seq
+    };
+    await appendRecord(chain, built.soul, built.door, {
       type: "attestation",
       body: {
         kind: "heartbeat",
         pop_version: POP_VERSION,
         door_id: DOOR_ID,
         epoch: 1,
-        session_pubkey: session,
+        session_pubkey: built.session,
         at: "2026-01-02T00:00:02.000Z"
       },
       residency: RESIDENCY
     });
     const badSource = chain.records[chain.records.length - 1];
-    await appendRecord(atTail, soul, door, {
+    await appendRecord(atTail, built.soul, built.door, {
       type: "attestation",
       body: {
         kind: "heartbeat",
         pop_version: POP_VERSION,
         door_id: DOOR_ID,
         epoch: 1,
-        session_pubkey: session,
+        session_pubkey: built.session,
         at: "2026-01-02T00:00:03.000Z"
       },
       residency: RESIDENCY
@@ -87,7 +55,7 @@ describe("installChainWorker", () => {
     if (tail === undefined || badSource === undefined || later === undefined) {
       throw new Error("missing heartbeat");
     }
-    const keys = { [DOOR_ID]: decodePublicKey(encodePublicKey(door.publicKey)) };
+    const keys = { [DOOR_ID]: built.doorBytes };
     const replies: WorkerVerifyReply[] = [];
     let illegal = 0;
     let onmessage: ((event: { data: unknown }) => void) | null = null;

@@ -1,11 +1,4 @@
-import {
-  decodePublicKey,
-  encodePublicKey,
-  generateKeypair,
-  POP_VERSION,
-  type Ed25519Keypair,
-  type OspRecord
-} from "@npc/osp-core";
+import { type OspRecord } from "@npc/osp-core";
 import { ChainVerifier, type ChainStep, type VerifyChainOptions } from "@npc/osp-core/browser";
 import { describe, expect, it } from "vitest";
 
@@ -19,13 +12,7 @@ import {
   type WorkerVerifyReply
 } from "../src/browser/incremental-chain.js";
 import { fetchChain } from "../src/browser/verify-porch.js";
-import {
-  appendRecord,
-  DOOR_ID,
-  RESIDENCY,
-  serveHandledExport,
-  type ChainCursor
-} from "./shrine-fixture.js";
+import { bareFetch, bareHooks, buildChain, DOOR_ID, serveHandledExport } from "./shrine-fixture.js";
 
 const ATTESTATIONS = 20_000;
 
@@ -48,31 +35,19 @@ describe("chunked verify stays on a time budget", () => {
         atlasUrl: served.url
       },
       null,
-      function bareFetch(this: void, url: string, init?: RequestInit) {
-        if (this !== undefined) {
-          throw new TypeError("Illegal invocation");
-        }
-        return fetch(url, init);
-      },
-      {
-        now(this: void) {
-          if (this !== undefined) {
-            throw new TypeError("Illegal invocation");
-          }
-          return time;
-        },
-        yield(this: void) {
-          if (this !== undefined) {
-            throw new TypeError("Illegal invocation");
-          }
+      bareFetch,
+      bareHooks({
+        now: () => time,
+        yield: () => {
           pushMark(marks, time);
           suspended = true;
           return Promise.resolve().then(() => {
             suspended = false;
           });
         },
-        createVerifier: (options) => new ChargingVerifier(options, charge, peek, flag)
-      } satisfies Partial<VerifyHooks>
+        createVerifier: (options: VerifyChainOptions) =>
+          new ChargingVerifier(options, charge, peek, flag)
+      })
     );
     await served.close();
     pushMark(marks, time);
@@ -114,6 +89,35 @@ describe("chunked verify stays on a time budget", () => {
     const charging = chargingRecords(built.records, () => {
       time += 10;
     });
+    function exportFetch(url: string): Promise<Response> {
+      if (!url.endsWith("/chain/export")) {
+        return Promise.reject(new Error(`unexpected fetch ${url}`));
+      }
+      return Promise.resolve(
+        new ExportResponse({
+          records: charging,
+          doorPublicKeys: { [DOOR_ID]: built.doorKey },
+          blobs: {}
+        })
+      );
+    }
+    const hooks = workerHooks(
+      marks,
+      () => time,
+      () => {
+        runs += 1;
+        return {
+          id: 0,
+          ok: true,
+          fed: built.records.length,
+          head: proven.head
+        };
+      },
+      { fetch: exportFetch }
+    );
+    if (hooks.fetch === undefined) {
+      throw new Error("missing fetch");
+    }
     const loaded = await fetchChain(
       {
         soulPublicKey: built.soulKey,
@@ -122,34 +126,8 @@ describe("chunked verify stays on a time budget", () => {
         atlasUrl: "https://atlas.example"
       },
       null,
-      function fetchExport(this: void, url: string) {
-        if (this !== undefined) {
-          throw new TypeError("Illegal invocation");
-        }
-        if (!url.endsWith("/chain/export")) {
-          return Promise.reject(new Error(`unexpected fetch ${url}`));
-        }
-        return Promise.resolve(
-          new ExportResponse({
-            records: charging,
-            doorPublicKeys: { [DOOR_ID]: built.doorKey },
-            blobs: {}
-          })
-        );
-      },
-      workerHooks(
-        marks,
-        () => time,
-        () => {
-          runs += 1;
-          return {
-            id: 0,
-            ok: true,
-            fed: built.records.length,
-            head: proven.head
-          };
-        }
-      )
+      hooks.fetch,
+      hooks
     );
     pushMark(marks, time);
     expect(runs).toBe(1);
@@ -174,45 +152,16 @@ describe("chunked verify stays on a time budget", () => {
         atlasUrl: served.url
       },
       null,
-      function bareFetch(this: void, url: string, init?: RequestInit) {
-        if (this !== undefined) {
-          throw new TypeError("Illegal invocation");
-        }
-        return fetch(url, init);
-      },
-      {
-        now(this: void) {
-          if (this !== undefined) {
-            throw new TypeError("Illegal invocation");
-          }
-          return 0;
-        },
-        yield(this: void) {
-          if (this !== undefined) {
-            throw new TypeError("Illegal invocation");
-          }
-          return Promise.resolve();
-        },
+      bareFetch,
+      bareHooks({
         bundleSource: "onmessage = function () {};",
-        createObjectURL(this: void) {
-          if (this !== undefined) {
-            throw new TypeError("Illegal invocation");
-          }
-          return "blob:chunk-test";
-        },
-        revokeObjectURL(this: void) {
-          if (this !== undefined) {
-            throw new TypeError("Illegal invocation");
-          }
-        },
-        createWorker(this: void) {
-          if (this !== undefined) {
-            throw new TypeError("Illegal invocation");
-          }
+        createObjectURL: () => "blob:chunk-test",
+        revokeObjectURL: () => undefined,
+        createWorker: () => {
           attempts += 1;
           throw new Error("csp");
         }
-      } satisfies Partial<VerifyHooks>
+      })
     );
     await served.close();
     expect(attempts).toBe(1);
@@ -257,6 +206,23 @@ describe("chunked verify stays on a time budget", () => {
         armed = null;
       };
     }
+    let bound: VerifyHooks["schedule"] | null = null;
+    const hooks = bareHooks({
+      bundleSource: "onmessage = function () {};",
+      createObjectURL: () => "blob:timeout-test",
+      revokeObjectURL: () => undefined,
+      schedule,
+      createWorker: () => {
+        if (bound === null) {
+          throw new Error("missing schedule");
+        }
+        return createVerifyWorker(pageWorker, bound);
+      }
+    });
+    if (hooks.schedule === undefined) {
+      throw new Error("missing schedule");
+    }
+    bound = hooks.schedule;
     const loaded = fetchChain(
       {
         soulPublicKey: built.soulKey,
@@ -265,45 +231,8 @@ describe("chunked verify stays on a time budget", () => {
         atlasUrl: served.url
       },
       null,
-      function bareFetch(this: void, url: string, init?: RequestInit) {
-        if (this !== undefined) {
-          throw new TypeError("Illegal invocation");
-        }
-        return fetch(url, init);
-      },
-      {
-        now(this: void) {
-          if (this !== undefined) {
-            throw new TypeError("Illegal invocation");
-          }
-          return 0;
-        },
-        yield(this: void) {
-          if (this !== undefined) {
-            throw new TypeError("Illegal invocation");
-          }
-          return Promise.resolve();
-        },
-        bundleSource: "onmessage = function () {};",
-        createObjectURL(this: void) {
-          if (this !== undefined) {
-            throw new TypeError("Illegal invocation");
-          }
-          return "blob:timeout-test";
-        },
-        revokeObjectURL(this: void) {
-          if (this !== undefined) {
-            throw new TypeError("Illegal invocation");
-          }
-        },
-        createWorker(this: void) {
-          if (this !== undefined) {
-            throw new TypeError("Illegal invocation");
-          }
-          return createVerifyWorker(pageWorker, schedule);
-        },
-        schedule
-      } satisfies Partial<VerifyHooks>
+      bareFetch,
+      hooks
     );
     await postedOnce;
     if (armed === null) {
@@ -317,6 +246,12 @@ describe("chunked verify stays on a time budget", () => {
     expect(result.hold.phase).toBe("verified");
     expect(result.client?.worker).toBeNull();
     expect(result.client?.head?.seq).toBe(built.records.length - 1);
+    const hold = result.hold;
+    pageWorker.onmessage?.({
+      data: { id: 99, ok: true, fed: 1, head: { cid: "late", seq: 99 } }
+    });
+    expect(result.client?.worker).toBeNull();
+    expect(result.hold).toBe(hold);
   });
 });
 
@@ -354,7 +289,8 @@ class ExportResponse extends Response {
 function workerHooks(
   marks: number[],
   readTime: () => number,
-  reply: () => WorkerVerifyReply
+  reply: () => WorkerVerifyReply,
+  extras: Partial<VerifyHooks> = {}
 ): Partial<VerifyHooks> {
   const worker: VerifyWorker = {
     run(request) {
@@ -370,40 +306,19 @@ function workerHooks(
       }
     }
   };
-  return {
-    now(this: void) {
-      if (this !== undefined) {
-        throw new TypeError("Illegal invocation");
-      }
-      return readTime();
-    },
-    yield(this: void) {
-      if (this !== undefined) {
-        throw new TypeError("Illegal invocation");
-      }
+  return bareHooks({
+    now: () => readTime(),
+    yield: () => {
       pushMark(marks, readTime());
       return Promise.resolve();
     },
     bundleSource: "onmessage = function () {};",
-    createObjectURL(this: void) {
-      if (this !== undefined) {
-        throw new TypeError("Illegal invocation");
-      }
-      return "blob:worker-test";
-    },
-    revokeObjectURL(this: void) {
-      if (this !== undefined) {
-        throw new TypeError("Illegal invocation");
-      }
-    },
-    createWorker(this: void) {
-      if (this !== undefined) {
-        throw new TypeError("Illegal invocation");
-      }
-      return worker;
-    },
-    createVerifier: (options) => new ChainVerifier(options)
-  };
+    createObjectURL: () => "blob:worker-test",
+    revokeObjectURL: () => undefined,
+    createWorker: () => worker,
+    createVerifier: (options: VerifyChainOptions) => new ChainVerifier(options),
+    ...extras
+  });
 }
 
 function chargingRecords(records: readonly OspRecord[], charge: () => void): OspRecord[] {
@@ -446,69 +361,4 @@ function pushMark(marks: number[], time: number): void {
   if (previous !== time) {
     marks.push(time);
   }
-}
-
-function stamp(index: number): string {
-  const hour = Math.floor(index / 3600);
-  const minute = Math.floor((index % 3600) / 60);
-  const second = index % 60;
-  return `2026-01-02T${pad(hour)}:${pad(minute)}:${pad(second)}.000Z`;
-}
-
-function pad(value: number): string {
-  return String(value).padStart(2, "0");
-}
-
-async function buildChain(heartbeats: number): Promise<{
-  records: OspRecord[];
-  soulKey: string;
-  doorKey: string;
-  doorBytes: Uint8Array;
-}> {
-  const soul: Ed25519Keypair = generateKeypair();
-  const door = generateKeypair();
-  const session = encodePublicKey(generateKeypair().publicKey);
-  const chain: ChainCursor = { records: [], prev: null, seq: 0 };
-  await appendRecord(chain, soul, null, {
-    type: "genesis",
-    body: {
-      charter: "# Wanderer\n\nI travel.",
-      soul_pubkey: encodePublicKey(soul.publicKey),
-      created_at: "2026-01-01T00:00:00.000Z"
-    },
-    residency: null
-  });
-  await appendRecord(chain, soul, door, {
-    type: "attestation",
-    body: {
-      kind: "arrival",
-      pop_version: POP_VERSION,
-      door_id: DOOR_ID,
-      epoch: 1,
-      session_pubkey: session,
-      at: "2026-01-02T00:00:00.000Z"
-    },
-    residency: RESIDENCY
-  });
-  for (let index = 0; index < heartbeats; index += 1) {
-    await appendRecord(chain, soul, door, {
-      type: "attestation",
-      body: {
-        kind: "heartbeat",
-        pop_version: POP_VERSION,
-        door_id: DOOR_ID,
-        epoch: 1,
-        session_pubkey: session,
-        at: stamp(index + 1)
-      },
-      residency: RESIDENCY
-    });
-  }
-  const doorKey = encodePublicKey(door.publicKey);
-  return {
-    records: chain.records,
-    soulKey: encodePublicKey(soul.publicKey),
-    doorKey,
-    doorBytes: decodePublicKey(doorKey)
-  };
 }

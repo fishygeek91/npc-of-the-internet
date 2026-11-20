@@ -18,6 +18,7 @@ import { fetchChain, verifyReaction, verifyText } from "../src/browser/verify-po
 import { signedOutbound } from "./helpers.js";
 import {
   appendRecord,
+  bareFetch,
   DOOR_ID,
   pins as shrinePins,
   PROSE,
@@ -420,11 +421,6 @@ function staticHooks(): Partial<VerifyHooks> {
       return Promise.resolve();
     }
   };
-}
-
-function bareFetch(this: void, url: string, init?: RequestInit): Promise<Response> {
-  rejectReceiver(this);
-  return fetch(url, init);
 }
 
 function chainBody(records: readonly unknown[], keys: Record<string, string>): ChainBody {
