@@ -1,5 +1,31 @@
 # @npc/atlas-site
 
+## 0.7.0
+
+### Patch Changes
+
+- 6340352: Security dependency floors — fastify ≥5.12.6, fast-uri ≥4.2.3, undici ≥6.29.1 and ≥8.12.2, astro ^7.4.7, astro's zod ≥4.6.6; Zod 3 advisory GHSA-mrhx-c7xc-m3w5 ignored pending migration (DEVIATIONS.md).
+- c762969: Render journal markdown with marked 18. HTML declarations keep trailing text inside the escaped token, and blank lines around HTML blocks are trimmed. Raw HTML and dangerous URL schemes stay neutralized.
+- 858f873: Record type names come from one `RECORD_TYPES` list. The Atlas site type filter includes tombstone when the chain has a tombstone record.
+- 6fbf2b1: Finish the Zod 4 migration for the remaining packages and report "Expected integer" for a non-integer seq or epoch. Parsed config and protocol values are unchanged.
+- Updated dependencies [fc78fff]
+- Updated dependencies [97f3162]
+- Updated dependencies [6340352]
+- Updated dependencies [64d4fbe]
+- Updated dependencies [1163862]
+- Updated dependencies [1949894]
+- Updated dependencies [9ec50dc]
+- Updated dependencies [99ce3e7]
+- Updated dependencies [858f873]
+- Updated dependencies [70e1219]
+- Updated dependencies [61d581b]
+- Updated dependencies [a614d25]
+- Updated dependencies [1f4e7c4]
+- Updated dependencies [8056980]
+- Updated dependencies [6fbf2b1]
+  - @npc/atlas@0.7.0
+  - @npc/osp-core@0.7.0
+
 ## 0.6.0
 
 ### Minor Changes

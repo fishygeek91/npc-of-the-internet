@@ -1,5 +1,25 @@
 # @npc/osp-core
 
+## 0.7.0
+
+### Minor Changes
+
+- 1163862: Visitors can verify soulchain records in the browser via `@npc/osp-core/browser`, which does not load the Node soulchain store.
+- 1949894: Browser pages can keep one `ChainVerifier` from `@npc/osp-core/browser` and verify only the records they have not admitted yet.
+- 70e1219: Atlas `GET /state`, the porch, and the shrine badge share one presence scan (`scanPresence`) and the per-epoch arrival lookup (`arrivalForEpoch`). A porch line still checks the arrival `session_pubkey` for its own epoch.
+
+### Patch Changes
+
+- 64d4fbe: CID, public-key, signature, base64url, and residency wire strings are branded types. Record bytes, JSON Schema, and validation errors are unchanged; plain strings are still accepted as inputs.
+- 9ec50dc: Import SHA-512 and HKDF from @noble/hashes 2 (`sha2.js`, `hkdf.js`). Digest bytes, signatures, and session keys stay the same.
+- 99ce3e7: The package root export includes a `default` condition, and `./package.json` is exported so tools can read the manifest.
+- 858f873: Record type names come from one `RECORD_TYPES` list. The Atlas site type filter includes tombstone when the chain has a tombstone record.
+- 61d581b: Private-key files are parsed once in osp-core (`parsePrivateKeyBytes`); soul and Door loaders and the preflight helper use that parser and `publicKeyFromPrivate`.
+- a614d25: Record sealing has one implementation: `createRecordWithSigner` in osp-core, used by `createRecord` and by runtime session sealing.
+- 1f4e7c4: Verification and Door errors carry exhaustive discriminants (`VerificationError.reason`, `DoorError.code`). Shard text length is one shared constant. Known messages and chain-rule ids are unchanged. An unrecognized Door wire `error.code` becomes `door_unavailable` with `details.unrecognized_code`; the message and HTTP status are kept.
+- 8056980: Migrate osp-core to Zod 4 and emit draft-07 JSON Schema with z.toJSONSchema. Record validation is unchanged; discriminated unions in the published schemas use oneOf.
+- 6fbf2b1: Finish the Zod 4 migration for the remaining packages and report "Expected integer" for a non-integer seq or epoch. Parsed config and protocol values are unchanged.
+
 ## 0.6.0
 
 ### Minor Changes

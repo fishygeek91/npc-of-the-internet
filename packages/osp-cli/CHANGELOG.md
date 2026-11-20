@@ -1,5 +1,23 @@
 # @npc/osp-cli
 
+## 0.7.0
+
+### Patch Changes
+
+- Updated dependencies [64d4fbe]
+- Updated dependencies [1163862]
+- Updated dependencies [1949894]
+- Updated dependencies [9ec50dc]
+- Updated dependencies [99ce3e7]
+- Updated dependencies [858f873]
+- Updated dependencies [70e1219]
+- Updated dependencies [61d581b]
+- Updated dependencies [a614d25]
+- Updated dependencies [1f4e7c4]
+- Updated dependencies [8056980]
+- Updated dependencies [6fbf2b1]
+  - @npc/osp-core@0.7.0
+
 ## 0.6.0
 
 ### Minor Changes
