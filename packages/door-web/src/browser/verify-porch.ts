@@ -4,13 +4,20 @@ import {
   canonicalize,
   decodePublicKey,
   decodeSignature,
-  RecordSchema,
   scanPresence,
   verify,
-  verifyRecords,
   type OspRecord
 } from "@npc/osp-core/browser";
 
+import {
+  loadVerifiedExport,
+  sealDoorKeys,
+  verifyHooks,
+  type ExportClient,
+  type PageFetch,
+  type PreparedKeys,
+  type VerifyHooks
+} from "./incremental-chain.js";
 import { readProof, roomIdFor, type ProofBytes } from "./proof.js";
 
 /** Visible label for a Wanderer line the browser did not accept. */
@@ -68,123 +75,55 @@ export type ChainHold =
 export type ChainCache = {
   etag: string | null;
   hold: ChainHold;
+  /** Incremental verifier for this page. Null after a failed fetch. */
+  client: ExportClient | null;
 };
-
-type ExportBody = {
-  records: unknown[];
-  doorPublicKeys: Record<string, string>;
-};
-
-/**
- * Door id inside a residency (`spec/osp` `door:<platform>:<id>`), without
- * the `door:` prefix or epoch. Rejects `__proto__` and other non-ids.
- */
-const DOOR_ID_RE = /^[a-z0-9-]+:[A-Za-z0-9_-]+$/u;
 
 /**
  * Download `GET /chain/export` and verify it under the porch pins.
+ * A verified head refetches `?after=<cid>` and feeds only that tail.
  * Failure stores no ETag and no verified snapshot. `304` reuses a snapshot
  * only when that snapshot was already verified (`spec/door/web.md`).
  */
 export async function fetchChain(
   pins: PorchPins,
   previous: ChainCache | null,
-  fetchImpl: typeof fetch = fetch
+  fetchImpl: PageFetch = windowFetch,
+  hooks?: Partial<VerifyHooks>
 ): Promise<ChainCache> {
   if (pins.atlasUrl === null) {
     return failedCache();
   }
-  let response: Response;
-  try {
-    const headers: Record<string, string> = {};
-    if (
-      previous !== null &&
-      previous.hold.phase === "verified" &&
-      previous.etag !== null &&
-      previous.etag.length > 0
-    ) {
-      headers["If-None-Match"] = previous.etag;
-    }
-    response = await fetchImpl(exportUrl(pins.atlasUrl), {
-      cache: "no-store",
-      headers
-    });
-  } catch {
+  const loaded = await loadVerifiedExport({
+    atlasUrl: pins.atlasUrl,
+    previous: previous?.client ?? null,
+    hooks: verifyHooks(fetchImpl, hooks),
+    soulPublicKey: pins.soulPublicKey,
+    prepareKeys: (encoded) => porchKeys(pins, encoded)
+  });
+  if (!loaded.ok) {
     return failedCache();
   }
-
-  const etag = response.headers.get("etag");
-  if (response.status === 304) {
-    if (previous !== null && previous.hold.phase === "verified") {
-      return { etag: etag ?? previous.etag, hold: previous.hold };
-    }
-    return failedCache();
+  if (loaded.unchanged && previous !== null && previous.hold.phase === "verified") {
+    return { etag: loaded.etag, hold: previous.hold, client: loaded.client };
   }
-  if (!response.ok) {
-    return failedCache();
-  }
-
-  let payload: unknown;
-  try {
-    payload = await response.json();
-  } catch {
-    return failedCache();
-  }
-  const exported = readExport(payload);
-  if (exported === null) {
-    return failedCache();
-  }
-
-  const doorKeys = doorKeyMap(exported.doorPublicKeys);
-  const advertised = doorKeys.get(pins.doorId);
-  if (advertised !== undefined && advertised !== pins.doorPublicKey) {
-    return failedCache();
-  }
-  doorKeys.set(pins.doorId, pins.doorPublicKey);
-
-  let decoded: Record<string, Uint8Array>;
-  try {
-    decoded = decodeDoorKeys(doorKeys);
-  } catch {
-    return failedCache();
-  }
-
-  let result: Awaited<ReturnType<typeof verifyRecords>>;
-  try {
-    result = await verifyRecords(exported.records, { doorPublicKeys: decoded });
-  } catch {
-    return failedCache();
-  }
-  if (!result.valid) {
-    return failedCache();
-  }
-
-  const records: OspRecord[] = [];
-  for (const record of exported.records) {
-    const parsed = RecordSchema.safeParse(record);
-    if (!parsed.success) {
-      return failedCache();
-    }
-    records.push(parsed.data);
-  }
-  const genesis = records[0];
-  if (genesis === undefined || genesis.type !== "genesis") {
-    return failedCache();
-  }
-  if (genesis.body.soul_pubkey !== pins.soulPublicKey) {
-    return failedCache();
-  }
-
+  const records = loaded.client.records;
   return {
-    etag,
+    etag: loaded.etag,
     hold: {
       phase: "verified",
       doorId: pins.doorId,
       open: openPorchArrival(records, pins.doorId),
       arrivals: porchArrivals(records, pins.doorId),
       epochCeiling: chainEpochCeiling(records)
-    }
+    },
+    client: loaded.client
   };
+}
+
+/** Page `fetch`. A bare `fetch(...)` drops `this` and throws in browsers. */
+function windowFetch(url: string, init?: RequestInit): Promise<Response> {
+  return globalThis.fetch(url, init);
 }
 
 /**
@@ -300,66 +239,25 @@ export function openPorchArrival(
   };
 }
 
-/** Join the Atlas origin to `/chain/export`. */
-function exportUrl(atlasUrl: string): string {
-  return `${atlasUrl.replace(/\/+$/u, "")}/chain/export`;
-}
-
 /**
  * Cache entry that forces the next poll to GET the export again.
  */
 function failedCache(): ChainCache {
-  return { etag: null, hold: { phase: "failed" } };
+  return { etag: null, hold: { phase: "failed" }, client: null };
 }
 
-/** Read `records` and `doorPublicKeys` from an export body, or null. */
-function readExport(value: unknown): ExportBody | null {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return null;
-  }
-  if (!("records" in value) || !("doorPublicKeys" in value)) {
-    return null;
-  }
-  const records = value.records;
-  const doorPublicKeys = value.doorPublicKeys;
-  if (!Array.isArray(records) || !isStringMap(doorPublicKeys)) {
-    return null;
-  }
-  return { records, doorPublicKeys };
-}
-
-/** True when every own value is a string. */
-function isStringMap(value: unknown): value is Record<string, string> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return false;
-  }
-  return Object.values(value).every((entry) => typeof entry === "string");
-}
-
-/** Copy door keys into a Map so `__proto__` cannot set a prototype. */
-function doorKeyMap(encoded: Readonly<Record<string, string>>): Map<string, string> {
+/** Overlay this porch's pinned door key, then decode the map. A mismatch is null. */
+function porchKeys(pins: PorchPins, encoded: Record<string, string>): PreparedKeys | null {
   const keys = new Map<string, string>();
   for (const [doorId, publicKey] of Object.entries(encoded)) {
     keys.set(doorId, publicKey);
   }
-  return keys;
-}
-
-/** Decode door public keys. A non-`platform:name` id throws. */
-function decodeDoorKeys(encoded: ReadonlyMap<string, string>): Record<string, Uint8Array> {
-  const decoded: Record<string, Uint8Array> = {};
-  for (const [doorId, publicKey] of encoded) {
-    if (!DOOR_ID_RE.test(doorId)) {
-      throw new Error("door public key id is not a door id");
-    }
-    Object.defineProperty(decoded, doorId, {
-      value: decodePublicKey(publicKey),
-      enumerable: true,
-      writable: true,
-      configurable: true
-    });
+  const advertised = keys.get(pins.doorId);
+  if (advertised !== undefined && advertised !== pins.doorPublicKey) {
+    return null;
   }
-  return decoded;
+  keys.set(pins.doorId, pins.doorPublicKey);
+  return sealDoorKeys(keys);
 }
 
 /** Every arrival at this porch, in chain order. The chain authenticated each key. */

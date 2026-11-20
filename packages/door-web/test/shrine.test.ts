@@ -113,13 +113,15 @@ describe("shrine embed", () => {
         doorPublicKeys: { [DOOR_ID]: encodePublicKey(door.publicKey) },
         blobs: built.blobs
       },
-      { etag: '"shrine"' }
+      { etag: '"shrine"', emptyTail: true }
     );
     closers.push(served.close);
     const first = await loadShrine(pins(served.url, soul), null);
     expect(first.snapshot.badge).toBe("PRESENT");
     const again = await loadShrine(pins(served.url, soul), first);
     expect(again.snapshot).toBe(first.snapshot);
+    const third = await loadShrine(pins(served.url, soul), again);
+    expect(third.snapshot).toBe(first.snapshot);
   });
 
   it("paints ELSEWHERE while checking, then the badge first inside a closed shadow", async () => {
