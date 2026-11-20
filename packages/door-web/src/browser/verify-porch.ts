@@ -1,8 +1,11 @@
 import {
+  arrivalForEpoch,
+  arrivalsForDoor,
   canonicalize,
   decodePublicKey,
   decodeSignature,
   RecordSchema,
+  scanPresence,
   verify,
   verifyRecords,
   type OspRecord
@@ -273,35 +276,28 @@ export function verifyReaction(
 }
 
 /**
- * Open arrival for this porch, or null. Same newest-first scan as Atlas
- * `deriveState`: sleep, or departure / travel / handover, or another Door,
- * means none. The key is that stay's arrival `session_pubkey`.
+ * Open arrival for this porch, or null. {@link scanPresence} is the same
+ * newest-first scan as Atlas `deriveState` and the shrine badge: sleep, or
+ * departure / travel / handover, or another Door, means none. The key is that
+ * epoch's first arrival `session_pubkey`, not a heartbeat key.
  */
 export function openPorchArrival(
   records: readonly OspRecord[],
   porchDoorId: string
 ): OpenResidency | null {
-  for (let index = records.length - 1; index >= 0; index -= 1) {
-    const record = records[index];
-    if (record === undefined) {
-      continue;
-    }
-    if (record.type === "sleep") {
-      return null;
-    }
-    if (record.type !== "attestation") {
-      continue;
-    }
-    const body = record.body;
-    if (body.kind === "arrival" || body.kind === "heartbeat") {
-      if (body.door_id !== porchDoorId) {
-        return null;
-      }
-      return arrivalFor(records, body.door_id, body.epoch);
-    }
+  const presence = scanPresence(records);
+  if (presence.status !== "present" || presence.doorId !== porchDoorId) {
     return null;
   }
-  return null;
+  const arrival = arrivalForEpoch(records, presence.doorId, presence.epoch);
+  if (arrival === null) {
+    return null;
+  }
+  return {
+    doorId: arrival.doorId,
+    epoch: arrival.epoch,
+    sessionPubkey: arrival.sessionPubkey
+  };
 }
 
 /** Join the Atlas origin to `/chain/export`. */
@@ -369,17 +365,11 @@ function decodeDoorKeys(encoded: ReadonlyMap<string, string>): Record<string, Ui
 /** Every arrival at this porch, in chain order. The chain authenticated each key. */
 function porchArrivals(records: readonly OspRecord[], porchDoorId: string): OpenResidency[] {
   const arrivals: OpenResidency[] = [];
-  for (const record of records) {
-    if (record.type !== "attestation" || record.body.kind !== "arrival") {
-      continue;
-    }
-    if (record.body.door_id !== porchDoorId) {
-      continue;
-    }
+  for (const arrival of arrivalsForDoor(records, porchDoorId)) {
     arrivals.push({
-      doorId: porchDoorId,
-      epoch: record.body.epoch,
-      sessionPubkey: record.body.session_pubkey
+      doorId: arrival.doorId,
+      epoch: arrival.epoch,
+      sessionPubkey: arrival.sessionPubkey
     });
   }
   return arrivals;
@@ -457,23 +447,6 @@ function verdictForEpoch(
     return "verified";
   }
   return "earlier";
-}
-
-/** Arrival `session_pubkey` for this door and epoch, or null. */
-function arrivalFor(
-  records: readonly OspRecord[],
-  doorId: string,
-  epoch: number
-): OpenResidency | null {
-  for (const record of records) {
-    if (record.type !== "attestation" || record.body.kind !== "arrival") {
-      continue;
-    }
-    if (record.body.door_id === doorId && record.body.epoch === epoch) {
-      return { doorId, epoch, sessionPubkey: record.body.session_pubkey };
-    }
-  }
-  return null;
 }
 
 /** True for a non-null, non-array object. */

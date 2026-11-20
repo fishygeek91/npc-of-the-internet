@@ -16,6 +16,7 @@ OSP soulchain primitives: Zod record schemas, canonical JSON, Ed25519 signing, C
 | Shard text | `SHARD_TEXT_MAX_CODE_POINTS` (500), `countCodePoints` — one length for schema and side-blob encoding |
 | Door keys | `parseDoorPublicKeyBinding`, `parseDoorPublicKeyMap`, `hasDoorPublicKeys` — `doorId=base64url` bindings |
 | Chain verify | `verifyRecords`, `verifyChain`, `ChainRule`, `ChainFailure`, `VerifyChainResult`, `VerifyChainOptions` |
+| Presence | `scanPresence`, `arrivalForEpoch`, `arrivalsForDoor` — also from `@npc/osp-core/browser` |
 | Pin manifest | `buildUnsignedPinManifest`, `signPinManifest`, `verifyPinManifest`, `encodePinManifest`, `decodePinManifest`, `computeManifestCid`, `listRecordCidsFromIpfsDir`, `buildAndSignPinManifestForIpfsDir` |
 | CAR | `exportSoulchainCar`, `importSoulchainCar` |
 | Browser | `@npc/osp-core/browser` — see below. Not re-exported from the package root. |
@@ -48,7 +49,9 @@ Parsed record CID fields, `soul_pubkey` / `session_pubkey`, `sig`, and `cosigner
 
 ## Browser verification
 
-Import `@npc/osp-core/browser` from a porch page or replica shrine. Do not bundle the package root: that entry loads `SoulStore` (`node:fs` and the other Node stores). The browser subpath exports `ChainVerifier`, `ChainStep`, `verifyRecords`, `verifyRecord`, `verify`, `canonicalize`, `computeCid`, `decodePublicKey`, `decodeSignature`, `parseResidency`, `hashBlobBytes`, `cidMatchesHash`, and `decodeJournalBlob`.
+Import `@npc/osp-core/browser` from a porch page or replica shrine. Do not bundle the package root: that entry loads `SoulStore` (`node:fs` and the other Node stores). The browser subpath exports `ChainVerifier`, `ChainStep`, `verifyRecords`, `verifyRecord`, `verify`, `canonicalize`, `computeCid`, `decodePublicKey`, `decodeSignature`, `parseResidency`, `hashBlobBytes`, `cidMatchesHash`, `decodeJournalBlob`, `scanPresence`, `arrivalForEpoch`, and `arrivalsForDoor`.
+
+`scanPresence(records)` walks newest first and does not verify signatures. A `sleep` before any later attestation is `{ status: "sleeping", asOf }`. An `arrival` or `heartbeat` is `{ status: "present", doorId, epoch, at, index }`. `departure`, `travel` (`from_epoch`), and `handover` (`depart_epoch`) are `{ status: "traveling" }`. No attestation is sleeping with `asOf: null`. `arrivalForEpoch(records, doorId, epoch)` is the first arrival `session_pubkey` for that door and epoch (a heartbeat is not a second key). `arrivalsForDoor` lists every arrival at one door, in chain order. Atlas `deriveState`, the porch, and the shrine badge call this scan.
 
 `verify` is strict RFC 8032 via `@noble/ed25519`. CID hashing uses `multiformats` sha2-256; a browser bundle resolves the `browser` export (`crypto.subtle`), not `node:crypto`. The contract for PRESENT / ELSEWHERE, session-key checks, and the shrine embed is `spec/door/web.md`.
 

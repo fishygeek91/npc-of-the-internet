@@ -3,6 +3,7 @@ import {
   decodeJournalBlob,
   parseResidency as parseOspResidency,
   RECORD_TYPES,
+  scanPresence,
   type OspRecord,
   type RecordType
 } from "@npc/osp-core";
@@ -186,7 +187,7 @@ export function parseResidency(residency: string): { door_id: string; epoch: num
 
 /**
  * Derive Wanderer presence state from chain records.
- * Scans newest to oldest: a `sleep` record before any attestation means sleeping
+ * The decision is {@link scanPresence}: a `sleep` record before any attestation means sleeping
  * (do not fake presence after the soul has recorded sleep). A later attestation,
  * including a heartbeat, clears that. The runtime withholds heartbeats and travel
  * while the budget policy is asleep so this stays sleeping until the next
@@ -212,40 +213,20 @@ export function deriveState(records: readonly OspRecord[], verified: boolean): S
     verified
   });
 
-  for (let index = records.length - 1; index >= 0; index -= 1) {
-    const record = records[index];
-    if (record === undefined) {
-      continue;
-    }
-
-    if (record.type === "sleep") {
-      return state("sleeping", null, null, record.body.as_of);
-    }
-
-    if (record.type !== "attestation") {
-      continue;
-    }
-
-    const body = record.body;
-    switch (body.kind) {
-      case "arrival":
-      case "heartbeat":
-        return state(
-          "present",
-          body.door_id,
-          body.epoch,
-          findStaySince(records, index, body.door_id, body.epoch) ?? body.at
-        );
-      case "departure":
-        return state("traveling", null, body.epoch, body.at);
-      case "travel":
-        return state("traveling", null, body.from_epoch, body.at);
-      case "handover":
-        return state("traveling", null, body.depart_epoch, body.at);
-    }
+  const presence = scanPresence(records);
+  switch (presence.status) {
+    case "sleeping":
+      return state("sleeping", null, null, presence.asOf);
+    case "traveling":
+      return state("traveling", null, presence.epoch, presence.at);
+    case "present":
+      return state(
+        "present",
+        presence.doorId,
+        presence.epoch,
+        findStaySince(records, presence.index, presence.doorId, presence.epoch) ?? presence.at
+      );
   }
-
-  return state("sleeping", null, null, null);
 }
 
 /**
