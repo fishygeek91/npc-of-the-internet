@@ -75,7 +75,7 @@ A client MUST NOT trust a tail unless it extends the head it verified. The tail 
 
 The response SHOULD include an `ETag`, and SHOULD expose that header to cross-origin callers (`Access-Control-Expose-Headers: ETag`). A tail's `ETag` is not the full export's tag. It is different for each `after` value, and it changes when the head changes. A client MUST send `If-None-Match` only with the tag from the same URL (the same `after`, or no `after`). `304` (empty body, same `ETag`) means the previous successful body for that URL is unchanged and MUST be kept. A client with no previous success for that URL MUST NOT treat `304` as a chain. `Cache-Control: no-cache` means revalidate; it does not replace the shrine's 60-second refetch.
 
-**First full verify.** The porch page and the shrine verify a full export on the main thread in chunks that yield at least every ~50 ms. A tail that extends a head the client already verified is only the new suffix, fed to the one verifier that already holds that head. A tail whose signature does not verify fails closed: the page drops that verifier and the next fetch is one full export. A `304` for a tail URL the page did not revalidate is not an unchanged chain; the page drops its state and fetches the full export once.
+**First full verify.** The porch page and the shrine run the first full verify off the main thread. The worker is a Blob URL whose script is the same classic bundle (`verify.js` or `shrine.js`); there is no separate worker file. Records the worker accepted are parsed on the main thread in the same chunks that yield at least every ~50 ms. If that worker cannot start (for example the page CSP blocks blob workers) or it errors, verification continues on the main thread in those chunks. A tail that extends a head the client already verified is only the new suffix, fed to the one verifier that already holds that head. A tail whose signature does not verify fails closed: the page drops that verifier and the next fetch is one full export. A `304` for a tail URL the page did not revalidate is not an unchanged chain; the page drops its state and fetches the full export once.
 
 Atlas does not cap `/chain/export`. The porch caps every body it forwards at 8 MiB, a full export and each tail alike. A tail that begins just after genesis is about as large as the full export, so a tail does not avoid that cap.
 
@@ -89,7 +89,7 @@ A shrine is not a Door. It MUST NOT offer chat, `POST /api/say`, attest, heartbe
 
 ### Embed
 
-One script element plus one config object. Embedders do not install a framework. The script is classic (a `src` URL), fetches only the configured Atlas (and does not load other scripts), and mounts into one element.
+One script element plus one config object. Embedders do not install a framework. The script is classic (a `src` URL). It fetches the configured Atlas and, once, its own script URL to build the verify worker; it does not load other scripts. It mounts into one element. `GET /shrine.js` sends `Access-Control-Allow-Origin: *` and does not send `Access-Control-Allow-Credentials`. It is a public script fetched without credentials, so a page on another origin can read it and run that text as the blob worker. No other static asset sends that header. The porch page's content security policy is unchanged.
 
 ```html
 <script

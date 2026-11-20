@@ -3,10 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createContext, runInContext } from "node:vm";
 
+import { decodeBase64Url, encodeBase64Url, type OspRecord } from "@npc/osp-core";
 import { describe, expect, it } from "vitest";
 
 import { SHRINE_REFRESH_MS } from "../src/browser/shrine.js";
 import { buildPorchBundle, buildShrineBundle } from "../scripts/bundle-browser.mjs";
+import { buildChain, DOOR_ID } from "./shrine-fixture.js";
 
 describe("porch verify.js bundle", () => {
   it("matches the committed file and does not reach Node or eval", async () => {
@@ -25,6 +27,8 @@ describe("porch verify.js bundle", () => {
       expect(text).not.toContain("node:fs");
       expect(text).not.toContain("node:crypto");
       expect(text).not.toContain("eval(");
+      expect(text).toContain("createObjectURL");
+      expect(text).toContain("Worker");
       expect(zodParsesWithoutFunction(text)).toBe("failed");
     } finally {
       await rm(dir, { recursive: true, force: true });
@@ -46,6 +50,8 @@ describe("porch verify.js bundle", () => {
       expect(built.inputs.some((path: string) => path.includes("node:"))).toBe(false);
       expect(text).not.toContain("node:fs");
       expect(text).not.toContain("eval(");
+      expect(text).toContain("createObjectURL");
+      expect(text).toContain("Worker");
       expect(await shrineParsesWithoutFunction(text)).toBe(0);
     } finally {
       await rm(dir, { recursive: true, force: true });
@@ -75,6 +81,37 @@ describe("porch verify.js bundle", () => {
       "https://atlas.example/chain/export"
     ]);
   });
+
+  it("answers a reset and a forged signature from the built worker bundles", async () => {
+    const built = await buildChain(1);
+    const chain = { records: built.records, keys: { [DOOR_ID]: [...built.doorBytes] } };
+    const forged = chain.records.slice();
+    const last = forged[forged.length - 1];
+    if (last === undefined) {
+      throw new Error("missing heartbeat");
+    }
+    forged[forged.length - 1] = forgeSignature(last);
+    for (const fileName of ["verify.js", "shrine.js"]) {
+      const source = await readFile(new URL(`../public/${fileName}`, import.meta.url), "utf8");
+      const session = loadWorkerBundle(source);
+      const admitted = await session.post({
+        id: 1,
+        reset: true,
+        records: chain.records,
+        doorPublicKeys: chain.keys
+      });
+      expect(admitted).toEqual({ id: 1, ok: true, fed: 3, head: { seq: 2 } });
+      const rejected = await session.post({
+        id: 2,
+        reset: true,
+        records: forged,
+        doorPublicKeys: chain.keys
+      });
+      expect(rejected.ok).toBe(false);
+      expect(rejected.id).toBe(2);
+      expect(session.illegal).toBe(0);
+    }
+  }, 20_000);
 });
 
 /**
@@ -406,4 +443,165 @@ function shrineElement(): {
     }
   };
   return node;
+}
+
+type WorkerReply = {
+  id: number;
+  ok: boolean;
+  fed: number;
+  head: { seq: number } | null;
+};
+
+type WorkerJob = {
+  id: number;
+  reset: boolean;
+  records: readonly OspRecord[];
+  doorPublicKeys: Record<string, number[]>;
+};
+
+type WorkerSession = {
+  illegal: number;
+  post(job: WorkerJob): Promise<WorkerReply>;
+};
+
+/**
+ * Evaluate a built classic bundle as a dedicated worker.
+ * `postMessage` throws when `this` is not the worker global.
+ */
+function loadWorkerBundle(source: string): WorkerSession {
+  let illegal = 0;
+  let resolveReply: ((reply: WorkerReply) => void) | null = null;
+  const mark = {};
+  // A vm global is a proxy of this object, so `this === sandbox` is false even
+  // for a correct `globalThis.postMessage(...)`. The mark is the receiver.
+  const isWorker = (receiver: unknown): boolean =>
+    typeof receiver === "object" &&
+    receiver !== null &&
+    "mark" in receiver &&
+    receiver.mark === mark;
+  const sandbox = {
+    mark,
+    console,
+    unescape,
+    escape,
+    URL,
+    URLSearchParams,
+    crypto: globalThis.crypto,
+    AbortSignal,
+    queueMicrotask,
+    setTimeout,
+    clearTimeout,
+    performance,
+    atob: (value: string): string => Buffer.from(value, "base64").toString("binary"),
+    btoa: (value: string): string => Buffer.from(value, "binary").toString("base64"),
+    importScripts(this: unknown): void {
+      if (!isWorker(this)) {
+        illegal += 1;
+        throw new TypeError("Illegal invocation");
+      }
+    },
+    postMessage(this: unknown, message: unknown): void {
+      if (!isWorker(this)) {
+        illegal += 1;
+        throw new TypeError("Illegal invocation");
+      }
+      const done = resolveReply;
+      resolveReply = null;
+      if (done === null) {
+        throw new Error("worker replied with nobody waiting");
+      }
+      done(readWorkerReply(message));
+    },
+    onmessage: null as ((event: { data: unknown }) => void) | null,
+    job: null as WorkerJob | null
+  };
+  const context = createContext(sandbox);
+  runInContext(WORKER_TEXT_CODECS, context, { timeout: 5_000 });
+  runInContext(source, context, { timeout: 5_000 });
+  return {
+    get illegal() {
+      return illegal;
+    },
+    post(job) {
+      const pending = new Promise<WorkerReply>((resolve) => {
+        resolveReply = resolve;
+      });
+      sandbox.job = job;
+      runInContext(DELIVER_JOB, context, { timeout: 5_000 });
+      return pending;
+    }
+  };
+}
+
+const WORKER_TEXT_CODECS = `
+globalThis.TextEncoder = class TextEncoder {
+  encode(text) {
+    const binary = unescape(encodeURIComponent(String(text)));
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) {
+      bytes[index] = binary.charCodeAt(index);
+    }
+    return bytes;
+  }
+};
+globalThis.TextDecoder = class TextDecoder {
+  decode(bytes) {
+    const chars = [];
+    for (const byte of bytes) {
+      chars.push(String.fromCharCode(byte));
+    }
+    return decodeURIComponent(escape(chars.join("")));
+  }
+};
+`;
+
+const DELIVER_JOB = `(() => {
+  const raw = globalThis.job;
+  const doorPublicKeys = {};
+  for (const doorId of Object.keys(raw.doorPublicKeys)) {
+    doorPublicKeys[doorId] = new Uint8Array(raw.doorPublicKeys[doorId]);
+  }
+  const handler = globalThis.onmessage;
+  if (typeof handler !== "function") {
+    throw new Error("worker did not install onmessage");
+  }
+  handler({
+    data: {
+      id: raw.id,
+      reset: raw.reset,
+      records: JSON.parse(JSON.stringify(raw.records)),
+      doorPublicKeys
+    }
+  });
+})()`;
+
+function readWorkerReply(message: unknown): WorkerReply {
+  if (typeof message !== "object" || message === null) {
+    throw new Error("worker reply was not an object");
+  }
+  if (!("id" in message) || !("ok" in message) || !("fed" in message) || !("head" in message)) {
+    throw new Error("worker reply was missing fields");
+  }
+  const { id, ok, fed, head } = message;
+  if (typeof id !== "number" || typeof ok !== "boolean" || typeof fed !== "number") {
+    throw new Error("worker reply had the wrong types");
+  }
+  if (head === null) {
+    return { id, ok, fed, head: null };
+  }
+  if (typeof head !== "object" || !("seq" in head) || typeof head.seq !== "number") {
+    throw new Error("worker reply head was not a cursor");
+  }
+  return { id, ok, fed, head: { seq: head.seq } };
+}
+
+function forgeSignature(record: OspRecord): OspRecord {
+  const bytes = Uint8Array.from(decodeBase64Url(record.sig));
+  const index = Math.floor(bytes.length / 2);
+  const current = bytes[index];
+  if (current === undefined) {
+    throw new Error("empty signature");
+  }
+  bytes[index] = current ^ 0xff;
+  return { ...record, sig: encodeBase64Url(bytes) };
 }
