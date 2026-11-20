@@ -148,7 +148,7 @@ export function mountShrine(options: {
         cache = next;
       })
       .catch(() => {
-        cache = { etag: null, snapshot: SHRINE_FAILED_SNAPSHOT };
+        cache = { etag: null, snapshot: SHRINE_FAILED_SNAPSHOT, client: null };
       })
       .finally(() => {
         busy = false;

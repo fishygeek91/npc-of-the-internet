@@ -159,7 +159,7 @@ describe("porch line verification", () => {
     const seen: string[] = [];
     const served = await serveExport(
       { records: chain.records, doorPublicKeys: keyMap(door), blobs: {} },
-      { etag: '"chain"', seen }
+      { etag: '"chain"', seen, emptyTail: true }
     );
     closers.push(served.close);
     const porch = pins(soul, door, served.url);
@@ -168,6 +168,8 @@ describe("porch line verification", () => {
     expect(first.etag).toBe('"chain"');
     const again = await fetchChain(porch, first);
     expect(again.hold).toBe(first.hold);
+    const third = await fetchChain(porch, again);
+    expect(third.hold).toBe(first.hold);
 
     let blows = true;
     const flaky: typeof fetch = (input, init) => {
@@ -178,14 +180,14 @@ describe("porch line verification", () => {
       return fetch(input, init);
     };
     const hello = speak(session);
-    const failed = await fetchChain(porch, first, flaky);
+    const failed = await fetchChain(porch, third, flaky);
     expect(failed.etag).toBeNull();
     expect(failed.hold.phase).toBe("failed");
     expect(wanderer(failed.hold, hello)).toBe("failed");
     const recovered = await fetchChain(porch, failed, flaky);
     expect(recovered.hold.phase).toBe("verified");
     expect(wanderer(recovered.hold, hello)).toBe("verified");
-    expect(seen).toEqual(["", '"chain"', ""]);
+    expect(seen).toEqual(["", "", '"tail"', ""]);
   });
 
   it("marks a closed, sleeping, or superseded stay as an earlier visit and fails another door", async () => {
@@ -503,7 +505,7 @@ async function append(
 
 function serveExport(
   body: unknown,
-  options: { etag?: string; seen?: string[] } = {}
+  options: { etag?: string; seen?: string[]; emptyTail?: boolean } = {}
 ): Promise<{ url: string; close: () => Promise<void> }> {
   const etag = options.etag ?? '"export"';
   const server: Server = createServer((request, response) => {
@@ -515,6 +517,21 @@ function serveExport(
     }
     const header = request.headers["if-none-match"];
     options.seen?.push(typeof header === "string" ? header : "");
+    if (options.emptyTail === true && (request.url ?? "").includes("after=")) {
+      const tailEtag = '"tail"';
+      if (header === tailEtag) {
+        response.writeHead(304, { ETag: tailEtag });
+        response.end();
+        return;
+      }
+      const keys =
+        typeof body === "object" && body !== null && "doorPublicKeys" in body
+          ? body.doorPublicKeys
+          : {};
+      response.writeHead(200, { "Content-Type": "application/json", ETag: tailEtag });
+      response.end(JSON.stringify({ records: [], doorPublicKeys: keys, blobs: {} }));
+      return;
+    }
     if (header === etag) {
       response.writeHead(304, { ETag: etag });
       response.end();

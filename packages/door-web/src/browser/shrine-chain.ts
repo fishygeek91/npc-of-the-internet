@@ -2,19 +2,25 @@ import {
   cidMatchesHash,
   decodeBase64Url,
   decodeJournalBlob,
-  decodePublicKey,
   hashBlobBytes,
-  RecordSchema,
   scanPresence,
-  verifyRecords,
   type OspRecord
 } from "@npc/osp-core/browser";
+
+import {
+  loadVerifiedExport,
+  sealDoorKeys,
+  verifyHooks,
+  type ExportClient,
+  type PageFetch,
+  type PreparedKeys,
+  type VerifyHooks
+} from "./incremental-chain.js";
 
 /** Shown instead of journal prose when a verified tombstone covers that blob. */
 export const JOURNAL_ERASED = "[journal erased]";
 
 const WEB_DOOR_ID_RE = /^web:[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
-const DOOR_ID_RE = /^[a-z0-9-]+:[A-Za-z0-9_-]+$/u;
 
 /** Embed settings. `doorPublicKeys === null` means use the export's map. */
 export type ShrineConfig = {
@@ -39,6 +45,8 @@ export type ShrineSnapshot = {
 export type ShrineCache = {
   etag: string | null;
   snapshot: ShrineSnapshot;
+  /** Incremental verifier for this embed. Null after a failed fetch. */
+  client: ExportClient | null;
 };
 
 export const SHRINE_FAILED_SNAPSHOT: ShrineSnapshot = Object.freeze({
@@ -54,73 +62,49 @@ export const SHRINE_FAILED_SNAPSHOT: ShrineSnapshot = Object.freeze({
 export async function loadShrine(
   config: ShrineConfig,
   previous: ShrineCache | null,
-  fetchImpl: typeof fetch = fetch
+  fetchImpl: PageFetch = windowFetch,
+  hooks?: Partial<VerifyHooks>
 ): Promise<ShrineCache> {
   if (config.atlasUrl === null) {
-    return { etag: null, snapshot: SHRINE_FAILED_SNAPSHOT };
+    return failedShrine();
   }
-  let response: Response;
-  try {
-    const headers: Record<string, string> = {};
-    if (previous?.etag !== undefined && previous.etag !== null) {
-      headers["If-None-Match"] = previous.etag;
-    }
-    response = await fetchImpl(`${config.atlasUrl}/chain/export`, {
-      cache: "no-store",
-      headers
-    });
-  } catch {
-    return { etag: null, snapshot: SHRINE_FAILED_SNAPSHOT };
+  const loaded = await loadVerifiedExport({
+    atlasUrl: config.atlasUrl,
+    previous: previous?.client ?? null,
+    hooks: verifyHooks(fetchImpl, hooks),
+    soulPublicKey: config.soulPublicKey,
+    prepareKeys: (encoded) => shrineKeys(config, encoded)
+  });
+  if (!loaded.ok) {
+    return failedShrine();
   }
-  const etag = response.headers.get("etag");
-  if (response.status === 304) {
-    if (previous !== null && previous.snapshot.phase === "verified") {
-      return { etag: etag ?? previous.etag, snapshot: previous.snapshot };
-    }
-    return { etag, snapshot: SHRINE_FAILED_SNAPSHOT };
+  if (loaded.unchanged && previous !== null && previous.snapshot.phase === "verified") {
+    return { etag: loaded.etag, snapshot: previous.snapshot, client: loaded.client };
   }
-  if (!response.ok) {
-    return { etag: null, snapshot: SHRINE_FAILED_SNAPSHOT };
+  const journals = await journalsOf(loaded.client.records, loaded.client.blobs);
+  return {
+    etag: loaded.etag,
+    snapshot: snapshotOf(config, loaded.client.records, journals),
+    client: loaded.client
+  };
+}
+
+function failedShrine(): ShrineCache {
+  return { etag: null, snapshot: SHRINE_FAILED_SNAPSHOT, client: null };
+}
+
+/** Page `fetch`. A bare `fetch(...)` drops `this` and throws in browsers. */
+function windowFetch(url: string, init?: RequestInit): Promise<Response> {
+  return globalThis.fetch(url, init);
+}
+
+function shrineKeys(config: ShrineConfig, encoded: Record<string, string>): PreparedKeys | null {
+  const source = config.doorPublicKeys ?? encoded;
+  const keys = new Map<string, string>();
+  for (const [doorId, publicKey] of Object.entries(source)) {
+    keys.set(doorId, publicKey);
   }
-  let payload: unknown;
-  try {
-    payload = await response.json();
-  } catch {
-    return { etag: null, snapshot: SHRINE_FAILED_SNAPSHOT };
-  }
-  const exported = readExport(payload);
-  if (exported === null) {
-    return { etag: null, snapshot: SHRINE_FAILED_SNAPSHOT };
-  }
-  const encodedKeys = config.doorPublicKeys ?? exported.doorPublicKeys;
-  let decoded: Record<string, Uint8Array>;
-  try {
-    decoded = decodeDoorKeys(encodedKeys);
-  } catch {
-    return { etag: null, snapshot: SHRINE_FAILED_SNAPSHOT };
-  }
-  let verified: Awaited<ReturnType<typeof verifyRecords>>;
-  try {
-    verified = await verifyRecords(exported.records, { doorPublicKeys: decoded });
-  } catch {
-    return { etag: null, snapshot: SHRINE_FAILED_SNAPSHOT };
-  }
-  if (!verified.valid) {
-    return { etag: null, snapshot: SHRINE_FAILED_SNAPSHOT };
-  }
-  const records: OspRecord[] = [];
-  for (const record of exported.records) {
-    const parsed = RecordSchema.safeParse(record);
-    if (!parsed.success) {
-      return { etag: null, snapshot: SHRINE_FAILED_SNAPSHOT };
-    }
-    records.push(parsed.data);
-  }
-  if (config.soulPublicKey !== null && !soulPinMatches(records, config.soulPublicKey)) {
-    return { etag: null, snapshot: SHRINE_FAILED_SNAPSHOT };
-  }
-  const journals = await journalsOf(records, exported.blobs);
-  return { etag, snapshot: snapshotOf(config, records, journals) };
+  return sealDoorKeys(keys);
 }
 
 function snapshotOf(
@@ -248,59 +232,4 @@ async function verifiedProse(encoded: string, cid: string, hash: string): Promis
   } catch {
     return null;
   }
-}
-
-function soulPinMatches(records: readonly OspRecord[], soulPublicKey: string): boolean {
-  const genesis = records[0];
-  return (
-    genesis !== undefined &&
-    genesis.type === "genesis" &&
-    genesis.body.soul_pubkey === soulPublicKey
-  );
-}
-
-function readExport(value: unknown): {
-  records: unknown[];
-  doorPublicKeys: Record<string, string>;
-  blobs: Record<string, string>;
-} | null {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return null;
-  }
-  if (!("records" in value) || !("doorPublicKeys" in value)) {
-    return null;
-  }
-  const records = value.records;
-  const doorPublicKeys = value.doorPublicKeys;
-  if (!Array.isArray(records) || !isStringMap(doorPublicKeys)) {
-    return null;
-  }
-  const blobs = "blobs" in value ? value.blobs : {};
-  if (!isStringMap(blobs)) {
-    return null;
-  }
-  return { records, doorPublicKeys, blobs };
-}
-
-function isStringMap(value: unknown): value is Record<string, string> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return false;
-  }
-  return Object.values(value).every((entry) => typeof entry === "string");
-}
-
-function decodeDoorKeys(encoded: Record<string, string>): Record<string, Uint8Array> {
-  const decoded: Record<string, Uint8Array> = {};
-  for (const [doorId, publicKey] of new Map(Object.entries(encoded))) {
-    if (!DOOR_ID_RE.test(doorId)) {
-      throw new Error("door public key id is not a door id");
-    }
-    Object.defineProperty(decoded, doorId, {
-      value: decodePublicKey(publicKey),
-      enumerable: true,
-      writable: true,
-      configurable: true
-    });
-  }
-  return decoded;
 }

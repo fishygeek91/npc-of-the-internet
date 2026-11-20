@@ -1,4 +1,4 @@
-import { createServer, type Server } from "node:http";
+import { createServer, type IncomingMessage, type Server } from "node:http";
 
 import {
   contentAddressSideBlob,
@@ -10,6 +10,7 @@ import {
   OSP_SPEC_V02,
   POP_VERSION,
   signCore,
+  type CreateRecordInput,
   type Ed25519Keypair,
   type OspRecord
 } from "@npc/osp-core";
@@ -122,7 +123,7 @@ export type ServedExport = { body: unknown; etag: string; status: number };
 /** Serve one export body, including a 304 when `If-None-Match` repeats the tag. */
 export function serveExport(
   body: unknown,
-  options: { etag?: string; live?: ServedExport } = {}
+  options: { etag?: string; live?: ServedExport; emptyTail?: boolean } = {}
 ): Promise<{ url: string; close: () => Promise<void> }> {
   const live = options.live ?? { body, etag: options.etag ?? '"export"', status: 200 };
   const server: Server = createServer((request, response) => {
@@ -130,6 +131,21 @@ export function serveExport(
     if (path !== "/chain/export") {
       response.writeHead(404);
       response.end();
+      return;
+    }
+    if (options.emptyTail === true && (request.url ?? "").includes("after=")) {
+      const tailEtag = '"tail"';
+      if (request.headers["if-none-match"] === tailEtag) {
+        response.writeHead(304, { ETag: tailEtag });
+        response.end();
+        return;
+      }
+      const keys =
+        typeof body === "object" && body !== null && "doorPublicKeys" in body
+          ? body.doorPublicKeys
+          : {};
+      response.writeHead(200, { "Content-Type": "application/json", ETag: tailEtag });
+      response.end(JSON.stringify({ records: [], doorPublicKeys: keys, blobs: {} }));
       return;
     }
     if (live.status !== 200) {
@@ -145,6 +161,60 @@ export function serveExport(
     response.writeHead(200, { "Content-Type": "application/json", ETag: live.etag });
     response.end(JSON.stringify(live.body));
   });
+  return listenLoopback(server);
+}
+
+export type ChainCursor = { records: OspRecord[]; prev: string | null; seq: number };
+
+/** Append one really-signed record and advance the cursor. */
+export async function appendRecord(
+  chain: ChainCursor,
+  soul: Ed25519Keypair,
+  door: Ed25519Keypair | null,
+  input: {
+    type: CreateRecordInput["type"];
+    body: CreateRecordInput["body"];
+    residency: string | null;
+  }
+): Promise<void> {
+  const fields = {
+    spec: OSP_SPEC_V02,
+    seq: chain.seq,
+    prev: chain.prev,
+    type: input.type,
+    body: input.body,
+    residency: input.residency
+  };
+  const created = await createRecord({
+    ...fields,
+    cosigners: door === null ? [] : [signCore(fields, door.privateKey)],
+    soulPrivateKey: soul.privateKey
+  });
+  chain.records.push(created.record);
+  chain.prev = created.cid;
+  chain.seq += 1;
+}
+
+/** Serve `GET /chain/export` from a per-request reply. Other paths are 404. */
+export function serveHandledExport(
+  handler: (request: IncomingMessage) => { status: number; body: unknown }
+): Promise<{ url: string; close: () => Promise<void> }> {
+  const server: Server = createServer((request, response) => {
+    const path = (request.url ?? "/").split("?")[0];
+    if (path !== "/chain/export") {
+      response.writeHead(404);
+      response.end();
+      return;
+    }
+    const reply = handler(request);
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    response.writeHead(reply.status, headers);
+    response.end(reply.status === 304 ? "" : JSON.stringify(reply.body));
+  });
+  return listenLoopback(server);
+}
+
+function listenLoopback(server: Server): Promise<{ url: string; close: () => Promise<void> }> {
   return new Promise((resolve, reject) => {
     server.once("error", reject);
     server.listen(0, "127.0.0.1", () => {
